@@ -207,13 +207,14 @@ def _append_to_transcript(path: Path, records: list[dict]) -> None:
 
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's fire path invokes
-    (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
-    `tail`/`wc`/`tr`/`head` for read_latest_usage_cached's incremental scan,
-    `mkdir`/`find`/`touch` for the marker dir, `bash`/`basename` for the
-    active-bypass marker enumeration and `sort`/`paste` to join its labels),
-    omitting both timeout(1) and gtimeout(1). Skips (does not silently
-    under-symlink) when a needed real binary is itself absent from the test
-    machine."""
+    (`cat`/`jq` for the payload/output JSON, `dirname` for the active-bypass
+    marker enumeration's own nested `$(dirname "$0")/_lib.sh` re-source (the
+    top-level bootstrap does not call it), `tail`/`wc`/`tr`/`head` for
+    read_latest_usage_cached's incremental scan, `mkdir`/`find`/`touch` for
+    the marker dir, `bash`/`basename` for the active-bypass marker
+    enumeration and `sort`/`paste` to join its labels), omitting both
+    timeout(1) and gtimeout(1). Skips (does not silently under-symlink) when
+    a needed real binary is itself absent from the test machine."""
     for tool in (
         "bash", "basename", "cat", "dirname", "find", "head", "jq", "mkdir",
         "paste", "sort", "tail", "touch", "tr", "wc",
@@ -227,11 +228,11 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
 
 def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries run_check_mode's --check path
-    invokes (`dirname` to locate _lib.sh, `jq` for the reported JSON,
-    `ps`/`head`/`sed`/`tr` for the ancestor walk, `env` for the pinned-locale
-    live-start read, `tail` for read_latest_usage), omitting both timeout(1)
-    and gtimeout(1). Skips when a needed real binary is itself absent from
-    the test machine."""
+    invokes (`dirname` kept as a harmless superset entry `run_check_mode`
+    never calls, `jq` for the reported JSON, `ps`/`head`/`sed`/`tr` for the
+    ancestor walk, `env` for the pinned-locale live-start read, `tail` for
+    read_latest_usage), omitting both timeout(1) and gtimeout(1). Skips when
+    a needed real binary is itself absent from the test machine."""
     for tool in ("dirname", "env", "head", "jq", "ps", "sed", "tail", "tr"):
         real = shutil.which(tool)
         if not real:
@@ -704,6 +705,96 @@ class TestNudgeHandoffNearContextCap:
         )
         assert not _marker_path(tmp_path).exists()
 
+    @pytest.mark.timing
+    @pytest.mark.parametrize(
+        "case",
+        ["bootstrap_filter", "bootstrap_extract", "cached_filter", "cached_extract"],
+    )
+    def test_newly_capped_sites_killed_by_2s_cap_not_5s_default(self, tmp_path, case):
+        """The four bare-`jq` sites wrapped in `_lib_capped_for 2 jq`
+        (:199, :208, :294, :303) each get their own case here.
+        - `:199`/`:294` share `_USAGE_BLOCK_JQ_FILTER` (the usage_block `-s`
+          call).
+        - `:208`/`:303` share the four-field extraction filter (the `-r`
+          call).
+
+        A jq shim keyed on filter content can't tell the
+        bootstrap call from the incremental-scan call sharing that filter,
+        so each case instead arranges which of the two code paths
+        (bootstrap vs incremental) is reachable, and the shared filter
+        content only ever fires inside that one path.
+        """
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — cap cannot fire at all")
+
+        filter_marker = "map(select"  # _USAGE_BLOCK_JQ_FILTER: sites :199/:294
+        extract_marker = "cache_read_input_tokens"  # four-field extraction: sites :208/:303
+        slow_on = filter_marker if case.endswith("_filter") else extract_marker
+
+        fake_bin = tmp_path / f"fakebin-slow-jq-{case}"
+        fake_bin.mkdir()
+        slow_jq = fake_bin / "jq"
+        slow_jq.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            f'  *"{slow_on}"*) sleep 3.5 ;;\n'
+            "esac\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        slow_jq.chmod(0o755)
+        # HANDOFF_NUDGE_BLOCK_AT pinned above default so the cached_* branch's
+        # rearmed_estimate stays on the advisory "fire" path this test's
+        # assertion messages describe, instead of the hard-block path a
+        # genuinely-completing slow jq would otherwise reach.
+        extra_env = {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT,
+        }
+        transcript = tmp_path / "t.jsonl"
+
+        if case.startswith("bootstrap"):
+            _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+            start = time.perf_counter()
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+            elapsed = time.perf_counter() - start
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", (
+                f"hook fired despite the slow bootstrap-path jq call being expected to "
+                f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
+                "collapsed to the 5s _lib_capped default"
+            )
+            assert not _marker_path(tmp_path).exists()
+            return
+
+        # "cached_*": a real (fast) first call bootstraps the scan-state
+        # file, then a larger usage record is appended so the incremental
+        # scan has genuinely new usage to find. The appended estimate sits
+        # past the rearm-spacing threshold, so the two outcomes diverge:
+        # - A successful slow jq (the 5s-regression case) produces an
+        #   observable fire.
+        # - A correctly-2s-killed call falls back to the first call's
+        #   cached, not-yet-rearmed estimate and stays silent.
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        rearmed_estimate = ABOVE_LARGE + DEFAULT_REARM_SPACING + 1
+        _append_to_transcript(transcript, [_record_totalling(rearmed_estimate)])
+
+        start = time.perf_counter()
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        elapsed = time.perf_counter() - start
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            f"hook fired despite the slow incremental-scan jq call being expected to "
+            f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
+            "collapsed to the 5s _lib_capped default"
+        )
+        assert _marker_path(tmp_path).read_text() == f"{ABOVE_LARGE}\n"
+
     def test_already_fired_is_silent(self, tmp_path):
         """When the marker holds a LAST_FIRED_AT within REARM_SPACING of ESTIMATE, subsequent calls produce no stdout."""
         transcript = tmp_path / "t.jsonl"
@@ -1046,8 +1137,8 @@ class TestNudgeHandoffNearContextCap:
 
     def test_tail_absent_fails_open_not_hard_blocked(self, tmp_path):
         """`tail` backs both read_latest_usage and
-        _advance_offset_past_complete_lines; its absence must fail open like
-        every other missing-dependency case in this file, never hard-block."""
+        _lib_advance_offset_past_complete_lines; its absence must fail open
+        like every other missing-dependency case in this file, never hard-block."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
         farm_dir = tmp_path / "path-without-tail"
@@ -2461,10 +2552,10 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
 
 
 class TestNudgeLogTelemetry:
-    """Every `nudged` line carries ignored= (the repurposed re-arm counter,
-    now recorded rather than gating) and skills= (the active-bypass skill
-    markers live at fire time, or "-"). See docs/handoff-nudge.md's "Log
-    location" for the field contract."""
+    """Every `nudged` line carries ignored= (the count of ignored re-arms
+    since the last fire) and skills= (the active-bypass skill markers live
+    at fire time, or "-"). See docs/handoff-nudge.md's "Log location" for
+    the field contract."""
 
     def test_ignored_field_present_and_equals_ignored_marker_size(self, tmp_path):
         """ignored= is present on every nudged line: 0 on the first-ever
@@ -2575,6 +2666,49 @@ class TestNudgeLogTelemetry:
             line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
         ]
         assert "skills=handoff,memory-skill" in nudged_lines[-1]
+
+    def test_handoff_marker_mtime_advances_on_fire(self, tmp_path):
+        """The enumeration loop refreshes .handoff-active.d's mtime on every
+        fire through _lib_active_bypass_marker_live_and_touch -- this hook
+        firing is itself evidence the session is still taking turns, which is
+        what keeps a long multi-turn /handoff write from expiring under the
+        shared 60-minute idle window."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # aged, but within the 60-minute idle window
+        os.utime(marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert marker.stat().st_mtime > old_time + 1, (
+            "the handoff label must refresh mtime through the touching wrapper"
+        )
+
+    def test_other_family_marker_mtime_does_not_advance_on_fire(self, tmp_path):
+        """The refresh is scoped to the handoff label only: a live sibling
+        marker for another skill family (memory-skill here), enumerated in
+        the same loop, must stay unrefreshed -- otherwise this hook's
+        near-every-turn fire cadence would defeat the idle window the other
+        four gate hooks rely on."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        handoff_marker = _handoff_active_marker_path(tmp_path)
+        handoff_marker.parent.mkdir(parents=True, exist_ok=True)
+        handoff_marker.write_text(str(os.getpid()))
+        memory_marker = _memory_skill_active_marker_path(tmp_path)
+        memory_marker.parent.mkdir(parents=True, exist_ok=True)
+        memory_marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300
+        os.utime(memory_marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert memory_marker.stat().st_mtime == old_time, (
+            "only the handoff label may refresh mtime; other families read through the base predicate"
+        )
 
 
 class TestCheckMode:
@@ -2973,7 +3107,9 @@ class TestCheckMode:
         assert payload["model_recognized"] is False
 
     def test_reports_already_fired(self, tmp_path):
-        """Replaces the 'it fires once' caveat the skill bodies used to carry."""
+        """--check's already_fired field reports whether the session has
+        already fired, so a caller doesn't need the skill body to explain
+        re-fire behavior separately."""
         config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
         marker = _marker_path(tmp_path, config_dir=config_dir)
         marker.parent.mkdir(parents=True, exist_ok=True)

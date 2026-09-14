@@ -50,27 +50,29 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="plan-review"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by plan-review gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by plan-review gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Gate Write, Edit, MultiEdit, and ExitPlanMode tool calls.
 case "$TOOL_NAME" in
@@ -78,19 +80,18 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-# Extract target path immediately after parsing — used both for the
+# Target path already extracted by the shared parse — used both for the
 # repo-scope guard below and the deny gate.
-TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
+TARGET_PATH="$FILE_PATH"
 
 # Resolve the repo from the payload's cwd rather than this hook process's
 # ambient cwd, so the marker is keyed to the tree the session is working in.
 # Downstream hashing already threads this root (_lib_active_plan_hash), so
 # root resolution is the only site that needs converting here.
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Not in a git repo — can't check for plan files or key the marker.
-REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -105,34 +106,56 @@ fi
 # or empty planFilePath (Write/Edit/MultiEdit, or an ExitPlanMode call outside
 # plan mode) falls through to the repo-relative check unchanged.
 if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
-  PLAN_MODE_FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.planFilePath // empty')
+  PLAN_MODE_FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.planFilePath // empty')
   if [ -n "$PLAN_MODE_FILE_PATH" ]; then
-    # ExitPlanMode's own tool description was checked directly this session and confirms the approval UI renders from the file named by planFilePath, not independently from tool_input.plan: "it will read the plan from the file you wrote... The user will see the contents of your plan file when they review it."
+    # ExitPlanMode's tool description says the approval UI renders from the file named by `planFilePath`, not from `tool_input.plan` directly.
     PLAN_MODE_HASH=$(_lib_capped sha256sum -- "$PLAN_MODE_FILE_PATH" 2>/dev/null | awk '{print $1}')
     if [ -z "$PLAN_MODE_HASH" ]; then
       # Unreadable, missing, or timed out. Fail closed rather than falling
       # through to the repo-relative check -- that would silently re-permit
       # the exact silent-allow bug this branch exists to close whenever a
       # stale repo-relative marker happens to be present.
-      emit_deny "Blocked by plan-review gate: cannot read the plan-mode file '$PLAN_MODE_FILE_PATH' named by ExitPlanMode, so the gate cannot tell whether it has been reviewed.
+      emit_deny "cannot read the plan-mode file '$PLAN_MODE_FILE_PATH' named by ExitPlanMode, so the gate cannot tell whether it has been reviewed.
 
 Plan presentation stays blocked until this is fixed — an unreadable plan-mode file is an unknown review state, not an absent one. Repair the file (chmod, or address whatever plan mode did to lose track of it), then retry. Running /plan-review first will fail the same way, since it hashes the same file."
       exit 0
     fi
     if ! CONFIG_DIR=$(_lib_config_dir); then
-      emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+      emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
       exit 0
     fi
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
     if _lib_marker_value_present "$CONFIG_DIR/plan-review-markers" "$PLAN_MODE_HASH" "$REPO_HASH."; then
       exit 0
     fi
-    emit_deny "Plan presentation blocked by the plan-review gate: this session is in harness plan mode and the plan file ExitPlanMode named has no plan-review marker covering its current content.
+    emit_deny "Plan presentation — this session is in harness plan mode and the plan file ExitPlanMode named has no plan-review marker covering its current content.
 
   Run /plan-review against the plan-mode file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry."
     exit 0
   fi
 fi
+
+# Cheap, git-free short-circuit before paying for GATE_DIFF_BASE resolution
+# below (a rev-parse plus, mid-merge/rebase/cherry-pick/revert, a capped
+# merge-tree computation): a repo with no .claude/plans/ directory at all has
+# nothing this gate could ever arm on, mirroring _lib_active_plan_files' own
+# first check.
+if [ ! -d "$REPO_ROOT/.claude/plans" ]; then
+  exit 0
+fi
+
+# Unlike require-code-review.sh, which pays this cost once per commit, this
+# hook pays it on every Write/Edit/MultiEdit/ExitPlanMode call for the whole
+# span of an in-progress merge/rebase/cherry-pick/revert -- an accepted,
+# materially different cost shape, not a caching bug.
+#
+# Resolved once for this hook invocation, after the plan-mode branch above
+# (which does not consume it), and threaded through both the fast-path guard
+# below and the hash computation further down -- a second resolution would
+# double the merge-tree cost per gated call for the exact same result, the
+# same shape require-code-review.sh and marker.sh status use.
+GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
+GATE_DIFF_BASE_STATUS=$?
 
 # Scope the deny to writes inside this repo. Writes targeting user-home
 # directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
@@ -144,16 +167,22 @@ fi
 # - Runs before the hash computation since path shape alone decides the
 #   common case.
 # - Also the gate's full disarm fast path: nothing active exits 0
-#   immediately here.
+#   immediately here -- but only when GATE_DIFF_BASE is also empty. With a
+#   trusted base in effect, _lib_active_plan_hash's empty-active-set result
+#   is no longer necessarily empty (it binds to the base's own identity
+#   instead -- see that function's docstring), so this shortcut's premise
+#   ("the hash computation below would independently reach this same empty
+#   result") no longer holds and it must fall through instead.
 # - Because this runs before the hash computation, an unhashable in-repo
 #   active plan does not block an out-of-repo write.
 if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
-  ACTIVE_PLAN_FILES=$(_lib_active_plan_files "$REPO_ROOT")
+  ACTIVE_PLAN_FILES=$(_lib_active_plan_files "$REPO_ROOT" "$GATE_DIFF_BASE")
   ACTIVE_PLAN_FILES_STATUS=$?
-  if [ "$ACTIVE_PLAN_FILES_STATUS" -eq 0 ] && [ -z "$ACTIVE_PLAN_FILES" ]; then
-    # Nothing active: the hash computation below would independently reach
-    # this same empty result via its own call to _lib_active_plan_files, so
-    # short-circuit here instead of paying for a second enumeration.
+  if [ "$ACTIVE_PLAN_FILES_STATUS" -eq 0 ] && [ -z "$ACTIVE_PLAN_FILES" ] && [ -z "$GATE_DIFF_BASE" ]; then
+    # Nothing active and no trusted base: the hash computation below would
+    # independently reach this same empty result via its own call to
+    # _lib_active_plan_files, so short-circuit here instead of paying for a
+    # second enumeration.
     exit 0
   fi
   # - Both a failed enumeration and a non-empty active-file list fall through
@@ -187,21 +216,24 @@ fi
 
 # Compute the content-addressed hash of the active plan file set (paths +
 # contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
-# plan file that is tracked and identical to HEAD is historical (its PR
-# shipped) and does not contribute to the hash. Empty result means no plan
-# is active -- gate disarmed, covering both an absent .claude/plans/ and one
-# containing only historical plans.
+# plan file that is tracked and identical to GATE_DIFF_BASE (HEAD outside any
+# trusted in-progress state) is historical and does not contribute to the
+# hash. Empty result means no plan is active and no trusted base was in
+# effect -- gate disarmed, covering both an absent .claude/plans/ and one
+# containing only historical plans. With a trusted base in effect and
+# nothing active relative to it, the result is instead bound to the base's
+# own identity, so the gate still requires a marker rather than disarming.
 # Keep this a top-level assignment. Inside a function, `local VAR=$(...)`
 # reports `local`'s exit status (always 0) and would mask the failure; a
 # refactor that moves this must split the declaration from the assignment.
-if ! CURRENT_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
+if ! CURRENT_HASH=$(_lib_active_plan_hash "$REPO_ROOT" "$GATE_DIFF_BASE"); then
   # A plan is active but could not be hashed; stdout carries the offending
   # path. Fail closed. This deny is deliberately worded differently from the
   # missing-marker deny below: telling the user to run /plan-review here
   # would be circular, since marker.sh hits the identical condition and
   # aborts. This hook gates only Write/Edit/MultiEdit/ExitPlanMode, so Bash
   # stays available to repair the file — point at that escape hatch.
-  emit_deny "Blocked by plan-review gate: cannot read the active plan file '$CURRENT_HASH', so the gate cannot tell whether the plan has been reviewed.
+  emit_deny "cannot read the active plan file '$CURRENT_HASH', so the gate cannot tell whether the plan has been reviewed.
 
 This is not a missing review — running /plan-review will fail the same way, because it hashes the same file. Repair the file first, using a Bash command (this gate does not block Bash):
 
@@ -218,7 +250,6 @@ if [ -z "$CURRENT_HASH" ]; then
 fi
 
 # Plans exist — look for a review covering this exact plan state.
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 
 # Active-marker bypass: the /plan-review skill is currently running.
 # This marker stays strictly session-keyed, unlike the completion marker
@@ -230,7 +261,7 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # completion-marker check further down decides the gate instead — never less
 # safe than the bypass would have been.
 if [ "$TOOL_NAME" != "ExitPlanMode" ] \
-  && _lib_active_bypass_marker_live ".plan-review-active.d" "$SESSION_ID"; then
+  && _lib_active_bypass_marker_live_and_touch ".plan-review-active.d" "$SESSION_ID"; then
   exit 0
 fi
 
@@ -250,7 +281,7 @@ fi
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the write/ExitPlanMode through.
 if ! CONFIG_DIR=$(_lib_config_dir); then
-  emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
   exit 0
 fi
 PLAN_REVIEW_MARKERS_DIR="$CONFIG_DIR/plan-review-markers"
@@ -260,32 +291,19 @@ if _lib_marker_value_present "$PLAN_REVIEW_MARKERS_DIR" "$CURRENT_HASH" "$REPO_H
 fi
 
 # Tier 2 — sibling worktrees of this same repository. The plan hash covers
-# repo-RELATIVE paths plus contents, so a plan copied into a fresh worktree
+# repo-relative paths plus contents, so a plan copied into a fresh worktree
 # hashes identically and a review performed in one worktree covers the
 # identical plan text in another.
-#
-# Scoped to `git worktree list` output rather than reading the marker
-# directory repo-agnostically: an unrelated repository holding a plan file at
-# the same relative path with the same contents would otherwise release this
-# gate, having reviewed that text against a different codebase.
-#
-# What a tier-2 hit authorizes, stated plainly: content-identity of the plan
-# text, not state-identity of the sibling's checkout. Two worktrees on
-# divergent branches that hold byte-identical plan files cross-validate even
-# though neither review assessed the other's HEAD. Bounded to one repository's
-# own worktrees, so it is not an external surface, but it is a broader
-# acceptance than the copied-plan case alone.
-#
-# Cost, stated plainly: tier 1 misses for the whole window between authoring a
-# plan and its first clean /plan-review, which is the normal state of a session
-# actively drafting. So this tier's `git worktree list` fork plus one
-# sha256sum per worktree is a per-edit steady-state cost during drafting, not
-# an occasional deny-path cost. Worktree count and marker count both grow
-# unboundedly and independently, so that cost compounds over a repo's life.
-#
-# A failed or timed-out enumeration falls through to the deny below. Fewer
-# worktrees scanned must never mean "allow" — same fail-closed discipline
+# Scoped to `git worktree list` output, not a repo-agnostic marker-directory
+# read, so an unrelated repository holding a plan file at the same relative
+# path and contents can't release this gate.
+# A failed or timed-out enumeration falls through to the deny below — fewer
+# worktrees scanned must never mean "allow", the same fail-closed discipline
 # _lib_active_plan_hash applies to its own git calls.
+# See docs/design-decisions/plan-review-tier-2-sibling-worktree-matching.md
+# for what a tier-2 hit authorizes (content-identity, not state-identity of
+# the sibling's checkout) and this tier's per-edit cost during active
+# drafting.
 if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null); then
   SIBLING_PREFIXES=()
   while IFS= read -r worktree_line; do
@@ -307,18 +325,27 @@ if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/
   fi
 fi
 
+# Status 2 never changes this allow/deny decision -- it only changes what
+# this message says, so a timeout-driven full-diff fallback reads as
+# distinguishable from an ordinary marker mismatch rather than this gate
+# silently not working.
+UNDETERMINED_BASE_NOTE=""
+if [ "$GATE_DIFF_BASE_STATUS" -eq 2 ]; then
+  UNDETERMINED_BASE_NOTE=" Note: this repo appears to be mid-merge/rebase/cherry-pick/revert, but the novel-content base could not be computed (a git call timed out, was killed, or its binary was missing), so this gate fell back to the full HEAD-relative plan-file diff instead of excluding already-reviewed upstream content."
+fi
+
 if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
-  emit_deny "Plan presentation blocked by the plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found.
+  emit_deny "Plan presentation — an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found.
 
   Run /plan-review against the plan file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry.
 
-  If no plan covers this session yet → run /plan-it first. It authors the plan and hands off to /plan-review."
+  If no plan covers this session yet → run /plan-it first. It authors the plan and hands off to /plan-review.${UNDETERMINED_BASE_NOTE}"
 else
-  emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Editing the plan file itself is exempt from this gate — this deny is for a different, non-plan target, so the plan is still editable. Next step depends on whether a plan covers this change:
+  emit_deny "Write/Edit — an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Editing the plan file itself is exempt from this gate — this deny is for a different, non-plan target, so the plan is still editable. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 
   - If no plan covers this change yet → run /plan-it first. It authors the plan and hands off to /plan-review at the end.
 
-The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation."
+The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation.${UNDETERMINED_BASE_NOTE}"
 fi

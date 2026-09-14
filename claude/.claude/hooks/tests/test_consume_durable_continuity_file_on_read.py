@@ -49,7 +49,14 @@ def _install_resume_context_script_at(config_dir: Path) -> Path:
     """Like helpers.install_resume_context_script, but symlinks into an
     arbitrary CONFIG_DIR/scripts/ rather than isolated_home/.claude/scripts/
     — needed for CLAUDE_CONFIG_DIR cases, where CONFIG_DIR is not
-    isolated_home/.claude."""
+    isolated_home/.claude. Also symlinks CONFIG_DIR/hooks/_lib.sh:
+    resume-context.sh sources it via a path relative to its own $0, which
+    resolves to CONFIG_DIR/hooks/_lib.sh here, not isolated_home's."""
+    hooks_dir = config_dir / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    lib_link = hooks_dir / "_lib.sh"
+    if not lib_link.exists():
+        lib_link.symlink_to(HOOKS_DIR / "_lib.sh")
     scripts_dir = config_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     link = scripts_dir / "resume-context.sh"
@@ -104,7 +111,10 @@ class TestConsumeDurableContinuityFileOnRead:
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, rel_path)
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        # Explicit 0o700, not the umask-dependent mkdir() default: a
+        # group-writable root (e.g. 0o775 under umask 0002) now trips
+        # _lib_resume_context_index_dir's sticky-bit guard.
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
@@ -124,6 +134,31 @@ class TestConsumeDurableContinuityFileOnRead:
             assert "handoffs" not in payload["systemMessage"]
             assert "handoffs" not in payload["hookSpecificOutput"]["additionalContext"]
 
+    def test_hook_triggered_consume_lands_a_row_in_the_index(self, isolated_home, tmp_path):
+        """The hook performs no move of its own -- it delegates to
+        resume-context.sh --consume-only, which is where
+        record_consumed_destination actually runs. This exercises that
+        delegation end to end rather than re-testing the append itself
+        (test_resume_context.py already covers the append in isolation)."""
+        install_resume_context_script(isolated_home)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        tmpdir_root = tmp_path / "resume-tmpdir"
+        tmpdir_root.mkdir(mode=0o700)
+        result = _run_hook_raw(
+            CONSUME_HOOK,
+            read_input(str(fixture)),
+            home=isolated_home,
+            extra_env={"RESUME_CONTEXT_TMPDIR": str(tmpdir_root)},
+        )
+        assert result.returncode == 0
+        moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        index = tmpdir_root / f"resume-context-index-{os.geteuid()}" / f"consumed.{today}.tsv"
+        rows = index.read_text().splitlines()
+        assert len(rows) == 1
+        assert rows[0].split("\t")[1] == str(moved[0])
+
     def test_additional_context_omits_source_path(self, isolated_home, tmp_path):
         """additionalContext carries only the destination, never the source
         path the model already holds from issuing the Read — interpolating
@@ -141,7 +176,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture = handoffs_dir / malicious_name
         fixture.write_text("fixture content\n")
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
@@ -184,6 +219,23 @@ class TestConsumeDurableContinuityFileOnRead:
         assert result.returncode == 0
         assert fixture.exists(), "jq unavailable — hook can't even parse tool_name, must not consume"
         assert result.stdout == "", "jq unavailable — must emit no systemMessage"
+
+    def test_malformed_json_does_not_block_and_emits_no_output(self, isolated_home):
+        """hook-class: informational — malformed stdin must not block the
+        Read tool result. _lib_jq on unparseable input yields empty
+        TOOL_NAME, which the `[ "$TOOL_NAME" = "Read" ]` guard rejects."""
+        env = dict(os.environ)
+        env["HOME"] = str(isolated_home)
+        result = subprocess.run(
+            [str(CONSUME_HOOK)],
+            input="not valid json {{",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
 
     def test_read_brief_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
@@ -346,7 +398,7 @@ class TestConsumeDurableContinuityFileOnRead:
                 (shadow_bin / cmd).symlink_to(cmd_path)
 
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),

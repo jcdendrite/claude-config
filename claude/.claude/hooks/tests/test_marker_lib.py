@@ -5,12 +5,18 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, build_path_without
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+
+# _lib.sh's slow-path tail calls are hardcoded to `_lib_capped_for 2 tail
+# ...` -- not overridable via env var, so this mirrors that literal rather
+# than reading it from the shell source.
+SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS = 2
 
 
 def _run_lib_fn(fn_call: str) -> str:
@@ -24,10 +30,40 @@ def _run_lib_fn(fn_call: str) -> str:
     return result.stdout.strip()
 
 
-def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
-    """Shell out to the real _lib_active_plan_hash against `repo`."""
+def _advance_offset(
+    transcript: Path, offset: int, current_size: int, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_advance_offset_past_complete_lines."""
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'. "{LIB_SH}"; _lib_advance_offset_past_complete_lines "$1" "$2" "$3"',
+            "_advance_offset", str(transcript), str(offset), str(current_size),
+        ],
+        capture_output=True,
+        text=True,
+        env=env if env is not None else os.environ,
+    )
+
+
+def _hash_diff_text(text: str) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_hash_diff_text against `text`, positional
+    (not string-interpolated) so arbitrary diff text needs no shell quoting."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _active_plan_hash(
+    repo: Path, base: str = "", env_overrides: dict | None = None
+) -> str:
+    """Shell out to the real _lib_active_plan_hash against `repo`. `base`
+    defaults to "" (no trusted in-progress state)."""
     result = subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_hash "$1"', "_active_plan_hash", str(repo)],
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_hash "$1" "$2"',
+         "_active_plan_hash", str(repo), base],
         capture_output=True,
         text=True,
         check=True,
@@ -36,12 +72,15 @@ def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
     return result.stdout.strip()
 
 
-def _active_plan_files(repo: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+def _active_plan_files(
+    repo: Path, base: str = "", env_overrides: dict | None = None
+) -> subprocess.CompletedProcess:
     """Shell out to the real _lib_active_plan_files against `repo`, returning
     the raw CompletedProcess so callers can assert on exit status and stdout
-    together."""
+    together. `base` defaults to "" (no trusted in-progress state)."""
     return subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1"', "_active_plan_files", str(repo)],
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1" "$2"',
+         "_active_plan_files", str(repo), base],
         capture_output=True,
         text=True,
         env={**os.environ, **(env_overrides or {})},
@@ -130,6 +169,131 @@ class TestMarkerLibRepoHash:
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
         )
+
+    def test_sha256sum_failure_returns_nonzero_with_empty_stdout(self):
+        """_marker_lib_repo_hash delegates to _lib_hash_diff_text, so a
+        broken sha256sum must propagate as a failing exit status with empty
+        stdout rather than fail open -- callers like
+        pr-diff-against-base.sh run this unchecked under set -euo
+        pipefail and rely on a nonzero exit to abort instead of silently
+        continuing with an empty hash."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _marker_lib_repo_hash "/tmp/test-repo"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
+
+class TestLibHashDiffText:
+    """Direct coverage for _lib_hash_diff_text -- the shared sha256 recipe
+    marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash's
+    own post-hash step both call, so a read-side and write-side digest for
+    the same text always agree by construction (see _lib.sh's header on
+    byte-identical output across the read and write sides)."""
+
+    def test_known_text_matches_python_sha256(self):
+        text = "diff --git a/f b/f\n+line\n"
+        expected = hashlib.sha256(text.encode()).hexdigest()
+        result = _hash_diff_text(text)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_empty_text_is_not_a_failure(self):
+        """sha256 of an empty string is itself a valid, non-empty digest --
+        TEXT emptiness is a business-rule concern for marker.sh's own [ -z ]
+        precondition on the read subject text, not a failure this helper
+        reports."""
+        expected = hashlib.sha256(b"").hexdigest()
+        result = _hash_diff_text("")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_digest_emptiness_guard_exercised_directly(self):
+        """The post-hash [ -n "$digest" ] guard, exercised without going
+        through _lib_cumulative_diff_hash's own subprocess-produced diff --
+        a broken sha256sum must exit nonzero with empty stdout rather than
+        silently succeed."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _lib_hash_diff_text "some text"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
+
+class TestLibRepoRoot:
+    """Direct coverage for _lib_repo_root -- the raw resolution recipe shared
+    by marker.sh's _resolve_repo_root and pr-diff-against-base.sh --record,
+    so both sides resolve a given tree to the identical REPO_ROOT string."""
+
+    def test_matches_git_rev_parse_show_toplevel(self, tmp_path):
+        repo = tmp_path / "repo-root-repo"
+        _init_repo(repo)
+        expected = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        actual = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert actual == expected
+
+    def test_fails_closed_outside_a_git_repository(self, tmp_path):
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    def test_hung_git_is_bounded_by_lib_capped(self, tmp_path):
+        """A locked .git/index or a stale NFS mount can make `git
+        rev-parse` block indefinitely -- _lib_repo_root must route through
+        _lib_capped so callers (marker.sh's _resolve_repo_root,
+        pr-diff-against-base.sh --record) fail fast instead of hanging for
+        however long the harness's own outer Bash-tool timeout allows."""
+        timeout_path = shutil.which("timeout")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            # 30s, well past _lib_capped's 5s cap -- avoids a race against
+            # the cap firing at the same instant a shorter sleep would end.
+            'if [ "$1" = "rev-parse" ]; then sleep 30; fi\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode != 0
+        assert elapsed < 8, f"_lib_repo_root took {elapsed:.1f}s — the git call is not capped"
 
 
 class TestLibActivePlanFiles:
@@ -385,6 +549,125 @@ class TestLibActivePlanHash:
         second = _active_plan_hash(repo)
         assert first != ""
         assert first == second
+
+
+class TestLibAdvanceOffsetPastCompleteLines:
+    """Unit tests for _lib_advance_offset_past_complete_lines -- shared by
+    nudge-handoff-near-context-cap.sh and nudge-long-turn-subagent.sh for
+    mid-write transcript safety when resuming an incremental scan from a
+    stored byte offset. The two hooks' own tests cover that each wires this
+    helper in; these tests cover the helper's own branch selection and
+    boundary behavior."""
+
+    def test_offset_already_equal_to_current_size_returns_offset_unchanged(self, tmp_path):
+        """Zero new bytes since the last scan -- the boundary short-circuit
+        ahead of both the fast and slow path."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, size, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
+
+    def test_fast_path_advances_to_current_size_when_file_ends_in_newline(self, tmp_path):
+        """The file's last byte is a newline, so everything up to
+        current_size is complete lines -- the one-`tail -c 1`-read fast
+        path, the common case for a Claude Code transcript."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, 0, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
+
+    def test_slow_path_stops_before_incomplete_trailing_line(self, tmp_path):
+        """The file currently ends mid-line (caught mid-write) -- the slow
+        path must stop at the last complete line's newline, not at
+        current_size."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        complete_prefix_size = len("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, 0, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(complete_prefix_size)
+
+    def test_slow_path_from_nonzero_offset_counts_only_the_new_slice(self, tmp_path):
+        """Resuming from a nonzero offset: only newlines in the unread slice
+        (offset+1..current_size) count toward the returned boundary, not
+        newlines before the offset."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\nline three\npartial")
+        offset = len("line one\n")
+        complete_prefix_size = len("line one\nline two\nline three\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, offset, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(complete_prefix_size)
+
+    @pytest.mark.timing
+    def test_slow_path_tail_timeout_returns_offset_unchanged(self, tmp_path):
+        """The slow path's `tail -c +N` calls are capped via
+        _lib_capped_for(2) -- a stalled tail must not hang the scan, and per
+        the function's own documented limitation must degrade to OFFSET
+        unchanged rather than partial progress."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        real_tail = shutil.which("tail")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "tail"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-c" ] && [[ "$2" == +* ]]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_tail} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        offset = 0
+        size = transcript.stat().st_size
+        start = time.monotonic()
+        result = _advance_offset(
+            transcript, offset, size,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(offset), "a timed-out slow-path scan must return OFFSET unchanged"
+        # No upper bound: 5/8 trials clocked 4.0-4.8s with no extra system
+        # load, an empirically observed baseline rather than a guessed
+        # margin -- the invariant that matters is not hanging for the ~10s
+        # stub sleep, which the lower bound alone already rules out.
+        assert elapsed >= SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS - 0.5, (
+            f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
+            f"if it does not), took {elapsed:.1f}s for this single call"
+        )
+
+    def test_tail_absent_from_path_freezes_offset_at_current_size(self, tmp_path):
+        """The function's own doc comment in _lib.sh documents this exact
+        gap: total absence of `tail` from PATH makes the fast path's
+        `tail -c 1` read return empty output (command-not-found, not a real
+        last byte), which is indistinguishable from the file genuinely
+        ending in a newline -- so the fast path fires and silently and
+        permanently freezes the offset at CURRENT_SIZE, even though this
+        transcript is caught mid-write with no trailing newline."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        size = transcript.stat().st_size
+        farm_dir = tmp_path / "path-without-tail"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tail", farm_dir)
+        result = _advance_offset(
+            transcript, 0, size,
+            env={**os.environ, "PATH": restricted_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
 
 
 class TestLibIsRepoPlanFile:

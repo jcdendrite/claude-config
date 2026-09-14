@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -580,6 +581,44 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    def test_push_of_commit_tree_built_oid_to_default_branch_allowed_with_no_open_pr(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    ):
+        """Documented-behavior assertion: this hook's own default-branch and
+        no-open-PR bypasses key on the checked-out branch and its PR state,
+        never on the push destination or refspec, so a commit built with
+        `git commit-tree` -- which never reaches require-code-review.sh,
+        since that hook matches only `git commit` -- is allowed straight
+        onto the default branch's refspec. This pins the local half of the
+        gap `_lib_gate_diff_base`'s origin/<default> anchor accepts (its
+        soundness rests on this repo's PR-merge workflow, not on any local
+        control over what reaches the remote); it does not claim a
+        GitHub-side branch-protection setting is absent -- that is a
+        per-repository server setting outside this suite's reach."""
+        tree_oid = subprocess.run(
+            ["git", "-C", str(repo_on_feature_branch), "write-tree"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        payload_oid = subprocess.run(
+            [
+                "git", "-C", str(repo_on_feature_branch), "commit-tree", tree_oid,
+                "-m", "unreviewed payload",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(f"git push origin {payload_oid}:refs/heads/main", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
     def test_outside_git_repo_allowed(self, isolated_home, tmp_path):
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
@@ -611,6 +650,32 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "allow"
+        )
+
+    def test_active_marker_hit_advances_mtime(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "session-active-touch"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
         )
 
     def test_alive_pid_active_marker_bypasses(
@@ -697,6 +762,179 @@ class TestRequireReadyForReview:
             isolated_home,
             expected_decision="deny",
             cwd=repo_on_feature_branch,
+        )
+
+    def test_non_gated_command_advances_active_marker_mtime(
+        self, isolated_home, repo_on_feature_branch
+    ):
+        """The active-marker check runs before the command-shape filter, so
+        a non-gated command still refreshes a live marker's mtime."""
+        sid = "session-non-gated"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("pytest -q", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a non-gated command must still refresh a live marker's mtime"
+        )
+
+    def test_live_marker_allows_despite_fragment_split_sed_failure(
+        self, isolated_home, repo_on_feature_branch, tmp_path
+    ):
+        """GH-869: the active-marker check runs before the fragment-split
+        fail-closed deny, so a session holding a live marker allows through a
+        sed shim that fails only on _lib_split_fragments's invocation shape.
+        Shares its PATH-shim technique with test_fragments_split_sed_failure_denied
+        (GH-783); differs only in holding a live marker."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        sid = "session-live-despite-sed-failure"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+
+    def test_live_marker_still_denied_by_total_sed_absence(
+        self, isolated_home, tmp_path
+    ):
+        """GH-869: the active-marker check runs before the fragment-split
+        fail-closed deny but after _lib_strip_shell_quotes's own deny, so a
+        live marker does not rescue a total sed absence. That earlier deny
+        still fires and leaves the marker untouched."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+
+        sid = "session-live-total-sed-absence"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+        assert marker.exists(), "the pre-SESSION_ID deny must not evict the marker"
+
+    def test_dead_pid_active_marker_evicts_on_non_gated_command(
+        self, isolated_home, repo_on_feature_branch
+    ):
+        """The active-marker check runs before the command-shape filter, so
+        a non-gated command also evicts an orphaned dead-PID marker. The
+        command itself is still allowed, since it never reaches a gated
+        shape."""
+        sid = "session-dead-pid-non-gated"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text("99999999")  # PID outside Linux/macOS max range → always dead
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("pytest -q", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
+
+    def test_gated_command_from_non_repo_cwd_still_refreshes_live_marker(
+        self, isolated_home, tmp_path
+    ):
+        """GH-869: the active-marker check runs before REPO_ROOT resolution,
+        so a live marker still refreshes even when the gated command's cwd
+        is not a git repo (REPO_ROOT resolves empty)."""
+        sid = "session-gated-non-repo-cwd"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300
+        os.utime(marker, (old_time, old_time))
+
+        non_repo_dir = tmp_path / "not-a-repo"
+        non_repo_dir.mkdir()
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=non_repo_dir,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a live marker must refresh even when the gated command's cwd "
+            "is not a git repo"
+        )
+
+    def test_live_marker_authorizes_push_on_a_different_branch_than_activation(
+        self, isolated_home, repo_on_feature_branch
+    ):
+        """A live marker authorizes a push on a branch unrelated to whatever
+        context it was originally activated under. The marker was never
+        scoped to a specific PR/branch, before or after this diff. The
+        widened refresh trigger only makes this pre-existing non-scoping
+        newly reachable more often, not new in kind. See
+        test_non_gated_command_advances_active_marker_mtime for the refresh
+        mechanism itself, pinned separately."""
+        sid = "session-cross-branch-reuse"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+
+        # A branch unrelated to whatever PR the marker was activated under --
+        # the marker was never branch-scoped, before or after this diff.
+        subprocess.run(
+            ["git", "checkout", "-q", "-b", "unrelated-pr-branch"],
+            cwd=repo_on_feature_branch,
+            check=True,
+        )
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin unrelated-pr-branch", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
         )
 
     # -- Completion-marker check ------------------------------------------
@@ -837,23 +1075,33 @@ class TestRequireReadyForReview:
     ):
         """Checked out on `main`, the repo's default branch.
 
-        Timing out DEFAULT_BRANCH's direct `git symbolic-ref --quiet
-        refs/remotes/origin/HEAD` lookup does not, by itself, withhold the
-        default-branch bypass. The candidate-loop fallback's `git rev-parse
-        --verify origin/main` still resolves quickly against the plain
-        `refs/remotes/origin/main` ref repo_on_feature_branch sets up, so
-        DEFAULT_BRANCH still gets set and the bypass still fires.
+        Timing out _lib_default_branch_from_origin_head's `git -C <repo>
+        symbolic-ref --quiet refs/remotes/origin/HEAD` lookup does not, by
+        itself, withhold the default-branch bypass. The candidate-loop
+        fallback's `git -C <repo> rev-parse --verify origin/main` still
+        resolves quickly against the plain `refs/remotes/origin/main` ref
+        repo_on_feature_branch sets up, so DEFAULT_BRANCH still gets set and
+        the bypass still fires.
 
-        `fake_output` gives a broken cap a decision-flipping outcome: if the
-        cap fails, the full sleep completes and the shim emits this
-        un-stripped `refs/remotes/origin/...` value (the hook's own `sed`
-        strips the prefix afterward), producing `DEFAULT_BRANCH="wrong-branch"`
-        which mismatches CURRENT_BRANCH and withholds the bypass instead of
-        allowing — versus a working cap, where the shim is killed mid-sleep,
-        this call stays empty, and the candidate loop still recovers "main"."""
+        `fake_output` gives a broken cap a decision-flipping outcome: naming
+        a real-but-non-default ref (`origin/develop`, set up here) rather
+        than a nonexistent one, since the helper's own verify step would
+        otherwise reject a nonexistent ref and fall through to the same
+        candidate-loop result as a working cap, losing the distinguishing
+        power this test needs. If the cap fails, the full
+        sleep completes and the shim emits this ref, resolving
+        `DEFAULT_BRANCH="develop"`, which mismatches CURRENT_BRANCH and
+        withholds the bypass instead of allowing — versus a working cap,
+        where the shim is killed mid-sleep, this call stays empty, and the
+        candidate loop still recovers "main"."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"],
+            cwd=repo_on_feature_branch,
+            check=True,
+        )
         env = git_timeout_shim(
-            '[ "$1" = "symbolic-ref" ]', fake_output="refs/remotes/origin/wrong-branch"
+            '[ "$3" = "symbolic-ref" ]', fake_output="refs/remotes/origin/develop"
         )
         with assert_cap_engaged():
             decision = run_hook(
@@ -873,15 +1121,15 @@ class TestRequireReadyForReview:
         DEFAULT_BRANCH's direct `symbolic-ref` lookup already fails to
         resolve on its own (repo_on_feature_branch configures no
         `refs/remotes/origin/HEAD`), so timing out the candidate loop's
-        `git rev-parse --verify origin/main` — the only candidate with a ref
-        to resolve against, since `master` and `develop` have none — exhausts
-        the whole loop and leaves DEFAULT_BRANCH empty, withholding the
-        default-branch bypass.
+        `git -C <repo> rev-parse --verify origin/main` — the only candidate
+        with a ref to resolve against, since `master` and `develop` have
+        none — exhausts the whole loop and leaves DEFAULT_BRANCH empty,
+        withholding the default-branch bypass.
 
         With an open PR and no completion marker, the gate then denies."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
         env = git_timeout_shim(
-            '[ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "origin/main" ]'
+            '[ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "origin/main" ]'
         )
         with assert_cap_engaged():
             decision = run_hook(
@@ -891,6 +1139,51 @@ class TestRequireReadyForReview:
                 extra_env=env,
             )
         assert decision == "deny"
+
+    def test_dangling_origin_head_bypass_granted_on_coincidental_candidate_name_match(
+        self, isolated_home, tmp_path
+    ):
+        """Pins the accepted-and-tracked (GH-899) widened fail-open: origin/
+        HEAD's symref resolves to `refs/remotes/origin/main`, but that target
+        ref was never created locally (dangling) --
+        `_lib_default_branch_from_origin_head`'s verify step rejects it and
+        falls through to the candidate loop. Only `refs/remotes/origin/
+        develop` is live, so the loop lands on "develop".
+
+        The branch checked out is also literally named `develop` -- purely
+        by coincidence, not because it is the repo's real default (which
+        origin/HEAD claims, unverifiably, to be `main`). CURRENT_BRANCH and
+        the guessed DEFAULT_BRANCH match, so the gate grants the
+        default-branch bypass and allows the push, with no open-PR check
+        ever run. This is the exact scenario GH-899 tracks as an accepted
+        risk, not a regression to fix here -- the test exists so a future
+        change to this boundary is a visible, reviewed decision."""
+        repo = tmp_path / "rfr-dangling"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "develop"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "f").write_text("a\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"],
+            cwd=repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin develop", session_id="s"),
+                cwd=repo,
+            )
+            == "allow"
+        )
 
     @pytest.mark.timing
     def test_gh_pr_view_timeout_allows(
@@ -1340,6 +1633,37 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh --repo o/r pr create",
+            "gh --repo o/r pr ready",
+        ],
+    )
+    def test_gh_repo_flag_before_subcommand_bypasses_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A documented gap, not yet fixed: both gh arms match `gh pr
+        ready`/`gh pr create` by strict word adjacency, so a flag interposed
+        before the subcommand — `--repo o/r` here — defeats detection. This
+        is an inverted assertion pinning the current gap, not the fix; see
+        the tracking issue linked from this hook's allowlist entry in
+        test_hook_alignment.py.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
     def test_git_invocation_before_a_bare_ampersand_defeats_push_detection(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
@@ -1439,7 +1763,7 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
-    def test_fragments_split_sed_failure_denied(self, tmp_path):
+    def test_fragments_split_sed_failure_denied(self, isolated_home, tmp_path):
         """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
         from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
         sed binary, so a total sed-absent test (like the one above) can't
@@ -1447,7 +1771,10 @@ class TestRequireReadyForReview:
         fails on any invocation that isn't _lib_strip_shell_quotes's own
         `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
         while the later _lib_split_fragments call (a bare `sed -E
-        's/.../g'`, no `-e` token) fails on its own."""
+        's/.../g'`, no `-e` token) fails on its own. isolated_home: the
+        active-marker check runs above this deny, so this test reaches that
+        check on its way to denying -- without a sandboxed $HOME it would run
+        that check against the real ambient $HOME."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
 
@@ -1532,7 +1859,7 @@ class TestRequireReadyForReview:
         )
         payload = json.loads(result.stdout)
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "PR creation blocked" in reason
+        assert "PR creation —" in reason
         assert "Push to a branch" not in reason
 
     # -- gh failure → fail-open ------------------------------------------

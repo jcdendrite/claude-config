@@ -27,8 +27,8 @@ HOOKS_DIR = "claude/.claude/hooks"
 HOOKS_TESTS_DIR = "claude/.claude/hooks/tests"
 SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
-SKILLS_DIR = "claude/.claude/skills"
-SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
+SKILLS_DIR = "claude-skills/skills"
+SKILLS_TESTS_DIR = "claude-skills/skills/tests"
 AGENTS_DIR = "claude/.claude/agents"
 RULES_DIR = "claude/.claude/rules"
 # Common ancestor for the plugin-generic hooks/skills/agents predicates below.
@@ -39,6 +39,21 @@ LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
+# Doubles as its own domain: unlike the source-tree/test-dir pairs above, any
+# path under it maps to itself rather than to a separate test directory.
+CLAUDE_TESTS_DIR = "claude/.claude/tests"
+
+# Common ancestor for the repo-wide-scan cross-domain exception below,
+# mirroring PLUGINS_DIR's role for the plugin-generic predicates.
+CLAUDE_TOP_LEVEL_DIR = "claude"
+# Top-level stow package for the skills tree, mirroring CLAUDE_TOP_LEVEL_DIR's
+# role in the repo-wide-scan predicate below (see root CLAUDE.md's repo-layout
+# bullet for why it's a separate package).
+CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
+# Directory name .gitignore excludes at both worktree roots. pyproject.toml's
+# norecursedirs prunes it from collection, so no test under one is ever
+# collected.
+WORKTREES_DIR_NAME = "worktrees"
 
 # test_transcript_analysis.py and its two siblings shell into specific hook
 # scripts and read specific SKILL.md files by path, not by import.
@@ -46,7 +61,21 @@ SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
 # cross-domain exception rather than folded into the scripts domain rule.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 
+# test_ticket_reference_discipline.py statically scans every tracked .py and
+# .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
+# independent of any import graph. Same undeclared-dependency shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB, naming the one dependent test file rather
+# than its containing domain.
+TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_reference_discipline.py"
+
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
+
+# test_select_tests.py's own TestCrossDomainReadCompleteness parses every
+# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR,
+# CLAUDE_TESTS_DIR, and plugins/*/tests/ for module-level repo-path
+# constants, so a change to any of those files can introduce a read this
+# table hasn't declared yet.
+SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
 # by path, not by import.
@@ -59,12 +88,38 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # check-handoff.py hardcodes this path.
 # test_check_handoff.py reads it directly by path, not by import.
 # Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB and
-# LOVABLE_CLOUD_PLUGIN_MANIFEST.
-HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
+# LOVABLE_CLOUD_PLUGIN_MANIFEST. Stays outside SKILL_FILES_READ_BY_HOOK_TESTS
+# below because test_check_handoff.py lives in SCRIPTS_TESTS_DIR, not
+# HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
+# this file's second target.
+HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
 
-# test_reconciliation_block_consistency.py reads this exact file by path to
-# diff its Reconciliation block against plan-review/ROUTING.md.
-CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
+CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
+PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
+PLAN_REVIEW_SKILL_MD = "claude-skills/skills/plan-review/SKILL.md"
+RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
+ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
+READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
+AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
+SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
+
+# Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
+# domain membership. TestCrossDomainReadCompleteness
+# (claude/.claude/scripts/tests/test_select_tests.py) derives and enforces
+# this set from each reading test's own module-level path constant, so no
+# per-member citation comment is kept here. HANDOFF_SKILL_MD stays a
+# standalone exception rather than joining this set -- see its own comment
+# above for why.
+SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
+    CODE_REVIEW_SKILL_MD,
+    PLAN_REVIEW_ROUTING_MD,
+    PLAN_REVIEW_SKILL_MD,
+    RESPOND_PR_SKILL_MD,
+    ERROR_MODE_ANALYSIS_SKILL_MD,
+    READY_FOR_REVIEW_SKILL_MD,
+    AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
+    SKILL_REVIEW_SKILL_MD,
+})
 
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
@@ -74,6 +129,8 @@ GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflow
 # skillOverrides counts. test_skills.py (SKILLS_TESTS_DIR) reads its
 # skillOverrides map at line 153, its docs/skills.md cross-check at line 1686,
 # and its destructive-cleanup permissions check at line 1724.
+# test_claude_enable_tool.py (SCRIPTS_TESTS_DIR) reads it by path to assert
+# which settings payload backs a re-enabled session.
 CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
 
 # No test reads any file under this directory by path or subprocess.
@@ -89,11 +146,12 @@ TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture
 
 # Blanket for every file under docs/, rather than one exact-match constant
 # per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
-# reads docs/design-decisions.md, docs/skills.md, and docs/handoff-nudge.md,
-# and test_skills.py's test_doc_has_no_state_path parametrizes over nearly
-# every docs/**/*.md file for a per-account state-path contract. A per-file
-# constant list would silently under-select the day a new doc gains a test
-# dependency; this rule can't.
+# reads docs/design-decisions/specialist-reviewer-roster.md,
+# docs/design-decisions/reviewer-findings-path-output.md, docs/skills.md, and
+# docs/handoff-nudge.md, and test_skills.py's test_doc_has_no_state_path
+# parametrizes over nearly every docs/**/*.md file for a per-account
+# state-path contract. A per-file constant list would silently under-select
+# the day a new doc gains a test dependency; this rule can't.
 DOCS_DIR = "docs"
 
 # test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and token-cap
@@ -124,6 +182,8 @@ ROOT_CLAUDE_MD = "CLAUDE.md"
 # and RULES_DIR (claude/.claude/rules/) for frontmatter validation —
 # distinct from RULES_DIR's own exception below, since the two directories
 # are separate trees with the same test dependency.
+# test_claude_md_excludes.py (HOOKS_TESTS_DIR) rglobs both directories as
+# well.
 ROOT_RULES_DIR = ".claude/rules"
 
 # test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
@@ -135,33 +195,32 @@ ROOT_SKILLS_DIR = ".claude/skills"
 # claudeMdExcludes entry by path.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
+# test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
+# test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
+# tracked-shell-script sweep. test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR) pick
+# it up via their own recursive *.sh globs.
+STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
-# directory absent from both this set and DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
-# means some test's cross-domain file-path or subprocess read into it was
-# never audited into this table.
+# directory absent from this set means some test's cross-domain file-path or
+# subprocess read into it was never audited into this table. SKILLS_DIR has
+# no member here: it points at claude-skills/skills, outside
+# claude/.claude/.
 MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
     Path(HOOKS_DIR).name,
     Path(SCRIPTS_DIR).name,
-    Path(SKILLS_DIR).name,
     Path(AGENTS_DIR).name,
     Path(RULES_DIR).name,
+    Path(CLAUDE_TESTS_DIR).name,
 })
-
-# claude/.claude/tests/test_statusline_command.py reads
-# claude/.claude/statusline-command.sh by path, and its sibling helpers.py
-# reads .github/workflows/tests.yml by path. Both paths deliberately fall
-# open to the full suite instead of getting a CROSS_DOMAIN_EXCEPTIONS entry,
-# because claude/.claude/tests/ itself has no selectable pytest target.
-DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
 
 # Directory names directly under root .claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference by path (PLANS_DIR,
 # ROOT_RULES_DIR, ROOT_SKILLS_DIR). Mirrors MAPPED_TOP_LEVEL_DIRS's role for
-# claude/.claude/, but for the separate root .claude/ tree. Unlike that
-# sibling, root .claude/ has no directory-with-no-selectable-pytest-target
-# case, so it needs no DELIBERATELY_UNMAPPED counterpart.
+# claude/.claude/, but for the separate root .claude/ tree.
 MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
     Path(PLANS_DIR).name,
     Path(ROOT_RULES_DIR).name,
@@ -169,13 +228,15 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
 })
 
 # Matches CI's own collectible pytest scope verbatim (see
-# .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
+# .github/workflows/tests.yml's `pytest claude/.claude/ claude-skills/ plugins/` step).
 # Targeting plugins/ instead of enumerating individual plugin subtrees means
 # a new plugin gaining a tests/ directory is covered automatically.
-FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "plugins/")
+FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
-# - claude/.claude/tests/helpers.py is imported by every domain's own test dir
+# - claude/.claude/tests/helpers.py's own DOMAIN_RULES match alone would
+#   under-select it to claude/.claude/tests plus TICKET_REFERENCE_DISCIPLINE_TEST_PATH.
+#   This entry is what forces every importing domain's tests to run instead.
 # - pyproject.toml governs collection for all of them
 # - this script's own table can't be trusted to correctly select tests for
 #   itself once changed
@@ -192,6 +253,15 @@ def _is_under(path: str, directory: str) -> bool:
 
 def _is_skill_md_change(path: str) -> bool:
     return _is_under(path, SKILLS_DIR) and Path(path).name == "SKILL.md"
+
+
+# test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR) scans every
+# REFERENCES.md and ROUTING.md sibling of a SKILL.md, not just SKILL.md itself.
+# This set must stay in sync with _citation_sources_for_skill_md's sibling
+# names in test_skills.py — a shared constant would be warranted if a third
+# auxiliary filename type is ever added.
+def _is_skill_auxiliary_md_change(path: str) -> bool:
+    return _is_under(path, SKILLS_DIR) and Path(path).name in {"REFERENCES.md", "ROUTING.md"}
 
 
 def _is_hooks_or_skills_change(path: str) -> bool:
@@ -244,22 +314,72 @@ def _is_hooks_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, HOOKS_DIR) and path.endswith(".sh")
 
 
+# See TICKET_REFERENCE_DISCIPLINE_TEST_PATH's own comment above for what
+# that test scans. This predicate is deliberately .py-only. That test's .sh
+# coverage is achieved today only incidentally, through the existing
+# hooks/scripts shell-script domain rules.
+# Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
+# HOOKS_TESTS_DIR domain it lives in.
+# Also selects CLAUDE_TESTS_DIR: TestConftestModuleNamesAreUnique in
+# test_pytest_collection_config.py resolves every tracked conftest.py
+# repo-wide via git ls-files, with no root scoping, so a .py file anywhere
+# under this predicate's three roots can be a new conftest.py that needs
+# that pairwise-uniqueness check to actually run.
+def _is_py_source_under_claude_or_plugins(path: str) -> bool:
+    return (
+        path.endswith(".py")
+        and (
+            _is_under(path, CLAUDE_TOP_LEVEL_DIR)
+            or _is_under(path, CLAUDE_SKILLS_TOP_LEVEL_DIR)
+            or _is_under(path, PLUGINS_DIR)
+        )
+    )
+
+
+# Matches exactly the corpus SELECT_TESTS_TEST_PATH's own comment describes:
+# a test_*.py file directly inside a tests/ directory under claude/ or
+# plugins/. A stricter subset of _is_py_source_under_claude_or_plugins,
+# since only a test file can introduce a new module-level repo-path
+# constant for that scanner to miss. Excludes any path under a worktrees/
+# directory, since no test corpus root ever resolves into one.
+def _is_test_source_change(path: str) -> bool:
+    return (
+        _is_py_source_under_claude_or_plugins(path)
+        and WORKTREES_DIR_NAME not in Path(path).parts
+        and Path(path).parent.name == "tests"
+        and Path(path).name.startswith("test_")
+    )
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
+    (_is_skill_auxiliary_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
+    (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
-# Nothing here checks completeness against real cross-domain file reads in
-# the test suite. When a test starts reading a file outside its own
-# domain-rule tree by path or subprocess, audit this table by hand and add
-# the matching entry.
+# TestCrossDomainReadCompleteness (claude/.claude/scripts/tests/test_select_tests.py)
+# derives this table's required entries by scanning test sources, so a new
+# undeclared cross-domain read fails CI.
+# It resolves only module-level constants built as a Path chain of string
+# literals rooted at __file__ or at a path constant from
+# claude/.claude/tests/helpers.py. A path assembled inside a function body,
+# from a plain string, or from any other call still needs a hand-added entry
+# here.
+# It matches a constant by its presence, not by checking that the name is
+# later passed to a read call, so a constant left behind by a refactor keeps
+# its row alive with no signal to prune it.
+# It verifies precision, not recall: a read whose constant the resolver
+# cannot see is invisible to both the scan and the hand-written audit list.
+# A green run therefore means no known read is unmapped, not that none
+# exists.
 #
 # _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB shells into hook
 # scripts and reads SKILL.md files by path.
@@ -284,24 +404,39 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
 # corresponding exception below over-selects for a nested SCRIPTS_DIR script
 # that glob wouldn't catch, since over-selection is the safe direction.
-# CODE_REVIEW_SKILL_MD: test_reconciliation_block_consistency.py
-# (HOOKS_TESTS_DIR) reads this exact file by path.
+# SKILL_FILES_READ_BY_HOOK_TESTS: see that frozenset's own comment above for
+# what it covers and why HANDOFF_SKILL_MD isn't a member.
+# CODE_REVIEW_SKILL_MD (second row): test_findings_path_suffix.py
+# (SCRIPTS_TESTS_DIR) also reads code-review/SKILL.md by path, for the
+# findings_path template text. Stays a standalone row rather than joining
+# SKILL_FILES_READ_BY_HOOK_TESTS -- that set's shared (HOOKS_TESTS_DIR,)
+# target doesn't cover this file's SCRIPTS_TESTS_DIR need. Its enforcing
+# equality test (test_skill_files_read_by_hook_tests_equals_known_reads_under_hooks_tests_dir)
+# is also scoped to HOOKS_TESTS_DIR readers only, so adding this row there
+# would break that test's invariant too.
+# READY_FOR_REVIEW_SKILL_MD (second row): test_findings_path_suffix.py
+# (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
+# own findings_path template text. Same standalone-row rationale as
+# CODE_REVIEW_SKILL_MD's second row above.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
-# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py
-# (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
-# picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
+# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
+# recursively glob claude/.claude/ for *.sh files, picking up
+# claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
 # _is_plugin_hooks_change, _is_plugin_skills_change, and
 # _is_plugin_agents_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
-# RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
+# RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
+# test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
 # GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
-# reads this exact file by path.
+# reads this exact file. Subsumed by the RULES_DIR row above. Kept anyway
+# because its declaration is narrower and independent of that row.
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
@@ -309,6 +444,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
+# STATUSLINE_COMMAND_SH: see its own comment above for citation.
+# _is_py_source_under_claude_or_plugins: see its own comment above for
+# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
+# CLAUDE_TESTS_DIR directly.
+# _is_test_source_change: see SELECT_TESTS_TEST_PATH's own comment above for
+# citation. A strict subset of _is_py_source_under_claude_or_plugins, since
+# only a test file under one of the five selectable test directories can
+# introduce a constant TestCrossDomainReadCompleteness's own scan would need
+# to see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -318,22 +462,27 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_plugin_agents_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
     (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p == CODE_REVIEW_SKILL_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
-    (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
-    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
+    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH, CLAUDE_TESTS_DIR)),
+    (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )
 
 
@@ -460,13 +609,67 @@ def _expand_target(target: str, *, repo_root: Path) -> list[str]:
     return sorted(str(match.relative_to(repo_root)) for match in repo_root.glob(target))
 
 
-def build_pytest_argv(
-    target_paths: Iterable[str], passthrough_args: Iterable[str], *, repo_root: Path,
-) -> list[str]:
+def _covers(container: str, candidate: str) -> bool:
+    """True when container's own pytest walk already collects candidate --
+    i.e. candidate sits strictly inside container. Reuses _is_under for the
+    prefix test rather than restating it.
+
+    FULL_SUITE_TARGETS entries end in "/", so container's trailing slash is
+    stripped first to avoid a never-matching `claude/.claude//` prefix in
+    _is_under's `directory + "/"` concatenation."""
+    normalized = container.rstrip("/")
+    return candidate != normalized and _is_under(candidate, normalized)
+
+
+def resolve_target_paths(target_paths: Iterable[str], *, repo_root: Path) -> list[str]:
+    """Turn a selection's target_paths into the concrete paths pytest
+    receives.
+
+    Pytest collects nothing from a directory argument when another
+    argument names a path inside it. To avoid that, every target is
+    expanded through _expand_target, then passed through two distinct
+    filters applied in order. First, exact duplicates are dropped, keeping
+    the first occurrence. Second, any path another entry in the expanded
+    list _covers is dropped. The duplicate filter can't fold into the
+    containment filter because _covers excludes equality by definition, so
+    containment alone never removes a repeat. Each candidate in the
+    containment filter is checked against the whole expanded list rather
+    than a progressively-shrinking one, so a multi-level chain (e.g. A,
+    A/B, A/B/c.py) collapses to its outermost container in one pass.
+
+    Output is sorted, matching select_pytest_targets' own
+    tuple(sorted(targets)) contract and the sortedness glob expansion
+    already carries. That's incidental for today's callers -- the
+    filtering above doesn't depend on argv order at all."""
     expanded: list[str] = []
     for target in target_paths:
         expanded.extend(_expand_target(target, repo_root=repo_root))
-    return [*expanded, *list(passthrough_args)]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for path in expanded:
+        if path not in seen:
+            deduped.append(path)
+            seen.add(path)
+
+    # Order-independent: pytest's Session.collect() runs the matching walk
+    # for every initial argument, mutating the shared collection cache,
+    # before genitems() runs on any of them, so the enclosing directory
+    # ends up cached whichever argument comes first.
+    survivors = [
+        path for path in deduped
+        if not any(_covers(other, path) for other in deduped if other != path)
+    ]
+    return sorted(survivors)
+
+
+def build_pytest_argv(
+    target_paths: Iterable[str], passthrough_args: Iterable[str], *, repo_root: Path,
+) -> list[str]:
+    """Only target_paths are containment-resolved; passthrough_args reach
+    pytest verbatim, so a path given on the command line can still shadow a
+    resolved target."""
+    return [*resolve_target_paths(target_paths, repo_root=repo_root), *list(passthrough_args)]
 
 
 def _resolve_pytest_executable() -> str:
@@ -497,6 +700,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         selection = select_pytest_targets(changed_paths)
 
+    resolved_targets = resolve_target_paths(selection.target_paths, repo_root=repo_root)
+
     if selection.is_full_suite:
         if selection.triggering_paths:
             paths = ", ".join(selection.triggering_paths)
@@ -507,9 +712,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"select-tests: nothing to run ({selection.reason})", file=sys.stderr)
         return 0
     else:
-        print(f"select-tests: running {', '.join(selection.target_paths)}", file=sys.stderr)
+        print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
 
-    pytest_argv = build_pytest_argv(selection.target_paths, passthrough_args, repo_root=repo_root)
+    # build_pytest_argv resolves resolved_targets again internally; safe
+    # because resolve_target_paths is idempotent on its own output, pinned
+    # by test_idempotent_on_its_own_output.
+    pytest_argv = build_pytest_argv(resolved_targets, passthrough_args, repo_root=repo_root)
     return run_pytest(pytest_argv, cwd=repo_root)
 
 

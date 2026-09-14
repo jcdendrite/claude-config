@@ -47,8 +47,8 @@ from helpers import CLAUDE_DIR
 
 REPO_ROOT = CLAUDE_DIR.parent.parent
 
-_SKILL_MD = REPO_ROOT / "claude" / ".claude" / "skills" / "code-review" / "SKILL.md"
-_ROUTING_MD = REPO_ROOT / "claude" / ".claude" / "skills" / "plan-review" / "ROUTING.md"
+_SKILL_MD = REPO_ROOT / "claude-skills" / "skills" / "code-review" / "SKILL.md"
+_ROUTING_MD = REPO_ROOT / "claude-skills" / "skills" / "plan-review" / "ROUTING.md"
 
 _SECTION_START_HEADING = "## Reconciliation"
 

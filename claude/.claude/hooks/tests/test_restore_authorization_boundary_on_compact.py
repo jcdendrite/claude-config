@@ -26,7 +26,7 @@ from helpers import HOOKS_DIR, build_path_without
 
 RESTORE_BOUNDARY_HOOK = HOOKS_DIR / "restore-authorization-boundary-on-compact.sh"
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_HANDOFF_SKILL = _REPO_ROOT / "claude" / ".claude" / "skills" / "handoff" / "SKILL.md"
+_HANDOFF_SKILL = _REPO_ROOT / "claude-skills" / "skills" / "handoff" / "SKILL.md"
 
 # Literal command/verb tokens the hook's injected text names — anchored on
 # the literal token rather than a descriptive clause so a prose reword does

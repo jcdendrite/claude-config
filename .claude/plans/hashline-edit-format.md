@@ -38,8 +38,8 @@ analysis, plus a decision on the one real defect the measurement surfaced.
 
 ## Measurement
 
-Snapshot taken 2026-08-08 across all four config dirs — `~/.claude/projects`
-plus the three account dirs under `~/.config/claude-accounts/`. Every `.jsonl`
+Snapshot taken 2026-08-08 across every config dir — `~/.claude/projects`
+plus every additional declared account dir under `~/.config/claude-accounts/`. Every `.jsonl`
 under each (session transcripts at depth 1, subagent transcripts at depth 3,
 workflow-agent transcripts at depth 5). The corpus grows every session
 (including this one), so two scans minutes apart return different absolute
@@ -268,7 +268,7 @@ the blog post's headline number does not answer it for this harness.
 
 | # | Assumption | Tag |
 |---|---|---|
-| 1 | 7,428 `Edit` + 2,700 `Write` calls; every error paired to its call by `tool_use_id`; three separate scans agree on every percentage to 2 decimals despite the corpus growing between them | `[verified: full-corpus scan, 4 config dirs, 2026-08-08]` |
+| 1 | 7,428 `Edit` + 2,700 `Write` calls; every error paired to its call by `tool_use_id`; three separate scans agree on every percentage to 2 decimals despite the corpus growing between them | `[verified: full-corpus scan, every config dir, 2026-08-08]` |
 | 1a | 2 whitespace-only + 4 multi-match = 0.08% of `Edit` calls is the hashline ceiling | `[verified: next-edit-same-file diff attribution, re-derived after the first classifier was shown non-discriminative]` |
 | 1b | The original `\t\| {2,}\S` classifier fires on 60.1% of successful edits vs 63.6% of failed — not discriminative | `[verified: base-rate test over 7,365 successful Edit old_strings (7,428 total − 63 all-error Edit calls)]` |
 | 1c | str_replace-mechanical `Edit` failures (`not_found`+`unread`+multi-match, no-ops and governance denials excluded) total 57/7,428 = 0.77%; including no-ops, all non-governance `Edit` errors total 63/7,428 = 0.85% | `[verified: re-bucketed all non-governance errors against 6 governance-hook message patterns; a scripting bug in the first pass mismatched the no-op message text ("old_string and new_string are exactly the same," not "replacement are exactly the same") and mis-sorted those 6 into an unclassified bucket — caught and corrected this round]` |
@@ -283,7 +283,7 @@ the blog post's headline number does not answer it for this harness.
 | 8 | The 6 redaction-caused failures are attributable to `[REDACTED-CREDENTIAL]` appearing in `old_string` | `[verified: error-text match against the Edit call's own tool_use_id]` |
 | 9 | Whether 2 whitespace failures justifies any edit-path change | `[resolved: no]` — settled by row 10's case-study-only disposition; retained only because the same 2-case/0.77%/0.67% figures set the numeric revisit trigger (Critical files, below) |
 | 10 | Deliverable is the case study alone; no code change to `redact-credential-values.sh` | `[engineer-verified]` — initially selected "Case study + fix redaction defect", then confirmed the narrowing to case-study-only after both candidate fixes were rejected at the design-fitness gate |
-| 11 | The transcript scan window is whatever history these four config dirs retain — not a fixed period | `[unverified]` — no retention policy checked; the rate is per-call, not per-unit-time, so this does not affect the percentages |
+| 11 | The transcript scan window is whatever history the declared config dirs retain — not a fixed period | `[unverified]` — no retention policy checked; the rate is per-call, not per-unit-time, so this does not affect the percentages |
 
 ## Critical files
 
@@ -418,8 +418,8 @@ matcher. No behavior change; no test change.
      output verbatim. Hand-anonymizing at writing time is the defect; the
      mechanized label is the fix.
    - **The hook is not a backstop here.** `~/.claude/private-projects.md` has an
-     entry for one of the three account names but **not** the other two. An
-     implementer who tests the gate with the covered name will see it deny and
+     entry for some account names but **not** all of them. An
+     implementer who tests the gate with a covered name will see it deny and
      wrongly conclude the tier is armed. Either populate the missing entries
      before implementation, or treat this tier as absent for this PR.
    - **Scope is the whole PR, not just the doc.** `.claude/plans/` is tracked,

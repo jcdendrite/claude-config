@@ -16,11 +16,10 @@ import re
 import sys
 from pathlib import Path
 
-# Sibling-relative, not config_dir()-derived: this script always reads the
-# SKILL.md that ships alongside it in the same checkout, regardless of which
-# CLAUDE_CONFIG_DIR profile invoked it -- the same convention marker.sh uses
-# to source ../hooks/_lib.sh.
-SKILL_MD_PATH = Path(__file__).resolve().parent.parent / "skills" / "handoff" / "SKILL.md"
+# Repo-root-relative, not config_dir()-derived: this script always reads the
+# SKILL.md that ships in the same checkout's claude-skills/ package,
+# regardless of which CLAUDE_CONFIG_DIR profile invoked it.
+SKILL_MD_PATH = Path(__file__).resolve().parents[3] / "claude-skills" / "skills" / "handoff" / "SKILL.md"
 
 PLACEHOLDER_TOKENS = ("TBD", "TODO", "fill in later")
 

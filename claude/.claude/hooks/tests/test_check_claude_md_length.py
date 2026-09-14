@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,15 +11,28 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_rebase,
     build_path_without,
     edit_input,
+    push_conflicting_edit_to_origin,
+    resolve_conflicted_rebase,
     run_hook,
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 CHECK_CLAUDE_MD_LENGTH_HOOK = HOOKS_DIR / "check-claude-md-length.sh"
 CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
+
+# Mirrors GLOBAL_CLAUDE_MD_BYTE_LIMIT in check-claude-md-length.sh.
+# test_byte_limit_constant_matches_hook_source below cross-checks the two
+# stay in sync.
+BYTE_LIMIT = 25600
+
+_GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE = re.compile(r"^GLOBAL_CLAUDE_MD_BYTE_LIMIT=(\d+)", re.MULTILINE)
 
 SETTINGS_PATH = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
 
@@ -27,13 +42,68 @@ def make_lines(n: int, prefix: str = "line") -> str:
     return "\n".join(f"{prefix} {i + 1}" for i in range(n)) + "\n"
 
 
+def make_bytes(n: int, filler: str = "a") -> str:
+    """Return content that is exactly n bytes: one line of (n - 1) filler
+    characters plus a trailing newline. A single line keeps the line-count
+    dimension out of play so byte-cap tests isolate the byte dimension."""
+    return filler * (n - 1) + "\n"
+
+
+def make_multibyte_bytes(n: int, filler: str = "é") -> str:
+    """Return content that is exactly n bytes (UTF-8 encoded), padded with a
+    multi-byte filler character plus a trailing newline. Isolates byte count
+    from character/codepoint count: `filler` must encode to more than one
+    byte, so a test built on this can distinguish `wc -c` semantics from a
+    codepoint count, which every `make_bytes` (single-byte ASCII filler)
+    test cannot. `n - 1` must be evenly divisible by the filler's UTF-8
+    byte length so the padding lands on an exact character boundary."""
+    filler_byte_length = len(filler.encode("utf-8"))
+    if filler_byte_length < 2:
+        raise ValueError(f"filler {filler!r} must be multi-byte in UTF-8")
+    if (n - 1) % filler_byte_length != 0:
+        raise ValueError(
+            f"n - 1 ({n - 1}) must be divisible by filler byte length {filler_byte_length}"
+        )
+    return filler * ((n - 1) // filler_byte_length) + "\n"
+
+
+def make_lines_over_byte_limit(n: int, min_bytes: int, filler: str = "a") -> str:
+    """Return content with exactly n lines whose total byte count is at
+    least min_bytes, padding the last line with filler characters. Lets a
+    test grow both the line-count and byte-count dimensions at once from a
+    single piece of content."""
+    lines = [f"line {i + 1}" for i in range(n)]
+    content = "\n".join(lines) + "\n"
+    deficit = min_bytes - len(content.encode("utf-8"))
+    if deficit > 0:
+        lines[-1] += filler * deficit
+        content = "\n".join(lines) + "\n"
+    return content
+
+
+def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) -> Path:
+    """Git repo with `target_path` committed at exactly `head_bytes` bytes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    target = repo / target_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(make_bytes(head_bytes))
+    subprocess.run(["git", "add", target_path], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
-    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
+    superset entry this hook's own bootstrap does not call,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    (GH-783), `grep` for the path-filter match, `awk` for the line
+    count, `git` for the _lib_capped-wrapped show and cat-file -s
+    calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
@@ -110,37 +180,9 @@ class TestCheckClaudeMdLength:
             == "allow"
         )
 
-    def test_claude_md_at_exactly_200_allows(self, isolated_home, tmp_path):
-        """200 lines is at the limit — the gate is `> 200`, so 200 passes."""
-        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
-        (repo / CLAUDE_MD_PATH).write_text(make_lines(200))
-        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_CLAUDE_MD_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_claude_md_growing_to_201_denies(self, isolated_home, tmp_path):
-        """HEAD at 190, staged at 201: new > 200 and new > old → deny."""
-        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
-        (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
-        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_CLAUDE_MD_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, tmp_path):
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
-        reach the same deny verdict as the unquoted form."""
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -199,48 +241,6 @@ class TestCheckClaudeMdLength:
             == "deny"
         )
 
-    def test_already_over_limit_growing_denies(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 215: growing while over limit → deny."""
-        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 210)
-        (repo / CLAUDE_MD_PATH).write_text(make_lines(215))
-        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_CLAUDE_MD_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_already_over_limit_reducing_allows(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 205: reducing while over limit → allow."""
-        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 210)
-        (repo / CLAUDE_MD_PATH).write_text(make_lines(205))
-        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_CLAUDE_MD_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_already_over_limit_same_size_allows(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 210 (different content, same count): not growing → allow."""
-        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 210)
-        (repo / CLAUDE_MD_PATH).write_text(make_lines(210, prefix="row"))
-        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_CLAUDE_MD_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
     def test_staged_deletion_of_claude_md_allows(self, isolated_home, tmp_path):
         """git rm-staged CLAUDE.md: git show ":$f" produces empty output → new=0, 0 > 200 is false → allow."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
@@ -255,7 +255,9 @@ class TestCheckClaudeMdLength:
         )
 
     def test_deny_message_includes_filename_and_counts(self, isolated_home, tmp_path):
-        """Deny reason must name the file, new line count, old line count, and limit."""
+        """Deny reason must name the file, new line count, old line count, and
+        limit — and must NOT carry the byte-violation fragment, since this
+        commit only crosses the line limit."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -269,6 +271,101 @@ class TestCheckClaudeMdLength:
         assert "201" in reason
         assert "190" in reason
         assert "200" in reason
+        assert "bytes (was" not in reason
+
+    # --- Byte-cap logic matrix (mirrors the line-cap matrix above) ---
+
+    def test_new_claude_md_over_byte_limit_denies(self, isolated_home, tmp_path):
+        """New file with no HEAD version staged over BYTE_LIMIT — there is no
+        `HEAD:$f` for `git cat-file -s` to read, so the file is new to this
+        commit and old_bytes is 0 → deny. Mirrors
+        test_new_claude_md_over_limit_denies for the byte dimension."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("hello\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        target = repo / CLAUDE_MD_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_deny_message_includes_both_byte_counts(
+        self, isolated_home, tmp_path
+    ):
+        """Deny reason must name both the new and old byte counts — and must
+        NOT carry the line-violation fragment, since this commit only
+        crosses the byte limit."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 1)
+        new_bytes = BYTE_LIMIT + 10
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(new_bytes))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert str(new_bytes) in reason
+        assert str(BYTE_LIMIT + 1) in reason
+        assert str(BYTE_LIMIT) in reason
+        assert "lines (was" not in reason
+
+    def test_byte_cap_multibyte_utf8_content_denies_at_byte_threshold(
+        self, isolated_home, tmp_path
+    ):
+        """Staged content's UTF-8 byte count crosses BYTE_LIMIT while its
+        character/codepoint count stays well under it — isolates `wc -c`
+        byte semantics from a codepoint count, which no `make_bytes`
+        (single-byte ASCII filler) test can distinguish."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        multibyte_content = make_multibyte_bytes(BYTE_LIMIT + 1, filler="é")
+        assert len(multibyte_content.encode("utf-8")) == BYTE_LIMIT + 1
+        assert len(multibyte_content) < BYTE_LIMIT
+        (repo / CLAUDE_MD_PATH).write_text(multibyte_content, encoding="utf-8")
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_combined_line_and_byte_violation_denies_with_both_reasons(
+        self, isolated_home, tmp_path
+    ):
+        """HEAD under both limits, staged crosses both simultaneously: the
+        deny reason must include both the line-violation and byte-violation
+        message fragments, not just one (mutation regression: overwriting
+        instead of appending the byte-violation message would silently drop
+        the line-violation message)."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        content = make_lines_over_byte_limit(250, BYTE_LIMIT + 100)
+        (repo / CLAUDE_MD_PATH).write_text(content)
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "lines (was" in reason
+        assert "limit 200)" in reason
+        assert "bytes (was" in reason
+        assert f"limit {BYTE_LIMIT})" in reason
 
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, tmp_path
@@ -606,15 +703,13 @@ class TestCheckClaudeMdLength:
         """Chained `git add ... && git commit` is caught by the internal
         _lib_command_invokes_git_subcmd check.
 
-        Note: this session's live commit probes established that the
-        `if: "Bash(git commit *)"` predicate in settings.json DOES match
+        The `if: "Bash(git commit *)"` predicate in settings.json matches
         chained and prefixed commands (a `true && git commit ...` with a
         real unreviewed staged diff got a genuine deny from
-        require-code-review.sh) — correcting an earlier, disproven claim
-        here that the glob required the command to start with "git commit".
-        This test invokes the hook binary directly regardless, since the
-        internal check is the authoritative gate either way — consistent
-        with the hook header's note that the `if` field is a hint only.
+        require-code-review.sh). This test invokes the hook binary directly
+        regardless, since the internal check is the authoritative gate
+        either way — consistent with the hook header's note that the `if`
+        field is a hint only.
         """
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
@@ -671,6 +766,99 @@ class TestCheckClaudeMdLength:
             == "allow"
         )
 
+    def test_byte_cap_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Byte-dimension analog of
+        test_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present:
+        stub_bin_without_timeout's PATH has no wc, exercising the byte
+        dimension's git-cat-file-s derivation without wc on PATH. File
+        stays a single line (well under the 200-line limit) so only the
+        byte dimension is in play."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_at_limit_allows_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        file at the byte limit (not growing past it) must still pass."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    # --- Newly-capped `git cat-file -s` calls (byte dimension of
+    # _lib_staged_length_gate) ---
+    #
+    # These calls run as `git -C "$repo_root" cat-file -s <operand>`, so the
+    # predicate below matches the subcommand on $3, not $1.
+
+    @pytest.mark.timing
+    def test_byte_cap_cat_file_git_timeout_engages_cap(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """Both `git cat-file -s ":$f"` and `git cat-file -s "HEAD:$f"` (the
+        byte-count dimension's _lib_capped wrap) must actually engage their
+        5s cap rather than hang, mirroring check-skill-length.py's coverage
+        of the shared git show/diff/rev-parse call sites. One shim predicate
+        (matching on the `cat-file` subcommand) covers both the new- and
+        old-revision calls, since they share it. A capped, empty byte count
+        defaults new_bytes/old_bytes to 0 (see _lib_staged_length_gate), so
+        the gate degrades to allow rather than hanging."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        env = git_timeout_shim('[ "$3" = "cat-file" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    # --- Byte-limit constant cross-check ---
+
+    def test_byte_limit_constant_matches_hook_source(self):
+        """This file's BYTE_LIMIT must track GLOBAL_CLAUDE_MD_BYTE_LIMIT in
+        check-claude-md-length.sh — that constant's own header comment
+        documents a dated log of prior values appended on every future
+        change, so drift between the two is an anticipated future event.
+        The boundary-value tests above already fail on any such drift
+        indirectly, via a deny-vs-allow mismatch a maintainer has to trace
+        back to the constant. This test adds a direct, single-assertion
+        diagnostic for the same drift instead. Mirrors
+        test_transcript_analysis.py's
+        test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label,
+        which extracts a bash constant out of hook source the same way."""
+        match = _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE.search(CHECK_CLAUDE_MD_LENGTH_HOOK.read_text())
+        assert match is not None, (
+            "GLOBAL_CLAUDE_MD_BYTE_LIMIT not found in check-claude-md-length.sh"
+        )
+        assert int(match.group(1)) == BYTE_LIMIT
+
     # --- Settings.json wiring ---
 
     def test_settings_json_contains_hook_entry(self):
@@ -694,4 +882,190 @@ class TestCheckClaudeMdLength:
         matcher, _ = matches[0]
         assert "Bash" in matcher, (
             f"check-claude-md-length.sh must be in a Bash matcher group; found: {matcher!r}"
+        )
+
+
+def _build_clean_merge_growing_claude_md(tmp_path: Path) -> Path:
+    """Local copy of test_check_skill_length.py's fixture of the same shape
+    (DAMP test code): a conflict-free merge where only upstream grows
+    CLAUDE.md past the limit, the clone's own commit touching an unrelated
+    file so the merge cannot fast-forward and leaves MERGE_HEAD."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (clone / CLAUDE_MD_PATH).write_text(make_lines(190))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add claude.md at 190"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (push_clone / CLAUDE_MD_PATH).write_text(make_lines(250))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin grows claude.md"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+def _build_conflicted_rebase_with_growing_claude_md(tmp_path: Path) -> Path:
+    """Local copy of test_check_skill_length.py's fixture of the same shape:
+    a conflicted rebase on an unrelated file, with CLAUDE.md separately
+    grown past the limit as part of the staged resolution."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (repo / CLAUDE_MD_PATH).write_text(make_lines(100))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed claude.md at 100"], cwd=repo, check=True)
+
+    build_conflicted_rebase(repo)
+    resolve_conflicted_rebase(repo)
+    (repo / CLAUDE_MD_PATH).write_text(make_lines(250))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+    return repo
+
+
+def _build_delete_modify_conflict_growing_claude_md(tmp_path: Path) -> Path:
+    """Local copy of test_check_skill_length.py's fixture of the same shape
+    (DAMP test code): the clone deletes CLAUDE.md, origin independently
+    grows it to 250 lines (past the 200-line limit), and the merge
+    surfaces a delete/modify conflict -- distinct from a two-sided content
+    conflict, since one side has no blob at all to three-way-merge
+    against. Resolved by staging content at 220 lines: over the limit
+    either way `old` is read, but strictly between the merge-tree base's
+    `old` (250, origin's surviving content) and a regressed literal-HEAD
+    fallback's `old` (0, since the file doesn't exist at literal HEAD in
+    the clone's own delete commit). That places the two candidate bases
+    on opposite sides of _lib_staged_length_gate's `new > old` deny
+    condition, so the resulting allow/deny outcome discriminates which
+    base the gate actually used -- see
+    test_delete_modify_conflict_growing_claude_md_allows's own docstring
+    for the two resulting outcomes."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (clone / CLAUDE_MD_PATH).write_text(make_lines(100))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add claude.md at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    subprocess.run(["git", "rm", "-q", CLAUDE_MD_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "clone deletes claude.md"], cwd=clone, check=True)
+
+    push_conflicting_edit_to_origin(tmp_path, bare, CLAUDE_MD_PATH, make_lines(250))
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / CLAUDE_MD_PATH).write_text(make_lines(220))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=clone, check=True)
+    return clone
+
+
+def _build_clean_merge_mode_bit_only_claude_md(tmp_path: Path) -> Path:
+    """Local copy of test_check_skill_length.py's fixture of the same shape
+    (DAMP test code): upstream's only contribution to CLAUDE.md is a
+    mode-bit flip (chmod +x, no content change), auto-resolved with no
+    conflict since the clone's own side never touched the file."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / CLAUDE_MD_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (clone / CLAUDE_MD_PATH).write_text(make_lines(100))
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add claude.md at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    os.chmod(push_clone / CLAUDE_MD_PATH, 0o755)
+    subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin marks claude.md executable"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+class TestCheckClaudeMdLengthMergeAwareBase:
+    """_lib_staged_length_gate's `old` comparison is measured against
+    _lib_gate_diff_base's resolved base, and mid-merge vs. mid-rebase differ
+    in which base gets used. Local mirror of
+    TestCheckSkillLengthMergeAwareBase -- the shared driver in _lib.sh means
+    both callers must show the same fixed defect and the same fix."""
+
+    def test_mid_merge_pure_upstream_growth_does_not_fail(self, isolated_home, tmp_path):
+        repo = _build_clean_merge_growing_claude_md(tmp_path)
+        assert (
+            run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mid_rebase_growth_past_mid_rebase_head_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_conflicted_rebase_with_growing_claude_md(tmp_path)
+        assert (
+            run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "deny"
+        )
+
+    def test_delete_modify_conflict_growing_claude_md_allows(self, isolated_home, tmp_path):
+        """A delete/modify conflict on CLAUDE.md itself, resolved at 220
+        lines -- over the 200-line limit either way `old` is read, but
+        strictly between the merge-tree base's `old` (250) and a
+        regressed literal-HEAD fallback's `old` (0, the file doesn't
+        exist at literal HEAD in the clone's own delete commit). At the
+        correct merge-tree base, 220 > 250 is false, so the gate allows;
+        this discriminates the correct base from a regressed
+        literal-HEAD fallback, where 220 > 0 is true and the gate would
+        instead deny -- the fixture shape
+        .claude/plans/merge-aware-review-gates.md's Verification section
+        names as untested against this gate's own git show pair. Local
+        copy of test_check_skill_length.py's fixture of the same shape
+        (DAMP test code)."""
+        repo = _build_delete_modify_conflict_growing_claude_md(tmp_path)
+        assert (
+            run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mode_bit_only_upstream_change_to_claude_md_does_not_deny(
+        self, isolated_home, tmp_path
+    ):
+        """Upstream's only contribution to CLAUDE.md is a mode-bit flip --
+        the merge auto-resolves with no conflict, and since the content is
+        byte-identical, `new` never exceeds `old`. Local copy of
+        test_check_skill_length.py's fixture of the same shape (DAMP test
+        code)."""
+        repo = _build_clean_merge_mode_bit_only_claude_md(tmp_path)
+        assert (
+            run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
         )

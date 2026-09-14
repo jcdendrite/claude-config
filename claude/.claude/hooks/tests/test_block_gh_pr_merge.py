@@ -198,7 +198,7 @@ class TestBlockGhPrMerge:
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh api repos/owner/repo/pulls/291/merge")) == "allow"
 
     # ------------------------------------------------------------------ #
-    # GH-783 Phase 2: quote-split and command-matcher regression tests    #
+    # Quote-split and command-matcher regression tests                    #
     # ------------------------------------------------------------------ #
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self):
@@ -209,17 +209,16 @@ class TestBlockGhPrMerge:
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('"gh" pr merge 1')) == "deny"
 
     def test_quoted_subcommand_word_now_denied(self):
-        """Closes a real gap the prior regex missed: `gh pr "merge"` quote-
-        strips to a bare `merge` token, which the word-sequence matcher now
-        catches — a genuine behavior change/gap-close, not a regression.
-        See docs/hooks.md's entry for this hook."""
+        """`gh pr "merge"` quote-strips to a bare `merge` token, which the
+        word-sequence matcher catches. See docs/hooks.md's entry for this
+        hook."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('gh pr "merge"')) == "deny"
 
     def test_echo_wrapped_form_still_allowed_via_command_word_resolution(self):
         """Re-pins the false-positive-avoidance property test_false_positive_
-        shapes_allowed above already covers, naming the NEW mechanism: the
-        stripped fragment's command word resolves to `echo`, not `gh`, not
-        because a quote character survived stripping."""
+        shapes_allowed above already covers: the stripped fragment's
+        command word resolves to `echo`, not `gh`, not because a quote
+        character survived stripping."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('echo "gh pr merge"')) == "allow"
 
     def test_value_taking_global_flag_before_subcommand_denied(self):
@@ -228,11 +227,33 @@ class TestBlockGhPrMerge:
         subcommand and the match would miss."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh --repo o/r pr merge")) == "deny"
 
-    def test_full_path_invocation_now_denied(self):
-        """Closed as a side effect of the command-word matcher (see
-        _lib_fragment_invokes_tool): a path ending in /gh resolves the same
-        as the bare token, not only a literal `gh` word."""
+    def test_full_path_invocation_denied(self):
+        """A path ending in `/gh` (e.g. `/usr/bin/gh pr merge`) resolves the
+        same as the bare `gh` token via _lib_fragment_invokes_tool's
+        command-word match."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("/usr/bin/gh pr merge 291")) == "deny"
+
+    def test_gh_pr_leaf_flag_interposed_before_merge_denied(self):
+        """A leaf flag registered on `gh pr merge` itself (`--body`), not a
+        global flag like `--repo`, written between the surface word and
+        `merge` — GH-559/GH-430's interposed-flag bypass class. gh's cobra
+        resolution consumes `--body` and its value while walking to
+        `merge`, so the shared _lib_tool_argv_from_subcmd grammar must do
+        the same or the word sequence never reaches `pr`, `merge`."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh pr --body x merge 42")) == "deny"
+
+    def test_gh_pr_boolean_flag_interposed_before_merge_allowed(self):
+        """`gh pr --auto merge 291` allows, correctly: cobra's loose
+        lookahead consumes `merge` as `--auto`'s command-word neighbor
+        while resolving the subcommand (the same mechanism that consumes a
+        value-taking flag's own value), so gh itself never reaches `pr
+        merge` and never merges. This is the correct verdict, not an
+        accepted regression — the test exists so a future change to the
+        flag-shape logic can't silently reintroduce the interposed-flag
+        bypass for this shape without a red test. Distinct from `gh pr
+        merge --auto 291` above (flag *after* the subcommand), which is
+        unaffected by this grammar and still denies."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh pr --auto merge 291")) == "allow"
 
     def test_sed_absent_from_path_denies(self, tmp_path):
         """Status-2 propagation: the matcher could not determine whether

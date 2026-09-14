@@ -71,7 +71,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by plugin-version-bump gate: could not source _lib.sh."
   exit 0
 fi
@@ -86,8 +86,8 @@ fi
 # Only gate commands that contain a git commit invocation. Match `git commit`
 # at the start of the command OR after a shell separator (`&&`, `||`, `;`,
 # `|`), so chained forms like `git add . && git commit` are also caught. The
-# trailing `(\s|$)` ensures we don't match `git commit-tree`.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
+# trailing `([[:space:]]|$)` ensures we don't match `git commit-tree`.
+if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'; then
   exit 0
 fi
 

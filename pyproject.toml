@@ -22,6 +22,11 @@ pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugin
 # which overrides this cleanly. --strict-markers makes a typo'd marker name a
 # collection error instead of a silently-unfiltered test.
 addopts = ["-n", "auto", "--strict-markers"]
+# Unbounded retention fills /tmp/pytest-of-<user>/ with every session's tmp_path
+# directories; failed-only, one-session retention caps it to the last failure's
+# output for debugging.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 markers = [
   "timing: asserts a wall-clock bound, or needs serial isolation to avoid subprocess-spawn contention flakiness; run serially (-m timing -n0) — see claude/.claude/tests/test_pytest_collection_config.py",
 ]

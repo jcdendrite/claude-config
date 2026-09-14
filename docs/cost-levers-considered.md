@@ -34,10 +34,9 @@ vars exposes this field" claim above is outdated — `ENABLE_PROMPT_CACHING_1H`
 and `FORCE_PROMPT_CACHING_5M` are real, documented environment variables
 (`code.claude.com/docs/en/prompt-caching`) that select TTL per session.
 Verdict unchanged (rejected): main-thread 5-minute-tier writes are 96–97%
-concentrated in idle gaps under 5 minutes on every account checked (personal-
-subscription, small-subscription-client, API-key-client), where the pricier
-1-hour breakpoint adds cost with no avoided-rebuild benefit — do not set
-either variable.
+concentrated in idle gaps under 5 minutes across the corpus, where the
+pricier 1-hour breakpoint adds cost with no avoided-rebuild benefit — do not
+set either variable.
 
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
@@ -154,7 +153,7 @@ subsequent turn.
 |---|---|---|
 | Delegating the diff read in `/code-review` to a cheaper subagent | Rejected | Diff-family output is 1.25% of cumulative main-context tokens amplification-weighted, against `Read` output at 7.95x that volume. The diff `/code-review` reads is the artifact under review, which `subagent-delegation`'s own frontmatter already excludes from delegation by name — delegating it delegates the review. |
 | Replacing in-context diff reads with deterministic scripts | No change needed | Already the case wherever it applies. Every marker and hook hash computes `git diff --cached \| sha256sum` inside a subprocess with output redirected to a file, so no diff bytes reach the model; only a deny message can surface. The seven `staff-*` agents and `ciso-reviewer` all carry `Bash` and re-fetch the diff inside their own contexts, so the parent never relays to them. |
-| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md:102`); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
+| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md` § "4. Skill-procedural-fidelity review (halt on findings)"); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
 
 **Unreconciled, noted rather than resolved:** `subagent-delegation/SKILL.md`
 names "verbose `git diff` / state-survey bursts" as delegation candidates,
@@ -169,6 +168,30 @@ read-and-reason split Step 2 already defines — so `ready-for-review`
 Step 3 and `/code-review`'s inline diff reads are governed by that
 stated rule.
 
+**2026-09-05 follow-up:** above the Bash tool's 30,000-byte truncation
+threshold, the parent session never holds the full diff text in context, so
+a paste-based handoff of diff text to `skill-fidelity-reviewer` is
+unsatisfiable, not merely expensive. `pr-diff-against-base.sh --diff-file`
+hands step 4's `skill-fidelity-reviewer` dispatch a file path instead,
+which is the same handle `/code-review`'s own Step 0, Step 0.6, and item 9d
+truncation-degradation logic needs to recover from a truncated diff.
+
+**2026-09-11 follow-up:** the **File-path handoff of diff text to the
+reviewers that lack `Bash`** row above is adopted for
+`comment-discipline-reviewer`, on correctness grounds rather than cost. That
+reviewer carries no `Bash`, so a prose description of changed line ranges
+leaves it inferring scope by correlating file content. Left to that
+inference, it flags pre-existing prose the diff never touched.
+`/code-review` now resolves an artifact with
+`pr-diff-against-base.sh --staged --diff-file` immediately before that one
+spawn and passes the path. The direct cost verdict is unchanged: the
+handoff still lands below the noise floor. Fewer false-positive findings
+should also cut review-churn cost indirectly, but that effect isn't
+measured here, so this ships as a correctness fix, not a cost lever. The eight Bash-having reviewers named
+in the row above are unaffected. Each already fetches its own diff, scoped
+to its lane. Handing them the shared unscoped artifact instead would widen
+what each reads.
+
 ## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
 
 `plan-boundary` re-priced 95 Opus-anchored sessions' own post-plan-boundary
@@ -179,7 +202,7 @@ will drift on a later rerun).
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Model-conditional branch in `plan-it` Step 7 and `handoff`'s warrant section, gated on the plan's own pre-committed five-part criterion | Rejected — null result, all five required and two failed | Continue on Opus totaled $2,464.44, switch to Sonnet in place $1,855.80, fresh Sonnet handoff $1,643.25 (cheapest). The handoff arm's advantage over switching in place breaks even at only +12.9% work-inflation, below the required 20% stress-margin floor, and the winning arm flips depending on whether the context-rebuild ramp curve is scoped to Sonnet-anchored sessions or pooled across model families — both required checks, neither holds. The other three required checks do pass: the corpus-denominator concern traced to subagent sidechain transcripts this subcommand already excludes, and is consistent across a 90-day and an all-time window; the switch-in-place simulation matched the 8 sessions with a real observed switch to within a mean deviation of -0.1% (worst single session ±2.3%); and 95 sessions clears the 20-session floor, with the fresh-handoff-cheaper-than-switch-in-place direction surviving a 2,000-resample bootstrap in 98.2% of resamples. |
+| Model-conditional branch in `plan-it` Step 7 and `handoff`'s warrant section, gated on the plan's own pre-committed five-part criterion | Rejected — null result, all five required and two failed | Continue on Opus is the costliest arm; switching to Sonnet in place costs 75.3% of that total, and a fresh Sonnet handoff costs 66.7% of that total (cheapest). The handoff arm's advantage over switching in place breaks even at only +12.9% work-inflation, below the required 20% stress-margin floor, and the winning arm flips depending on whether the context-rebuild ramp curve is scoped to Sonnet-anchored sessions or pooled across model families — both required checks, neither holds. The other three required checks do pass: the corpus-denominator concern traced to subagent sidechain transcripts this subcommand already excludes, and is consistent across a 90-day and an all-time window; the switch-in-place simulation matched the 8 sessions with a real observed switch to within a mean deviation of -0.1% (worst single session ±2.3%); and 95 sessions clears the 20-session floor, with the fresh-handoff-cheaper-than-switch-in-place direction surviving a 2,000-resample bootstrap in 98.2% of resamples. |
 | Continuing on Opus past the plan boundary (today's default behavior) | Not favored, direction robust | Loses to both alternatives in 100% of 2,000 session-level bootstrap resamples. Breakeven against switching in place is +32.8% work-inflation, against a fresh handoff +50.0% — the direction that continuing is the costliest arm is not the part this measurement leaves undecided. |
 | Family-pooled context-rebuild ramp curve for the fresh-handoff arm's pricing | Rejected in favor of a Sonnet-anchored-only curve | The Opus/Sonnet per-turn-position rate ratio ranges 1.14x–2.28x across buckets, not a flat ~2.5x matching the vendor price ratio. Pricing the handoff arm from a family-pooled curve overstates its cost by roughly 12% and changes which of switch-in-place/handoff wins; `plan-boundary` derives it from the 472 Sonnet-anchored sessions (~54M output tokens) in scope instead. |
 
@@ -195,8 +218,8 @@ clears the 20% margin under both ramp-curve methodologies.
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Cache-invalidation-by-payload-mutation (`.claude/plans/transcript-cost-subcommand.md`'s "Prefix-cache invalidation" hypothesis, killed via an 11.7k-tokens/turn corpus mean) | Refuted, mechanism reclassified | The prompt bytes across an idle gap are byte-identical; the tokens are re-billed because the vendor's 5-minute/1-hour cache TTL lapsed during the gap, not because the payload changed. A right-skewed distribution hides a tail a mean can't see: `cache-rebuild --since 30d --threshold 100000` measured 1,577 idle-gap rebuilds / $1,513.55 excess at list price (as measured; reproduce against the current rolling 30-day window — 165,303 calls scanned, 2,261 (1.4%) writing >= 100,000 tokens). |
-| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks | **Concurrent-session switching (92.9%), not breaks (7.1%)** | Classifying each idle-gap rebuild by whether another Claude Code session, in any account, had a call during the gap: 1,465 rebuilds / $1,406.52 occurred with another session active; 112 rebuilds / $107.03 occurred with everything idle, a real break. Breaks are almost exactly 7% of this cost and are not worth optimizing against. |
+| Cache-invalidation-by-payload-mutation (`.claude/plans/transcript-cost-subcommand.md`'s "Prefix-cache invalidation" hypothesis, killed via an 11.7k-tokens/turn corpus mean) | Refuted, mechanism reclassified | The prompt bytes across an idle gap are byte-identical; the tokens are re-billed because the vendor's 5-minute/1-hour cache TTL lapsed during the gap, not because the payload changed. A right-skewed distribution hides a tail a mean can't see: `cache-rebuild --since 30d --threshold 100000` measured 1,577 idle-gap rebuilds (as measured; reproduce against the current rolling 30-day window — 165,303 calls scanned, 2,261 (1.4%) writing >= 100,000 tokens). |
+| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks | **Concurrent-session switching (92.9%), not breaks (7.1%)** | Classifying each idle-gap rebuild by whether another Claude Code session, in any account, had a call during the gap: 1,465 rebuilds occurred with another session active; 112 rebuilds occurred with everything idle, a real break. Breaks are almost exactly 7% of this cost and are not worth optimizing against. |
 
 **2026-08-16 follow-up:** an idle gap past the 5-minute tier is necessary but
 not sufficient for a rebuild. Reading `usage` fields directly for main-thread
@@ -222,13 +245,13 @@ surviving record of it.
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | `Stop`-hook `{"decision":"block"}` on `nudge-handoff-near-context-cap.sh`, compelling a handoff decision past an escalating tail-context threshold | Rejected, never merged | Failed `/plan-review` twice: three reviewers across two rounds established that a `Stop`-hook block is satisfiable by any one-sentence reply from the agent — a stronger nudge at best, not the binding mechanism the plan claimed. |
-| Reversing `token-cost-reduction.md` (PR #622)'s informational-only decision on the same hook to enable the above | Rejected, not shown necessary | PR #622 documents an engineer-verified decision to keep this hook informational-only ("nothing stronger is available without breaking the informational-class contract the engineer keeps deliberately"), made under the same project-engagement risk PR #622's own opening line already states. Measuring the real nudge-to-handoff conversion rate (344 distinct nudged sessions across all 6 declared config accounts, joined against `handoff session=` log lines) found 5.51% before PR #622's escalating-band re-arm shipped vs. 33.93% after — a ~6x improvement. Confounded (not a controlled experiment) and concentrated in one account (307 of 344 nudged sessions), but large and directional enough to undercut the premise that the informational lever had already failed and needed replacing. |
+| Reversing `token-cost-reduction.md` (PR #622)'s informational-only decision on the same hook to enable the above | Rejected, not shown necessary | PR #622 documents an engineer-verified decision to keep this hook informational-only ("nothing stronger is available without breaking the informational-class contract the engineer keeps deliberately"), made under the same project-engagement risk the opening line of PR #622 already states. Measuring the real nudge-to-handoff conversion rate (344 distinct nudged sessions across every declared config account, joined against `handoff session=` log lines) found 5.51% before the PR #622 escalating-band re-arm shipped vs. 33.93% after — a ~6x improvement. Confounded (not a controlled experiment) and concentrated in one account (307 of 344 nudged sessions), but large and directional enough to undercut the premise that the informational lever had already failed and needed replacing. |
 
 ## From `lsp-token-reduction-feasibility.md` — "LSP as a token-reduction lever"
 
 Whether routing code navigation through the Language Server Protocol would
 cut billed tokens enough to be worth building. Figures below are shares of a
-rolling 30-day transcript corpus measured across two accounts; re-measure
+rolling 30-day transcript corpus measured across more than one account; re-measure
 before citing them forward.
 
 | Lever | Verdict | Measured reason |
@@ -264,7 +287,7 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while the other five accounts on the byte-identical stowed harness all show non-zero. The earlier "Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever" row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |
+| Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while every other account on the byte-identical stowed harness shows non-zero. The earlier "Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever" row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |
 
 ## From `token-cost-reduction.md` — "Token cost reduction: bound context growth"
 
@@ -307,6 +330,23 @@ Breakdown for the global-file row above:
 
 Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales with rebuild magnitude (byte count), not frequency — see "Context cost root cause" above.
 
+**Second pass: `claude-md-audience-restructure.md` (2026-09-03).** By the time this plan started, the global file had regrown to 178 lines / 31,515 bytes (`git show a3b74ce7^:claude/.claude/CLAUDE.md | wc -lc`) — up from the 146-line landing the first pass measured. That regrowth went unnoticed by the line-only gate. It motivated a second, narrower pass:
+
+- A behavior-test audit of that delta.
+- One exact-trigger relocation (settings.json conventions) into a new user-scope `.claude/rules/` file.
+- Moving Safety to the file head for attention.
+- A byte-size ratchet so the next regrowth doesn't repeat silently.
+
+Landed at 177 lines / 30,969 bytes — still over the new byte limit, by design: the ratchet is relief-on-shrink (denies a commit only when the staged file is both over the limit and larger than its predecessor), so an already-over file can keep shrinking commit by commit without being blocked outright.
+
+Six unrelated upstream commits merged to `main` while `claude-md-audience-restructure.md`'s work was in review, growing the file further before this branch's own merge. As of `0ac48138` it measures 183 lines / 31,908 bytes (`git show 0ac48138:claude/.claude/CLAUDE.md | wc -lc`) — still under the 200-line cap but 24.6% over the 25,600-byte ratchet. Tracked in [GH-885](https://github.com/jcdendrite/claude-config/issues/885) rather than trimmed here; trimming is out of scope for the ratchet-mechanism pass.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Byte-size ratchet added to `check-claude-md-length.sh` (25,600 bytes, extrapolated from Anthropic's `MEMORY.md` "25KB" load-window figure — `claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md` § "Cross-vendor size table"), applying to every stow consumer's CLAUDE.md/AGENTS.md alongside the existing 200-line cap | Adopted | Closes the exact gap the regrowth exposed: the file was already over the new byte figure (30,969 > 25,600) while still under the 200-line cap, so line count alone was not catching cumulative growth. Implemented as an opt-in third parameter on the shared `_lib_staged_length_gate` helper rather than a widen of its two-arg contract, so `check-skill-length.sh`'s call site and behavior are unchanged. |
+| `SessionStart` + `additionalContext` per-subagent injection of the orchestrator-only CLAUDE.md block, to spare the 28.6%-of-dollars subagent slice the block's context cost | Declined, not deferred | - Converts a vendor-guaranteed load into a locally-scripted one that fails silently.<br>- Moves rules onto an unmeasured-adherence surface to improve adherence.<br>- Saving lands in the smaller cost slice (main thread carries 71.4% of dollar cost, §22 in `design-decisions.md`, and would keep the block).<br>- Its premise (`SessionStart` not firing for subagents) was not settled during the plan's own investigation.<br><br>Full reasoning and the lighter alternatives considered instead: [`design-decisions/declined-sessionstart-additionalcontext-injection.md`](design-decisions/declined-sessionstart-additionalcontext-injection.md). |
+| Further in-place compression of `claude/.claude/CLAUDE.md` | Near-exhausted | Two consecutive passes at this lever both landed short of their targets:<br>- Pass 1: +1,118 chars against a projected cut (row above).<br>- This pass: a 546-byte cut (31,515 → 30,969) against a stated 3,811-byte regrowth delta (`claude-md-audience-restructure.md:31`).<br><br>The durable deliverable from this pass is the byte-size ratchet, not the trim. |
+
 ## From `disable-artifact-workflow-default.md` — "Disable Artifact/Workflow by default, with per-session opt-back-in" (2026-08-25)
 
 | Lever | Verdict | Measured reason |
@@ -326,7 +366,7 @@ Full empirical record: [`case-studies/opus-frontload-review-rounds.md`](case-stu
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Front-loading Opus into an earlier authoring point (beyond `plan-architect` and `consult`-mode) to cut review-and-fix rounds | Inconclusive | The pre-registered observational screen doesn't clear the adopt bar in any stratum. It ran against a 186-row ledger, stratified by `changed_files`, with a 2,000-resample bootstrap on the direction. Every high-stability pair moves in the confound-consistent direction (`/plan-it`'s own complexity selection), which the plan's asymmetric verdict rule excludes from reading as refutation. |
-| `code-writer` dispatches that resolved to Opus despite a `sonnet` pin, as the one plausible within-agent natural-experiment channel (the plan's within-agent gate) | Instrument-blocked, not tested | `subagent-mix` redacts `subagent_type`, not only branch names, once more than one account root resolves — unconditional on this machine (6 declared roots). The 12 `Declared: sonnet` rows in the 30-day window can't be individually attributed to `code-writer`; a superset bound (245 sonnet-declared/opus-observed dispatches across all 12 agent types) exceeds the ≥20 floor but isn't code-writer-specific. |
+| `code-writer` dispatches that resolved to Opus despite a `sonnet` pin, as the one plausible within-agent natural-experiment channel (the plan's within-agent gate) | Instrument-blocked, not tested | `subagent-mix` redacts `subagent_type`, not only branch names, once more than one account root resolves — unconditional on this machine (resolves more than one root). The 12 `Declared: sonnet` rows in the 30-day window can't be individually attributed to `code-writer`; a superset bound (245 sonnet-declared/opus-observed dispatches across all 12 agent types) exceeds the ≥20 floor but isn't code-writer-specific. |
 | A forward-looking controlled pilot flipping a `model:` pin for a treatment arm | Declined, not deferred | Requires the pin flip the plan's Out-of-scope excludes; a structurally identical pilot was already closed as unmeasurable in this repo's available window (`absolute-token-handoff-threshold.md`), and the outcome variable's variance puts a sub-one-round effect out of reach at achievable n. |
 | A round-3-triggered, hook-enforced, unspecialized `plan-architect MODE=consult` dispatch, aimed at the 29-PR 3+-round tail specifically rather than the whole distribution | Recommended follow-up, not built here | The tail's `commit_count` jumps discontinuously (2.33→2.54→2.86→6.31 across rounds 0–3+), the signature of a non-converging review loop rather than a first-pass-authoring-quality gradient. A failure-mode classification of all 29 tail PRs found no single mode at ≥half (plan-quality 39%, oscillation 29%, context-loss 29%, scope-growth 4%), which under `plan-architect`'s own pre-registered decision rule recommends an unspecialized consult over a mode-tailored one. Ships as its own scoped `/plan-it` run — see the full empirical record's "Follow-up diagnostic" section. |
 
@@ -342,7 +382,7 @@ is what this register already does, so the method gets no row of its own.
 | Guide lever | Verdict | Coverage, or why not reachable |
 |---|---|---|
 | Prompt caching (cache repeated context) | Already covered, root-caused | The "Context cost root cause" section above traced idle-gap rebuilds to concurrent-session switching (92.9%), not operator breaks (7.1%). `transcript_analysis/pricing.py` independently encodes the same multipliers the guide prices against: 5-minute write 1.25x, 1-hour write 2x, cache read 0.1x. |
-| Pick the cache duration (5-minute vs. 1-hour) | Reopened on a new mechanism; verdict unchanged | Supersedes the cache-TTL thread running through three earlier entries (the original "Cache-TTL selection" row, its 2026-08-15 follow-up, and the "Cache TTL as a uniform, non-account-scoped property" row under `cost-attribution-integrity.md`). A mechanism none of them covered exists: `experimental.cacheTtl` in subagent frontmatter selects `5m` or `1h` per agent (Anthropic, *Create custom subagents*). It is the first cache-duration control living in repo-tracked config rather than per-machine environment. Still not worth pulling: the 1-hour tier costs 2x base per write against the 5-minute tier's 1.25x, so it pays only when a prefix is re-read after a gap past five minutes. The field also sits in an `experimental.` namespace, not a stable surface for repo-shared config. Not measured for subagents: the 96–97% sub-5-minute idle-gap concentration behind the 2026-08-15 verdict was taken on main-thread calls. `cache-rebuild` includes subagent groups but reports no main/sidechain split, so a subagent-scoped figure needs a `transcript-analysis.py` change, not a rerun. |
+| Pick the cache duration (5-minute vs. 1-hour) | Reopened on a new mechanism; verdict unchanged | Supersedes the cache-TTL thread running through three earlier entries (the original "Cache-TTL selection" row, its 2026-08-15 follow-up, and the "Cache TTL as a uniform, non-account-scoped property" row under `cost-attribution-integrity.md`). A mechanism none of them covered exists: `experimental.cacheTtl` in subagent frontmatter selects `5m` or `1h` per agent (Anthropic, *Create custom subagents*). It is the first cache-duration control living in repo-tracked config rather than per-machine environment. Still not worth pulling: the 1-hour tier costs 2x base per write against the 5-minute tier's 1.25x, so it pays only when a prefix is re-read after a gap past five minutes. The field also sits in an `experimental.` namespace, not a stable surface for repo-shared config. Not measured for subagents as of this row's original writing: the 96–97% sub-5-minute idle-gap concentration behind the 2026-08-15 verdict was taken on main-thread calls, and `cache-rebuild` at the time reported no main/sidechain split. That gap is closed below — see the `subagent-idle-gap-cache-rebuild-split.md` section for the subagent-scoped measurement and its decline verdict. |
 | Trim tokens | Already covered; all three sub-levers adopted by a different mechanism | Deferring unused tool definitions: `disableArtifact`/`disableWorkflows` default to `true`, measured 16k-token drop (23.8k→7.8k), see the `disable-artifact-workflow-default.md` section above. Keeping bulk data out of the prompt: the guide's Files-API-plus-code-execution mechanism has no Claude Code surface, and the reachable equivalent is already mandatory — "Locate before a whole-file read" in the global `CLAUDE.md`, plus pass-a-path-not-the-content in `brief` and `handoff`, with one documented exception in `ready-for-review` for a subagent holding no `Bash` to resolve a path itself. Managing the context lifecycle: the handoff-nudge program, retuned against `$/PR` (`handoff-nudge-cap-recalibration.md` above). |
 | Audit prompts against the current model | Swept 2026-09-01, nothing found | The guide targets stale over-specification: "verify twice," "maximally thorough," mandatory step-by-step, hand-rolled reasoning scratchpads, retired thinking-budget settings, contradictory rules. A sweep across `claude/.claude/`, both `CLAUDE.md` files, and `docs/` returned zero instructional hits for any of those shapes. The only "step-by-step" and "scratchpad" matches found are descriptive prose or unrelated senses (a filesystem scratch path, the ephemeral-isolation worktree primitive). Recorded so the next reader of this guide doesn't re-run the sweep. |
 | Batch processing (50% discount, 24-hour turnaround) | Rejected, no exposed surface | Nothing in `settings.json`, hooks, or agent frontmatter exposes a batch-submission path, so a session cannot route its own turns through it — the same no-surface shape as the original `cache_control` rejection above. The guide forecloses it directly: "Not available for Claude Managed Agents sessions (interactive by design)." Zero prior mention anywhere in this repo, which is why it gets a row rather than a pointer. |
@@ -352,3 +392,197 @@ is what this register already does, so the method gets no row of its own.
 | Re-run failures at higher effort | Named, not investigated | The one guide lever with no prior coverage and no verdict here. Effort pins are static per agent, and nothing re-dispatches the same agent at a higher effort after a failed outcome check, though the guide's precondition (checkable outcomes) holds via tests and the review gates. The nearest existing arrangement differs in kind: `code-writer` runs at `high` with a downstream review pass as backstop (`design-decisions.md` §24), escalating to a different agent rather than re-running the same one. Closing this needs a measurement nobody has run — what share of `code-writer` dispatches fail their own downstream check, and what a lower starting tier would cost against that share. |
 | Set budgets and output caps | Rejected, no exposed surface | Subagent frontmatter (Anthropic, *Create custom subagents*) carries no `task_budget`, `max_tokens`, or output-token-cap field; the only budget-adjacent fields are `maxTurns` (a turn count, not a token limit) and `experimental.cacheTtl` (the cache-duration lever above). `max_tokens` is set by the API caller, which is Claude Code, not this repo. `maxTurns` is reachable and truncates a dispatch rather than pricing it — a safety cap, not a cost lever. |
 | Multi-model architectures (Advisor, Orchestrator) | Already implemented, under different names | Advisor: `plan-architect`'s `MODE=consult` dispatch is a cheap executor escalating one hard design decision to an Opus-pinned read-only agent on demand (`design-decisions.md` §37), and `MODE=plan-sections` is the same escalation on a fixed trigger (§30). Orchestrator: a Sonnet-default parent decomposes and delegates bulk work to `code-writer` and the reviewer roster, with the global `CLAUDE.md`'s Model & Effort Routing rule fixing which tier each dispatch gets. Recorded honestly: the guide's precondition — a multi-model configuration must beat a single model's entire score-vs-spend curve — was never measured here. Both arrangements were adopted on other grounds, not as a validated curve win. |
+
+**2026-09-06 correction:** `reviewer-instance-continuation.md`'s
+over-powered-primitive check claims `experimental.cacheTtl` "warms only the
+small system-prompt prefix and never touches a `Read` result." Claude
+Code's own prompt-caching guide
+(`https://code.claude.com/docs/en/prompt-caching`) is the authoritative
+source here, distinct from the generic Messages API doc cited above.
+Claude Code decides cache TTL **per request**, not per content type. A
+request's cached content is "the system prompt, your project context,
+every prior message and tool result" — so a `Read` result gets the same
+TTL `cacheTtl` sets. This closes the row above's "not measured for
+subagents" gap only for reviewer re-dispatch gaps, via `review-trace`'s
+existing per-event timestamps. The row's broader claim — that a general
+subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
+stays open. See the `reviewer-instance-continuation.md` section below for
+the corrected pricing this unlocks.
+
+## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
+
+Full empirical record: [`case-studies/markdown-context-ingestion.md`](case-studies/markdown-context-ingestion.md). Supersedes nothing in the `lsp-token-reduction-feasibility.md` section above — that entry already rejected LSP as a general token lever and named markdown as the bucket it doesn't touch; this row closes the follow-up that finding implies, a markdown-specific LSP.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Markdown LSP / MCP section server, retrieving one heading's text instead of a whole file | Rejected, declined outright | No LSP request returns document text — `documentSymbol` and siblings return ranges and labels only — so a markdown language server would still need a `Read` to retrieve the located section. Two lighter primitives already do this in two calls with zero new infrastructure: `Grep '^#{1,6} '` then a ranged `Read`, or a ranged `Read` directly against a cited `§N`. Both are already mandatory via the global `CLAUDE.md` "Locate before a whole-file read" rule. |
+| A section-extract script or new markdown-parsing dependency | Rejected | The lighter primitives above succeed on their own; the waste heuristic found no evidence of waste for such a tool to recover (weaker than evidence of no waste, so corroborating only); this repo declares no npm toolchain and no markdown parser today. |
+| `context: fork`, a `skills:` preload, or switching agents from `Read` to `Skill` invocation | Rejected | An invoked skill body and a read file both persist in-conversation identically until compaction, so switching between them saves no in-turn bytes. All 812 sampled multi-read subagent dispatches favored observed, as-needed reads over a turn-1 preload of every skill body; zero favored preload. Omitting `Skill` from a subagent's `tools:` disables invocation entirely, with no per-skill allowlist to selectively restrict it. |
+| Trimming the always-loaded `CLAUDE.md`/skill/doc baseline | Named, not solved — owned elsewhere | Weighted in byte-turns, the always-loaded baseline is the single largest measured item (1.41× every main-thread markdown read combined). It sits inside its 200-line commit-time cap today and reclaiming it is scoped to a separate, already-in-flight trimming effort; this plan only records the finding. |
+
+## From `reviewer-instance-continuation.md` — "Reviewer-instance continuation on same-branch, same-session re-dispatch"
+
+Pre-registered gate, fixed before the measurement ran: build the mechanism
+only if both hold — (1) at least 50% of same-session (agent-type, branch)
+repeat dispatches fall under the vendor's 300-second cache-TTL boundary, and
+(2) the projected net savings exceed a $50 floor over the observed window,
+confirmed by the engineer before the measurement. Reproducible via
+`transcript-analysis.py review-trace --this-repo --since <window>`,
+cross-checked two ways against the event count.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Continue a same-branch, same-session reviewer re-dispatch via `SendMessage`, carrying only the delta since the prior pass, instead of a fresh stateless `Agent` dispatch that re-reads every changed file | Rejected (measured, gate criterion 1 fails decisively) | Of 263 same-session (agent-type, branch) repeats measured 2026-09-06 (562 in-scope reviewer-spawn events across 299 distinct triples, `skill-fidelity-reviewer` excluded), only 14.4% (38/263) fall under the 300-second boundary — the ≥50% floor. Median gap 1,435s (~24 min), mean 2,456s. 65.4% of repeats land in the 10–60-minute band, consistent with a read-findings/apply-fixes/re-stage/re-run turnaround rather than a same-round artifact. The 85.6% majority crosses the cache-TTL boundary before the re-dispatch happens, so its prompt cache has already gone cold. A continued instance's carried prefix (the prior read set plus the prior round's own output) is strictly larger than what a fresh dispatch would re-read, so writing that larger prefix to a cold cache costs more than the fresh re-read it would replace — continuation only ever saves money on the warm-cache minority. Criterion 2 (the $50 floor) was not separately evaluated: the "both must hold" rule means criterion 1's decisive failure alone ends this, and the per-dispatch read-token volume needed to price criterion 2 precisely proved unmeasurable with existing `transcript-analysis.py` subcommands — measuring it would need new tooling, which this gate check was scoped not to build. |
+
+**Harness prerequisites, separately verified viable:** this measurement also
+resolved three open questions about whether the harness could even support
+the mechanism, independent of the cost verdict above. `ListAgents` lists a
+completed synchronous dispatch, not only a running one. Two
+same-`subagent_type` dispatches in one turn are individually addressable.
+And a `SendMessage` continuation preserves a spawned agent's own prior
+tool-result content, not merely a message-level thread — two throwaway
+agents each correctly recalled a nanosecond-precision `date +%s%N` value
+from their own earlier Bash output, one with zero further tool calls that
+turn. None of these blocked the mechanism — the gap distribution alone did —
+so a later re-measurement of the gap distribution would not need to
+re-verify these.
+
+**Verdict:** decline. The mechanism's sign, not only its magnitude, depends
+on the inter-round gap staying mostly under the cache TTL, and in this
+repo's own usage it does not: 85.6% of same-session repeats exceed the
+boundary where continuation costs more than it saves. No code change ships.
+Per the plan's own out-of-scope note, `experimental.cacheTtl: 1h` on the
+reviewer roster is the follow-up lever to open if a warm-share fix is wanted
+later — not a revised version of this one, since it raises the write
+multiplier on every dispatch, including the ~66% of same-(agent-type,
+branch) dispatches that are first-of-type on a branch and gain nothing from
+a warm-cache continuation fix.
+
+**2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
+correction above reopens the bundle the plan named: `cacheTtl: 1h` paired
+with the declined
+`SendMessage` continuation. `cacheTtl` alone cannot warm one dispatch's
+`Read` results for a different dispatch. Reviewer file reads land in
+`messages[]` after each dispatch's own divergent prompt, so nothing
+carries a `Read` result across two separate `Agent` calls without the
+continuation mechanism itself.
+
+Re-running this section's own gap measurement at the 1-hour boundary
+(`review-trace --this-repo --since 2026-07-07`, rerun same day; 271
+same-session repeats, up from 263 above) finds 86.7% fall under one hour.
+That clears gate criterion 1 decisively, the reverse of the
+5-minute-boundary result.
+
+Criterion 2 — the $50 floor — still fails. A one-off scan against
+`reviewer_yield.py`'s existing per-dispatch transcript resolution measured
+the per-dispatch `Read`-token volume (the plan's `R`) directly — not a
+rerunnable script, so treat the precision accordingly, per this register's
+usual caveat for such scans. The result: mean 14,260 tokens across 550
+dispatches, well under the plan's 20,000–35,000 extrapolation.
+Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
+1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
+dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
+benefit, reaching only the subset warm under the new boundary, totals
+≈$17.35, a net of ≈−$0.30. Both terms are ≈$17, roughly $33 short of the
+$50 floor either way — a gap this size, not the precise net, is what
+should carry weight given both figures are one-off-scan estimates.
+
+**Verdict unchanged (decline).** The corrected mechanics flip criterion 1
+from failing to passing, but the roster-wide cost and the repeat-only
+benefit are the same order of magnitude and cancel. A permanent subcommand
+for that figure isn't warranted either: `reviewer_yield.py`'s per-dispatch
+resolution already supplies it via a throwaway script, and this plan treats
+it as magnitude-only, never sign-determining.
+
+This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
+row above, the register's canonical cache-duration entry. Its objection
+that `experimental.cacheTtl` sits in an unstable `experimental.` namespace
+is untouched by the cost side coming out a wash. That objection is now the
+sole reason to decline, since the cost gap no longer carries independent
+weight.
+
+## From `subagent-idle-gap-cache-rebuild-split.md` — "Subagent-specific idle-gap cache-rebuild share, and a 5m-to-1h `cacheTtl` switch, priced" (2026-09-06)
+
+Pre-registered gate, fixed before the measurement ran (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`), in the same discipline `reviewer-instance-continuation.md` and `delegate-instrument-authoring.md` both used. `W5m` is every 5-minute-tier cache-write token in scope; `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the subset a `cacheTtl` switch would actually rescue. Three outcomes: (1) **adopt (uniform)** if the pooled subagent net exceeds a $50 floor (by analogy to the floor this register already applied once, at `:388` above) *and* the pooled `X/W5m` ratio clears a 0.50 robustness margin over the 0.3947 break-even; (2) **not excluded (selective)** if the pooled figure fails but the ex-post oracle bound (net restricted to subagent dispatches that individually clear their own break-even ratio) exceeds $50; (3) **decline** if both fail. `cache-rebuild --this-repo` now reports the split and the switch-delta pricing directly; no one-off scan was needed.
+
+**Free pre-gate (`cache-efficiency`, zero code):** confirmed the premise before any instrument change. Sidechain `Write1h` is ≈0 in this repo's corpus, consistent with the vendor's stated default that subagents get the 5-minute tier "even on a subscription until you choose a longer one." The absolute-ceiling check found enough sidechain `Write5m` volume to clear the $50 floor at the impossible `X = W5m` extreme. The plan proceeded to the instrument change on that basis, rather than declining on the pre-gate alone.
+
+**Live measurement** (`cache-rebuild --this-repo`, run 2026-09-06, last 30 days, N roots — root count elided per `docs/transcript-analysis.md`'s sample-output convention):
+
+| Origin | W5m | X | Ratio | Net$ |
+|---|---|---|---|---|
+| main | 0 | 0 | 0.0% | 0.00 |
+| subagent | 107,128,369 | 5,600,740 | 5.2% | -168.81 |
+
+The pooled subagent ratio (5.2%) sits far under both the 0.3947 break-even and the 0.50 robustness margin, and the pooled net is negative — a uniform 5-minute-to-1-hour switch would cost this corpus money, not save it, because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds. Criterion 1 fails decisively.
+
+**Ex-post oracle bound** (per-dispatch dispersion, the one-sided selective-lever test): of 727 subagent dispatches with any 5-minute-tier write, only 13 individually clear their own break-even ratio. Those 13 carry 6.7% of per-dispatch subagent `W5m` and net **$5.89** — an order of magnitude under the $50 floor even at this ex-post-best-case selection. No ex-ante per-agent-type policy could reach even this bound in practice, since a policy selects agent types in advance and cannot select on a dispatch's realized outcome. Criterion 2 fails.
+
+**Verdict: decline.** Both criteria fail, exactly the outcome the plan named as expected before the run. No `experimental.cacheTtl` edit ships from this plan. The instrument change ships regardless — the origin split and switch-delta pricing are now a permanent, rerunnable part of `cache-rebuild --this-repo`, not a one-off scan, so a future re-measurement (a corpus shift, a change in subagent dispatch volume or duration) costs one command, not a new plan.
+
+Two follow-ups named, neither pursued here: (1) if long in-dispatch `Bash` stalls dominate the 300–3600s gaps, cutting the stall — this repo already mandates `select-tests.py` over the full suite in agents — shrinks both `W5m` and `X`, and is the first thing to re-examine before ever revisiting `cacheTtl`; (2) per-agent-type attribution, which the oracle bound's own dispersion result gives no reason to build, since even the ex-post-best-case subpopulation misses the floor by an order of magnitude, so a selective lever restricted to real agent-type policy would fare no better.
+
+**2026-09-07 follow-up, the "cutting the stall" lever above is priced-out-or-untried, not proven absent.** Hand-rolled sleep-poll loops (`until ... kill -0 $PID ...; do sleep N; done`, or `sleep N; <check>`) are a sub-pattern within the `waiting on own Bash call` cause the row above pools, not the full-suite-pytest stall follow-up (1) had in mind when it named "cutting the stall" as the first thing to re-examine. In this repo's own `--this-repo`-scoped corpus, `cache-rebuild`'s `Own-Bash wait shape` block finds sleep-poll wait a *minority* of that cause (4 of the 11 `waiting on own Bash call` rebuilds, ≈36%), not the dominant sub-pattern. This is a small-n, non-generalizing in-repo data point, distinct from the withheld machine-wide hand-sample finding below.
+
+Backgrounding a slow Bash call still does not reach this cause, per the `background-slow-bash-calls.md` section's second row above. `ScheduleWakeup` does not reach it either. Its documented scope is exclusively `/loop` dynamic-mode iteration pacing, not a generic background-work heartbeat ("Reschedules the next iteration of a self-paced `/loop`... you don't call it directly," `code.claude.com/docs/en/tools-reference`). This repo's `permissions.deny` entry (`docs/design-decisions.md` §49) is not what excludes a `Monitor`-wait heartbeat use — reversing it would not make the call legitimate. Whether another mechanism, such as a `Monitor`-watched script self-emitting a periodic status line, could serve as one is untried and unswept, not ruled out — tracked in GH-925.
+
+The sleep-poll measurement's real consumer is narrower than a `cacheTtl` cost lever, too: `docs/design-decisions.md` §49 names "a `Bash sleep`" as the first of its own Revisit conditions for the `ScheduleWakeup` deny (`.claude/plans/subagent-idle-gap-cause-attribution.md:26`), so a measured poll-loop share is production evidence toward or against reopening that condition, not (only) input to whether a `cacheTtl` switch pencils out.
+
+Follow-up (1)'s "cutting the stall" is therefore narrowed by this correction, not eliminated: the sub-5-minute-check-in-cadence candidate this entry's own measurement separately surfaced remains open, tracked in GH-926.
+
+As with §49's own precedent, the sub-pattern's exact share from the earlier, much larger hand-sampled corpus is withheld here. That corpus mixes private-project and public transcripts, so publishing a figure from it is governed by `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" and its approval gate, unexercised here. The `--this-repo`-scoped ratio above is not subject to that withholding — it is content derived only from this repo's own history. That withholding costs nothing going forward, as `:489` already establishes for this section's prior deliverable: `cache-rebuild --this-repo`'s `Own-Bash wait shape` block (`docs/transcript-analysis.md`) now reports the sleep-poll-versus-other split as a permanent, rerunnable measurement, so a reader who wants the sub-split for their own corpus is one command away from it, not a new plan. Follow-up (2) above, per-agent-type attribution, is untouched by this entry.
+
+## From `handoff-threshold-cost-audit.md` — "Did raising the handoff hard-block floor to 470,000 tokens (PR #769, inherited unchanged by PR #782) cut cost?" (2026-09-06)
+
+Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-studies/handoff-hard-block-position.md).
+
+| Question | Verdict | Headline figure (scope) |
+|---|---|---|
+| Does the mechanism-engagement gate confirm the floor raise fired at the right boundary, and nowhere else? | Yes, and the falsifiable no-shift-at-#782 prediction holds | Block rate 29.8%→4.2% same-machine (macOS), 3.5% pooled across both machines' after-era data; no detectable shift at the 2026-08-31 sub-boundary (#782) |
+| Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% pooled across both machines; both machines' own after-era medians sit at or below the before-era median. A two-point before/after comparison at this sample size, with no variance data available, supports a directional read rather than a tested result. |
+| Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
+| Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |
+
+## From a 2026-09-07 session measurement — "`review-round-cost`: first cross-machine run"
+
+Whether the plan-review/code-review/ready-for-review loop itself is a
+worthwhile cost-reduction target, now that PR #914 shipped a subcommand to
+measure it directly.
+
+Figures are from `review-round-cost`, run 2026-09-07, at default
+machine-wide scope — every declared account, not one repo — on each of two
+machines. The two machines' output is pooled into one total. Per-account
+splits and branch identities are withheld here for the same reason cited in
+the
+`subagent-idle-gap-cache-rebuild-split.md` section above: the corpus mixes
+private-project and public transcripts, and any more granular figure would
+inherit the private half's composition. The pooled ratio below is not
+subject to that withholding, since it never surfaces any single account's
+share.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. |
+
+The tool's own `main $` column conflates a round's skill cost with
+same-window fix-application turns, since no fresh user prompt separates
+them under autonomous shipping. A hand-sum of the cleaner
+reviewer-dispatch-only figure (`agent $`) across a handful of branches is
+not a computed corpus total; treat its precision accordingly. It ran
+roughly 10–15% of total spend, well under the 30.3% round-window figure.
+Nothing in
+the toolkit decomposes the non-round ≈70% without double-counting round
+windows, so chasing that split further isn't productive.
+
+**Qualitative follow-up on the round-count tail.** A branch reaching 19
+review-loop invocations turned out, on a close read of its
+`review-trace` output, to be genuine multi-session iterative work with real
+reviewer fan-out at nearly every round. The branch's round-based
+review-escalation gate fired exactly as designed. The branch also carried a real vein of
+wasted spend: the same denial fired verbatim more than half a dozen times
+in one session before the ordinary per-round review gate underneath it was
+actually satisfied. High
+round counts on this one sample are not attributable to a single cause;
+genuine convergence difficulty and denial-retry churn coexist on the same
+branch. Reading further branches in the tail, rather than pooled statistics
+alone, is the next step if this is revisited.

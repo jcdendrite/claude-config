@@ -2,7 +2,7 @@
 
 ## Context
 
-Auto-memory audit of `claude-config`'s project-scoped memory (`~/.claude/projects/-home-jared-MyCode-claude-config/memory/`, 44 files) found that a meaningful fraction of the content encodes rules that either duplicate an already-committed CLAUDE.md rule, or belong in a durable git-tracked surface (global CLAUDE.md, a skill body, `docs/design-decisions.md`) rather than in memory scoped to one project/account/machine — which is the likely cause of Claude Code behaving inconsistently across the user's machines when working on `claude-config`. The goal is to migrate each misclassified fact to its correct durable home and remove it from memory once promoted, so the rule fires deterministically regardless of which machine or account the session runs under.
+Auto-memory audit of `claude-config`'s project-scoped memory (`~/.claude/projects/<project-slug>/memory/`, 44 files) found that a meaningful fraction of the content encodes rules that either duplicate an already-committed CLAUDE.md rule, or belong in a durable git-tracked surface (global CLAUDE.md, a skill body, `docs/design-decisions.md`) rather than in memory scoped to one project/account/machine — which is the likely cause of Claude Code behaving inconsistently across the user's machines when working on `claude-config`. The goal is to migrate each misclassified fact to its correct durable home and remove it from memory once promoted, so the rule fires deterministically regardless of which machine or account the session runs under.
 
 ## Approach
 

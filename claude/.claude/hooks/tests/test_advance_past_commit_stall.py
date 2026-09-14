@@ -390,11 +390,16 @@ def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
     assert result is None
 
 
-def test_legacy_home_claude_sentinel_inert_once_config_dir_set(armed_home, dirty_repo, tmp_path):
-    """The machine sentinel is a swap, not a union: armed_home's legacy
-    $HOME/.claude/autonomous-shipping-required does not fire once
-    CLAUDE_CONFIG_DIR points at a directory holding no copy of it —
-    matches _lib_autonomous_shipping_active's existing swap semantics."""
+def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
+    armed_home, dirty_repo, tmp_path
+):
+    """GH-793: the fast-path sentinel check (step 3) must union the
+    resolved config dir with the legacy $HOME/.claude location, the same
+    way the full _lib_autonomous_shipping_active check at step 9 already
+    does. armed_home provides the sentinel only at the legacy
+    $HOME/.claude/autonomous-shipping-required location, while
+    CLAUDE_CONFIG_DIR points at a directory holding no copy of it, and the
+    fast path still fires."""
     empty_config_dir = tmp_path / "empty-profile"
     empty_config_dir.mkdir()
     result = _fire(
@@ -405,7 +410,7 @@ def test_legacy_home_claude_sentinel_inert_once_config_dir_set(armed_home, dirty
         home=armed_home,
         extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
     )
-    assert result is None
+    assert result is not None
 
 
 # ------------------------------------------------------------------ #
@@ -622,6 +627,48 @@ def test_jq_absent_exits_zero_empty_stdout(armed_home, dirty_repo, tmp_path):
         text=True,
         cwd=dirty_repo,
         env={**os.environ, "HOME": str(armed_home), "PATH": _path_without("jq", tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def _fake_jq_failing_on_flag(fake_bin: Path, flag: str) -> str:
+    """A `jq` shim that delegates to the real binary except when invoked
+    with `flag`, where it exits 1 with no output — isolates a failure to one
+    specific call shape rather than removing jq from PATH entirely."""
+    real_jq = shutil.which("jq")
+    if not real_jq:
+        pytest.skip("jq not found in PATH")
+    shim = fake_bin / "jq"
+    shim.write_text(
+        "#!/bin/bash\n"
+        f'for arg in "$@"; do [ "$arg" = "{flag}" ] && exit 1; done\n'
+        f'exec "{real_jq}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
+def test_reason_encode_failure_degrades_to_silent_exit(armed_home, dirty_repo, tmp_path):
+    """The six-field read (:87, `_lib_jq -r`) succeeds normally; the
+    reason-encode call (:220, `_lib_jq -Rs .`) fails. This pins that the
+    guard around that printf degrades to silent-allow instead of emitting
+    the malformed `{"decision":"block","reason":}` a bare printf would
+    produce. test_jq_absent_exits_zero_empty_stdout above removes jq from
+    PATH entirely, which exits at the earlier six-field-read gate and never
+    reaches this line at all.
+    """
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    path = _fake_jq_failing_on_flag(fake_bin, "-Rs")
+    result = subprocess.run(
+        [str(ADVANCE_HOOK)],
+        input=stop_input_json(ISSUE_QUOTE_QUESTION, "s", "p1", str(dirty_repo)),
+        capture_output=True,
+        text=True,
+        cwd=dirty_repo,
+        env={**os.environ, "HOME": str(armed_home), "PATH": path},
         check=False,
     )
     assert result.returncode == 0

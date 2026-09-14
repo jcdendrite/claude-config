@@ -47,7 +47,12 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
+  echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
+
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
   echo "[capture-session-id] no session_id in payload; respond-pr skill will fail at Step 0" >&2
   exit 0
@@ -56,10 +61,6 @@ fi
 # SESSION_ID feeds the active.d rewrite loop below as a path component ("../"
 # would escape the resolved config dir's .*-active.d/); fail the same way an
 # empty id already does rather than sanitizing further.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
-  exit 0
-fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "[capture-session-id] session_id is not a valid path component; respond-pr skill will fail at Step 0" >&2
   exit 0
@@ -70,18 +71,7 @@ CONFIG_DIR=$(_lib_config_dir) || {
   exit 0
 }
 
-# Validate-then-select: an unusable $CLAUDE_PID must fall back to $PPID, not
-# abort the write, so substitution can't happen before the checks below run.
-# Accepted only within one hop of $PPID (itself, or its immediate parent —
-# the shim case) so an unrelated live ancestor can't be named.
-resolved_claude_pid=$PPID
-if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
-  ppid_parent=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
-  if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
-    resolved_claude_pid=$CLAUDE_PID
-  fi
-fi
-CLAUDE_PID=$resolved_claude_pid
+CLAUDE_PID=$(_lib_hook_claude_pid)
 if [ -z "$CLAUDE_PID" ]; then
   echo "[capture-session-id] could not resolve claude PID from \$PPID ($PPID) or \$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
   exit 0

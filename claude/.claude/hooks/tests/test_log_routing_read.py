@@ -1,6 +1,9 @@
 """Tests for log-routing-read.sh."""
 from __future__ import annotations
 
+import os
+import subprocess
+
 from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
@@ -79,6 +82,22 @@ class TestLogRoutingRead:
         sid = "session-always-allow"
         write_plan_review_active_marker(isolated_home, sid)
         assert run_hook(LOG_ROUTING_READ_HOOK, read_input(ROUTING_MD_PATH, session_id=sid)) == "allow"
+
+    def test_malformed_json_does_not_block_and_emits_no_output(self, isolated_home):
+        """hook-class: informational — malformed stdin must not block the
+        Read tool result. _lib_jq on unparseable input yields empty
+        TOOL_NAME, which the `[ "$TOOL_NAME" = "Read" ]` guard rejects."""
+        env = {**os.environ, "HOME": str(isolated_home)}
+        result = subprocess.run(
+            [str(LOG_ROUTING_READ_HOOK)],
+            input="not valid json {{",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
 
     # -- CLAUDE_CONFIG_DIR ------------------------------------------------
 

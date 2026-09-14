@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -15,7 +16,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
+from helpers import (
+    CONSULT_CLASSIFICATION_TABLE,
+    HOOKS_DIR,
+    SKILLS_DIR,
+    bash_input,
+    build_path_without,
+    run_hook_reason,
+)
 
 from .conftest import (
     _agent_use,
@@ -77,6 +85,28 @@ def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_p
         total += int(ln.split()[col_idx])
     assert matched_any, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
     return total
+
+
+def _column_values_for_matching_rows(
+    out: str, *, header_contains: str, label: str, row_prefix: str
+) -> list[str]:
+    """Sibling to _sum_column_across_rows for a caller that needs each
+    matched row's own column value -- e.g. asserting several rows stayed
+    distinct rather than merging into a sum. Same header-token-anchored
+    column lookup, not a bare line.split()[N] index."""
+    lines = out.splitlines()
+    headers = [ln for ln in lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header_idx = lines.index(headers[0])
+    col_idx = headers[0].split().index(label)
+    values = []
+    for ln in lines[header_idx + 1:]:
+        if ln == "":
+            break
+        if ln.startswith(row_prefix):
+            values.append(ln.split()[col_idx])
+    assert values, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
+    return values
 
 
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
@@ -212,12 +242,13 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_WITH_OWN_CONFIG_DIR)
+    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
-        """Every subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR resolves its
-        own scan roots via its own --config-dir (_resolve_cost_roots ->
+        """Every subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        refuses the top-level --config-dir outright. Most resolve their own
+        scan roots via their own --config-dir (_resolve_cost_roots ->
         config_dir() + declared_transcript_roots()), never reading the
         module-global PROJECTS_DIR this top-level flag reassigns. Letting the
         top-level flag through silently would reassign an unused global while
@@ -250,6 +281,23 @@ class TestConfigDirFlag:
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
+
+    def test_message_recommends_the_subcommands_own_flag_when_it_has_one(self, monkeypatch, tmp_path, capsys):
+        """Regression coverage for the other branch of main()'s hasattr
+        check: a subcommand that DOES register its own --config-dir (e.g.
+        "cost") must still get the "use that instead" recommendation --
+        cost-counts's own no-flag test above only pins the branch that
+        omits it."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +701,102 @@ class TestBuckets:
         assert cols["Proj"] == "2"
         assert cols["Sess"] == "2"
 
+    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_three_worktree_dirs_into_one_main_repo(self, tmp_path, monkeypatch, capsys):
+        """Cardinality beyond a single worktree pair: a main checkout plus two
+        differently-suffixed worktree dirs off the same repo all collapse to
+        Proj == 1."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree_x = projects / "-home-u-repo-a--claude-worktrees-feat-x"
+        proj_worktree_y = projects / "-home-u-repo-a--claude-worktrees-feat-y"
+        proj_main.mkdir(parents=True)
+        proj_worktree_x.mkdir(parents=True)
+        proj_worktree_y.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_x / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_y / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "3"
+
+    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount Proj."""
+        projects = tmp_path / "projects"
+        proj_alice = projects / "-home-alice-repo"
+        proj_bob = projects / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_sibling = projects / "-home-v-repo-a"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_sibling / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "3"
+
+
+class TestProjectFamily:
+    def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
+        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+
+    def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
+        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+
 
 # ---------------------------------------------------------------------------
 # fail-seq end-to-end (core parsing logic, via shared helper)
@@ -799,6 +943,22 @@ def _subagent_mix_args(
     })()
 
 
+def _cost_counts_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    branches: str | None = None,
+    this_repo_slugs: list[str] | None = None,
+) -> object:
+    """this_repo_slugs, when given, pre-seeds args._this_repo_slugs -- the
+    cache _resolve_project_scope reads first (see its own docstring), so a
+    direct cmd_cost_counts() call under --this-repo never shells out to git."""
+    attrs = {"projects": projects, "this_repo": this_repo, "branches": branches}
+    if this_repo_slugs is not None:
+        attrs["_this_repo_slugs"] = this_repo_slugs
+    return type("A", (), attrs)()
+
+
 class TestSubagentMix:
     def test_counts_agent_spawns_by_subagent_type(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -892,6 +1052,43 @@ class TestSubagentMix:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_single_root_output_strips_control_characters_from_branch_and_subagent_type(
+        self, fake_projects, capsys
+    ):
+        """gitBranch and subagent_type are both transcript-sourced, not
+        validated, before this table prints them -- same invariant as
+        cmd_subagents' single-root branch sanitization, extended here to
+        subagent_type since this table has its own second raw-value column."""
+        branch_payload = "\x1b]0;PWNED-BRANCH\x07"
+        stype_payload = "\x1b[31mPWNED-TYPE\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-BRANCH" in out
+        assert "[31mPWNED-TYPE[0m(1)" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
+    def test_control_byte_differing_branches_do_not_merge_into_one_row(self, fake_projects, capsys):
+        """Two raw gitBranch values that differ only in a stripped control
+        byte sanitize to the same display label but must stay distinct
+        rows -- aggregating on the sanitized label instead of the raw value
+        would silently sum their session/spawn counts into one row."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="feat\x01", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        sess_values = _column_values_for_matching_rows(
+            out, header_contains="Sess", label="Sess", row_prefix="feat "
+        )
+        assert sess_values == ["1", "1"], f"expected two distinct 'feat' rows, each Sess=1: {sess_values}"
+
 
 def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
     """Write a minimal on-disk agent file with a `model:` frontmatter pin,
@@ -902,8 +1099,9 @@ def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str)
 
 
 class TestSubagentMixModelMix:
-    """cmd_subagent_mix's second table: one case per method term from the
-    plan's requested/observed/declared/run/dangling definitions."""
+    """cmd_subagent_mix's second table: one test per column
+    (Runs/Dangling/Declared/Requested/Observed) in cmd_subagent_mix's own
+    docstring."""
 
     def test_declared_pin_violation_reports_opus_fraction_of_runs(self, fake_projects, tmp_path, capsys):
         """3 staff-sdet dispatches, declared pin sonnet: 2 observed opus (a
@@ -1085,6 +1283,38 @@ class TestSubagentMixModelMix:
         _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+    def test_control_byte_differing_subagent_types_do_not_merge_model_mix_rows(
+        self, fake_projects, capsys
+    ):
+        """Two raw subagent_type values that differ only in a stripped
+        control byte sanitize to the same AgentType label but must stay
+        distinct model-mix rows -- aggregating on the sanitized label
+        instead of the raw value would silently sum their Runs and dollar
+        figures into one row."""
+        session_id = "sess-collide"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet\x01"),
+                _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet\x01",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        runs_values = _column_values_for_matching_rows(
+            out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
+        )
+        assert runs_values == ["1", "1"], f"expected two distinct 'staff-sdet' rows, each Runs=1: {runs_values}"
 
 
 class TestSubagentMixDollars:
@@ -1436,8 +1666,459 @@ class TestSubagentMixSince:
         assert "No data found." in out
 
 
+class TestRootScopedDisplayLabel:
+    """Direct unit coverage of redaction._root_scoped_display_label --
+    cmd_subagents/cmd_subagent_mix exercise it only through their own
+    redacted/disclosed output, so this class pins the disclosed path and its
+    never-writes-into-redact_map invariant on their own."""
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        assert label == "account-1/feat-x"
+        assert redact_map == {}
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        assert redact_map == {(1, "feat-x"): label}
+
+    def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
+        """The direct proof of the "never writes into redact_map" invariant
+        -- no integration test pins this unconditionally, since a real
+        multi-root corpus can't isolate the counter position from the data
+        it's built from."""
+        redact_map: dict[tuple[int, str], str] = {}
+        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        assert first == "account-1/branch-1"
+        assert second == "account-1/branch-2"
+
+    def test_disclosed_and_redacted_labels_share_the_account_prefix_format(self):
+        """Format-drift pin: a future change to either function's namespace
+        string must fail here, substituting for extracting the format
+        string into a third shared helper."""
+        redact_map: dict[tuple[int, str], str] = {}
+        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
+
+    def test_disclosed_label_strips_control_characters(self):
+        """A gitBranch value is transcript-sourced, not git-validated -- an
+        OSC-injection payload (the same fixture shape used for
+        _format_cost_ledger_row's own control-character test) must not reach
+        the disclosed label raw."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(
+            "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
+        )
+        assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
+        assert not re.search(r"[\x00-\x1f\x7f]", label)
+
+    def test_disclosed_branch_value_containing_slash_stays_unambiguous(self):
+        """Git branch names legitimately contain "/" (e.g. feature/foo) --
+        the disclosed format itself uses "/" as the account-<K>/<value>
+        separator, so this pins that a "/"-bearing value composes without
+        truncation or reinterpretation."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        assert label == "account-1/feature/foo"
+        assert label.split("/", 1) == ["account-1", "feature/foo"]
+
+
+class TestRepoTrackedAgentTypeNames:
+    """_repo_tracked_agent_type_names -- the --this-repo subagent_type
+    disclosure allowlist accessor."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """lru_cache(maxsize=1) is process-global; cleared before and after
+        every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
+        from one test can never leak a stale cached result into the next,
+        including the real-directory regression test below."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        for name in untracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        return agents_dir
+
+    def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+
+    def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "tracked-agent" in names
+        assert "scratch-agent" not in names
+
+    def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in names
+        assert "Code-Writer" not in names
+
+    def test_directory_outside_any_git_repo_yields_built_ins_alone(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "not-a-repo"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
+    def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
+        if agents_dir_kind == "not_a_repo":
+            agents_dir = tmp_path / "not-a-repo"
+            agents_dir.mkdir()
+        elif agents_dir_kind == "tracked":
+            agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"])
+        else:
+            agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+
+    def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
+        precedent for _repo_scoped_project_slugs, diverging in outcome: this
+        accessor deliberately fails closed to the built-ins frozenset rather
+        than sys.exit, since failing closed here means more redaction, and
+        an operator's report should not die because git is unavailable."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise subprocess.TimeoutExpired(cmd, 10)
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
+        """_repo_tracked_agent_type_names matches top-level entries only
+        (no "/" in the path), matching _declared_pin's own flat
+        agents_dir / f"{agent_type}.md" resolution -- a nested tracked file
+        over-redacts, the safe direction."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["top-level-agent"])
+        nested_dir = agents_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "top-level-agent" in names
+        assert "nested-agent" not in names
+
+    def test_non_ascii_tracked_filename_is_allowlisted(self, tmp_path, monkeypatch):
+        """Pins the docstring's -z rationale: without -z, git quotes and
+        escapes unusual path names, corrupting the stem."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_real_agents_directory_allowlists_code_writer(self):
+        """The ticket's own motivating scenario, against the real,
+        unmonkeypatched agents/ directory -- deriving the name dynamically
+        (next(dir.glob('*.md')).stem) would make both this test's intent
+        and its failure message unreadable, so the name is hardcoded; the
+        unit tests above already carry the "real derivation works" fact."""
+        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+
+
+class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:
+    """cost-counts prints a disclosed agent-type label raw with no escaping
+    step, on the assumption every tracked agents/*.md stem already matches
+    _AGENT_TYPE_NAME_RE's charset. A future filename outside this charset
+    must fail this test, not silently reach a GFM table cell raw once that
+    agent is dispatched."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def test_every_tracked_agent_stem_matches_the_charset(self):
+        names = _mod._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
+        assert names, "expected at least one repo-tracked agent definition"
+        for name in names:
+            assert _mod._AGENT_TYPE_NAME_RE.fullmatch(name), name
+
+
+class TestSpawnCountsByAgentType:
+    """_spawn_counts_by_agent_type: main-thread-only raw spawn counts,
+    feeding cost-counts's ### Subagent spawns table."""
+
+    def test_spawn_nested_inside_a_subagent_is_excluded(self):
+        """A spawn dispatched from inside another agent's own transcript
+        (isSidechain: true) is not counted. Only main-thread dispatches
+        decide this count, mirroring cmd_subagent_mix's own exclusion order
+        (see _spawn_counts_by_agent_type's own docstring)."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
+        ]
+        counts = _mod._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
+        assert counts == {"staff-sdet": 1}
+
+
+class TestCostCounts:
+    """cost-counts: per-branch review-round and subagent-spawn counts for a
+    public PR body -- counts only, no dollar attribution."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_agent_type_cache(self):
+        """Same process-global lru_cache isolation as
+        TestRepoTrackedAgentTypeNames -- a monkeypatched
+        _REPO_AGENT_DEFINITIONS_DIR from one test here must never leak a
+        stale cached result into the next."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _isolate_allowlist(self, tmp_path, monkeypatch, tracked: list[str]) -> None:
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def test_this_repo_required(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=False, branches="feat"))
+        assert exc_info.value.code == 2
+        assert "--this-repo" in capsys.readouterr().err
+
+    def test_non_default_projects_refused(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, projects="some-glob", branches="feat"))
+        assert exc_info.value.code == 2
+        assert "--projects" in capsys.readouterr().err
+
+    def test_branches_required(self, fake_projects, capsys):
+        """--branches is refused at runtime, inside cmd_cost_counts, not made
+        argparse-required -- an argparse-level requirement would fire during
+        parse_args(), before main()'s own top-level --config-dir refusal
+        check ever runs."""
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
+        assert exc_info.value.code == 2
+        assert "--branches" in capsys.readouterr().err
+
+    def test_review_round_table_renders_actual_round_counts(self, fake_projects, capsys):
+        """Every other TestCostCounts fixture seeds spawn records only, so
+        round_counts is all-zero in every one of them. This test seeds a
+        real round-opening record (a Skill tool_use matching a
+        REVIEW_SKILLS member) and asserts the ### Review rounds table's
+        actual rendered row values and caption, through the real
+        cmd_cost_counts rendering path."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
+        assert "| plan-review | 0 |" in out
+        assert "| ready-for-review | 0 |" in out
+        assert "| **total** | **1** |" in out
+        assert _mod._COST_COUNTS_ROUNDS_CAPTION in out
+
+    def test_untracked_subagent_type_is_withheld_under_this_repo(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "totally-untracked-agent")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "staff-sdet" in out
+        assert "totally-untracked-agent" not in out
+        assert "(withheld — untracked agent type)" in out
+
+    def test_withheld_row_stays_last_even_when_its_total_exceeds_a_disclosed_row(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """The withheld row is appended after the (-count, name) sort, never
+        merged into it -- a withheld total that outweighs every disclosed
+        row's own count must still render last, not sort ahead of a named
+        row and get mistaken for one (see
+        _partition_spawn_counts_by_disclosure's own docstring)."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "untracked-agent-a")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "untracked-agent-b")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a4", "untracked-agent-c")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert out.index("| staff-sdet | 1 |") < out.index("(withheld — untracked agent type)")
+
+    def test_backstop_assertion_fires_on_bypassed_partition_step(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """cost-counts's own render-time backstop: a future regression to a
+        _stype_label-style direct reuse (bypassing
+        _partition_spawn_counts_by_disclosure's own allowlist gate) must
+        fail loudly, not silently disclose an untracked subagent_type."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        monkeypatch.setattr(
+            _mod, "_partition_spawn_counts_by_disclosure",
+            lambda raw_counts: [("some-untracked-agent-type", 1)],
+        )
+        with pytest.raises(AssertionError) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(
+                this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+            ))
+        assert "some-untracked-agent-type" not in str(exc_info.value)
+
+    def test_more_than_five_distinct_agent_types_all_render(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """This is the test that would have caught a top-5-scrape
+        reimplementation: cmd_subagent_mix's own table truncates to the top
+        5 spawn types per branch, but cost-counts must not."""
+        tracked = [f"agent-{i}" for i in range(6)]
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=tracked)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use(f"a{i}", name)])
+            for i, name in enumerate(tracked)
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        for name in tracked:
+            assert name in out
+
+    def test_zero_spawns_renders_the_sentence_not_a_table(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "No subagent spawns found in scope." in out
+        assert "| Agent type | Spawns |" not in out
+
+    def test_no_branch_name_appears_anywhere_in_output(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="my-secret-branch-name", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="my-secret-branch-name", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "my-secret-branch-name" not in out
+
+    def test_second_declared_root_contributes_nothing(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """cost-counts always resolves to [config_dir() / "projects"] alone
+        -- a populated ~/.claude/transcript-config-dirs must not pull
+        another account's activity into a public PR body's counts."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        declared_root = tmp_path / "declared-root"
+        declared_proj = declared_root / "projects" / "-home-user-other-repo"
+        declared_proj.mkdir(parents=True)
+        _write_jsonl(declared_proj / "sess-other.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "staff-sdet")]),
+        ])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{declared_root}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| staff-sdet | 1 |" in out
+
+    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys):
+        """cost-counts registers no --config-dir flag of its own, unlike
+        every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member -- the
+        shared refusal message must not recommend a flag that doesn't exist
+        on its own parser."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost-counts"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "cost-counts" in err
+        assert "use that instead" not in err
+        assert "with no override" in err
+
+
 class TestSubagentMixMultiRoot:
     """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
+
+    @pytest.fixture
+    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
+        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
+        agents/ directory tracking staff-sdet.md, decoupling the two
+        --this-repo subagent_type disclosure tests below from this repo's
+        own real agents/ tree -- the same isolation TestRepoTrackedAgentTypeNames
+        applies to its own unit tests, via monkeypatch + cache_clear()."""
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_two_roots_yield_strictly_more_spawns_than_either_alone(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -1622,6 +2303,153 @@ class TestSubagentMixMultiRoot:
         # root's row.
         assert account_1["Spawns"] == "2"
         assert account_2["Spawns"] == "1"
+
+    def test_this_repo_with_explicit_config_dir_discloses_branch_and_allowlisted_agent_type(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """--this-repo plus subagent-mix's own repeatable --config-dir (not
+        only the declared-roots file) discloses a raw branch name and an
+        allowlisted subagent_type in both tables -- pins that the two flags
+        are not mutually exclusive. Both roots write identical branch and
+        subagent_type values, so the two disclosed labels are the same
+        regardless of which physical root resolves to account-1 vs. account-2."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)  # no SystemExit
+        out = capsys.readouterr().out
+        # Substring-on-combined-stdout, not a per-table _table_cols extract:
+        # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
+        # key, so both tables render the same label for the same key even
+        # though each computes it independently at its own print time -- a
+        # future change breaking that idempotence would need this test
+        # tightened to catch a per-table divergence.
+        assert "account-1/feat" in out
+        assert "account-2/feat" in out
+        assert "account-1/staff-sdet" in out
+        assert "account-2/staff-sdet" in out
+
+    def test_this_repo_non_allowlisted_agent_type_counter_starts_at_one_despite_allowlisted_seen_first(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """A non-allowlisted subagent_type still renders as
+        account-<K>/agent-type-1, with its counter starting at 1 despite an
+        allowlisted type being seen first in the same session -- proves the
+        disclosed path never writes into subagent_type_redact_map, matching
+        TestRootScopedDisplayLabel's own unit-level pin at the integration
+        layer."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "staff-sdet"),  # allowlisted, dispatched first
+                _agent_use("a2", "acme-corp-internal-tool"),  # not allowlisted
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/staff-sdet", out)
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert "acme-corp-internal-tool" not in out
+
+    def test_this_repo_case_varied_spelling_of_allowlisted_type_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Pin against a later .lower()-style "robustness" change disclosing
+        a private type that collides case-insensitively with a real
+        allowlisted name. Asserts both directions in the same run: the
+        mixed-case collision stays opaque, and the exact-case allowlisted
+        form still discloses -- without the positive control, an
+        accidentally-empty allowlist would pass this test for the wrong
+        reason."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "Staff-Sdet"),  # mixed-case collision, not allowlisted verbatim
+                _agent_use("a2", "staff-sdet"),  # exact-case allowlisted form -- positive control
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "Staff-Sdet" not in out
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert re.search(r"account-\d+/staff-sdet\b", out)
+
+    def test_this_repo_colliding_branch_names_across_accounts_stay_on_separate_rows(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Two accounts' identically-named "main" branch must not collapse
+        into one row under --this-repo disclosure either -- the table this
+        measurement actually reads."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/main" in out
+        assert "account-2/main" in out
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_per_session_still_refused_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_subagent_mix(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--per-session" in err
+
+    def test_this_repo_single_root_prints_raw_branch_and_raw_non_allowlisted_type_with_no_account_prefix(
+        self, fake_projects, capsys
+    ):
+        """Single-root path (no --config-dir, no declared roots): root_idx
+        is always None, so both fields print raw with no account-<K>/
+        prefix regardless of --this-repo or the allowlist. The
+        non-allowlisted type is the load-bearing half: it proves the
+        allowlist gate is never consulted at single root, catching a future
+        reordering that checks `disclose` before `root_idx is not None`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "acme-corp-internal-tool")]),
+        ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "acme-corp-internal-tool" in out
+        assert "account-" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -2538,8 +3366,187 @@ class TestReviewTrace:
         reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
         assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
 
-    def test_sidechain_skill_invocation_excluded(self):
-        """A code-review Skill call inside a sidechain record must not produce a skill event."""
+    # -----------------------------------------------------------------------
+    # architect-consult classification
+    # -----------------------------------------------------------------------
+
+    def test_architect_consult_mode_consult_first_line_emits_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=consult emits an architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nSome question.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_mode_plan_sections_first_line_emits_no_consult_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=plan-sections emits no architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=plan-sections\n## Context")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert not any(e["kind"] == "architect-consult" for e in events)
+
+    def test_architect_consult_empty_prompt_emits_event_fail_safe(self):
+        """An empty-string prompt is not the MODE=plan-sections literal, so
+        the fail-safe direction classifies it as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_consult_missing_prompt_key_emits_event_fail_safe(self):
+        """A block whose `input` dict lacks the `prompt` key entirely also
+        classifies as a consult -- `_agent_use` always populates `prompt` and
+        can't build this shape, so this constructs the raw dict literal."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[{
+                      "type": "tool_use", "id": "a1", "name": "Agent",
+                      "input": {"subagent_type": "plan-architect", "description": "x"},
+                  }]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    @pytest.mark.parametrize(
+        "first_line,expect_consult",
+        [pytest.param(fl, ec, id=tid) for fl, ec, tid in CONSULT_CLASSIFICATION_TABLE],
+    )
+    def test_classification_matches_table(self, first_line, expect_consult):
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt=first_line)]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        emitted_consult = any(e["kind"] == "architect-consult" for e in events)
+        assert emitted_consult is expect_consult
+
+    def test_sidechain_architect_consult_now_detected(self):
+        """A plan-architect consult dispatch inside a sidechain record
+        produces an architect-consult event, tagged thread=sidechain."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  sidechain=True,
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "architect-consult"
+        assert events[0]["thread"] == "sidechain"
+
+    def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
+        """A staff-backend-engineer dispatch with no MODE=plan-sections first
+        line still emits zero architect-consult events and exactly one
+        reviewer-spawn -- guards against the `stype ==` gate being dropped,
+        which would reclassify every ordinary reviewer dispatch as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer", prompt="Review this diff.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 0
+        assert sum(1 for e in events if e["kind"] == "reviewer-spawn") == 1
+
+    def test_architect_consult_event_attributed_to_own_branch_not_session_first_branch(self):
+        """Mirrors test_events_attributed_to_own_branch_not_session_first_branch
+        for the architect-consult kind: a session opening on one branch, then
+        moving to another before the consult dispatch, attributes the event
+        to its own (later) branch and model."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0]["branch"] == "feature-x"
+        assert consult_events[0]["model"] == "opus"
+
+    def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
+        """The blindness property pinned at the layer it is defined: the
+        event dict itself carries only the classification result plus the
+        metadata every event kind carries, never a prompt-derived field.
+        thread is record-structural -- derived from the record's own
+        isSidechain flag, never from the prompt -- so its presence here
+        does not weaken the pin."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt="MODE=consult\nSecret rationale nobody should see.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model", "thread"}
+
+    def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
+        """The prompt string is never stored on the event dict, so it can
+        never leak into printed output -- a distinctive rationale substring
+        embedded in the prompt must not appear anywhere in review-trace's
+        stdout."""
+        secret_rationale = "UNIQUE_RATIONALE_MARKER_892"
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt=f"MODE=consult\n{secret_rationale}")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert secret_rationale not in out
+        assert "consult-session.jsonl" in out
+
+    def test_architect_consults_header_count_renders(self, fake_projects, capsys):
+        """The per-session header line's architect-consults=<N> count reflects
+        the number of architect-consult events emitted for that session."""
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+
+    def test_session_holding_only_consult_event_emits_session_block(self, fake_projects, capsys):
+        """A session whose only review-relevant event is an architect-consult
+        dispatch still emits a session block -- consult-only sessions aren't
+        silently dropped like a session with zero events."""
+        _write_jsonl(fake_projects / "consult-only.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "consult-only.jsonl" in out
+        assert "consult      " in out
+
+    def test_sidechain_skill_invocation_now_detected(self):
+        """A code-review Skill call inside a sidechain record produces a
+        skill event, tagged thread=sidechain."""
         records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
@@ -2549,7 +3556,220 @@ class TestReviewTrace:
         events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
             records, None, None, None,
         )
-        assert events == []
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["thread"] == "sidechain"
+
+    # -----------------------------------------------------------------------
+    # GH-896: merge/sort of main and subagent records
+    # -----------------------------------------------------------------------
+
+    def test_review_trace_end_to_end_detects_consult_dispatched_from_subagent_file(
+        self, fake_projects, capsys
+    ):
+        """End to end through cmd_review_trace's own scope resolution (not
+        just the direct _review_trace_session_events call the other tests in
+        this class use): a plan-architect consult dispatched from inside a
+        subagent's own <session_id>/subagents/*.jsonl file is detected now
+        that include_subagents=True is the default, and its timeline row
+        prints thread=sidechain with its line number suppressed as n/a,
+        since a sidechain event's line_no indexes no real file."""
+        session_id = "sess-subagent-consult"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:05:00.000Z",
+                  content=[_agent_use("a2", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+        assert "thread=sidechain" in out
+        assert "line   n/a" in out
+
+    def test_merged_stream_interleaves_main_and_sidechain_chronologically(self):
+        """Main and subagent records are merged into one chronological
+        stream before detection, not left in main-then-subagent
+        concatenation order: a subagent record timestamped between two
+        main-thread records lands between their events in the emitted
+        timeline."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "ready-for-review", "plan-review"]
+        assert [e["thread"] for e in events] == ["main", "sidechain", "main"]
+
+    def test_line_no_still_resolves_to_main_file_line_after_sort(self):
+        """A thread=main event's line_no still equals its position in the
+        main transcript after the merge sort reorders it relative to a
+        later-positioned but earlier-timestamped subagent record."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),  # main file line 1, later ts
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T09:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),  # subagent record, earlier ts
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events[0]["thread"] == "sidechain"
+        assert events[1]["thread"] == "main"
+        assert events[1]["line_no"] == 1
+
+    def test_interior_unparseable_timestamp_forward_fills_and_stays_adjacent(self):
+        """An interior record whose timestamp fails to parse forward-fills
+        the immediately preceding record's effective_ts, so it sorts
+        adjacent to that neighbour rather than raising TypeError or
+        drifting elsewhere in the stream."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review", "ready-for-review"]
+
+    def test_leading_unparseable_timestamp_sorts_to_head_not_typeerror(self):
+        """A leading record whose timestamp fails to parse has no preceding
+        record to forward-fill from -- it falls back to float("-inf") and
+        sorts to the head of the stream instead of raising TypeError
+        against its neighbour's float key, a distinct case from an interior
+        unparseable timestamp above."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review"]
+
+    def test_same_timestamp_main_sidechain_tie_break_main_first(self):
+        """Two records sharing one timestamp, one main and one sidechain,
+        place the main event first -- the tie-break is a stated choice
+        (cause before effect), not inherited from the records' own list
+        position, which here has the sidechain record listed ahead of the
+        main one."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["thread"] for e in events] == ["main", "sidechain"]
+        assert [e["skill"] for e in events] == ["plan-review", "code-review"]
+
+    def test_sidechain_event_inherits_main_threads_branch_not_its_own(self):
+        """A sidechain event's branch is the carried-forward value from the
+        preceding main-thread record, never the sidechain record's own
+        gitBranch -- the isSidechain guard on the carry-forward trackers
+        (docs/design-decisions.md §58) is load-bearing specifically because
+        lifting it would attribute a sidechain event to its own record's
+        branch instead of the dispatching main thread's. Every other
+        sidechain fixture in this file sets the sidechain record's own
+        branch equal to the preceding main record's, so only a fixture with
+        a genuinely differing sidechain gitBranch can catch a regression
+        that reads it directly."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="A", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="B", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "A"
+
+    def test_denial_dedup_by_tool_use_id_survives_sort_reorder(self):
+        """A denial recorded as both a sidechain attachment record and its
+        earlier-timestamped main-thread current-format twin still collapses
+        to one event once the merge sort reorders them ahead of their
+        original list position -- dedup runs against the sorted stream, not
+        the pre-sort one."""
+        attach = _hook_deny("worktree", ts="2026-05-19T10:05:00.000Z")  # toolUseID == toolu_worktree
+        attach["isSidechain"] = True
+        twin = _hook_deny_current(
+            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
+            tool_id="toolu_worktree", ts="2026-05-19T10:00:00.000Z",
+        )
+        # attach (sidechain, later ts) is listed first; twin (main, earlier
+        # ts) is listed second -- pre-sort order is the reverse of
+        # chronological order, so this exercises the merge sort as well as
+        # dedup.
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, twin], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        # hook_name=="" (rather than "worktree") proves the sort actually ran
+        # twin (main, earlier ts) ahead of attach before dedup, not merely
+        # that dedup collapsed whichever one happened to be processed first.
+        assert events[0]["hook_name"] == ""
+        assert events[0]["thread"] == "main"
+
+    def test_forward_fill_does_not_cross_subagent_file_boundary(self, fake_projects, capsys):
+        """An unparseable-timestamp record that is the first record of its
+        own subagent file resets to the earliest sort position instead of
+        forward-filling from a different subagent file's last record --
+        filename-sorted subagent files carry no chronological relationship
+        to each other, so a global (rather than per-source-group)
+        forward-fill would wrongly inherit agent-1's late timestamp into
+        agent-2's own first record. Exercised end to end through
+        cmd_review_trace, since the per-file group boundary this needs only
+        exists once records are read via real subagent files, not via a
+        hand-built flat records list."""
+        session_id = "sess-cross-file-forward-fill"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T15:00:00.000Z",
+                  content=[_skill_use("s-main", "skill-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T20:00:00.000Z",
+                  content=[_skill_use("s-a1", "code-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="not-a-timestamp",
+                  content=[_skill_use("s-a2-bad", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s-a2-good", "ready-for-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # agent-2's own unparseable-ts record (plan-review) must sort ahead
+        # of agent-2's own later, real-ts record (ready-for-review), and
+        # both ahead of main (skill-review, 15:00) and agent-1 (code-review,
+        # 20:00, the last record of the *other*, filename-earlier-sorted
+        # subagent file) -- not fall back to agent-1's 20:00 timestamp,
+        # which would instead sort plan-review last.
+        assert (
+            out.index("plan-review") < out.index("ready-for-review")
+            < out.index("skill-review") < out.index("code-review")
+        )
 
     def test_since_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --since is included."""
@@ -2759,15 +3979,26 @@ class TestReviewTrace:
         assert "denial-session.jsonl" in out
         assert "skill-only-session.jsonl" not in out
 
+    def test_default_timeline_denial_line_carries_cause_field(self, fake_projects, capsys):
+        """The plain (non-deny-summary) timeline's denial line prints
+        cause=<kind> classified from the denial's own message, alongside
+        the existing hook= field."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "cause=lib-source" in out
+
     # -----------------------------------------------------------------------
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
+    def test_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        branch_filter must select by that per-event value, not the session's first
-        record's branch (the 53-session class from row 4 of the GH-482 plan)."""
+        branch_filter must select by that per-event value, not the session's
+        first record's branch."""
         records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
@@ -3085,7 +4316,7 @@ class TestReviewTrace:
         records = [
             _hook_deny_current(
                 "Skill length gate: one or more SKILL.md files grew past their "
-                "per-skill limit. Reduce to the limit or fewer lines before committing."
+                "per-skill limit. Reduce to the limit before committing."
             ),
         ]
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
@@ -3353,6 +4584,23 @@ class TestReviewTrace:
         assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
         assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
 
+    def test_deny_summary_corpus_window_widened_by_consult_event_outside_denial_range(self):
+        """The corpus min/max window reads every event kind, not just denial.
+        An architect-consult event timestamped outside the range the
+        corpus's own denial events establish must move the window -- proving
+        the widening is real, not merely that the session registers."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-opus-4-7", branch="main", ts="2026-07-20T09:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-20T09:00:00.000Z")
+
     def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
         toolDenialKind's 2026-07-20 introduction structurally cannot carry
@@ -3431,6 +4679,52 @@ class TestReviewTrace:
         assert data["hook_shape_counts"][("code-review", "git checkout")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git commit")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git checkout")] == 2
+
+    def test_deny_summary_cause_cross_tab_shows_joint_counts_not_just_marginals(self):
+        """Two hooks each produce a mix of behavioral and lib-source denials
+        with symmetric marginals (code-review: 2 behavioral + 1 lib-source;
+        worktree-enforcement: 1 behavioral + 2 lib-source) — the cause
+        marginal alone can't say which hook hit which failure family.
+        hook_cause_counts must carry the true joint counts."""
+        records = [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b2"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b3"),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git commit' is not on the read-only allowlist.",
+                tool_id="b4",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b5",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b6",
+            ),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["hook_cause_counts"][("code-review", "behavioral")] == 2
+        assert data["hook_cause_counts"][("code-review", "lib-source")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "behavioral")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "lib-source")] == 2
+
+    def test_deny_summary_cause_table_prints_header_and_correct_cross_tab_cell(
+        self, fake_projects, capsys
+    ):
+        """--deny-summary's printed output carries the hook/gate x cause table
+        header and a joint count in the right column — not just the
+        marginal hook/gate and friction tables that predate this axis."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b2"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "## Denials by hook/gate x cause" in out
+        cols = _table_cols(out, header_contains="behavioral", row_contains="code-review")
+        assert cols["behavioral"] == "1"
+        assert cols["lib-source"] == "1"
 
     def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self):
         """A fixture drawn from real transcript-analysis.py corpus denials —
@@ -3561,6 +4855,33 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+
+class TestComputeDenySummaryDataGroupBoundaryFreshRead:
+    """_compute_deny_summary_data must derive group_boundaries from the same
+    read that produces its records, not from session_iter's own records
+    paired with an independent, later _read_session_file_partitioned call --
+    the two reads can observe a growing transcript file differently."""
+
+    def test_stale_session_iter_records_are_replaced_by_the_fresh_disk_read(self, fake_projects):
+        """session_iter hands in a deliberately empty records list for this
+        session -- simulating a read taken before the main and subagent
+        files carried their denials -- while the real on-disk files already
+        have one denial each. Both denials must still surface, proving
+        detection runs against a fresh read of the files, not the stale,
+        empty tuple session_iter provided."""
+        session_id = "sess-toctou"
+        jsonl = fake_projects / f"{session_id}.jsonl"
+        _write_jsonl(jsonl, [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
+        ])
+
+        data = _mod._compute_deny_summary_data([(jsonl, [])])
+
+        assert dict(data["hook_counts"]) == {"code-review": 1, "ready-for-review": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -4114,6 +5435,58 @@ class TestPriceTurnSpeedGeoMultipliers:
         dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
+
+
+class TestReportableUnpricedModelIds:
+    """Direct unit tests for pricing._reportable_unpriced_model_ids, the
+    shared predicate TestExcludedSpendBanner's _cost_report fixtures also
+    exercise -- these pin its branches by direct call so a bug in the
+    predicate itself is distinguishable from a print-wording bug in the
+    banner that consumes it."""
+
+    def test_empty_dict_reports_nothing(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+
+    def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+
+    def test_synthetic_at_zero_tokens_is_not_reportable(self):
+        """A corpus with no synthetic records at all still seeds this key at
+        0 in some callers -- a $0 entry is not spend excluded from anything."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+
+    def test_synthetic_at_nonzero_tokens_is_reportable(self):
+        """Forward-looking guard, not a case observed in a real corpus (see
+        the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
+        filter, which would silently drop this branch, is rejected."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            _mod.pricing._SYNTHETIC_MODEL_ID
+        ]
+
+    def test_multiple_unpriced_ids_all_reported(self):
+        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        assert sorted(result) == ["claude-example-10", "claude-example-9"]
+
+
+class TestFormatDriftDetected:
+    """Direct unit tests for pricing._format_drift_detected, the OR of the
+    two module-level drift flags TestPricingIntegrityBanner's _cost_report
+    fixtures also exercise through the full report."""
+
+    def test_false_when_neither_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is False
+
+    def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is True
+
+    def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
+        assert _mod.pricing._format_drift_detected() is True
 
 
 class TestDedupTurnsByRequestId:
@@ -6771,7 +8144,7 @@ class TestCacheEfficiencyArgparseWiring:
 def cost_ledger_enabled(tmp_path, monkeypatch):
     """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
     _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, so its sentinel check
+    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR, so its sentinel check
     (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
     never scope.py's _resolve_cost_roots."""
     cfg_dir = tmp_path / "isolated-claude-config"
@@ -6824,6 +8197,7 @@ def _cache_rebuild_args(
     threshold: int | None = None,
     no_redact: bool = False,
     extra_config_dirs: list[str] | None = None,
+    ttl_verdict: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -6832,6 +8206,7 @@ def _cache_rebuild_args(
         "threshold": threshold,
         "no_redact": no_redact,
         "extra_config_dirs": extra_config_dirs,
+        "ttl_verdict": ttl_verdict,
     })()
 
 
@@ -6862,6 +8237,496 @@ def _extract_cache_rebuild_row(out: str, row_label: str) -> tuple[int, str]:
     raise AssertionError(f"row not found for {row_label!r}")
 
 
+def _extract_cache_rebuild_attribution_row(out: str, row_label: str) -> tuple[int, str, str, str]:
+    """Read one (rebuilds, excess $, 5m-1h $, median cov.) row from the
+    subagent idle-gap cause-attribution table by its leading label -- the
+    5-cell sibling _extract_cache_rebuild_row (label + 1-2 numeric cells)
+    cannot parse, the same "neither existing extractor fits" precedent
+    _extract_cache_rebuild_dispersion sets below."""
+    for line in out.splitlines():
+        if line.startswith(row_label):
+            rest = line[len(row_label):].split()
+            if len(rest) != 4:
+                raise AssertionError(f"expected 4 cells after label {row_label!r}, got {rest!r}")
+            rebuilds, excess, band_excess, median_cov = rest
+            return int(rebuilds.replace(",", "")), excess, band_excess, median_cov
+    raise AssertionError(f"row not found for {row_label!r}")
+
+
+def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
+    """Read cache-rebuild's 'Subagent per-dispatch dispersion' block's
+    labeled stat lines and its own coverage-disclosure line -- neither
+    _extract_cache_rebuild_row (label + 1-2 numeric cells) nor _table_cols
+    (fixed-width table rows) can parse these, since each is its own
+    free-text sentence, not a table row. Matches on exact sentence wording,
+    not header position like _table_cols -- a wording-only edit to the
+    dispersion block's own print statements, with no behavior change,
+    breaks every test using this extractor."""
+    eligible = re.search(r"Subagent dispatches \(dispatches with any 5m-tier write\): ([\d,]+)", out)
+    clearing = re.search(r"Dispatches individually clearing their own break-even ratio: ([\d,]+)", out)
+    share = re.search(r"Their share of per-dispatch subagent W5m \(not the pooled row above\): ([\d.]+%)", out)
+    net = re.search(r"Net \$ restricted to clearing dispatches: (-?[\d,]+\.\d\d)", out)
+    uncovered = re.search(r"\(([\d,]+) of ([\d,]+) pooled subagent W5m tokens landed in no dispatch group", out)
+    assert eligible is not None, "'Subagent dispatches' line not found in output"
+    assert clearing is not None, "'Dispatches individually clearing' line not found in output"
+    assert share is not None, "'Their share of per-dispatch subagent W5m' line not found in output"
+    assert net is not None, "'Net $ restricted to clearing dispatches' line not found in output"
+    assert uncovered is not None, "dispersion coverage-disclosure line not found in output"
+    return {
+        "eligible": int(eligible.group(1).replace(",", "")),
+        "clearing": int(clearing.group(1).replace(",", "")),
+        "share": share.group(1),
+        "net": net.group(1).replace(",", ""),
+        "uncovered_w5m": int(uncovered.group(1).replace(",", "")),
+        "pooled_subagent_w5m": int(uncovered.group(2).replace(",", "")),
+    }
+
+
+def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
+    """Read --ttl-verdict's own per-bucket summary line ('main: consistent
+    5m roots=N  consistent 1h roots=N  excluded (mixed-tier or no
+    data) roots=N  verdict=...') for one bucket."""
+    match = re.search(
+        rf"^{re.escape(origin)}: consistent 5m roots=(\d+)  consistent 1h roots=(\d+)"
+        r"  excluded \(mixed-tier or no data\) roots=(\d+)  verdict=(.+)$",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"ttl-verdict summary line not found for origin {origin!r}"
+    return {
+        "consistent_5m": match.group(1),
+        "consistent_1h": match.group(2),
+        "excluded": match.group(3),
+        "verdict": match.group(4),
+    }
+
+
+def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dict[str, str]:
+    """Read one per-root row from --ttl-verdict's own per-bucket table (the
+    '### {origin}' section) by its leading account label. _table_cols can't
+    be reused directly since this section's header repeats once per origin.
+    Matching on the exact leading token, not a startswith prefix, avoids
+    "account-1" matching "account-10"."""
+    lines = out.splitlines()
+    section_start = lines.index(f"### {origin}")
+    section_end = len(lines)
+    for i in range(section_start + 1, len(lines)):
+        if lines[i].startswith("### ") or lines[i].startswith(f"{origin}: consistent"):
+            section_end = i
+            break
+    section_lines = lines[section_start:section_end]
+    header_line = next(ln for ln in section_lines if ln.startswith("Root"))
+    labels = header_line.split()
+    rows = [ln for ln in section_lines if ln.split() and ln.split()[0] == root_label]
+    assert len(rows) == 1, f"row not found for {root_label!r} in {origin!r} section: {rows!r}"
+    return dict(zip(labels, rows[0].split(), strict=False))
+
+
+def _ttl_verdict_5m_tier_adopt_records() -> list[dict]:
+    """Record list for a clean 5m-tier root that reaches --ttl-verdict's
+    'adopt' verdict (W5m=1,000,000, X=500,000, comfortably clearing
+    margin), shared by test_main_bucket_5m_tier_root_reaches_adopt and by
+    root_a in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:06:00.000Z", request_id="m2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=300_000,
+            ts="2026-08-01T10:12:00.000Z", request_id="m3",
+        ),
+    ]
+
+
+def _ttl_verdict_1h_tier_non_wash_disagreement_records() -> list[dict]:
+    """Record list for a 1h-tier root whose dollar accounting and
+    tiebreaker disagree (W1h=1,000,000, primary Z=800,000, favors 1h,
+    does not clear), shared by
+    test_1h_tier_root_declines_on_a_non_wash_disagreement and by root_b in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
+        _priced(
+            "claude-sonnet-5", cache_read=800_000,
+            ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=400_000,
+            ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
+        ),
+    ]
+
+
+def _tool_result_record(tool_id: str, *, ts: str, text: str = "ok") -> dict:
+    """A user record carrying one tool_result block, for
+    _attribute_idle_gap_cause's direct unit tests below."""
+    return _user_msg([_tool_result(tool_id, text)], ts=ts)
+
+
+def _meta_marker_record(text: str, *, ts: str, is_meta: bool = True, is_sidechain: bool = True) -> dict:
+    """A harness-injected meta-marker user record (background-task or
+    coordinator-message), for _attribute_idle_gap_cause's direct unit tests
+    below -- conftest builds no meta-record helper of its own, so this
+    mirrors TestCacheRebuildOriginSplit's own rec["isSidechain"] = True
+    idiom of setting the flag post-hoc on a plain _user_msg record."""
+    rec = _user_msg(text, ts=ts)
+    rec["isMeta"] = is_meta
+    rec["isSidechain"] = is_sidechain
+    return rec
+
+
+class TestAttributeIdleGapCause:
+    """Direct unit tests for _attribute_idle_gap_cause -- hand-built
+    prior_turn/window dicts, no fixture transcript and no
+    _cache_rebuild_report run, so a marker-shape bug is pinned without
+    needing a full transcript fixture. Covers
+    .claude/plans/subagent-idle-gap-cause-attribution.md's Verification
+    section's precedence, self-scoping, and clock-skew cases, plus the
+    bash_shape/no-command/other-command split. Sleep-poll wait follows the
+    winning Bash marker, not window order."""
+
+    def test_bash_tool_result_at_gap_end_attributes_to_own_bash_call_with_high_covered_share(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(350 / 360)
+
+    def test_background_task_marker_attributes_to_waiting_on_background_task(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+            ts="2026-08-01T10:05:55.000Z",
+        )]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_BACKGROUND_TASK
+        assert covered_share == pytest.approx(355 / 360)
+
+    def test_coordinator_message_marker_attributes_to_waiting_on_coordinator_message(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello",
+            ts="2026-08-01T10:05:55.000Z",
+        )]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+        assert covered_share == pytest.approx(355 / 360)
+
+    def test_empty_window_is_unattributed_with_no_covered_share(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, [], gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_bash_then_coordinator_marker_in_window_last_marker_wins_coordinator(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:05:00.000Z",
+            ),
+        ]
+        cause, _covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+
+    def test_coordinator_then_bash_marker_in_window_last_marker_wins_bash(self):
+        """Same two markers as the previous test, reversed window order --
+        last-marker-wins must flip with them, proving precedence is
+        window-order-based, not a fixed cause priority."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:01:00.000Z",
+            ),
+            _tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        cause, _covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+
+    def test_tool_result_id_prior_turn_never_emitted_is_unattributed(self):
+        """Self-scoping: a tool_result whose tool_use_id isn't among the ids
+        prior_turn's own Bash tool_use blocks emitted must not match, even
+        though it's the only marker-shaped record in the window."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [_tool_result_record("tool-999", ts="2026-08-01T10:05:00.000Z")]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_non_bash_tool_use_result_in_window_is_unattributed(self):
+        """A tool_result for an Edit call (not Bash) must not attribute to
+        'waiting on own Bash call' even though its id matches a tool_use
+        prior_turn itself emitted -- only a Bash-named tool_use seeds the
+        matching id set."""
+        prior_turn = _asst("claude-sonnet-5", content=[_edit_use("tool-1")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z")]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_marker_prefix_text_present_but_isMeta_absent_is_unattributed(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_user_msg(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+            ts="2026-08-01T10:05:00.000Z",
+        )]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_isMeta_true_isSidechain_false_is_unattributed(self):
+        """A main-thread system notification (isMeta True, isSidechain
+        False) must not attribute -- both flags are required."""
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:05:00.000Z", is_sidechain=False,
+        )]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_isSidechain_true_isMeta_false_is_unattributed(self):
+        """The reverse combination (isSidechain True, isMeta False) must
+        also not attribute -- both flags are required, held individually
+        false in this test and the previous one."""
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: x", ts="2026-08-01T10:05:00.000Z", is_meta=False,
+        )]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_two_bash_pairs_poll_loop_last_marker_wins_the_later_tool_result(self):
+        """Two Bash tool_use/tool_result pairs in one window (the poll-loop
+        shape .claude/plans/subagent-idle-gap-cause-attribution.md's
+        Context section hand-sampled) -- last-marker-wins must pick the
+        LATER tool_result's timestamp, not the first."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-2", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(350 / 360)
+
+    def test_two_bash_pairs_differing_shape_the_later_sleep_poll_wins_the_shape(self):
+        """Two Bash tool_use/tool_result pairs where only the later result's
+        own command is a sleep-poll -- the shape must follow the winning
+        (later) marker, not the other pair's non-matching command."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "pytest"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-2", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_two_bash_pairs_differing_shape_the_later_other_command_wins_the_shape(self):
+        """Same two pairs as the previous test, reversed window order -- the
+        shape must flip with them, proving it follows window-order
+        precedence, not a fixed per-command priority."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "pytest"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-2", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_OTHER
+
+    def test_coordinator_marker_win_carries_no_bash_shape(self):
+        """A coordinator-marker win (last-marker-wins over an earlier Bash
+        result) must carry no shape at all -- shape is only ever set when
+        the winning cause is _ATTR_OWN_BASH."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:05:00.000Z",
+            ),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape is None
+
+    def test_bash_tool_use_with_no_input_yields_no_command_recorded_shape(self):
+        """A Bash tool_use block with no `input` key at all must still win
+        the cause via its matching tool_use_id. The shape degrades to 'no
+        command recorded' rather than raising on the missing key. This is
+        distinct from TestClassifyBashWaitShape's present-but-non-string
+        case."""
+        prior_turn = _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "tool-1", "name": "Bash"}])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_NO_COMMAND
+
+    def test_clock_skew_marker_outside_gap_window_yields_finite_unclamped_covered_share(self):
+        """A marker timestamp before gap_start_ts (clock skew) must still
+        render a finite covered_share, negative and unclamped, rather than
+        crashing or silently clamping to 0."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T09:59:00.000Z")]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(-60 / 360)
+
+    def test_marker_with_no_timestamp_field_still_attributes_with_none_covered_share(self):
+        """A structurally-matching marker with no `timestamp` field at all
+        must still win the cause -- only its covered_share degrades to
+        None, never a silent fall-through to unattributed or to an earlier
+        marker."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [{"type": "user", "message": {"content": [_tool_result("tool-1", "ok")]}}]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share is None
+
+    def test_later_marker_with_bad_timestamp_still_wins_over_earlier_timestamped_marker(self):
+        """Last-marker-wins must not silently revert to an earlier,
+        timestamped marker just because the true last marker's own
+        timestamp is missing -- that would misattribute to a different
+        real cause instead of disclosing the gap via covered_share."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            {
+                "type": "user",
+                "message": {"content": f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello"},
+                "isMeta": True,
+                "isSidechain": True,
+            },
+        ]
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+        assert covered_share is None
+
+
+class TestClassifyBashWaitShape:
+    """Direct unit tests for _classify_bash_wait_shape -- a pure string
+    classifier, so its whole test surface is literal command strings. Covers
+    the sleep-poll match shape, including the quoted/heredoc and `$VAR`
+    edge cases."""
+
+    def test_do_sleep_shape_classifies_as_sleep_poll(self):
+        """The `until ... kill -0 $PID ...; do sleep N; done` shape -- one
+        of the two Bash sleep-poll idioms this classifier exists to catch,
+        a `kill -0 $PID`-style wait loop."""
+        command = "until ! kill -0 $PID 2>/dev/null; do sleep 5; done"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_leading_sleep_shape_classifies_as_sleep_poll(self):
+        """The `sleep N; <check>` shape -- the other of the two Bash
+        sleep-poll idioms this classifier exists to catch, a leading sleep
+        before a check command."""
+        command = "sleep 30; kill -0 $PID || break"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_ampersand_separated_sleep_classifies_as_sleep_poll(self):
+        command = "make build && sleep 10 && make test"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_sleep_with_variable_argument_classifies_as_other(self):
+        """No literal leading digit -- the documented under-count bias."""
+        command = "sleep $INTERVAL"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_OTHER
+
+    def test_sleep_flag_name_not_in_command_position_classifies_as_other(self):
+        """`sleep` appearing inside a longer flag name, not preceded by a
+        separator or reserved word -- no per-tool poll idiom matching."""
+        command = "gh run watch --sleep-interval 5"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_OTHER
+
+    def test_quoted_sleep_inside_echo_classifies_as_sleep_poll(self):
+        """Textual match with no shell parsing: a `sleep 5` inside a quoted
+        echo argument counts, documenting the accepted false positive so a
+        later widening to shell-aware parsing is a deliberate change."""
+        command = 'echo "done; sleep 5"'
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_newline_separated_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` on its own line inside a multi-line Bash script --
+        the newline-separator branch of the sleep-poll regex."""
+        command = "set -e\nsleep 5\necho done"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_then_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`then` conditional -- the
+        `then` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_else_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`else` conditional -- the
+        `else` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then true; else sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_heredoc_body_sleep_classifies_as_sleep_poll(self):
+        """Heredoc bodies match via the same newline-separator branch as a
+        multi-line script."""
+        command = "cat <<'EOF'\nsleep 5\nEOF"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_pipe_separated_sleep_classifies_as_sleep_poll(self):
+        command = "some-command | sleep 5"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_none_command_classifies_as_no_command_recorded(self):
+        assert _mod._classify_bash_wait_shape(None) == _mod._BASH_WAIT_NO_COMMAND
+
+    def test_non_string_command_classifies_as_no_command_recorded(self):
+        assert _mod._classify_bash_wait_shape(12345) == _mod._BASH_WAIT_NO_COMMAND
+
+
 class TestCacheRebuildExcessPricing:
     """Direct unit coverage for _cache_rebuild_excess_dollars -- new pricing
     logic (the counterfactual warm-read leg) not exercised by any of
@@ -6889,6 +8754,23 @@ class TestCacheRebuildExcessPricing:
         assert excess is None
         assert unpriced_tokens > 0
 
+    def test_fable_5_1_warm_read_leg_uses_reduced_cache_read_multiplier(self):
+        """This function re-derives rates["cache_read"] via its own
+        _model_rates(model) call, independent of _price_turn -- cache-
+        rebuild's entire thesis is a cache-read-vs-cache-write delta, the
+        exact axis Fable 5.1's reduced cache-read multiplier deviates on, so
+        this is the site most exposed to the Fable pricing change. Like
+        test_transcript_cost.py::TestFablePricing, this validates rate
+        arithmetic only -- it never confirms "claude-fable-5-1" is the exact
+        string Claude Code writes to message.model."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
+        # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the
+        # 0.025x reduced multiplier, not the standard 0.1x: 1,000,000/1e6 *
+        # 10.00*0.025 = 0.25; excess = 12.25.
+        assert excess == pytest.approx(12.25)
+        assert unpriced_tokens == 0
+
 
 class TestCacheRebuildClassification:
     """Direct coverage for _cache_rebuild_report's per-call cause
@@ -6899,21 +8781,24 @@ class TestCacheRebuildClassification:
     def test_dedup_synthetic_exclusion_cause_classification_and_priced_excess(
         self, fake_projects, capsys
     ):
-        """One transcript combining: a multi-record requestId run (must
-        dedup to one small, non-tail call), a requestId-less <synthetic>
-        entry (must be excluded from both pricing and the i/prev_ts/
-        prev_model bookkeeping), the transcript's own first call (must
-        classify session start, never an idle bucket), a flat-field
-        cache_creation fallback (classifies unexplained at a sub-5-minute
-        gap; its pricing-as-5m-only is covered separately by
-        test_flat_cache_creation_fallback_priced_as_5m_only), a record with
-        no timestamp at all and,
-        separately, a negative-gap clock-skew pair and a genuinely garbled
-        (non-empty) timestamp string (all three must classify as the
-        explicit timestamp-anomaly bucket, never silently folded into idle
-        or unexplained), a 6-minute gap (idle 5m-1h, with its priced excess
-        hand-computed below), and a model switch at a sub-5-minute gap
-        (classifies model switch, not unexplained)."""
+        """One transcript exercising every classification case:
+        - a multi-record requestId run (dedups to one small, non-tail call)
+        - a requestId-less <synthetic> entry (excluded from both pricing and
+          the i/prev_ts/prev_model bookkeeping)
+        - the transcript's own first call (session start, never an idle
+          bucket)
+        - a flat-field cache_creation fallback (unexplained at a sub-5-minute
+          gap; its pricing-as-5m-only is covered separately by
+          test_flat_cache_creation_fallback_priced_as_5m_only)
+        - a record with no timestamp at all (timestamp-anomaly bucket)
+        - a negative-gap clock-skew pair (timestamp-anomaly bucket)
+        - a genuinely garbled, non-empty timestamp string (timestamp-anomaly
+          bucket -- none of these three anomalies is silently folded into
+          idle or unexplained)
+        - a 6-minute gap (idle 5m-1h, priced excess hand-computed below)
+        - a model switch at a sub-5-minute gap (model switch, not
+          unexplained)
+        """
         run_ts = "2026-08-01T10:01:00.000Z"
         records = [
             # i=0: first call ever -- session start, regardless of tail size.
@@ -7037,6 +8922,1038 @@ class TestCacheRebuildGroupBoundary:
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
         assert _extract_cache_rebuild_row(out, "model switch")[0] == 0
         assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+
+class TestCacheRebuildSwitchDeltaPricing:
+    """Direct unit coverage for _cache_rebuild_switch_delta_dollars, mirroring
+    TestCacheRebuildExcessPricing's three cases -- the new helper's own
+    fast-mode/US-geo/unpriced-model parity is exercised nowhere else, since
+    the pooled-report fixtures below use only claude-sonnet-5 with no
+    speed/inference_geo variation."""
+
+    def test_fast_mode_multiplier_applies_to_both_switch_cost_and_rescue_legs(self):
+        """Mirrors _price_turn's own fast-mode multiplier: a wholly
+        idle-5m-1h-cause call's switch delta is the negation of that same
+        call's own _cache_rebuild_excess_dollars value (write $5.00, warm
+        read $0.40, excess $4.60 -- see TestCacheRebuildExcessPricing's own
+        fast-mode case)."""
+        usage = _priced("claude-sonnet-5", ephemeral_5m=1_000_000, speed="fast")["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(-4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_delta_not_a_silent_zero(self):
+        """A model absent from _MODEL_BASE_INPUT_RATES must not silently
+        price its delta as $0 -- callers distinguish 'unpriced' from 'priced
+        at zero' via the None sentinel, matching _price_turn's own
+        unpriced-model contract."""
+        usage = _priced("claude-unknown-model", ephemeral_5m=1_000_000, input=10, output=5)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-unknown-model", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta is None
+        assert unpriced_tokens > 0
+
+    def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_9(self):
+        """A hardcoded (2 - 0.1) = 1.9 coefficient would price this call's
+        rescue leg at 1,000,000/1e6 * 10.00*1.9 = 19.00, giving a delta of
+        -11.50; the correct, per-model-resolved coefficient uses Fable
+        5.1's own reduced 0.025x cache-read multiplier ((2 - 0.025) = 1.975,
+        rescue $19.75), giving -12.25 -- identical to that same call's own
+        _cache_rebuild_excess_dollars value."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(-12.25)
+        assert unpriced_tokens == 0
+
+
+class TestCacheRebuildNegateSwitchDeltaForDisplay:
+    """Direct unit coverage for _negate_switch_delta_for_display's own
+    sign-bit guard -- exercised elsewhere only indirectly, through a full
+    report run and a regex-parsed "Net$" cell
+    (test_exact_break_even_boundary_nets_zero_and_the_strict_inequality_holds)."""
+
+    def test_a_tiny_positive_residual_negates_to_positive_zero_not_negative_zero(self):
+        """A +1e-16 floating-point residual at an exact break-even point
+        must not print as the misleading "-0.00" once negated: round(0.0 -
+        1e-16, 2) underflows to -0.0 without the function's own + 0.0
+        guard."""
+        result = _mod._negate_switch_delta_for_display(1e-16)
+        assert result == 0.0
+        assert math.copysign(1.0, result) == 1.0
+
+    def test_negates_and_rounds_a_genuine_nonzero_delta(self):
+        """-4.567 mirrors the sign _cache_rebuild_switch_delta_dollars
+        actually accumulates (see TestCacheRebuildSwitchDeltaPricing's own
+        negative deltas); negation makes it a positive savings figure."""
+        assert _mod._negate_switch_delta_for_display(-4.567) == pytest.approx(4.57)
+
+
+class TestCacheRebuildOriginSplit:
+    """Verification items 1-2 (.claude/plans/subagent-idle-gap-cache-rebuild-split.md):
+    origin classification must be per-record via isSidechain, not by which
+    source file (group) a record came from, and the sequential gap-chain
+    used for cause classification must be keyed per (group, origin), not
+    per group alone."""
+
+    def test_main_and_subagent_idle_gap_rebuilds_each_land_in_their_own_origin_row(
+        self, fake_projects, capsys
+    ):
+        """One main-thread and one subagent idle-5m-1h rebuild in the same
+        fixture session: each origin's rebuild lands in its own row of the
+        new origin-split block, and the corpus-wide cause-breakdown and
+        concurrency-split totals this instrument already printed are
+        unchanged by adding the split."""
+        session_id = "sess-origin-split"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 2
+        assert _extract_cache_rebuild_row(out, "Everything idle (a break)") == (2, "0.69")
+
+        assert _extract_cache_rebuild_row(out, "main") == (1, "0.23")
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+
+    def test_inline_sidechain_record_in_main_file_counts_as_subagent_origin_and_own_gap_chain(
+        self, fake_projects, capsys
+    ):
+        """A record carrying isSidechain: true, written into the MAIN
+        transcript file (not a subagents/*.jsonl file), must count as
+        subagent origin -- a group_index > 0 classifier would misfile this
+        record's tokens under "main" instead. It must also be classified
+        against its OWN origin's prior call, not whichever record precedes
+        it in file order: a chain keyed per group alone would compare this
+        record to the immediately preceding main-thread record instead of
+        treating it as its own chain's first-ever call."""
+        main_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z", request_id="main-1",
+        )
+        # 350s after main-1. Correctly classified: the SUBAGENT chain's own
+        # first-ever call (session start), regardless of the elapsed time
+        # from main-1 -- a chain shared with the main thread would instead
+        # see this as the group's 2nd record and classify idle 5m-1h.
+        sidechain_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=150_000, ts="2026-08-01T10:05:50.000Z", request_id="sub-inline-1",
+        )
+        sidechain_first["isSidechain"] = True
+        # Main thread's own 2nd call: 355s after main-1, but only 5s after
+        # the inline sidechain record above. Correctly classified against
+        # main-1 (idle 5m-1h) -- a chain shared across origins would instead
+        # compare it to the sidechain record 5s earlier and classify
+        # unexplained.
+        main_second = _priced(
+            "claude-sonnet-5", ephemeral_5m=150_000, ts="2026-08-01T10:05:55.000Z", request_id="main-2",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [main_first, sidechain_first, main_second])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        # Two session starts (main's own, and the sidechain's own first
+        # call), one idle-5m-1h (main's 2nd call), zero unexplained -- a
+        # group-level (not per-origin) chain would instead produce one
+        # session start, one idle-5m-1h (the sidechain record, wrongly),
+        # and one unexplained (main's 2nd call, wrongly). The idle-5m-1h
+        # COUNT is coincidentally 1 either way, which is why the
+        # session-start/unexplained counts, and the per-origin X split
+        # below, are this test's real assertions.
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 2
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "150,000"
+        assert subagent_row["X"] == "0"
+        main_row = _table_cols(out, header_contains="Ratio", row_contains="main")
+        assert main_row["W5m"] == "250,000"
+        assert main_row["X"] == "150,000"
+
+
+class TestCacheRebuildIdleGapAttribution:
+    """.claude/plans/subagent-idle-gap-cause-attribution.md's Verification
+    section's report-level cases for the subagent idle-gap cause-attribution
+    table, modeled on TestCacheRebuildOriginSplit's own fixture-per-case
+    style. Precedence/self-scoping/clock-skew are covered directly against
+    _attribute_idle_gap_cause in TestAttributeIdleGapCause above; these
+    tests exercise the report's own wiring of that function into the scan
+    loop and the printed table. Also covers the report-level own-Bash
+    wait-shape rows: the sleep-poll/other/no-command split sums exactly to
+    the 'waiting on own Bash call' row it sub-splits."""
+
+    def test_bash_tool_result_at_gap_end_populates_own_bash_row_leaving_others_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        """Also covers the populated/empty-bucket case: the three
+        unmatched causes must render their zero/'n/a' sentinel in the same
+        run without statistics.median raising on an empty list."""
+        session_id = "sess-bash-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest -k foo")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.46", "97.2%",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_COORDINATOR) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_UNATTRIBUTED) == (
+            0, "0.00", "0.00", "n/a",
+        )
+
+    def test_background_task_marker_populates_background_task_row(self, fake_projects, capsys):
+        session_id = "sess-bg-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(
+                f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+                ts="2026-08-01T10:05:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isMeta"] = True
+        subagent_records[1]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK) == (
+            1, "0.46", "0.46", "98.6%",
+        )
+
+    def test_coordinator_message_marker_populates_coordinator_row(self, fake_projects, capsys):
+        session_id = "sess-coord-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: here's an update", ts="2026-08-01T10:05:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isMeta"] = True
+        subagent_records[1]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_COORDINATOR) == (
+            1, "0.46", "0.46", "98.6%",
+        )
+
+    def test_main_origin_bash_tool_result_in_window_does_not_leak_into_subagent_attribution(
+        self, fake_projects, capsys
+    ):
+        """Mirrors TestCacheRebuildOriginSplit's own
+        test_inline_sidechain_record_in_main_file_counts_as_subagent_origin_and_own_gap_chain
+        main/inline-sidechain/main shape, adding a second origin's own Bash
+        tool_use/tool_result interleaved into the same group_records list.
+        The main-origin tool_result lands LATER in the subagent's own
+        window than the subagent's own tool_result -- if self-scoping were
+        "any Bash tool_result in the window" rather than true tool_use_id
+        membership, last-marker-wins would pick up main's late-arriving
+        result instead and report a high covered share, not the correct
+        low one."""
+        main_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z",
+            request_id="main-1", content=[_bash_use("main-tool-1", "ls")],
+        )
+        sidechain_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:01.000Z",
+            request_id="sub-inline-1", content=[_bash_use("sub-tool-1", "pytest")],
+        )
+        sidechain_first["isSidechain"] = True
+        sub_tool_result = _user_msg([_tool_result("sub-tool-1", "ok")], ts="2026-08-01T10:00:10.000Z")
+        main_tool_result = _user_msg([_tool_result("main-tool-1", "ok")], ts="2026-08-01T10:05:55.000Z")
+        sidechain_second = _priced(
+            "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-inline-2",
+        )
+        sidechain_second["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            main_first, sidechain_first, sub_tool_result, main_tool_result, sidechain_second,
+        ])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        rebuilds, excess, band_excess, median_cov = _extract_cache_rebuild_attribution_row(
+            out, _mod._ATTR_OWN_BASH
+        )
+        assert (rebuilds, excess, band_excess) == (1, "0.46", "0.46")
+        assert median_cov == "2.5%"
+
+    def test_main_origin_rebuild_enters_no_attribution_row_and_totals_reconcile_with_subagent_row(
+        self, fake_projects, capsys
+    ):
+        """A main-origin idle-gap rebuild in the same corpus as two
+        differently-attributed subagent rebuilds: the main rebuild must
+        enter no attribution row, and the attribution table's own
+        Rebuilds/Excess $ must sum exactly to the subagent origin row --
+        neither more (main leaking in) nor less (a subagent rebuild
+        dropped)."""
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-main.jsonl", main_records)
+
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+            _user_msg(
+                f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:11:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:12:00.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in (subagent_records[0], subagent_records[2], subagent_records[4]):
+            rec["isSidechain"] = True
+        subagent_records[3]["isMeta"] = True
+        subagent_records[3]["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess-sub.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess-sub", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_rebuilds, main_excess = _extract_cache_rebuild_row(out, "main")
+        subagent_rebuilds, subagent_excess = _extract_cache_rebuild_row(out, "subagent")
+        assert (main_rebuilds, main_excess) == (1, "0.23")
+        assert (subagent_rebuilds, subagent_excess) == (2, "0.92")
+
+        rows = [_extract_cache_rebuild_attribution_row(out, attr) for attr in _mod._CACHE_REBUILD_ATTRIBUTIONS]
+        total_attributed_rebuilds = sum(row[0] for row in rows)
+        total_attributed_excess = sum(float(row[1]) for row in rows)
+        assert total_attributed_rebuilds == subagent_rebuilds
+        assert total_attributed_excess == pytest.approx(float(subagent_excess))
+        # main's own 0.23 must not have leaked into any attribution row.
+        assert total_attributed_excess == pytest.approx(0.92)
+
+    def test_idle_over_1h_subagent_rebuild_counts_in_excess_but_not_5m_1h_band_excess(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-over-1h"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:30:00.000Z"),
+            # Exactly 3600s after sub-1 -- idle >1h, not idle 5m-1h.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T11:00:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle >1h")[0] == 1
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.00", "50.0%",
+        )
+
+    def test_no_marker_in_window_populates_unattributed_row_with_nonzero_rebuilds(self, fake_projects, capsys):
+        """A genuine idle-gap candidate whose prior turn emits no Bash
+        tool_use and whose window carries no meta marker at all -- distinct
+        from the all-zero corpus case below, which never reaches a
+        populated attribution branch."""
+        session_id = "sess-unattr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:05:50.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_UNATTRIBUTED) == (
+            1, "0.46", "0.46", "n/a",
+        )
+
+    def test_multiple_candidates_in_same_bucket_uses_true_median_not_mean(self, fake_projects, capsys):
+        """Three Bash-attributed candidates, each in its own subagent group,
+        with covered shares 10%/90%/95% -- the median (90%) diverges from
+        the mean (65%), so this pins statistics.median against a
+        mean/first/last-value regression that every other test in this
+        class (at most one candidate per bucket) can't catch."""
+        marker_offsets = [
+            ("sess-median-a", "2026-08-01T10:00:36.000Z"),  # 36/360 = 10.0%
+            ("sess-median-b", "2026-08-01T10:05:24.000Z"),  # 324/360 = 90.0%
+            ("sess-median-c", "2026-08-01T10:05:42.000Z"),  # 342/360 = 95.0%
+        ]
+        for session_id, marker_ts in marker_offsets:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+            subagent_records = [
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                    request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+                ),
+                _user_msg([_tool_result("tool-1", "ok")], ts=marker_ts),
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+                ),
+            ]
+            subagent_records[0]["isSidechain"] = True
+            subagent_records[2]["isSidechain"] = True
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            3, "1.38", "1.38", "90.0%",
+        )
+
+    def test_timestampless_winning_marker_still_attributes_cause_with_na_median_cov(self, fake_projects, capsys):
+        """Report-level regression test for the timestamp-fallback bug this
+        round fixed: a winning Bash tool_result with no timestamp field at
+        all must still land in waiting-on-own-Bash-call, not unattributed,
+        rendering Median cov. as n/a rather than crashing or misattributing."""
+        session_id = "sess-no-ts-marker"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")]),  # no ts -- the fixed fallback shape
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.46", "n/a",
+        )
+
+    def test_no_subagent_idle_gap_rebuilds_renders_all_four_attribution_rows_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-mainonly.jsonl", main_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
+        for attribution in _mod._CACHE_REBUILD_ATTRIBUTIONS:
+            assert _extract_cache_rebuild_attribution_row(out, attribution) == (0, "0.00", "0.00", "n/a")
+
+    def test_sleep_poll_bash_command_populates_sleep_poll_wait_row(self, fake_projects, capsys):
+        """Mirrors
+        test_bash_tool_result_at_gap_end_populates_own_bash_row_leaving_others_zero_seeded
+        with a sleep-poll command instead of a plain one -- pins that the
+        sleep-poll wait row, not just the parent own-Bash row, gets
+        populated, leaving the other two shape rows zero-seeded."""
+        session_id = "sess-sleep-poll"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_SLEEP_POLL) == (
+            1, "0.46", "0.46", "97.2%",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_OTHER) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_NO_COMMAND) == (
+            0, "0.00", "0.00", "n/a",
+        )
+
+    def test_own_bash_wait_shape_rows_sum_exactly_to_the_own_bash_attribution_row(
+        self, fake_projects, capsys
+    ):
+        """Three own-Bash-attributed subagent rebuilds, one per shape
+        (sleep-poll, other, no command recorded), plus one background-task-
+        attributed rebuild that must not leak into the shape sum -- the
+        three shape rows' Rebuilds/Excess $/5m-1h $ must sum exactly to the
+        'waiting on own Bash call' row above them, modeled on
+        test_main_origin_rebuild_enters_no_attribution_row_and_totals_reconcile_with_subagent_row."""
+        shape_fixtures = [
+            ("sess-shape-sleep", [_bash_use("tool-1", "sleep 30")]),
+            ("sess-shape-other", [_bash_use("tool-1", "pytest")]),
+            ("sess-shape-nocommand", [{"type": "tool_use", "id": "tool-1", "name": "Bash"}]),
+        ]
+        for session_id, first_content in shape_fixtures:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+            subagent_records = [
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                    request_id="sub-1", content=first_content,
+                ),
+                _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+                ),
+            ]
+            subagent_records[0]["isSidechain"] = True
+            subagent_records[2]["isSidechain"] = True
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        session_id = "sess-shape-bgtask"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        bgtask_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:05:55.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        bgtask_records[0]["isSidechain"] = True
+        bgtask_records[1]["isMeta"] = True
+        bgtask_records[1]["isSidechain"] = True
+        bgtask_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", bgtask_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        own_bash_rebuilds, own_bash_excess, own_bash_band_excess, _median = (
+            _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH)
+        )
+        assert (own_bash_rebuilds, own_bash_excess, own_bash_band_excess) == (3, "1.38", "1.38")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK)[0] == 1
+
+        shape_rows = [_extract_cache_rebuild_attribution_row(out, shape) for shape in _mod._OWN_BASH_WAIT_SHAPES]
+        assert sum(row[0] for row in shape_rows) == own_bash_rebuilds
+        assert sum(float(row[1]) for row in shape_rows) == pytest.approx(float(own_bash_excess))
+        assert sum(float(row[2]) for row in shape_rows) == pytest.approx(float(own_bash_band_excess))
+
+    def test_no_subagent_idle_gap_rebuilds_renders_all_three_shape_rows_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        """Same all-main-origin corpus shape as the four-row zero-seeding
+        test above, pinning that statistics.median doesn't raise on the new
+        block's own empty lists either."""
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-mainonly-shape.jsonl", main_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for shape in _mod._OWN_BASH_WAIT_SHAPES:
+            assert _extract_cache_rebuild_attribution_row(out, shape) == (0, "0.00", "0.00", "n/a")
+
+    def test_bash_shape_row_5m_1h_excess_excludes_idle_over_1h_candidate_but_excess_includes_it(
+        self, fake_projects, capsys
+    ):
+        """Mirrors test_idle_over_1h_subagent_rebuild_counts_in_excess_but_not_5m_1h_band_excess
+        at the shape-row level: bash_shape_band_excess's own idle-5m-1h-band
+        guard sits unexercised whenever every own-Bash fixture lands in the
+        same band, as every other shape-row test above does. Pairing an
+        in-band sleep-poll candidate against an idle->1h sleep-poll
+        candidate makes 5m-1h $ and Excess $ diverge on the shape row."""
+        session_band = "sess-shape-band"
+        _write_jsonl(fake_projects / f"{session_band}.jsonl", [])
+        band_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        band_records[0]["isSidechain"] = True
+        band_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_band, "agent-1", band_records)
+
+        session_over1h = "sess-shape-over1h"
+        _write_jsonl(fake_projects / f"{session_over1h}.jsonl", [])
+        over1h_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:30:00.000Z"),
+            # Exactly 3600s after sub-1 -- idle >1h, not idle 5m-1h.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T11:00:00.000Z", request_id="sub-2",
+            ),
+        ]
+        over1h_records[0]["isSidechain"] = True
+        over1h_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_over1h, "agent-1", over1h_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        sleep_poll_rebuilds, sleep_poll_excess, sleep_poll_band_excess, _median = (
+            _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_SLEEP_POLL)
+        )
+        assert sleep_poll_rebuilds == 2
+        assert sleep_poll_excess == "0.92"
+        assert sleep_poll_band_excess == "0.46"
+
+
+class TestCacheRebuildSwitchDeltaThresholdIndependence:
+    """Verification item 3: W5m and X must be threshold-independent -- both
+    accumulate over every in-scope call, not just tail (>= threshold) ones."""
+
+    def test_sub_threshold_calls_count_toward_w5m_and_x_but_stay_invisible_in_tail_cause_table(
+        self, fake_projects, capsys
+    ):
+        """Three sub-threshold subagent calls: none crosses the 100,000-token
+        tail threshold, so none appears in the cause-breakdown table or the
+        'Calls writing >= ... tokens' tail count -- but their own 5m-tier
+        write tokens still accumulate into W5m, and the one classified idle
+        5m-1h still accumulates into X. The likelier implementer mistake
+        this pins: gating X's own accumulation on the same in_tail check
+        that gates the cause table, rather than accumulating it
+        unconditionally."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=10_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 400s gap -- idle 5m-1h, but sub-threshold (30,000 < 100,000).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=30_000,
+                ts="2026-08-01T10:06:40.000Z", request_id="sub-2",
+            ),
+            # 10s gap -- not idle, also sub-threshold.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=20_000,
+                ts="2026-08-01T10:06:50.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_cache_rebuild_summary(out)
+        assert summary["tail"] == "0"
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 0
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "60,000"
+        assert subagent_row["X"] == "30,000"
+
+
+class TestCacheRebuildSwitchDeltaNumeratorBoundaries:
+    """Verification item 4: X excludes idle >1h (a 1-hour cache is also
+    cold past 3600s) and pure-1h-tier writes (can't have been forced by a
+    <1h gap) -- extends TestCacheRebuildCacheTierGapMismatch's fixture shape
+    to a subagent-origin record."""
+
+    def test_idle_over_1h_and_pure_1h_tier_subagent_writes_stay_out_of_x(self, fake_projects, capsys):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 3,900s gap -- idle >1h. Excluded from X despite carrying
+            # 5m-tier write tokens (it still counts toward W5m).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=150_000,
+                ts="2026-08-01T11:05:00.000Z", request_id="sub-2",
+            ),
+            # 6-minute gap, but a PURE ephemeral_1h-tier write (no
+            # ephemeral_5m at all) -- the 1h-TTL cache can't have expired
+            # inside 6 minutes, so this reclassifies unexplained and
+            # contributes nothing to either W5m or X (no eph_5m tokens).
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=200_000,
+                ts="2026-08-01T11:11:00.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "150,100"
+        assert subagent_row["X"] == "0"
+
+
+class TestCacheRebuildSwitchDeltaArithmetic:
+    """Verification items 5-6: the printed net dollar figure for the
+    subagent origin row is savings-positive and uses the correct, per-model
+    coefficients, and the break-even boundary is exact, not a
+    rounded-decimal approximation."""
+
+    def test_default_rate_model_break_even_arithmetic(self, fake_projects, capsys):
+        """X = 500,000, W5m = 1,000,000 on claude-sonnet-5 ($2.00/MTok
+        base): net = (1.9 x 500,000 - 0.75 x 1,000,000) / 1e6 * $2.00 =
+        $0.40, savings-positive per the report's negation step -- a fixture
+        that instead asserted the helper's own pre-negation per-call sum
+        would expect -$0.40."""
+        records = [
+            # Session start: contributes 500,000 to W5m only (not X).
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 6-minute gap -- idle 5m-1h: contributes 500,000 to both W5m
+            # and X.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "1,000,000"
+        assert subagent_row["X"] == "500,000"
+        assert subagent_row["Net$"] == "0.40"
+
+    def test_exact_break_even_boundary_nets_zero_and_the_strict_inequality_holds(
+        self, fake_projects, capsys
+    ):
+        """X = 150,000, W5m = 380,000 is the exact rational break-even
+        (150,000/380,000 = 15/38 = 0.75/1.9), not the rounded 0.3947 display
+        figure -- a fixture built at the rounded decimal would sit
+        measurably off the true boundary and couldn't discriminate '>'
+        from '>='. Net must print exactly $0, not the "-0.00" a raw,
+        un-rounded floating-point cancellation could otherwise leave."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=230_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "380,000"
+        assert subagent_row["X"] == "150,000"
+        assert subagent_row["Net$"] == "0.00"
+
+        # The fixture's single subagent group sits exactly at the break-even
+        # ratio -- it must not count as "clearing" under the strict '>' this
+        # test's own docstring pins, which a '>=' off-by-one would flip.
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["clearing"] == 0
+
+
+class TestCacheRebuildSwitchDeltaZeroState:
+    def test_no_sidechain_records_prints_zero_valued_subagent_row(self, fake_projects, capsys):
+        """A corpus with no sidechain records at all still renders a
+        zero-valued subagent row in every new block, matching the
+        per-account zero-seeding convention, rather than vanishing -- and
+        the dispersion block's own share-of-zero division doesn't raise."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "0"
+        assert subagent_row["X"] == "0"
+        assert subagent_row["Net$"] == "0.00"
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 0
+        assert dispersion["clearing"] == 0
+        assert dispersion["share"] == "0.0%"
+        assert dispersion["net"] == "0.00"
+
+
+class TestCacheRebuildSubagentDispersion:
+    """Verification item 8: per-dispatch dispersion is computed against each
+    subagent group's OWN X and W5m, not the pooled corpus-wide denominator --
+    the mechanism Phase 0c's Outcome 2 (a selective lever not excluded)
+    would read off."""
+
+    def test_per_group_ratios_dispersion_excludes_zero_w5m_group_and_counts_sub_threshold_calls(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-dispersion"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+
+        # This dispatch's own ratio (150,000/200,000 = 0.75) clears the
+        # default-rate break-even (0.3947) with margin.
+        clearing_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=50_000, ts="2026-08-01T10:00:00.000Z", request_id="c-1"),
+            # Sub-threshold (10,000 < 100,000 default threshold) but idle
+            # 5m-1h -- must still count toward THIS group's own X/W5m
+            # (per-group threshold independence, mirroring the pooled fix
+            # above).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="c-2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=140_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="c-3",
+            ),
+        ]
+        for rec in clearing_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-clearing", clearing_records)
+
+        # This dispatch's own ratio (10,000/200,000 = 0.05) does not clear.
+        non_clearing_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=190_000, ts="2026-08-01T10:00:00.000Z", request_id="n-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="n-2",
+            ),
+        ]
+        for rec in non_clearing_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-non-clearing", non_clearing_records)
+
+        # No 5-minute-tier writes at all -- undefined ratio, excluded from
+        # both the clearing count and the W5m-share denominator, and must
+        # not raise a division error.
+        zero_w5m_record = _priced(
+            "claude-sonnet-5", ephemeral_1h=100_000, ts="2026-08-01T10:00:00.000Z", request_id="z-1",
+        )
+        zero_w5m_record["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-zero-w5m", [zero_w5m_record])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 2
+        assert dispersion["clearing"] == 1
+        assert dispersion["share"] == "50.0%"
+        assert dispersion["net"] == "0.27"
+
+    def test_unpriced_model_call_inside_a_priced_group_is_excluded_from_that_groups_own_w5m_and_x(
+        self, fake_projects, capsys
+    ):
+        """A group's own W5m/X reflect only its priced calls -- per-group
+        accumulation happens exclusively inside the priced branch of the
+        report's accumulation block, by design (an unpriced call has no
+        delta_dollars to fold into group_delta_dollars, and a group's
+        "clears/doesn't clear" verdict must be computed over the same
+        population as its own ratio). agent-1's own priced calls (40,000
+        session-start + 100,000 idle-5m-1h) clear the default-rate
+        break-even at ratio 100,000/140,000 = 0.714. A second,
+        unambiguously non-clearing group (agent-2, own ratio 10,000/200,000
+        = 0.05) sits alongside it so the dispersion block has two eligible
+        groups -- with only one eligible group, "share" reduces to
+        w5m/w5m = 100% regardless of what that group's own w5m actually is,
+        so a regression that folds the unpriced call's tokens into
+        agent-1's own group_w5m_tokens too (e.g. moving that accumulator
+        line outside the price-gated branch) would leave "share" unchanged
+        at 100% and go undetected; with agent-2 present, the same
+        regression inflates agent-1's numerator and denominator by
+        different amounts (agent-1 alone is the numerator, both groups sum
+        to the denominator), so "share" moves from 41.2% to 85.1% and the
+        assertion below catches it. The unpriced call's tokens still count
+        toward the POOLED subagent W5m (price-independent there, by
+        design), which is exactly what the dispersion block's own
+        coverage-disclosure line reports as uncovered, and its excluded
+        turn/token count is exactly what the switch-delta table's own
+        unpriced-model disclosure line reports."""
+        session_id = "sess-unpriced-in-group"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=40_000, ts="2026-08-01T10:00:00.000Z", request_id="u-1"),
+            # 6-minute gap -- idle 5m-1h, priced.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="u-2",
+            ),
+            # 6-minute gap -- also idle 5m-1h, but an unpriced model: no
+            # price-table entry, so this call's tokens can never reach
+            # group_delta_dollars/group_w5m_tokens/group_x_tokens.
+            _priced(
+                "claude-unknown-model", ephemeral_5m=1_000_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="u-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", records)
+
+        # A second, unambiguously non-clearing group -- gives the dispersion
+        # block two eligible groups so "share" is a genuine weighted value
+        # (see docstring above for why a single-group fixture can't
+        # discriminate the regression this test guards against).
+        other_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=190_000, ts="2026-08-01T10:00:00.000Z", request_id="o-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="o-2",
+            ),
+        ]
+        for rec in other_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", other_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 2
+        assert dispersion["clearing"] == 1
+        assert dispersion["share"] == "41.2%"
+        assert dispersion["net"] == "0.17"
+        assert dispersion["uncovered_w5m"] == 1_000_000
+        assert dispersion["pooled_subagent_w5m"] == 1_340_000
+
+        unpriced_switch_delta = re.search(
+            r"\((\d[\d,]*) 5m-tier write calls / (\d[\d,]*) tokens"
+            r" excluded from the switch-delta figures above", out,
+        )
+        assert unpriced_switch_delta is not None, "unpriced switch-delta disclosure line not found in output"
+        assert unpriced_switch_delta.group(1) == "1"
+        assert unpriced_switch_delta.group(2) == "1,000,000"
+
+
+class TestCacheRebuildCrossInstrumentReconciliation:
+    """Verification item 10: cache-rebuild's new sidechain W5m accumulator
+    must agree exactly with cache-efficiency's own sidechain Write5m column
+    on an identical fixture -- both dedup by requestId per group and
+    classify origin off the identical isSidechain expression, so a
+    disagreement means the new accumulator has a bug, not that the corpus
+    is odd."""
+
+    def test_sidechain_w5m_matches_cache_efficiency_sidechain_write5m_on_identical_fixture(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-reconcile"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=75_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=125_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        rebuild_out = capsys.readouterr().out
+        rebuild_row = _table_cols(rebuild_out, header_contains="Ratio", row_contains="subagent")
+
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
+        efficiency_out = capsys.readouterr().out
+        efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
+
+        assert rebuild_row["W5m"] == efficiency_row["Write5m"]
 
 
 class TestCacheRebuildCacheTierGapMismatch:
@@ -7222,6 +10139,28 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
             _mod._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
 
+    def test_no_redact_refused_with_ttl_verdict_and_multi_root(self, tmp_path, capsys):
+        """--ttl-verdict's own accumulation family is keyed on
+        (origin, root_ordinal), carrying the identical multi-root +
+        --no-redact leak risk as the pooled figures the sibling test above
+        covers. This needs its own test rather than an edit to the sibling
+        test, since ttl_verdict defaults to False on _cache_rebuild_args and
+        every other test in this class leaves it there."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_rebuild_report(
+                _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[root_a, root_b],
+            )
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "acct-a" not in out
+        assert "acct-b" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+
 
 class TestCacheRebuildArgparseWiring:
     def test_parses_since_threshold_and_extra_config_dirs(self):
@@ -7243,6 +10182,825 @@ class TestCacheRebuildArgparseWiring:
         assert args.since == "7d"
         assert args.threshold == 50_000
         assert args.extra_config_dirs == ["/tmp/acct-b"]
+
+
+class TestCacheRebuildTtlVerdictArgparseWiring:
+    def test_ttl_verdict_flag_defaults_false_and_parses_true(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-rebuild"])
+        assert args.ttl_verdict is False
+
+        args = parser.parse_args(["cache-rebuild", "--ttl-verdict"])
+        assert args.ttl_verdict is True
+
+
+class TestClassifyCacheRebuildCauseIdle5mBoundaryOverride:
+    """Direct edge-value coverage for _classify_cache_rebuild_cause's
+    idle_5m_boundary_seconds override, at its own exact boundary --
+    exercised only indirectly elsewhere (via --ttl-verdict's sensitivity
+    accumulation), matching this function's own pre-existing convention of
+    no other direct unit tests."""
+
+    def test_gap_at_the_overridden_boundary_classifies_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=60, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_IDLE_5M_1H
+
+    def test_gap_one_second_under_the_overridden_boundary_does_not_classify_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=59, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_UNEXPLAINED
+
+
+class TestCacheRebuild1hTo5mDeltaPricing:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars,
+    mirroring TestCacheRebuildSwitchDeltaPricing's three cases for the
+    sibling 5m-to-1h formula -- fast-mode/US-geo multiplier parity, the
+    unpriced-model sentinel, and the reduced-cache-read-rate coefficient
+    are exercised nowhere else."""
+
+    def test_fast_mode_multiplier_applies_to_the_expiry_leg(self):
+        """A wholly idle-5m-1h-cause call (eph_1h=0, all read tokens) nets
+        1,000,000/1e6*(2.5-0.2) = $2.30 at the default rate; fast mode
+        doubles every dollar class, so this call's own delta doubles too."""
+        usage = _priced("claude-sonnet-5", cache_read=1_000_000, speed="fast")["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_delta_not_a_silent_zero(self):
+        """Mirrors the sibling's own unpriced-model contract: None, not a
+        silently priced $0, so callers can distinguish the two."""
+        usage = _priced("claude-unknown-model", ephemeral_1h=1_000_000, input=10, output=5)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-unknown-model", usage, is_idle_5m_1h_cause=False
+        )
+        assert delta is None
+        assert unpriced_tokens > 0
+
+    def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_15(self):
+        """A hardcoded (1.25 - 0.1) = 1.15 coefficient would price this
+        call's expiry leg at 1,000,000/1e6 * (12.5 - 1.0) = $11.50. The
+        correct, per-model-resolved coefficient uses Fable 5.1's own
+        reduced 0.025x cache-read multiplier (read rate $0.25, expiry
+        coefficient 12.5-0.25=12.25), giving $12.25 instead."""
+        usage = _priced("claude-fable-5-1", cache_read=1_000_000)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(12.25)
+        assert unpriced_tokens == 0
+
+
+class TestCacheRebuild1hTo5mDeltaArithmetic:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars' own
+    per-call arithmetic at, above, and below its algebraic break-even
+    (Z/W1h = 0.75/(1.25-r) ~= 0.6522 at the default rate) -- the mirror of
+    TestCacheRebuildSwitchDeltaArithmetic's own coverage for the sibling
+    5m-to-1h formula. W1h=1,150,000 (one session-start call, contributing
+    only the always-on base term) pairs with a second, idle-5m-1h-cause
+    call's own read tokens (Z) at each of the three points."""
+
+    def test_below_break_even_z_favors_dropping_to_5m(self):
+        """Z=500,000: 500,000/1,150,000 = 0.435 is well under 0.6522, so
+        dropping to 5m nets a savings (a negative, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=500_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(-0.575)
+
+    def test_exact_rational_break_even_nets_exactly_zero(self):
+        """Z=750,000 is the exact rational break-even (750,000/1,150,000 =
+        15/23 = 0.75/1.15), not the rounded 0.6522 display figure."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=750_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.0, abs=1e-9)
+
+    def test_above_break_even_z_disfavors_dropping_to_5m(self):
+        """Z=1,000,000: 1,000,000/1,150,000 = 0.870 clears 0.6522, so
+        dropping to 5m nets a cost (a positive, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=1_000_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.575)
+
+
+class TestCacheRebuildMarginClears:
+    """Direct unit coverage for _cache_rebuild_margin_clears -- shared by
+    both directions' own per-root check, at, above, and below the plan's
+    10% margin threshold (_CACHE_REBUILD_TTL_MARGIN_FRACTION)."""
+
+    def test_exactly_at_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(10.0, 100.0) is True
+
+    def test_above_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(50.0, 100.0) is True
+
+    def test_below_the_margin_threshold_does_not_clear(self):
+        assert _mod._cache_rebuild_margin_clears(5.0, 100.0) is False
+
+    def test_non_positive_volume_never_clears(self):
+        """A root with zero (or, degenerately, negative) dollar-equivalent
+        volume never clears, rather than dividing by zero or by a negative
+        number."""
+        assert _mod._cache_rebuild_margin_clears(0.0, 0.0) is False
+        assert _mod._cache_rebuild_margin_clears(5.0, -1.0) is False
+
+
+class TestCacheRebuildTokenTiebreakerFavors5m:
+    """Direct unit coverage for _cache_rebuild_token_tiebreaker_favors_5m --
+    the raw-token, zero-price, zero-tolerance sign check, exercised
+    independently of any verdict-decision branch test."""
+
+    def test_z_below_w1h_favors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(5, 10) is True
+
+    def test_z_above_w1h_disfavors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(15, 10) is False
+
+    def test_z_equal_to_w1h_is_a_disagreement_not_a_favorable_tie(self):
+        """Z == W1h counts as a disagreement, never a wash --
+        including the degenerate 0 == 0 case (a root with no data in
+        either direction never reaches this function in the report's
+        own per-root reduction, but the function itself must not
+        special-case zero)."""
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
+
+
+class TestCacheRebuildRootVerdictInput:
+    """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
+    per-root reduction the report's own per-bucket loop calls once per
+    5m-tier root and once per 1h-tier root. For a 5m-tier root,
+    apply_tiebreaker=False and the tiebreaker never runs, since W1h is
+    always 0 for a 5m-tier root by construction, making a raw-token
+    comparison against it degenerate. For a 1h-tier root, apply_tiebreaker=
+    True and the tiebreaker gates clears."""
+
+    def test_5m_tier_root_clears_despite_disagreeing_tiebreaker_value(self):
+        """apply_tiebreaker is False for a 5m-tier root, so clears is
+        decided by the margin alone even when tiebreaker_favors_5m is
+        passed a value that would disagree with the dollar accounting's
+        own sign."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_clears_despite_tiebreaker_wash(self):
+        """A 5m-tier root's most common would-be tiebreaker outcome is
+        Z == W1h == 0, a wash -- but apply_tiebreaker is False for it, so
+        the wash never gates clears the way it does for a 1h-tier root."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_favoring_5m_when_net_primary_is_non_positive(self):
+        """A 5m-tier root whose own net$ is non-positive (no savings from
+        adopting 1h) favors staying at 5m, never clearing -- apply_tiebreaker
+        is always False for a 5m-tier root, so the margin failure alone is
+        what fails it here."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=-1.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_when_sensitivity_boundary_fails_margin(self):
+        """Clears at the primary boundary's own margin but not at the
+        sensitivity boundary's -- the two-point AND-gate fails the
+        whole root even with a tiebreaker that agrees."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_disagreement_despite_clearing_margin(self):
+        """A dollar margin that clears comfortably at both boundaries
+        still declines when the raw-token tiebreaker disagrees with the
+        dollar accounting's own sign."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_wash(self):
+        """A 1h-tier root's own raw-token tiebreaker wash (Z == W1h) counts
+        as a disagreement, never a favorable tie, even when the dollar
+        margin clears comfortably -- apply_tiebreaker is True here, unlike
+        a 5m-tier root, so the wash still gates clears."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10),
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_adopts_when_margin_clears_and_tiebreaker_agrees(self):
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": True}
+
+    def test_5m_tier_root_favors_5m_at_the_net_primary_zero_sign_boundary(self):
+        """favors resolves via net_primary > 0, not net_primary >= 0, so an
+        exact 0.0 net_primary -- a real dollar-delta accumulation can land
+        exactly on zero -- takes the negative_favors branch for a 5m-tier
+        root's own orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_favors_1h_at_the_net_primary_zero_sign_boundary(self):
+        """The same net_primary == 0.0 sign boundary, at a 1h-tier root's
+        own positive_favors/negative_favors orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "1h", "clears": False}
+
+
+class TestCacheRebuildTtlVerdictDecision:
+    """Direct unit coverage for _cache_rebuild_ttl_verdict's own four-way
+    reduction, with hand-fed per-root {"favors", "clears"} inputs -- one
+    test per branch."""
+
+    def test_zero_consistent_roots_is_no_verdict(self):
+        assert _mod._cache_rebuild_ttl_verdict([]) == _mod._TTL_VERDICT_NO_VERDICT
+
+    def test_single_direction_all_clearing_is_adopt(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ADOPT
+
+    def test_single_direction_one_not_clearing_is_decline(self):
+        """A margin/boundary miss on one otherwise-agreeing root declines
+        the whole bucket, even though every root points the same way."""
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": False},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_dollar_vs_token_tiebreaker_disagreement_declines(self):
+        """A root whose dollar accounting and raw-token tiebreaker
+        disagree never clears, regardless of its own dollar margin --
+        modeled here by resolving "clears" through the tiebreaker exactly
+        as the report's own per-root reduction does, then feeding the
+        result into the pure verdict function."""
+        dollar_favors_5m = True
+        tiebreaker_favors_5m = _mod._cache_rebuild_token_tiebreaker_favors_5m(900_000, 100_000)
+        assert tiebreaker_favors_5m is False  # Z > W1h disfavors 5m
+        tiebreaker_agrees = tiebreaker_favors_5m is not None and tiebreaker_favors_5m == dollar_favors_5m
+        root_inputs = [{"favors": "5m", "clears": tiebreaker_agrees}]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_differing_favored_directions_is_roots_disagree(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "5m", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ROOTS_DISAGREE
+
+
+class TestCacheRebuildTtlVerdictPerRootAccumulation:
+    """Full-report coverage of --ttl-verdict's own per-(origin, root_ordinal)
+    accumulation and reduction, on synthetic corpora built via fake_projects/
+    fake_config_dir_factory."""
+
+    def test_main_bucket_5m_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 5m-tier main-thread root (W5m=1,000,000, X=500,000,
+        comfortably clearing margin) reaches 'adopt' for the main bucket.
+        A third, idle-gap warm read (300,000 tokens, no write at all)
+        accumulates Z=300,000 for this root, but apply_tiebreaker is False
+        for a 5m-tier root, so this read's presence or absence never gates
+        its own clears (see
+        test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash
+        below for the same root reaching 'adopt' with no read at all)."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "0"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash(self, fake_projects, capsys):
+        """Regression test guarding the tiebreaker-scope fix: apply_tiebreaker
+        is False for a 5m-tier root, so its own Z==W1h==0 wash (no idle-gap
+        read at all) never gates clears, and this root adopts despite the
+        wash -- same clean 5m-tier root as
+        test_main_bucket_5m_tier_root_reaches_adopt above (W5m=1,000,000,
+        X=500,000), but with no third call at all."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_subagent_bucket_1h_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 1h-tier subagent-origin root (W1h nonzero from a
+        single session-start write, Z=0) reaches 'adopt' for the subagent
+        bucket, favoring a drop to 5m."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="s1"),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "0"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Clears"] == "True"
+
+    def test_per_root_w5m_cells_sum_to_the_pooled_per_origin_w5m_row(self, tmp_path, capsys):
+        """Reconciliation guard (plan Verification section): the new
+        per-(origin, root_ordinal) W5m accumulator must never drift from
+        the existing pooled w5m_by_origin figure it duplicates at finer
+        grain -- reuses the dispersion coverage-disclosure extractor's own
+        "sum the parts, compare to the pooled row" pattern
+        (TestCacheRebuildSubagentDispersion, around line 9549)."""
+        session_id = "sess-reconcile-root"
+        proj_slug = "-home-user-repo"
+        root_x = _write_cost_root(tmp_path, "acct-x", proj_slug, session_id, [])
+        root_y = _write_cost_root(tmp_path, "acct-y", proj_slug, session_id, [])
+
+        records_x = [
+            _priced("claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z", request_id="x-1"),
+        ]
+        for rec in records_x:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_x / proj_slug, session_id, "agent-x", records_x)
+
+        records_y = [
+            _priced("claude-sonnet-5", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="y-1"),
+        ]
+        for rec in records_y:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_y / proj_slug, session_id, "agent-y", records_y)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_x, root_y])
+        out = capsys.readouterr().out
+
+        pooled_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        pooled_w5m = int(pooled_row["W5m"].replace(",", ""))
+
+        root_1 = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        root_2 = _extract_ttl_verdict_root_row(out, "subagent", "account-2")
+        per_root_sum = int(root_1["W5m/W1h"].replace(",", "")) + int(root_2["W5m/W1h"].replace(",", ""))
+
+        assert per_root_sum == pooled_w5m == 350_000
+        # Redacted by default: the raw account names/paths never leak into
+        # the per-root table, matching this file's own convention for every
+        # other redacted per-account table.
+        assert "acct-x" not in out
+        assert "acct-y" not in out
+        assert str(root_x) not in out
+        assert str(root_y) not in out
+
+    def test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict(
+        self, tmp_path, capsys
+    ):
+        """Two roots landing in the same bucket but on different tiers must
+        both feed that bucket's verdict through the real accumulation loop,
+        not just the pure verdict function directly. account-1 (5m-tier)
+        reuses _ttl_verdict_5m_tier_adopt_records; account-2 (1h-tier)
+        reuses _ttl_verdict_1h_tier_non_wash_disagreement_records -- closing
+        the multi-tier wiring gap those single-root tests can't cover on
+        their own."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(
+            tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+            _ttl_verdict_1h_tier_non_wash_disagreement_records(),
+        )
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "decline"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["X/Z"] == "500,000"
+        assert root_1["Favors"] == "1h"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["W5m/W1h"] == "1,000,000"
+        assert root_2["X/Z"] == "800,000"
+        assert root_2["Favors"] == "1h"
+        assert root_2["Clears"] == "False"
+
+    def test_hand_computed_w1h_and_z_totals_match_known_fixture(self, fake_projects, capsys):
+        """A small, hand-computed 1h-tier fixture.
+
+        call1 (session start) writes 200,000 ephemeral_1h tokens (W1h
+        only -- session start is never idle-gap-caused).
+        call2, a 6-minute-gap warm read of 150,000 tokens with no write
+        at all, is idle 5m-1h under a live 1h tier (W1h unchanged,
+        Z += 150,000).
+        call3, a further 6-minute-gap PURE ephemeral_1h-tier write of
+        100,000 tokens, reclassifies unexplained (the 1h cache can't have
+        expired inside 6 minutes), so it adds to W1h but not Z.
+
+        Expected totals -- W1h=300,000, Z=150,000 -- are known in
+        advance, not derived from the code under test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=200_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", cache_read=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=100_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="w3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "300,000"
+        assert root_row["X/Z"] == "150,000"
+
+    def test_root_with_both_w5m_and_w1h_nonzero_contributes_no_verdict_for_that_bucket(
+        self, fake_projects, capsys
+    ):
+        """A root paying both tiers simultaneously in this window (mixed
+        evidence) is excluded from the bucket's verdict entirely, the same
+        as a root with no data -- the break-even algebra
+        assumes a single live tier per root per window."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="mix-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "0"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "no verdict"
+
+    def test_zero_consistent_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
+        """A corpus with cache activity but no cache-write/read tokens
+        crossing either direction's own accumulation gate (plain
+        input/output tokens only) leaves neither direction with data --
+        'no verdict', never a vacuous 'adopt'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["consistent_5m"] == "0"
+            assert summary["consistent_1h"] == "0"
+            assert summary["verdict"] == "no verdict"
+
+    def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
+        """root_label's own redact branch prints "account-N"; the
+        --no-redact branch must print scan_roots[0]'s own real parent path
+        instead -- no prior test pinned this for the per-root table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="nr1"),
+        ])
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[fake_projects.parent],
+        )
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", str(fake_projects.parent.parent))
+        assert root_row["W5m/W1h"] == "500,000"
+        assert "account-1" not in out
+
+    def test_empty_corpus_reaches_no_verdict_without_crashing(self, fake_projects, capsys):
+        """--ttl-verdict against zero in-scope calls prints clean
+        no-verdict output for both buckets rather than crashing (e.g. a
+        division by zero in the margin check, already guarded by
+        _cache_rebuild_margin_clears' own non-positive-volume branch)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["verdict"] == "no verdict"
+
+
+class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
+    """Full-pipeline coverage that the per-root tiebreaker reduction reads
+    z_by_origin_root at the primary, 300s boundary, never the 60s
+    sensitivity boundary. Each fixture below adds a read call idle only at
+    the 60s sensitivity boundary (gap in [60s, 300s)) alongside one idle at
+    both boundaries, so the primary and sensitivity Z totals genuinely
+    diverge. That divergence is observable only through a 1h-tier root's
+    own printed Z figure in its X/Z column, since apply_tiebreaker is False
+    for a 5m-tier root."""
+
+    def test_5m_tier_root_adopts_regardless_of_which_boundary_z_is_read_at(self, fake_projects, capsys):
+        """apply_tiebreaker is False for a 5m-tier root, so a Z/W1h wash at
+        either boundary never gates clears."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w5m-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w5m-2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=300_000,
+                ts="2026-08-01T10:07:30.000Z", request_id="w5m-3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_1h_tier_root_declines_on_a_non_wash_disagreement(self, fake_projects, capsys):
+        """W1h=1,000,000 (call1, session start). call2 reads 800,000
+        tokens at a 400s gap, idle at both boundaries. call3 reads a
+        further 400,000 at a 100s gap after call2, idle only at the 60s
+        sensitivity boundary.
+
+        The primary Z is 800,000: nonzero, unequal to W1h, and 0.8 below
+        the 1.0 tiebreaker threshold favors dropping to 5m, disagreeing
+        with the dollar accounting's own "favors 1h" sign.
+
+        0.8 also exceeds the ~0.652 dollar break-even, so net$ is negative
+        here too. This ratio band structurally always fails the margin
+        alongside the tiebreaker, since the break-even sits below the
+        tiebreaker's own threshold.
+
+        Gating Z's own increment on the sensitivity boundary instead of
+        the primary one would total 1,200,000, a different printed X/Z
+        figure than the 800,000 asserted below."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_1h_tier_non_wash_disagreement_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "decline"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "800,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictSensitivityBoundary:
+    def test_clears_margin_at_300s_but_fails_at_60s_never_adopts(self, fake_projects, capsys):
+        """A 1h-tier root whose margin clears using the primary
+        (300s-boundary) accumulation but fails once a gap in [60s, 300s)
+        is also reclassified idle at the 60s sensitivity boundary -- the
+        two-point check is an explicit AND-gate, so this must
+        decline, never adopt, even though the primary boundary alone
+        clears comfortably.
+
+        call1 (session start) writes 1,150,000 ephemeral_1h tokens (W1h),
+        contributing only the always-on base term (-$1.725) at both
+        boundaries. call2, a 100s gap, reads 900,000 tokens:
+        - at the 300s boundary, this call is unexplained (gap < 300) and
+          never touches Z or the expiry term, leaving net$ = +$1.725
+          (margin 1.725/4.6 = 37.5%, clears).
+        - at the 60s boundary, the same call is idle 5m-1h, adding a
+          +$2.07 expiry term that flips the total to -$0.345 (a negative
+          margin, failing)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_150_000, ts="2026-08-01T10:00:00.000Z", request_id="b1"),
+            _priced(
+                "claude-sonnet-5", cache_read=900_000,
+                ts="2026-08-01T10:01:40.000Z", request_id="b2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] != "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictUnpricedDisclosure:
+    """--ttl-verdict's own unpriced-model disclosure (pooled across both
+    directions and every root) -- mirrors the sibling
+    unpriced_switch_delta_turns disclosure's own coverage
+    (TestCacheRebuildSubagentDispersion, around line 9593)."""
+
+    def test_unpriced_model_call_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call is priced once per record, before
+        either the W5m or W1h branch runs, rather than once per boundary
+        iteration -- the disclosure count must reflect the one underlying
+        call, not the two boundaries (primary and sensitivity) it would
+        otherwise be priced at."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-unknown-model", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+    def test_unpriced_mixed_tier_write_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call carrying both ephemeral_1h and
+        ephemeral_5m tokens (a mixed-tier write) enters both the W5m and
+        the W1h branch, but must be counted once, not twice, since both
+        branches price the same underlying call."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced(
+                "claude-unknown-model", ephemeral_1h=100_000, ephemeral_5m=150_000,
+                ts="2026-08-01T10:00:00.000Z", request_id="u2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+
+class TestCacheRebuildTtlVerdictCacheMissReasonValidator:
+    """Cross-tab the gap-derived idle-5m-1h cause against
+    pricing._cache_miss_reason's own model_changed signal -- disclosed
+    only, never overriding the gap-derived accumulation."""
+
+    def test_agreeing_cache_miss_reason_prints_no_discrepancy_line(self, fake_projects, capsys):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "excessive_gap", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert "cache-miss-reason cross-tab" not in out
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+    def test_disagreeing_cache_miss_reason_prints_discrepancy_but_never_overrides_the_accumulator(
+        self, fake_projects, capsys
+    ):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(r"cache-miss-reason cross-tab: (\d+) of (\d+)", out)
+        assert match is not None, "cache-miss-reason cross-tab discrepancy line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "1"
+
+        # The gap-derived classification still governs the cause breakdown
+        # and the per-root accumulator, never pricing._cache_miss_reason's
+        # own signal.
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+
+class TestCacheRebuildTtlVerdictDefaultPathRegression:
+    def test_output_without_the_flag_is_unchanged_and_omits_the_new_section(self, fake_projects, capsys):
+        """Same fixture and assertions as
+        TestCacheRebuildSwitchDeltaArithmetic.test_default_rate_model_break_even_arithmetic
+        -- a spot-check of the subagent row's W5m/X/Net$ cells, plus
+        confirmation the new TTL-verdict section never appears, when
+        --ttl-verdict is omitted."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "1,000,000"
+        assert subagent_row["X"] == "500,000"
+        assert subagent_row["Net$"] == "0.40"
+        assert "## TTL-verdict" not in out
 
 
 def _reviewer_dispatch_records(
@@ -7580,7 +11338,16 @@ class TestCostLedgerRecordParity:
         """--record's row values equal what _compute_cost_trend_data,
         _compute_deny_summary_data, and _compute_reviewer_yield_data compute
         independently for the same week — the parity check that catches
-        drift between the recorder and the report subcommands it reuses."""
+        drift between the recorder and the report subcommands it reuses.
+
+        The fixture carries one main-thread denial and one subagent-sourced
+        denial. The two use different hook names because _hook_deny derives
+        its toolUseID from the hook name, and a same-named second denial
+        would collapse under dedup. The deny oracle below is widened to
+        include_subagents=True to match its two cost/reviewer siblings. That
+        widening is what exercises agreement between the recorder's denials
+        column and the oracle's own subagent-inclusive count, rather than
+        only the main-thread-only count both would otherwise report."""
         proj = fake_projects
         session_id = "sess-parity"
         records = [
@@ -7607,6 +11374,10 @@ class TestCostLedgerRecordParity:
         records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
                               content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        subagent_denial = _hook_deny("worktree", ts="2026-06-02T11:00:00.000Z")
+        subagent_denial["isSidechain"] = True
+        _write_subagent_jsonl(proj, session_id, "denial-agent", [subagent_denial])
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
         capsys.readouterr()
@@ -7637,10 +11408,10 @@ class TestCostLedgerRecordParity:
 
         week_start = _mod.datetime(2026, 6, 1, tzinfo=_mod.UTC).timestamp()
         week_end = week_start + 7 * 86400
-        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         deny_data = _mod._compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
         assert row["denials"] == sum(deny_data["hook_counts"].values())
-        assert row["denials"] == 1
+        assert row["denials"] == 2
 
         reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
@@ -10730,6 +14501,67 @@ class TestCmdUserInput:
         assert "### claude-config ·" in out
         assert "### private-project-1 ·" in out
 
+    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        the Scope line's project count must collapse the worktree-suffixed slug back
+        to the main slug before counting. Same as cmd_buckets's Proj column."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount the Scope line's project
+        count. Same invariant as TestBuckets's Proj-column sibling guard for
+        cmd_buckets — see that test for the mirrored intent, not identical setup
+        mechanics."""
+        proj_alice = fake_projects.parent / "-home-alice-repo"
+        proj_bob = fake_projects.parent / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [
+            _ui_user("prompt from alice's repo", branch="feat"),
+        ])
+        _write_jsonl(proj_bob / "sess.jsonl", [
+            _ui_user("prompt from bob's repo", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, fake_projects, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family. Same invariant as TestBuckets's combined sibling test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        proj_sibling = fake_projects.parent / "-home-otheruser-testrepo"
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_sibling / "sess.jsonl", [
+            _ui_user("prompt from a same-named repo under a different home dir", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 3 sessions, 3 fresh prompts" in out
+
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
         with the user-input-specific stderr message; nothing is printed to stdout."""
@@ -11797,6 +15629,19 @@ class TestSubagents:
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
 
+    def test_single_root_branch_output_strips_control_characters(self, fake_projects, capsys):
+        """gitBranch is transcript-sourced, not git-validated -- an
+        OSC-injection payload must not reach the single-root (no
+        --config-dir) table row raw, the same invariant
+        _root_scoped_display_label's disclose path enforces under multi-root."""
+        payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
 
 class TestSubagentsToolResultBytes:
     """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
@@ -11947,6 +15792,24 @@ class TestSubagentsByteGroupingByTool:
         _mod.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "unknown" in out
+
+    def test_tool_name_output_strips_control_characters(self, fake_projects, capsys):
+        """tool_use.name is transcript-sourced, not validated -- an
+        OSC-injection payload must not reach the byte-by-tool table's Tool
+        column raw, the same invariant cmd_subagents' branch column already
+        enforces (test_single_root_branch_output_strips_control_characters)."""
+        payload = "\x1b]0;PWNED-TOOL\x07\x1b[31mFAKE-TOOL-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                {"type": "tool_use", "id": "t1", "name": payload, "input": {}},
+            ]),
+            _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
 
 
 class TestSubagentsSince:
@@ -13462,6 +17325,8 @@ class TestDenialHookLabelEnumeration:
         ("enforce-marker-script-shape.sh:353",
          "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus",
          "marker.sh"),
+        # These two rows must land unedited: they pin legacy pre-DENY_GATE_LABEL wording,
+        # not today's hooks/*.sh text (see TestDenialHookLabelEnumerationRealHooks for that).
         ("check-claude-md-length.sh:85",
          "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
          "Reduce to the limit or fewer lines before committing.",
@@ -13483,14 +17348,20 @@ class TestDenialHookLabelEnumeration:
 
 
 # Every gate hook bootstraps identically: `set -uo pipefail`, define a raw
-# emit_deny stub, then `. "$(dirname "$0")/_lib.sh"` — if that source fails,
+# emit_deny stub, then `. "${0%/*}/_lib.sh"` — if that source fails,
 # the stub denies with "Blocked by <label> gate/hook: could not source
 # _lib.sh." before ever reading stdin. Copying one hook script alone (no
 # _lib.sh alongside it, see _isolated_hook_copy) into a fresh directory
 # reliably fails that source line, driving this exact wording for real
 # rather than hand-typing it — one entry per _DENIAL_HOOK_LABELS member
 # reachable through this shared path.
-_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+# These 24 rows must land unedited: an edit here would mean the bootstrap
+# stub's emitted bytes changed where they should not have. Kept as an
+# independently-typed copy — never referenced by _BOOTSTRAP_FALLBACK_HOOKS's
+# own definition below — so test_original_24_bootstrap_fallback_rows_are_unedited
+# compares two separately-authored literals rather than a tuple against a
+# slice of its own construction, which would pass regardless of content.
+_BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "gh-pr-merge"),
     ("check-claude-md-length.sh", "CLAUDE.md length"),
     ("check-skill-length.sh", "skill length"),
@@ -13517,10 +17388,70 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
 )
 
+# require-architect-consult.sh and deny-invisible-commit-content.sh already
+# emitted this exact wording; they were simply unenumerated in
+# _DENIAL_HOOK_LABELS until now. Written as its own flat tuple, not built by
+# concatenating _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 — see that tuple's own
+# comment for why the two are kept independent.
+_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "gh-pr-merge"),
+    ("check-claude-md-length.sh", "CLAUDE.md length"),
+    ("check-skill-length.sh", "skill length"),
+    ("deny-credential-bash-reads.sh", "credential-path Bash"),
+    ("deny-credential-file-reads.sh", "credential-file read"),
+    ("deny-data-file-reads.sh", "data-file read"),
+    ("deny-env-reads.sh", "env-read"),
+    ("deny-escaped-backticks-in-pr-body.sh", "backtick-escape"),
+    ("deny-network-installs.sh", "network-install"),
+    ("deny-pii-in-commits.sh", "PII commit"),
+    ("deny-private-project-refs.sh", "redaction"),
+    ("deny-repo-relocation.sh", "repo-relocation"),
+    ("deny-reviewer-tree-mutation.sh", "reviewer-tree-mutation"),
+    ("enforce-marker-script-shape.sh", "marker-script-shape"),
+    ("guard-settings-session-keys.sh", "settings session-keys"),
+    ("require-code-review.sh", "code-review"),
+    ("require-memory-skill.sh", "memory-skill"),
+    ("require-plan-review.sh", "plan-review"),
+    ("require-routing-read.sh", "routing-read"),
+    ("require-ready-for-review.sh", "ready-for-review"),
+    ("require-respond-pr.sh", "respond-pr"),
+    ("require-stow-reminder.sh", "stow-reminder"),
+    ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
+    ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
+    ("require-architect-consult.sh", "architect-consult"),
+    ("deny-invisible-commit-content.sh", "invisible-commit-content"),
+    ("deny-no-op-dispatch.sh", "no-op-dispatch"),
+)
+
+
+def test_original_24_bootstrap_fallback_rows_are_unedited():
+    """The 24 pre-existing _BOOTSTRAP_FALLBACK_HOOKS rows stay exactly as
+    they were before the two rows above were added — a genuine check, since
+    _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 is a separately-typed literal, not
+    read by _BOOTSTRAP_FALLBACK_HOOKS's own definition."""
+    assert _BOOTSTRAP_FALLBACK_HOOKS[:24] == _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24
+
+
+def test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label():
+    """Completeness guard: a future gate hook that declares its own
+    DENY_GATE_LABEL but is never added here would silently get zero
+    TestDenyGateLabelConformance coverage — the same "forgotten declaration"
+    failure mode that class exists to catch, one layer up."""
+    on_disk = {
+        path.name
+        for path in HOOKS_DIR.glob("*.sh")
+        if _DENY_GATE_LABEL_DECLARATION_RE.search(path.read_text())
+    }
+    enumerated = {name for name, _label in _BOOTSTRAP_FALLBACK_HOOKS}
+    assert on_disk == enumerated, (
+        f"hooks declaring DENY_GATE_LABEL but missing from _BOOTSTRAP_FALLBACK_HOOKS: "
+        f"{on_disk - enumerated}; enumerated but not on disk: {enumerated - on_disk}"
+    )
+
 
 def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
     """Copy one hooks/*.sh script alone into an isolated directory, with no
-    _lib.sh alongside it, so the hook's own `. "$(dirname "$0")/_lib.sh"`
+    _lib.sh alongside it, so the hook's own `. "${0%/*}/_lib.sh"`
     bootstrap line genuinely fails to source."""
     dest_dir = tmp_path / "isolated-hook"
     dest_dir.mkdir(exist_ok=True)
@@ -13569,24 +17500,33 @@ class TestDenialHookLabelEnumerationRealHooks:
             f"{hook_name}'s real bootstrap-failure wording {message!r} produced "
             f"{got!r}, expected the enumerated label {expected_label!r}"
         )
+        # Same real stderr, second axis: this is the strongest available
+        # evidence that the bootstrap-failure wording classifies lib-source.
+        assert _mod._denial_cause_kind(message) == "lib-source"
 
     def test_marker_sh_path_traversal_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's own path-traversal deny path —
         distinct real wording from the bootstrap-failure case above, which
-        shares the same 'marker.sh' label."""
+        shares the same 'marker-script-shape' label. The message now leads
+        with 'Blocked by marker-script-shape gate:', so _DENIAL_HOOK_NAME_RE
+        wins the label-extraction cascade ahead of the legacy
+        'marker.sh invocation denied' pattern."""
         cmd = "../../.claude/scripts/marker.sh write code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's general 'invocation denied'
         wording for an unenumerated subcommand — distinct real wording from
-        the path-traversal case above, which shares the same 'marker.sh' label."""
+        the path-traversal case above, which shares the same
+        'marker-script-shape' label."""
         cmd = "~/.claude/scripts/marker.sh forge code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's real 'grew past the 200-line limit'
@@ -13607,20 +17547,20 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-claude-md-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's real 'grew past their per-skill limit' deny
         path, mirroring test_check_skill_length.py's own git-repo fixture
         pattern."""
         repo = tmp_path / "repo"
-        skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+        skill_dir = repo / "claude-skills" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         skill_md = skill_dir / "SKILL.md"
-        skill_path = "claude/.claude/skills/my-skill/SKILL.md"
+        skill_path = "claude-skills/skills/my-skill/SKILL.md"
         skill_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
         subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -13630,7 +17570,759 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "Skill length"
+        assert _mod._denial_hook_label("", message) == "skill length"
+
+    def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-claude-md-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-claude-md-length.sh's own DENY_GATE_LABEL, "CLAUDE.md length" —
+        pinning that classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-claude-md-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
+
+    def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-skill-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-skill-length.sh's own DENY_GATE_LABEL, "skill length" —
+        pinning that classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-skill-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "skill length"
+
+
+# ---------------------------------------------------------------------------
+# DENY_GATE_LABEL conformance test — converts a forgotten or unenumerated
+# declaration from a silent fall-through-to-unmatched into a CI failure.
+# Reads DENY_GATE_LABEL and every deny-message literal straight off each of
+# the 26 gate hooks' own source, rather than trusting _DENIAL_HOOK_LABELS or
+# _DENIAL_CAUSE_MARKERS to have kept up on their own.
+# ---------------------------------------------------------------------------
+
+_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
+
+# Bounds a declared label the same way _DENIAL_HOOK_NAME_MAX_CHARS bounds an
+# extracted one (clause (c)) — independent of any "blocked by ... gate"
+# framing, since this checks the raw declared value.
+_DENIAL_HOOK_NAME_SHAPE_RE = re.compile(r"[\w .-]+")
+
+# Call shapes that carry a deny-message literal: emit_deny, its
+# emit_deny_folding_fresh_lock_context wrapper
+# (require-worktree-for-git-writes.sh), and _lib_parse_tool_input_or_deny's
+# own argument. _lib_staged_length_gate's third (message) argument is
+# reached via its distinct three-argument call shape — "$REPO_ROOT", then a
+# single-quoted grep -E pattern, then the deny literal.
+_DENY_LITERAL_CALL_START_RE = re.compile(
+    r"(?<![\w])(?:emit_deny|emit_deny_folding_fresh_lock_context|_lib_parse_tool_input_or_deny)\s+\""
+    r"|_lib_staged_length_gate\s+\"\$REPO_ROOT\"\s+'[^']*'\s+\""
+)
+
+
+def _read_balanced_dquoted(text: str, quote_index: int) -> tuple[str, int]:
+    """Return (literal_content, index_after_closing_quote) for the bash
+    double-quoted string literal whose opening quote is text[quote_index].
+
+    A closing quote is only recognized when it isn't itself
+    backslash-escaped, so a literal carrying an embedded \\" (e.g.
+    block-gh-pr-merge.sh's self-merge-block message) is read whole rather
+    than truncated at the first inner quote. Bash double-quoted strings may
+    also span multiple physical lines (several enforce-marker-script-shape.sh
+    and require-plan-review.sh literals do), so this scans past newlines
+    rather than stopping at end-of-line.
+    """
+    assert text[quote_index] == '"'
+    i = quote_index + 1
+    start = i
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if ch == '"':
+            return text[start:i], i + 1
+        i += 1
+    raise ValueError(f"unterminated double-quoted literal starting at index {quote_index}")
+
+
+def _deny_literals_from_text(text: str) -> list[str]:
+    """Every deny-message literal in one hook's source text. Skips a
+    literal that is a bare $VAR reference (e.g.
+    require-worktree-for-git-writes.sh's wrapper-internal emit_deny "$reason") —
+    its real text is the wrapper's own callers' literals, enumerated
+    separately as their own call sites."""
+    literals = []
+    for m in _DENY_LITERAL_CALL_START_RE.finditer(text):
+        literal, _end = _read_balanced_dquoted(text, m.end() - 1)
+        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", literal):
+            continue
+        literals.append(literal)
+    return literals
+
+
+def _deny_literals(hook_name: str) -> list[str]:
+    return _deny_literals_from_text((HOOKS_DIR / hook_name).read_text())
+
+
+def _deny_gate_label_declarations(hook_name: str) -> list[str]:
+    text = (HOOKS_DIR / hook_name).read_text()
+    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
+
+
+def _declared_deny_gate_label(hook_name: str) -> str:
+    declarations = _deny_gate_label_declarations(hook_name)
+    assert len(declarations) == 1, (
+        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
+    )
+    return declarations[0]
+
+
+def _marker_kinds_present(text: str) -> list[str]:
+    """Every _DENIAL_CAUSE_MARKERS family whose literal marker substring
+    appears in `text`, case-insensitively, in cascade-precedence order."""
+    lowered = text.lower()
+    return [kind for marker, kind in _mod._DENIAL_CAUSE_MARKERS if marker in lowered]
+
+
+class TestDenyGateLabelConformance:
+    """Five clauses (a)-(e), driven against every one of the 26 gate hooks
+    named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b), (d), and (e) each get
+    their own permanent negative-case test below, built by
+    deliberately breaking a scratch copy of a real hook — a one-time
+    demonstration during authoring would leave nothing guarding the check's
+    detection power against a later edit that quietly weakens it."""
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_a_every_gate_hook_declares_exactly_one_label(self, hook_name, _expected_label):
+        declarations = _deny_gate_label_declarations(hook_name)
+        assert len(declarations) == 1, (
+            f"{hook_name} declares {len(declarations)} DENY_GATE_LABEL values, expected exactly one"
+        )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_b_every_declared_label_is_an_enumerated_member(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert label in _mod._DENIAL_HOOK_LABELS, (
+            f"{hook_name} declares DENY_GATE_LABEL={label!r}, which is not a _DENIAL_HOOK_LABELS "
+            f"member — either the label is a typo or the set is stale"
+        )
+
+    def test_clause_b_negative_unenumerated_label_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose DENY_GATE_LABEL isn't a _DENIAL_HOOK_LABELS member must be
+        flagged, matching what clause (b)'s own check above would report."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        mutated = original.replace(
+            'DENY_GATE_LABEL="gh-pr-merge"', 'DENY_GATE_LABEL="not-a-real-enumerated-label"', 1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's DENY_GATE_LABEL declaration wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        declarations = _DENY_GATE_LABEL_DECLARATION_RE.findall(scratch.read_text())
+        assert declarations == ["not-a-real-enumerated-label"]
+        assert declarations[0] not in _mod._DENIAL_HOOK_LABELS
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_c_every_declared_label_matches_the_name_shape(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert _DENIAL_HOOK_NAME_SHAPE_RE.fullmatch(label), (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} doesn't match the name-shaped [\\w .-]+ class"
+        )
+        assert len(label) <= _mod._DENIAL_HOOK_NAME_MAX_CHARS, (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} exceeds _DENIAL_HOOK_NAME_MAX_CHARS"
+        )
+
+    def test_deny_literal_extraction_is_non_empty_for_every_gate_hook(self):
+        """Vacuity self-check mirroring test_lib.py's builds_path_re
+        precedent: a hook yielding zero literals means the extraction regex
+        has drifted from that hook's call shape, not that the hook has no
+        deny literals — and clause (d) would be silently vacuous for it."""
+        for hook_name, _label in _BOOTSTRAP_FALLBACK_HOOKS:
+            literals = _deny_literals(hook_name)
+            assert literals, (
+                f"{hook_name}: no deny literals extracted — the extraction regex has drifted "
+                f"from this hook's call shape"
+            )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_d_every_marker_carrying_literal_carries_exactly_one_marker(self, hook_name, _expected_label):
+        for literal in _deny_literals(hook_name):
+            present = _marker_kinds_present(literal)
+            assert len(present) <= 1, (
+                f"{hook_name}'s deny literal {literal!r} carries markers for causes {present}, "
+                f"which defeats _denial_cause_kind's substring cascade"
+            )
+            if present:
+                assert _mod._denial_cause_kind(literal) == present[0]
+
+    def test_clause_d_negative_marker_collision_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose parse-failure literal carries both the input-parse and
+        helper-proc markers must be flagged by the exactly-one-marker rule —
+        a marker collision is the only construction that defeats
+        _denial_cause_kind's first-match-wins substring cascade, which is
+        exactly why clause (d) forbids it."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        collision_literal = (
+            "could not parse tool-input JSON, failing closed rather than acting on an unscanned command."
+        )
+        mutated = original.replace(
+            '_lib_parse_tool_input_or_deny "could not parse tool-input JSON."',
+            f'_lib_parse_tool_input_or_deny "{collision_literal}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's parse-failure call site wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        assert collision_literal in literals
+        present = _marker_kinds_present(collision_literal)
+        assert present == ["input-parse", "helper-proc"], present
+        assert len(present) > 1
+        # The cascade's first-match-wins order silently masks the literal's
+        # own "failing closed" marker — the exact miscategorization clause
+        # (d) exists to keep out of a real hook's source.
+        assert _mod._denial_cause_kind(collision_literal) == "input-parse"
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_e_no_deny_literal_reintroduces_a_hand_written_blocked_by_prefix(
+        self, hook_name, _expected_label,
+    ):
+        for literal in _deny_literals(hook_name):
+            assert "blocked by" not in literal.lower(), (
+                f"{hook_name}'s deny literal {literal!r} contains a hand-written "
+                f"'Blocked by ... gate:' phrase — DENY_GATE_LABEL already supplies "
+                f"this prefix via _lib_emit_deny, so a literal carrying its own "
+                f"copy renders doubled"
+            )
+
+    def test_clause_e_negative_reintroduced_prefix_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of check-skill-length.sh
+        whose _lib_staged_length_gate message literal has a hand-written
+        "Blocked by ... gate:" phrase spliced back in — the exact reversion
+        shape a copy-paste-from-history edit would produce — must be flagged
+        by clause (e)."""
+        original = (HOOKS_DIR / "check-skill-length.sh").read_text()
+        original_message = "one or more SKILL.md files grew past their per-skill limit."
+        mutated = original.replace(
+            f'"{original_message}"',
+            f'"Blocked by skill length gate: {original_message}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — check-skill-length.sh's over-limit message wording drifted"
+        )
+        scratch = tmp_path / "check-skill-length.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        collision_literal = next(literal for literal in literals if original_message in literal)
+        assert "blocked by" in collision_literal.lower()
+
+
+# ---------------------------------------------------------------------------
+# _denial_cause_kind — pins the denial-cause axis against every gate hook's
+# current wording. Every fixture literal below is copied from the working
+# tree as it stands at authoring time — never re-derived via git show/git
+# merge-base, which would resolve to a later rewrite's text. A historical
+# transcript keeps its original wording forever, so a fixture reflecting
+# only newer wording would prove nothing about the corpus these tests exist
+# to classify correctly.
+# ---------------------------------------------------------------------------
+
+
+# Bootstrap source-failure wording, one row per gate hook (all 26) — the same
+# "could not source _lib.sh" idiom TestDenialHookLabelEnumeration's fixture
+# rows above already carry for 24 of them, plus the two hooks whose labels
+# (architect-consult, invisible-commit-content) aren't yet _DENIAL_HOOK_LABELS
+# members.
+_LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not source _lib.sh."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not source _lib.sh."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not source _lib.sh."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not source _lib.sh."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not source _lib.sh."),
+    ("deny-data-file-reads.sh", "Blocked by data-file read gate: could not source _lib.sh."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not source _lib.sh."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not source _lib.sh."),
+    ("deny-network-installs.sh", "Blocked by network-install gate: could not source _lib.sh."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not source _lib.sh — hook cannot evaluate the commit safely."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command "
+     "detection safely."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not source _lib.sh — hook cannot evaluate "
+     "relocation discipline safely."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not source _lib.sh — hook cannot evaluate "
+     "reviewer discipline safely."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not source _lib.sh."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not source _lib.sh."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not source _lib.sh."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not source _lib.sh."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not source _lib.sh."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not source _lib.sh."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not source _lib.sh."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not source _lib.sh."),
+    ("require-stow-reminder.sh", "Blocked by stow-reminder gate: could not source _lib.sh."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot evaluate "
+     "git discipline safely."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not source _lib.sh."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not source _lib.sh."),
+)
+
+# Tool-input parse-failure wording, one row per gate hook (all 26) — each
+# hook's own _lib_parse_tool_input_or_deny argument.
+_INPUT_PARSE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked: could not parse tool-input JSON for gh-pr-merge gate."),
+    ("deny-data-file-reads.sh",
+     "Blocked by data-file read gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the Read under malformed input."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not parse tool-input JSON."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not parse tool-input JSON. Refusing to evaluate "
+     "relocation discipline under malformed input."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the Read under malformed input."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not parse tool-input JSON. Refusing to evaluate "
+     "PR body under malformed input."),
+    ("deny-env-reads.sh", "Blocked: could not parse tool-input JSON for env-read gate."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the command under malformed input."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not parse tool-input JSON."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the command under malformed input."),
+    ("enforce-marker-script-shape.sh", "Blocked: could not parse tool-input JSON."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. "
+     "Refusing to evaluate worktree discipline under malformed input."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the "
+     "commit under malformed input."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate "
+     "redaction under malformed input."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not parse tool-input JSON. Refusing to "
+     "evaluate reviewer discipline under malformed input."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not parse tool-input JSON."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not parse tool-input JSON."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not parse tool-input JSON."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not parse tool-input JSON."),
+    ("require-stow-reminder.sh",
+     "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate "
+     "under malformed input."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not parse tool-input JSON."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not parse tool-input JSON."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not parse tool-input JSON."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not parse tool-input JSON."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to "
+     "evaluate git discipline under malformed input."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not parse tool-input JSON."),
+)
+
+# Helper-process ("failing closed") wording — every distinct call site found
+# by a total enumeration of "failing closed"/"Failing closed" across
+# claude/.claude/hooks/*.sh, covering all thirteen gate hooks that carry one
+# (roughly thirty call sites; the shared _lib.sh call site used by
+# check-claude-md-length.sh/check-skill-length.sh via _lib_staged_length_gate
+# has its wording exercised separately by those hooks' own commit-detection
+# fail-closed tests, which assert the reason text but not this module's
+# cause classification, and isn't duplicated here). ${...} shell
+# interpolations are filled with a plausible concrete value; the classifier
+# only needs the literal "failing closed" substring, not the exact exit
+# code or command text.
+_HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("block-gh-pr-merge.sh",
+     "Blocked: could not determine whether 'gh pr merge 123' invokes gh pr merge (status 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed per this gate's documented "
+     "fail-closed posture rather than letting an unscanned command bypass the self-merge block."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command with no bypass valve."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not quote-strip the command text "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not determine whether this command "
+     "invokes git commit (status 2) — sed/tr may be missing, killed, or errored. Failing "
+     "closed rather than silently allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not mask quoted command text (exit 2) — "
+     "awk may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the masked command into "
+     "fragments (exit 2). Failing closed rather than allowing an unscanned git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the command into fragments "
+     "(exit 2). Failing closed rather than allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip a command fragment "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip the scan target (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned mv/rsync."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "relocation command."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command for a review-only agent."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned command for a review-only agent."),
+    ("require-code-review.sh",
+     "Blocked by code-review gate: could not determine whether this command invokes git "
+     "commit (status 2) — sed/tr may be missing, killed, or errored. Failing closed rather "
+     "than letting an unscanned git commit bypass the review gate."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not split the command into fragments (exit 2) "
+     "— sed may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not determine whether 'marker.sh write "
+     "code-review' invokes marker.sh write/activate (sed/tr may be missing, killed, or "
+     "errored) — failing closed per this gate's documented fail-closed posture rather than "
+     "letting an unscanned command bypass gate-release authority."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the command text (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not split the command into fragments (exit 2) — sed "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the scanned content (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than scanning with degraded "
+     "quote-split coverage."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the 'tracker-id' detector failed to scan the gated content "
+     "(grep exit 2) — failing closed. Unscanned content is exactly the leak vector this hook "
+     "guards against."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no "
+     "individual detector in the follow-up loop confirmed which one — failing closed on this "
+     "pattern-composition mismatch between the combined and per-detector regexes."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan "
+     "the gated content (grep exit 2) — failing closed. Unscanned content is exactly the leak "
+     "vector this hook guards against."),
+    ("require-respond-pr.sh",
+     "Blocked by respond-pr gate: could not flatten the command text (exit 2) — awk may be "
+     "missing, killed, or errored. Failing closed rather than evaluating an unflattened "
+     "command that could hide a gated pattern across a line break."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not determine whether this command invokes gh "
+     "pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "letting an unscanned PR body bypass the backtick-escape scan."),
+)
+
+# The single deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
+# wrapping a parse-failure reason to prove deny-encode's cascade precedence
+# over an input-parse fragment embedded in the same message.
+_DENY_ENCODE_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked: could not parse tool-input JSON.\n"
+)
+
+# The genuinely-behavioral subset of TestDenialHookLabelEnumeration's fixture
+# rows above (duplicated here per this repo's DAMP-test-code convention,
+# rather than threaded through a shared constant) — every other row in that
+# class's parametrization is bootstrap or parse-failure wording, already
+# covered by _LIB_SOURCE_FIXTURES/_INPUT_PARSE_FIXTURES above.
+_BEHAVIORAL_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("require-memory-skill.sh:125",
+     "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to "
+     "MEMORY.md, which is part of Claude Code's auto-memory file system."),
+    ("require-plan-review.sh:239",
+     "Plan presentation blocked by the plan-review gate: an uncommitted or modified "
+     "plan file exists in .claude/plans/ but no plan-review marker covering the "
+     "current plan set was found."),
+    ("require-routing-read.sh:68",
+     "Agent spawn blocked by plan-review routing gate: Read the plan-review skill's "
+     "ROUTING.md before spawning any specialist agent."),
+    ("enforce-marker-script-shape.sh:277",
+     "marker.sh invocation denied (path traversal '..' detected). Command "
+     "(truncated): ~/.claude/scripts/marker.sh write foo"),
+    ("enforce-marker-script-shape.sh:353",
+     "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus"),
+    ("check-claude-md-length.sh:85",
+     "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
+     "Reduce to the limit or fewer lines before committing."),
+    ("check-skill-length.sh:87",
+     "Skill length gate: one or more SKILL.md files grew past their per-skill limit. "
+     "Reduce to the limit or fewer lines before committing."),
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures pinning today's actual on-disk wording, added alongside — never
+# replacing — the frozen fixtures above copied from an earlier rewrite. Both
+# eras must classify identically. lib-source needs no separate fixture set
+# here: TestDenialHookLabelEnumerationRealHooks's
+# test_bootstrap_lib_sh_failure_produces_enumerated_label already drives all
+# 26 gate hooks' real, on-disk bootstrap wording through a subprocess and
+# asserts lib-source, which is stronger proof of current wording than a
+# hand-transcribed string. Only _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES
+# below is itself subprocess-verified (via run_hook_reason); the
+# helper-proc and deny-encode groups are hand-transcribed snapshots with no
+# tripwire against a later body-text edit that leaves the
+# classification-relevant substring untouched.
+# ---------------------------------------------------------------------------
+
+# block-gh-pr-merge.sh and deny-env-reads.sh are the sharpest cases: each
+# hook's own message rewrite deleted a "for <gate> gate" clause from its
+# parse-failure sentence, so a test that only checked the input-parse
+# fragment would miss a corrected sentence that dropped a clause.
+_INPUT_PARSE_CURRENT_WORDING_SHARP_CASES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not parse tool-input JSON."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not parse tool-input JSON."),
+)
+
+# deny-pii-in-commits.sh's action-carrying lead-in folded into the body:
+# "Commit blocked by PII/credential guard:" became "Blocked by PII commit
+# gate: Commit — ", moving the action into the body rather than deleting it
+# a second time. block-gh-pr-merge.sh's helper-proc site is the plain-strip
+# case: it carried no gate name at all before the rewrite ("Blocked: ..."),
+# so it gained one rather than losing a clause.
+_HELPER_PROC_CURRENT_WORDING_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh",
+     "Blocked by gh-pr-merge gate: could not determine whether 'gh pr merge 123' invokes gh "
+     "pr merge (status 2) — sed/tr may be missing, killed, or errored. Failing closed per "
+     "this gate's documented fail-closed posture rather than letting an unscanned command "
+     "bypass the self-merge block."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip a command fragment (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip the scan target (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+)
+
+# deny-encode's shared preamble wraps whatever underlying reason the caller
+# passed; this pins the cascade's precedence still holding when that
+# underlying reason is today's on-disk wording rather than the older
+# "Blocked: ..." shape _DENY_ENCODE_FIXTURE above wraps.
+_DENY_ENCODE_CURRENT_WORDING_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked by code-review gate: could not parse tool-input JSON.\n"
+)
+
+# _lib.sh's own field-shift deny is a deliberate 0x1f-injection bypass
+# attempt, pinned to classify behavioral rather than input-parse — the
+# strongest available signal that the agent tripped a gate rather than
+# encountering harness noise. Duplicated from test_lib.py's
+# _FIELD_SHIFT_DENY_MESSAGE per this repo's DAMP-test-code convention.
+_FIELD_SHIFT_DENY_MESSAGE = (
+    "a tool-input field contained a Unit Separator (U+001F) byte, which would shift "
+    "extracted-field boundaries — refusing rather than acting on values that may not be the "
+    "ones the harness sent."
+)
+
+
+class TestDenialCauseKind:
+    """Pins _denial_cause_kind's four infra markers plus its behavioral
+    fallback against real and hand-transcribed denial wording. No test here
+    may call git show/git merge-base — every fixture literal is the hook's
+    current wording, copied once from the working tree, so a green run
+    here is evidence about today's text specifically."""
+
+    @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
+    def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "lib-source", (
+            f"{hook_name}'s bootstrap wording {message!r} did not classify lib-source"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_FIXTURES)
+    def test_parse_failure_wording_classifies_input_parse(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "input-parse", (
+            f"{hook_name}'s parse-failure wording {message!r} did not classify input-parse"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES)
+    def test_real_subprocess_parse_failure_matches_corrected_wording(self, hook_name, message):
+        """The sharpest wording-regression case: each hook's own message
+        rewrite deleted the "for <gate> gate" clause from
+        block-gh-pr-merge.sh's and deny-env-reads.sh's parse-failure
+        sentences, so this drives the real hook and asserts the exact
+        corrected message — not merely that the input-parse fragment still
+        matches somewhere."""
+        got = run_hook_reason(HOOKS_DIR / hook_name, {"tool_name": "Bash", "tool_input": "a string"})
+        assert got == message
+        assert _mod._denial_cause_kind(got) == "input-parse"
+
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_FIXTURES)
+    def test_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s failing-closed wording {message!r} did not classify helper-proc"
+        )
+
+    def test_helper_proc_fixtures_cover_all_thirteen_census_hooks(self):
+        """Thirteen gate hooks carry at least one helper-proc ("failing
+        closed") deny; a fixture list that silently dropped one would still
+        pass the parametrized test above, so this pins the coverage itself."""
+        covered = {hook_name for hook_name, _message in _HELPER_PROC_FIXTURES}
+        assert covered == {
+            "deny-credential-bash-reads.sh", "block-gh-pr-merge.sh", "deny-network-installs.sh",
+            "deny-invisible-commit-content.sh", "deny-pii-in-commits.sh", "deny-repo-relocation.sh",
+            "deny-reviewer-tree-mutation.sh", "require-code-review.sh", "require-ready-for-review.sh",
+            "enforce-marker-script-shape.sh", "deny-private-project-refs.sh", "require-respond-pr.sh",
+            "deny-escaped-backticks-in-pr-body.sh",
+        }
+
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_CURRENT_WORDING_FIXTURES)
+    def test_current_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s current failing-closed wording {message!r} did not classify helper-proc"
+        )
+
+    def test_deny_encode_preamble_classifies_deny_encode(self):
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_deny_encode_precedes_input_parse_when_both_markers_present(self):
+        """The deny-encode preamble wraps the underlying reason verbatim, so
+        a jq outage during a parse-failure deny carries both markers in one
+        message; deny-encode must win because the outage that broke jq's
+        deny-envelope encoding is also what broke the input parse."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_current_deny_encode_preamble_classifies_deny_encode(self):
+        """The deny-encode preamble's cascade precedence holds when the
+        underlying wrapped reason is today's on-disk wording too, not only
+        the older shape _DENY_ENCODE_FIXTURE wraps."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_CURRENT_WORDING_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_CURRENT_WORDING_FIXTURE) == "deny-encode"
+
+    def test_real_subprocess_input_parse_classifies_input_parse(self):
+        """A real .tool_input-is-a-string payload, which _lib.sh's own
+        comment documents as the structural-type-error trigger that fails
+        the shared jq call before any hook-specific logic runs."""
+        message = run_hook_reason(
+            HOOKS_DIR / "require-code-review.sh",
+            {"tool_name": "Bash", "tool_input": "a string"},
+        )
+        assert message is not None
+        assert _mod._denial_cause_kind(message) == "input-parse"
+
+    @pytest.mark.parametrize("hook_file,message", _BEHAVIORAL_FIXTURES)
+    def test_behavioral_wording_classifies_behavioral(self, hook_file, message):
+        assert _mod._denial_cause_kind(message) == "behavioral", (
+            f"{hook_file}'s wording {message!r} did not classify behavioral"
+        )
+
+    def test_field_shift_deny_classifies_behavioral(self):
+        """_lib.sh's own field-shift deny is a deliberate 0x1f-injection
+        bypass attempt and must classify behavioral, not input-parse — the
+        strongest available signal that the agent tripped a gate rather
+        than encountering harness noise. Guards against a later edit
+        accidentally giving it an infra marker."""
+        assert _mod._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
+
+    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
+        """Recorded limitation, adversarial case: an agent-controlled Read
+        path containing a cause-marker substring reclassifies a genuinely
+        behavioral env-read denial as helper-proc in this derived aggregate.
+        The gate still denies in real time and the raw record is unchanged;
+        review-trace's own cause= line recovers the individual event."""
+        file_path = "/tmp/failing closed.env"
+        message = (
+            f"Read of '{file_path}' denied by env-read gate. Dotenv files commonly hold "
+            "secrets; reading pulls them into Claude's conversation context. If this is a "
+            "non-secret template, rename it to .env.example, .env.template, or .env.sample. "
+            f"Otherwise inspect it with a shell command (e.g. `! cat {file_path}`) instead of "
+            "the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+        )
+        assert _mod._denial_cause_kind(message) == "helper-proc"
 
 
 # ---------------------------------------------------------------------------
@@ -14386,6 +19078,173 @@ class TestSubagentsDeclaredRootsMultiRoot:
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
 
+    def test_this_repo_via_declared_roots_discloses_branch_raw(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed"),
+            ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_subagent_mix_this_repo_via_declared_roots_discloses_branch_raw(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """cmd_subagent_mix's own --this-repo x declared-roots-file
+        coverage, mirroring test_this_repo_via_declared_roots_discloses_branch_raw
+        above for cmd_subagents -- closes the asymmetry where only
+        cmd_subagents' declared-roots path (as opposed to explicit
+        --config-dir, already covered by TestSubagentMixMultiRoot) had this
+        coverage."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed", content=[_agent_use(f"a{idx}", "staff-sdet")]),
+            ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """One session's main-thread record attests branch 'alpha'; its own
+        sidechain record carries a different branch 'beta' with no
+        main-thread attestation anywhere in scope -- alpha discloses raw
+        and beta prints as account-<K>/branch-<N>, in the same run. Both
+        halves asserted together so the contrast is what fails."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/alpha\b", out)
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "beta" not in out
+
+    def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
+        self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
+    ):
+        """main_thread_branches attestation runs before the --since filter
+        and is never narrowed by it -- a branch attested by a main-thread
+        record outside the --since window still discloses raw for an
+        in-window sidechain record on that same branch. Pins this as
+        intentional: the attestation question is whether a real
+        main-thread session ever used this branch, not whether the
+        attesting record itself appears in the displayed table."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        old_ts = datetime.fromtimestamp(fixed_now - 10 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        recent_ts = datetime.fromtimestamp(fixed_now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest-window"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="gamma", ts=old_ts),  # main-thread, outside --since 1d
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="gamma", sidechain=True, ts=recent_ts),  # in-window
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/gamma\b", out)
+
+    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Accepted residual: attestation is keyed on (root_idx, branch) --
+        a same-account, same-string check, not a same-repo check. A
+        sidechain record that happens to carry the SAME branch name as a
+        genuine main-thread record in the same account -- e.g. a subagent
+        dispatched to a different repo whose own gitBranch coincidentally
+        also reads "main" -- still folds into that disclosed row. Pinned
+        here as a deliberate, tested tradeoff, not a silent consequence."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-collision"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
+
+    def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
+        """main_thread_branches keyed on (root_idx, branch), not a flat
+        set[str] -- account A's own main-thread attestation of a generic
+        branch name must not leak disclosure to account B's own unattested
+        (sidechain-only) copy of the same branch name."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        proj_a = roots[0] / this_repo_slug
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        proj_b = roots[1] / this_repo_slug
+        proj_b.mkdir(parents=True)
+        session_id_b = "sess-b"
+        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
+            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
+        ])
+        _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
+        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "account-" not in out
+
 
 class TestResolveScanRoots:
     """_resolve_scan_roots as a directly callable, unit-testable function --
@@ -14803,7 +19662,7 @@ class TestHookObservableBoundaries:
 
 
 class TestRampCurveFromCorpus:
-    def test_turn_index_bucket_edges_match_pr605_bands_including_the_gap(self):
+    def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
         """PR #605's own table never labeled turn index 10-19 (its bands jump
         from "5-10" to "20-40"); the cascading less-than lookup this reuses
         from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range

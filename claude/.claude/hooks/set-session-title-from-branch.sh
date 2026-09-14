@@ -42,7 +42,7 @@
 # per-repo <main-worktree-root>/.claude/session-title-disabled, resolved
 # against the main worktree root this hook already computes, never cwd.
 #
-# Known gap: `refs/remotes/origin/HEAD` is only ever written by `git clone`
+# Known gap: `origin/HEAD` is only ever written by `git clone`
 # or `git remote set-head`; a repo built via `init` + `remote add` + push has
 # no way to resolve a default branch, so this hook never fires there.
 # Remedy: `git remote set-head origin -a`. A stale origin/HEAD (renamed
@@ -70,16 +70,18 @@ set -uo pipefail
 # stale divergence advisory (its own failure mode) is harmless to re-emit.
 
 INPUT=$(cat 2>/dev/null)
-SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
+
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r '.source // empty' 2>/dev/null)
 [[ "$SOURCE" == "startup" ]] || exit 0
 
 # --- machine-global kill switch ------------------------------------------
 
 # An unresolvable config dir leaves no kill-switch location to check, so
 # this hook fails open (today's auto-titler behavior) rather than guess.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -f "$CONFIG_DIR/.session-title-disabled" ] && exit 0
 
@@ -88,16 +90,17 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # session whose payload .cwd differs from process cwd must title from the
 # worktree's branch.
 
-PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+PAYLOAD_CWD=$(printf '%s' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$PAYLOAD_CWD" ] && exit 0
 
 # Known limitation: unlike check-branch-divergence.sh's one true network
-# call, none of the git invocations below are timeout-wrapped — they're
-# local plumbing reads, fast under any normal filesystem. A hung/stale
-# network-mounted $PAYLOAD_CWD could still block one of them past "exit 0
-# always," but a session whose own cwd is unreachable is already failing
-# broadly elsewhere; adding a timeout wrapper here for that one case would
-# out-scale the problem it defends against.
+# call, most of the git invocations below are not timeout-wrapped — they're
+# local plumbing reads, fast under any normal filesystem. The default-branch
+# resolution below is the one exception, capped via _lib.sh's _lib_capped.
+# A hung/stale network-mounted $PAYLOAD_CWD could still block one of the
+# unwrapped reads past "exit 0 always," but a session whose own cwd is
+# unreachable is already failing broadly elsewhere; adding a timeout wrapper
+# here for that one case would out-scale the problem it defends against.
 git -C "$PAYLOAD_CWD" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 # --- branch component ------------------------------------------------------
@@ -108,14 +111,9 @@ git -C "$PAYLOAD_CWD" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 CURRENT_BRANCH=$(git -C "$PAYLOAD_CWD" symbolic-ref -q --short HEAD 2>/dev/null)
 if [ -n "$CURRENT_BRANCH" ]; then
-  DEFAULT_REF=$(git -C "$PAYLOAD_CWD" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)
-  [ -z "$DEFAULT_REF" ] && exit 0
-  # A dangling origin/HEAD symref still resolves via symbolic-ref -q (it just
-  # reads the pointer text) but must not be conflated with a live default
-  # branch — verify the target actually resolves to a commit.
-  git -C "$PAYLOAD_CWD" rev-parse --verify --quiet "$DEFAULT_REF" >/dev/null 2>&1 || exit 0
-  DEFAULT_BRANCH=${DEFAULT_REF#refs/remotes/origin/}
-  [ -z "$DEFAULT_BRANCH" ] && exit 0
+  # The origin/HEAD pointer only, with no conventional-name fallback: a guessed
+  # name here would title the session from a branch that is not the default.
+  DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$PAYLOAD_CWD") || exit 0
   [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] && exit 0
   BRANCH_COMPONENT="$CURRENT_BRANCH"
 else
@@ -159,6 +157,7 @@ printf '%s' "$BRANCH_COMPONENT" | LC_ALL=C grep -Eq "$ALLOWLIST_RE" || exit 0
 BRANCH_COMPONENT="${BRANCH_COMPONENT:0:32}"
 
 TITLE="${REPO_COMPONENT}/${BRANCH_COMPONENT}"
-jq -n --arg title "$TITLE" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $title is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg title "$TITLE" \
   '{hookSpecificOutput: {hookEventName: "SessionStart", sessionTitle: $title}}' || true
 exit 0

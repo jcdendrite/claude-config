@@ -15,6 +15,7 @@ The evidence is this repo's own Claude Code transcript corpus: 785 sessions and 
 - **The counts are a point-in-time snapshot.** A local Claude Code transcript store is mutable — sessions accrue continuously, and a worktree's transcript directory is removed when that worktree is cleaned up after a merge. The figures here were measured during this case study's authoring; the `review-trace` *method* reproduces, but a later run over the same machine reports different totals.
 - **No pre-gate baseline.** The review pipeline was already in place before the corpus begins — the plan-review skill, the code-review gate, and the plan-review gate hook all merged at or before the corpus start. So this is not a before/after experiment. It measures the *steady state* of a mature gated workflow, not the transition into one.
 - **Denial counts are best-effort.** Claude Code changed its transcript format mid-window; current-format hook denials carry no structured marker and are matched by message-text signature. Counts are accurate to within signature precision, not exact.
+- **Not comparable to a post-2026-09-06 `review-trace` run.** The review-skill-invocation, specialist-reviewer-spawn, and denial figures below were measured under `review-trace`'s pre-2026-09-06 main-thread-only scan, which excluded subagent (sidechain) transcript records.
 - **No model-versus-model claim.** The corpus spans both Opus and Sonnet sessions. Examples below are drawn from both; no Opus-vs-Sonnet comparison is asserted — the corpus has too few branches per model to support one.
 
 Quotes are verbatim from transcripts and were scanned for credential material before inclusion.
@@ -27,7 +28,7 @@ Of 785 sessions, 332 contain at least one review event. Within them:
 - **142 specialist-reviewer spawns** (`staff-*`, `ciso-reviewer`) across 62 sessions.
 - **946 hook denials** across 317 sessions — 40% of all sessions hit a gate at least once. By gate, attributed best-effort from each denial's message text: worktree-enforcement 387, marker-shape 213, ready-for-review 88, plan-review 69, code-review 62, redaction 39, respond-pr 35, memory-write 30, skill-review 14 — these nine sum to 937; the remaining 9 are denials whose message did not map cleanly to a single gate.
 
-The denial total is the headline: 946 times, an agent attempted something a gate blocked. That is the load-bearing measurement — the gates are not decorative, they are interposed on real attempts. A second repository's private transcript corpus — 590 sessions over a comparable window — shows the same shape in aggregate (989 denials across 244 sessions, 712 review-skill invocations, 330 specialist spawns); it is not quoted here, only noted as corroboration at similar scale.
+The denial total is the headline: 946 times, an agent attempted something a gate blocked. That is the load-bearing measurement — the gates are not decorative, they are interposed on real attempts.
 
 What the numbers cannot show is whether any given review *caught something material*. That is a question only a transcript read answers, and the three sections below work through it from primary sources.
 

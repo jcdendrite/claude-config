@@ -15,6 +15,7 @@ from pathlib import Path
 
 from transcript_analysis import scope
 from transcript_analysis.corpus import iter_sessions
+from transcript_analysis.render import _sanitize_table_cell
 
 
 def _derive_proj_label(jsonl: Path) -> str:
@@ -29,17 +30,16 @@ _WORKTREE_SUFFIX_RE = re.compile(r"--claude-worktrees-.+$")
 
 
 def _project_family(raw_proj_label: str) -> str:
-    """Collapse a _derive_proj_label output to its base-repo "family" key.
+    """Collapse a project label or a raw project-dir slug to its base-repo "family" key.
 
-    One repo's main checkout and every linked worktree derive to distinct
-    labels (repo, repo--claude-worktrees-branch-a, ...) that would otherwise
-    fragment --by-project's per-project rows across branches of the same repo.
-
-    Matches on the literal substring alone — a project whose own name happens
-    to contain "--claude-worktrees-" would have that trailing portion
-    stripped and merged into a false family. Below current scale to guard
-    against; re-evaluate if --by-project output ever shows an unexpected
-    merge.
+    Strips the `--claude-worktrees-<branch>` suffix that a linked worktree's
+    project-dir slug already carries (see `_WORKTREE_SUFFIX_RE` above);
+    `_derive_proj_label`'s output preserves that suffix unchanged, so the
+    same match applies to either input shape. A project literally named
+    with that substring would falsely merge into another family -- an
+    accepted risk at current scale. If cost --by-project, buckets' Proj
+    count, or user-input's Scope project count ever shows an unexpected
+    merge, re-evaluate.
     """
     return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
 
@@ -227,3 +227,19 @@ def _assign_root_scoped_redact_label(
         n = sum(1 for k in redact_map if k[0] == ordinal) + 1
         redact_map[key] = f"account-{ordinal}/{kind}-{n}"
     return redact_map[key]
+
+
+def _root_scoped_display_label(
+    kind: str, ordinal: int, value: str, redact_map: dict[tuple[int, str], str], *, disclose: bool
+) -> str:
+    """Return either a disclosed raw label or a redacted one for one
+    (root, value) pair, sharing the account-<K>/ namespace format both paths
+    use.
+
+    disclose=True skips writing to redact_map so it can't inflate later
+    placeholder numbers; disclose=False delegates entirely to
+    _assign_root_scoped_redact_label.
+    """
+    if disclose:
+        return f"account-{ordinal}/{_sanitize_table_cell(value)}"
+    return _assign_root_scoped_redact_label(kind, ordinal, value, redact_map)

@@ -15,9 +15,6 @@ set -u
 _LEDGER_FINDING_MAX_CHARS=200
 _LEDGER_RATIONALE_MAX_CHARS=300
 _LEDGER_SOURCE_MAX_CHARS=200
-# Small and fixed: this runs synchronously inside /code-review, so the
-# worst-case added latency is bounded retries * the sleep below.
-_LEDGER_LOCK_RETRIES=5
 
 usage() {
   cat >&2 <<'EOF'
@@ -95,55 +92,6 @@ _sweep_stale_ledger_files() {
       printf 'clear-stale: evicted %d file(s)\n' "$evicted"
     fi
   fi
-}
-
-# _append_ledger_line_locked LEDGER_FILE LOCK_FILE LINE
-# Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
-# idiom _lib_worktree_collision_guard already establishes in this repo)
-# around the check-then-append critical section: no-ops if LINE already
-# exists verbatim in LEDGER_FILE, else appends it. The lock file's content is
-# the holder's PID; a lock whose PID is dead is evicted and retried
-# immediately, the same PID-liveness eviction _lib_active_bypass_marker_live
-# (_lib.sh) uses for its own markers, rather than waiting out every retry
-# against a crashed holder. Falls through to an unlocked append after
-# _LEDGER_LOCK_RETRIES failed acquisitions rather than blocking — a duplicate
-# line from a lost race is a low-consequence outcome (an inflated count in a
-# summary), not data loss. The lock is released via an EXIT trap, so it
-# clears whether the append succeeds or fails — this is the only trap this
-# script sets.
-_append_ledger_line_locked() {
-  local ledger_file="$1" line="$3"
-  # Deliberately not `local`: the EXIT trap below evaluates $_LEDGER_LOCK_PATH
-  # lazily at script-exit time, after this function has already returned and
-  # any `local` binding of the same name would be out of scope.
-  _LEDGER_LOCK_PATH="$2"
-  local attempt=0 stored_pid
-  while [ "$attempt" -lt "$_LEDGER_LOCK_RETRIES" ]; do
-    if (set -o noclobber; printf '%s\n' "$$" > "$_LEDGER_LOCK_PATH") 2>/dev/null; then
-      trap 'rm -f "$_LEDGER_LOCK_PATH"' EXIT
-      break
-    fi
-    stored_pid=$(cat "$_LEDGER_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
-      # Dead holder: evict now and retry acquisition on the very next
-      # iteration, with no sleep -- this is what makes eviction prompt
-      # rather than waiting out the remaining retries.
-      rm -f "$_LEDGER_LOCK_PATH" 2>/dev/null
-      attempt=$((attempt + 1))
-      continue
-    fi
-    attempt=$((attempt + 1))
-    sleep 0.05
-  done
-  if [ -f "$ledger_file" ] && grep -qFx -e "$line" -- "$ledger_file" 2>/dev/null; then
-    # A dedup no-op must still count as activity on this session's own
-    # ledger file, or a long-running session's later no-op append leaves a
-    # stale mtime for the directory-wide sweep below to delete out from
-    # under it.
-    touch -- "$ledger_file" 2>/dev/null
-    return 0
-  fi
-  printf '%s\n' "$line" >> "$ledger_file"
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -258,7 +206,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
 
-    _append_ledger_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE"
+    _lib_append_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE"
 
     # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
     _sweep_stale_ledger_files "$LEDGER_DIR" 0 0

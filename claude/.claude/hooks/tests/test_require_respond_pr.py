@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 import pytest
 from helpers import (
@@ -374,6 +375,30 @@ class TestRequireRespondPr:
         assert (
             run_hook(RESPOND_PR_HOOK, bash_input(command, session_id=sid), cwd=current_repo_foo_bar)
             == "allow"
+        )
+
+    def test_active_marker_hit_advances_mtime(self, isolated_home, current_repo_foo_bar):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "session-active-touch"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
         )
 
     def test_dead_pid_bypass_marker_evicts_and_denies(self, isolated_home, current_repo_foo_bar):
@@ -970,14 +995,14 @@ class TestRequireRespondPr:
         )
 
 
-class TestGh483Invariants:
-    """GH-483's two acceptance-criteria tests. Neither is a behavioral
+class TestRespondPrStructuralInvariants:
+    """Two structural-invariant tests. Neither is a behavioral
     hook-gate test like the classes above: both are source/doc scans,
     because the two invariants they pin have no runtime code path this
     hook (or any script) executes — see each test's own docstring."""
 
     def test_documented_reply_commands_all_carry_claude_code_attribution(self):
-        """GH-483 acceptance criterion 1: 'a comment posted through
+        """The requirement pinned by this test: 'a comment posted through
         /respond-pr carries the [Claude Code] prefix'. The whole gate
         exists to route writes into /respond-pr for that guarantee, but
         nothing enforces it in code — the attribution is a prose
@@ -1002,17 +1027,12 @@ class TestGh483Invariants:
             )
 
     def test_every_pattern_is_accounted_for_in_a_gate_bucket(self):
-        """GH-483 acceptance criterion 2, inverted: nothing structurally
-        stops a future PATTERN_* from being added and forgotten in every
-        gate that decides on it -- that is exactly how `gh issue comment`
-        once came to be gated in one arm and not the other. The prior
-        version of this test used a naming heuristic ("WRITE" or
-        "MUTATION" in the name) that missed PATTERN_FIELD_FLAG and
-        PATTERN_ANY_FILE_BODY, neither of whose names contains either
-        substring, leaving both with no coverage from this test despite
-        being real entries in gated_write_patterns. This version scans the
-        hook's own source instead: every PATTERN_* it assigns must appear
-        in one of three accounted-for buckets --
+        """GH-483's requirement that no PATTERN_* constant reach production
+        wired into zero gate arms, inverted: a PATTERN_* constant can be
+        defined and never wired into a gate arm, which is how one command
+        reached production gated in one arm only. This test scans
+        the hook's own source: every PATTERN_* it assigns must appear in
+        one of three accounted-for buckets --
           - the if/elif arm chain that decides whether to keep evaluating
             a command at all (a literal `[[ "$COMMAND_FLAT" =~ $PATTERN_X
             ]]` conditional), which also covers PATTERN_MUTATING_METHOD's

@@ -82,6 +82,8 @@ class TestRequireWorktreeForGitWrites:
         reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
         assert reason is not None
         assert "untracked" not in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
 
     def test_staged_not_committed_marker_deny_omits_stray_hint(self, staged_marker_repo):
         """The hint's actual gate is index-tracked (git ls-files --error-unmatch),
@@ -107,6 +109,8 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "could not determine the git subcommand" in reason
         assert "untracked" not in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
 
     @pytest.mark.parametrize(
         "command",
@@ -691,7 +695,7 @@ class TestRequireWorktreeForGitWrites:
         with a stub directory containing only symlinks to the other tools
         this hook's code path actually invokes before ever reaching the
         python3 check (`cat` via _lib_parse_tool_input_or_deny, `dirname`
-        to locate _lib.sh/the parser, `git`, `jq`, `timeout`) — not
+        to locate the git-command parser script, `git`, `jq`, `timeout`) — not
         sha256sum/awk, which only _marker_lib_repo_hash uses and this hook
         never calls — so python3 is genuinely absent regardless of where
         the real binary lives on this machine. Mirrors test_lib.py's
@@ -724,9 +728,9 @@ class TestRequireWorktreeForGitWrites:
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
-        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate
-        _lib.sh/the parser, `git`, `python3` for the command parser, `ps`
-        and `tr` for _lib_worktree_collision_guard's session-identity
+        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate the
+        git-command parser script, `git`, `python3` for the command parser,
+        `ps` and `tr` for _lib_worktree_collision_guard's session-identity
         ancestor walk on the worktree-allow path, `bash` for the guard's own
         noclobber lock-acquisition write), omitting both timeout(1) and
         gtimeout(1). Mirrors test_python3_absent_denies's shape; skips (does
@@ -1572,6 +1576,8 @@ exec "{real_git}" "$@"
         assert reason is not None
         assert "cannot be safely determined" in reason
         assert "'||'" in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
         assert _worktree_lock_reason(worktree) is None, (
             "a denied write must not acquire the worktree lock"
         )
@@ -1602,6 +1608,8 @@ exec "{real_git}" "$@"
         assert reason is not None
         assert "cannot be safely determined" in reason
         assert "backgrounded with '&'" in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
         assert _worktree_lock_reason(worktree) is None, (
             "a denied write must not acquire the worktree lock"
         )

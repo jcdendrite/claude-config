@@ -81,7 +81,7 @@ fi
 
 # Sourced ahead of the stdin read so both paths can use it; sourcing has no
 # side effects, so this costs the fire path only a small, fixed amount of work.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
@@ -196,7 +196,7 @@ read_latest_usage() {
   local transcript_path="$1"
   local usage_block
   usage_block=$(_lib_capped_for 2 tail -n 200 "$transcript_path" 2>/dev/null \
-    | jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
+    | _lib_capped_for 2 jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
   [ -n "$usage_block" ] || return 1
   ESTIMATE=""
   MODEL=""
@@ -205,7 +205,7 @@ read_latest_usage() {
     IFS= read -r MODEL
   } < <(
     printf '%s\n' "$usage_block" \
-      | jq -r '
+      | _lib_capped_for 2 jq -r '
           ((.message.usage.cache_read_input_tokens // 0)
          + (.message.usage.cache_creation_input_tokens // 0)
          + (.message.usage.input_tokens // 0)
@@ -215,42 +215,6 @@ read_latest_usage() {
   ) 2>/dev/null || true
   [ -n "$ESTIMATE" ] || return 1
   return 0
-}
-
-# _advance_offset_past_complete_lines TRANSCRIPT OFFSET CURRENT_SIZE
-# Prints the resume-from byte offset, stopping before any trailing
-# partially-written line — see docs/handoff-nudge.md "What the hook does"
-# for the incremental-read mechanism this supports.
-# Known limitation: on a scan timeout in the slow path below, this returns
-# OFFSET unchanged rather than partial progress — see docs/handoff-nudge.md
-# "Known limitations" for the retry-cost tradeoff that follows from that.
-_advance_offset_past_complete_lines() {
-  local transcript_path="$1" offset="$2" current_size="$3"
-  if [ "$current_size" -le "$offset" ] 2>/dev/null; then
-    printf '%s' "$offset"
-    return
-  fi
-  # Fast path: the file's current last byte is a newline, so everything up
-  # to current_size is complete lines — one 1-byte read covers the common
-  # case (Claude Code writes each transcript record as a complete line).
-  local last_byte
-  last_byte=$(_lib_capped_for 2 tail -c 1 "$transcript_path" 2>/dev/null)
-  if [ -z "$last_byte" ]; then
-    printf '%s' "$current_size"
-    return
-  fi
-  # Slow path: the file currently ends mid-line (caught mid-write). Count
-  # complete lines in the unread slice, then measure exactly that many bytes
-  # with `head`/`wc -c` — avoids locale-sensitive string-length arithmetic on
-  # a captured shell variable.
-  local newline_count complete_bytes
-  newline_count=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
-    | tr -cd '\n' | wc -c | tr -d '[:space:]')
-  case "$newline_count" in ''|*[!0-9]*|0) printf '%s' "$offset"; return ;; esac
-  complete_bytes=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
-    | head -n "$newline_count" | wc -c | tr -d '[:space:]')
-  case "$complete_bytes" in ''|*[!0-9]*) printf '%s' "$offset"; return ;; esac
-  printf '%s' "$(( offset + complete_bytes ))"
 }
 
 # read_latest_usage_cached TRANSCRIPT SESSION_ID MARKER_DIR
@@ -291,7 +255,7 @@ read_latest_usage_cached() {
   else
     local usage_block
     usage_block=$(_lib_capped_for 2 tail -c +$((scan_from + 1)) "$transcript_path" 2>/dev/null \
-      | jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
+      | _lib_capped_for 2 jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
     if [ -n "$usage_block" ]; then
       ESTIMATE=""
       MODEL=""
@@ -300,7 +264,7 @@ read_latest_usage_cached() {
         IFS= read -r MODEL
       } < <(
         printf '%s\n' "$usage_block" \
-          | jq -r '
+          | _lib_capped_for 2 jq -r '
               ((.message.usage.cache_read_input_tokens // 0)
              + (.message.usage.cache_creation_input_tokens // 0)
              + (.message.usage.input_tokens // 0)
@@ -317,10 +281,10 @@ read_latest_usage_cached() {
   fi
 
   local new_offset
-  new_offset=$(_advance_offset_past_complete_lines "$transcript_path" "$scan_from" "$current_size")
+  new_offset=$(_lib_advance_offset_past_complete_lines "$transcript_path" "$scan_from" "$current_size")
   case "$new_offset" in ''|*[!0-9]*) new_offset="$scan_from" ;; esac
 
-  mkdir -p "$marker_dir" 2>/dev/null || true
+  _lib_capped_for 2 mkdir -p "$marker_dir" 2>/dev/null || true
   printf '%s\n%s\n%s\n' "$new_offset" "$ESTIMATE" "$MODEL" > "$scan_state" 2>/dev/null || true
 
   [ -n "$ESTIMATE" ] || return 1
@@ -542,7 +506,7 @@ fi
 # Ensure the log parent directory exists before any log write, and assign
 # MARKER_DIR before read_latest_usage_cached below — its incremental-scan
 # state file needs this directory to exist and be known.
-mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+_lib_capped_for 2 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
 NUDGE_LOG="$CONFIG_DIR/.handoff-nudge.log"
 MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 
@@ -551,8 +515,8 @@ MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 # because the -scan state file needs the same bound as FIRED_MARKER/
 # DRIFT_MARKER/-ignored — see docs/handoff-nudge.md "Known limitations" for
 # the resulting marker-directory growth shape.
-mkdir -p "$MARKER_DIR" 2>/dev/null || true
-find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
+_lib_capped_for 2 mkdir -p "$MARKER_DIR" 2>/dev/null || true
+_lib_capped_for 2 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 
 read_latest_usage_cached "$TRANSCRIPT_PATH" "$SESSION_ID" "$MARKER_DIR" || exit 0
 
@@ -562,7 +526,7 @@ if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   DRIFT_MARKER="${MARKER_DIR}/${SESSION_ID}-drift"
   if [ ! -f "$DRIFT_MARKER" ]; then
     printf 'schema-drift session=%s event=%s\n' "$SESSION_ID" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
-    mkdir -p "$MARKER_DIR" 2>/dev/null || true
+    _lib_capped_for 2 mkdir -p "$MARKER_DIR" 2>/dev/null || true
     touch "$DRIFT_MARKER" 2>/dev/null || true
   fi
   exit 0
@@ -629,6 +593,13 @@ fi
 # call on this hook's fire path, since up to five marker directories, each
 # probed via _lib_active_bypass_marker_live's own subshell/cat/kill -0,
 # could otherwise chain 10-15 uncapped subprocess spawns in the worst case.
+# Every label but "handoff" reads through the unrefreshing base predicate, a
+# status-only read for this hook's SKILLS_FIELD display. "handoff" alone
+# refreshes on read; see docs/hooks.md's "Gate deadlock recovery" section for
+# why.
+# Known gap: a single turn or tool batch spanning over 60 minutes with no
+# intervening Stop/PostToolBatch event still lets the marker idle-expire,
+# since this hook is the only place that touches it.
 # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 are the nested bash -c script's own positional params, meant to expand there, not in this outer shell.
 LIVE_SKILL_LABELS=$(_lib_capped_for 2 bash -c '
   . "$1"
@@ -640,7 +611,11 @@ LIVE_SKILL_LABELS=$(_lib_capped_for 2 bash -c '
     case "$label" in
       ""|*[!A-Za-z0-9_-]*) continue ;;
     esac
-    _lib_active_bypass_marker_live "$dir_name" "$3" && printf "%s\n" "$label"
+    if [ "$label" = "handoff" ]; then
+      _lib_active_bypass_marker_live_and_touch "$dir_name" "$3" && printf "%s\n" "$label"
+    else
+      _lib_active_bypass_marker_live "$dir_name" "$3" && printf "%s\n" "$label"
+    fi
   done
 ' _ "$(dirname "$0")/_lib.sh" "$CONFIG_DIR" "$SESSION_ID" 2>/dev/null)
 SKILLS_FIELD=$(printf '%s\n' "$LIVE_SKILL_LABELS" | sort | paste -sd, - 2>/dev/null)
