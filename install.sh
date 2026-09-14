@@ -429,17 +429,10 @@ fi
 # Writes via _config_set to the resolved config dir for every promptable
 # key. KEY is a config-keys.psv key name, not a caller-supplied path, so no
 # path-confinement check is needed.
-# Display-only gap, not an enforcement bypass: this function's own
-# `current=$(_config_value "$key") || current="false"` line folds
-# _config_value's exit code 3 (config-keys.psv unreadable) into the same
-# "currently disabled" display as every other nonzero exit, so a prompt
-# for worktree_required under that condition could mislabel its current
-# state. worktree_required's actual enforcement runs through
-# _lib_worktree_enforcement_active, whose own exit-3 handling is
-# independently and directly tested by
-# test_lib.py's TestWorktreeEnforcementActive.test_active_when_config_keys_psv_unreadable
-# -- that test sources _lib.sh and calls the function directly, with no
-# dependency on this file's own display path.
+# Display-only gap, not an enforcement bypass: on a config-keys.psv read
+# failure this mislabels the current-enabled state, but doesn't affect
+# worktree_required's actual enforcement, which resolves independently via
+# _lib_worktree_enforcement_active.
 _prompt_sentinel_opt_in() {
   local key="$1" human_name="$2" description="$3" answer current
   current=$(_config_value "$key") || current="false"
