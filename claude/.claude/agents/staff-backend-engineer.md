@@ -44,7 +44,7 @@ If the diff is purely frontend, purely infra config with no behavior change, or 
 
 **Queue semantics** — visibility timeouts, DLQ, poison-message handling, ordering guarantees, idempotent consumers.
 
-**Feature flags / kill switches** — risky server paths gated, default-off behavior sane, flag state observable.
+**Feature flags / kill switches** — risky server paths gated, default-off behavior sane, flag state observable. For where the toggle should live and whether it needs a platform, Read `~/.claude/skills/feature-flags/SKILL.md`.
 
 **Observability contract** — structured logs with correlation IDs, trace context propagated across external calls, metric names and cardinality, error taxonomy. You own the CONTRACT (are the right fields there?); `staff-platform-engineer` owns COVERAGE (do we log enough, do we alert on new failure modes?).
 

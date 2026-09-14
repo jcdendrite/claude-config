@@ -93,7 +93,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 4. **Silent defaults for unexpected values** — Does the code silently substitute a default for an unexpected value (unknown enum variant, unrecognized config key)? In infrastructure and test code, prefer throwing over guessing.
 
-5. **Feature flag coverage** — If the change adds or modifies feature flags or conditional rollout logic, are all flag states tested? Check for stale flags that are always-on/always-off and should be removed; verify the default-off state doesn't break existing behavior.
+5. **Feature flag coverage** — If the change adds or modifies feature flags or conditional rollout logic, are all flag states tested? Check for stale flags that are always-on/always-off and should be removed; verify the default-off state doesn't break existing behavior. For where the toggle should live in the first place, invoke the `feature-flags` skill.
 
 ### Hygiene
 
