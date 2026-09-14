@@ -9654,9 +9654,9 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
     memory. Returns [] when the file is absent or unreadable -- shared by
     _print_nudge_log_diagnostic and _parse_nudge_log_entries so both read
     ~/.claude/.handoff-nudge.log the same bounded way."""
-    if not log_path.exists():
-        return []
     try:
+        if not log_path.exists():
+            return []
         if log_path.stat().st_size > _NUDGE_LOG_MAX_READ:
             raw = log_path.read_bytes()[-_NUDGE_LOG_MAX_READ:]
             return raw.decode(errors="ignore").splitlines()
@@ -11340,8 +11340,7 @@ def _nudge_conversion_from_log(
 ) -> dict:
     """Classify each fired, in-scope session into one of four nudge-to-handoff
     conversion buckets, per the frozen classification in
-    .claude/plans/handoff-nudge-deep-tail-lever.md ("The classification,
-    frozen before any run").
+    .claude/plans/handoff-nudge-deep-tail-lever.md.
 
     A session enters the classified population when it appears on at least
     one `nudged` log line AND has a surviving in-scope trace in
@@ -11381,10 +11380,10 @@ def _nudge_conversion_from_log(
       carries no ignored= field -- counted separately and never defaulted to
       0, which would bias the distribution toward "complied immediately"
     """
-    # A session id repeated under more than one root (a stale symlink, a
-    # merged log, a PID-reuse collision) is an explicit non-goal: entries
-    # land in root-scan order, not true chronological order, since neither
-    # line type carries a timestamp.
+    # A session id repeated across roots (stale symlink, merged log, PID
+    # reuse) is not handled -- entries land in root-scan order.
+    # Ordering is approximate because neither line type carries a
+    # timestamp.
     per_session: dict[str, list[dict]] = defaultdict(list)
     for entries in log_entries_by_root.values():
         for entry in entries:
@@ -11661,22 +11660,21 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    # Per-root join is required: a single hardcoded config_dir() read would
-    # bias the lag/conversion signal toward one account while session_traces
-    # spans every resolved root.
-    # No local config_dir() call or try/except is needed here.
-    # _resolve_cost_roots already resolved scan_roots via config_dir(),
-    # using its own stderr+exit(2) convention, before this function was
-    # ever called.
-    # Computed unconditionally, not gated on multi_root -- correct and cheap
-    # on a single-element sequence too.
+    # scan_roots is already resolved (with its own exit(2) handling) via
+    # _resolve_cost_roots, so no config_dir() call is needed here. Per-root
+    # join avoids biasing lag/conversion toward one account while
+    # session_traces spans every root.
     redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
     log_entries_by_root: dict[Path, list[dict]] = {}
     for root in scan_roots:
         log_path = root.parent / ".handoff-nudge.log"
         log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
         root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
-        log_size = log_path.stat().st_size if log_path.exists() else 0
+        try:
+            log_size = log_path.stat().st_size if log_path.exists() else 0
+        except OSError:
+            print(f"  {root_label} nudge log: unreadable")
+            continue
         truncated_note = " [truncated -- oldest lines dropped]" if log_size > _NUDGE_LOG_MAX_READ else ""
         print(f"  {root_label} nudge log: {log_size:,} bytes{truncated_note}")
     log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
