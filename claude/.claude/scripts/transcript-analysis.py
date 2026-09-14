@@ -12573,6 +12573,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
         help="Print only rounds for one skill name (default: all three); never narrows detection.",
     )
+    p_review_round_cost.add_argument(
+        "--pooled", action="store_true",
+        help=(
+            "Print only a cross-account pooled block of shares (no dollar amounts, no"
+            " raw counts, no per-branch rows). Refuses every scope-narrowing flag; see"
+            " docs/private-project-redaction.md."
+        ),
+    )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
     p_cost_counts = sub.add_parser(
