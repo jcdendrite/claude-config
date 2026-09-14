@@ -387,19 +387,22 @@ gate.
 3. `[verified: claude/.claude/hooks/_lib.sh:41-51]` — `_lib_capped_for`
    resolves `timeout`, then `gtimeout`, via `command -v` at call time, so a
    `PATH`-prepended fake intercepts every call site with no library change.
-4. `[verified: claude/.claude/hooks/tests/test_lib.py:533-676]` — **five**
+4. `[verified: claude/.claude/hooks/tests/test_lib.py:589-778]` — **five**
    consecutive tests, not three, must never receive the scaled shim
-   (verified this session by direct read: exactly these five function
-   boundaries, no others, span 533-676). Each builds its own closed `PATH`
-   and never routes through `_write_conditional_sleep_shim` or
-   `assert_cap_engaged`: `test_timeout_absent_fallback_valid_payload_returns_ok`
-   (533-557, premise is that no `timeout` exists on `PATH`),
-   `test_lib_capped_for_enforces_cap_when_timeout_present` (560-585),
-   `…enforces_cap_via_gtimeout_when_timeout_absent` (588-615),
-   `…runs_uncapped_when_neither_timeout_nor_gtimeout_present` (618-642),
-   `…prefers_timeout_over_gtimeout_when_both_present` (645-676). Four of the
+   (re-verified at Verification time by direct read: exactly these five
+   function boundaries, no others, span 589-778 — the range shifted from
+   this row's original 533-676 estimate once the `test_hung_jq_denied_within_timeout`
+   site above this block was converted, adding lines before it). Each
+   builds its own closed `PATH` and never routes through
+   `_write_conditional_sleep_shim` or `assert_cap_engaged`:
+   `test_timeout_absent_fallback_valid_payload_returns_ok`
+   (589-619, premise is that no `timeout` exists on `PATH`),
+   `test_lib_capped_for_enforces_cap_when_timeout_present` (622-657),
+   `…enforces_cap_via_gtimeout_when_timeout_absent` (660-697),
+   `…runs_uncapped_when_neither_timeout_nor_gtimeout_present` (700-733),
+   `…prefers_timeout_over_gtimeout_when_both_present` (736-778). Four of the
    five would **still pass** with a shim installed while no longer testing
-   their own premise; only 618-642 would fail loudly.
+   their own premise; only 700-733 would fail loudly.
 5. `[verified: claude/.claude/hooks/_lib.sh:251]` — this repo already treats
    `124` as `timeout`'s kill status in production code ("jq non-zero exit
    (parse failure, timeout exit=124, missing jq binary)"). Corroborates
@@ -751,15 +754,21 @@ B starts.**
      `cumulative_diff_repo` fixture across modules, or depends on
      `fake_output` to keep a zero-sleep shim off the real `gh` binary.
 
-4. **`claude/.claude/hooks/tests/test_lib.py:533-676`** (modify — comments
+4. **`claude/.claude/hooks/tests/test_lib.py:589-778`** (modify — comments
    only). Add one line above each of the five protected tests naming the
    specific premise a scaled `timeout` shim would defeat there. Each must
    stand alone without this plan:
-   - `:533` — `# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary condition this test is named for, and the OK assertion below would still pass.`
-   - `:560` — `# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps end-to-end evidence that the binary itself enforces a cap.`
-   - `:588` — `# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test would never execute and the exit-124 assertion would still pass.`
-   - `:618` — `# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.`
-   - `:645` — `# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove the fake was preferred rather than the real one.`
+   - `:589` — `# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary condition this test is named for, and the OK assertion below would still pass.`
+   - `:622` — `# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps end-to-end evidence that the binary itself enforces a cap.`
+   - `:660` — `# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test would never execute and the exit-124 assertion would still pass.`
+   - `:700` — `# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.`
+   - `:736` — `# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove the fake was preferred rather than the real one.`
+
+   These line numbers were re-derived against the current file at
+   Verification time; the range shifted from the plan's original
+   `533-676` estimate once the `test_hung_jq_denied_within_timeout` site
+   above it (Critical files, `test_lib.py` conversion sites) was
+   converted, adding lines before this block.
 
 5. **Fixture-based files — one mechanical edit per call site, no logic
    change.** `test_deny_pii_in_commits.py` (4 sites), `test_check_skill_length.py`
@@ -972,9 +981,14 @@ neither one's self-review seeing the other's — exactly the condition
      point, not the literal `origin/main`, so an unrelated upstream commit
      to this file after this branch forked can't produce a false-positive
      hunk. No hunk's **old-side** range (the `-a,b` field, numbered against
-     the merge-base and therefore unmoved by this branch's own edits) may
-     intersect `533-676`, except for the five comment insertions of
-     Critical files item 4. This catches any edit at all inside the range,
+     the merge-base) may intersect `583-763` — the merge-base-relative
+     equivalent of Critical files item 4's current-file `589-778` (the two
+     differ because the range shifted once the `test_hung_jq_denied_within_timeout`
+     site above it was converted, adding lines before it, both since the
+     plan was first written and again during this session's rebase) —
+     except for the five comment insertions of Critical files item 4, each
+     a zero-old-line insertion anchored just before one of the five
+     protected tests. This catches any edit at all inside the range,
      including ones the source scan cannot see, such as a changed `sleep`
      literal.
 
