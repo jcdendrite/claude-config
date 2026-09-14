@@ -22114,22 +22114,24 @@ class TestRearmBacktestReport:
         out = capsys.readouterr().out
         assert "1 excluded" in out
 
-    def test_unresolvable_config_dir_exits_cleanly(self, fake_projects, capsys, monkeypatch):
-        """An unresolvable config dir (e.g. $HOME unset) at the
-        .handoff-nudge.log read exits 1 with a diagnostic, rather than an
-        uncaught ValueError traceback -- mirrors _cost_ledger_path's own
-        callers' stderr+exit convention."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
+    def test_unresolvable_config_dir_exits_cleanly(self, capsys, monkeypatch):
+        """An unresolvable config dir (e.g. $HOME unset) exits 2 with a
+        diagnostic, rather than an uncaught ValueError traceback --
+        _resolve_cost_roots's own stderr+exit(2) convention. Exercised via
+        cmd_rearm_backtest itself, not _rearm_backtest_report directly:
+        the root-aware join reads scan_roots (resolved by
+        _resolve_cost_roots before this function is ever entered) rather
+        than calling config_dir() locally, so this failure can no longer be
+        triggered by monkeypatching _rearm_backtest_report's own module-level
+        config_dir reference."""
 
         def _raise_value_error():
             raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
 
-        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        monkeypatch.setattr(_mod.scope, "config_dir", _raise_value_error)
         with pytest.raises(SystemExit) as exc_info:
-            _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        assert exc_info.value.code == 1
+            _mod.cmd_rearm_backtest(_rearm_backtest_args())
+        assert exc_info.value.code == 2
         assert "HOME is unset or empty" in capsys.readouterr().err
 
     def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
