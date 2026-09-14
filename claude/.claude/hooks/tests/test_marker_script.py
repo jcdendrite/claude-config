@@ -3739,17 +3739,37 @@ class TestMarkerScriptVerification:
         between the original commit and the amend. `check` must still report
         match here -- the positive-direction proof that tree-keying actually
         behaves differently from keying on HEAD (the commit SHA) itself."""
+        # Git commit timestamps have 1-second resolution. Pinning both
+        # commits' author/committer dates to distinct values guarantees
+        # they differ, since amend always re-stamps the committer date.
+        # Without distinct pins, both commits could land in the same
+        # wall-clock second and hash identically, failing the HEAD-moved
+        # check below.
+        pinned_commit_date = "2000-01-01T00:00:00+0000"
+        pinned_amend_date = "2000-01-01T00:00:01+0000"
         subprocess.run(
             ["git", "commit", "-q", "-m", "land the fixture's staged change"],
             cwd=git_repo,
             check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_DATE": pinned_commit_date,
+                "GIT_COMMITTER_DATE": pinned_commit_date,
+            },
         )
         tree_hash = _head_tree_hash(git_repo)
         _write_verification_marker(isolated_home, git_repo, tree_hash, self.SID)
         original_head = head_sha(git_repo)
 
         subprocess.run(
-            ["git", "commit", "--amend", "--no-edit", "-q"], cwd=git_repo, check=True
+            ["git", "commit", "--amend", "--no-edit", "-q"],
+            cwd=git_repo,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_DATE": pinned_amend_date,
+                "GIT_COMMITTER_DATE": pinned_amend_date,
+            },
         )
         assert head_sha(git_repo) != original_head, (
             "amend must move HEAD for this test to prove anything"
