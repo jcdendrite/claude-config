@@ -244,7 +244,7 @@ _config_file_lines() {
 #
 # KNOWN_KEYS/KEY_TYPE are optional (both or neither, detected via `$# -eq 4`)
 # and let a caller that already resolved both skip re-deriving them --
-# today only _config_value's config-dir-or-home union, which calls this
+# today only _config_resolve's config-dir-or-home union, which calls this
 # function once per location for the same KEY. Every existing 2-arg caller
 # (install.sh, migrate-legacy-config.sh, this file's own tests) is
 # unaffected.
@@ -367,7 +367,7 @@ _config_read_key_from_file() {
 # default, resolution, legacy-probe-on-resolution-failure) came back empty
 # on a matched row -- a caller validates that at the point it consumes a
 # specific FIELD, since only the caller knows which FIELD it asked for (see
-# _config_schema_field and _config_value's own truncation checks, both
+# _config_schema_field and _config_resolve's own truncation checks, both
 # calling _config_warn_truncated_row).
 #
 # Uses install.sh:479's own `IFS='|' read -r' idiom -- reads directly from
@@ -423,7 +423,7 @@ _config_schema_row() {
 # matched row but empty.
 # The same interrupted-stow-relink/git-pull race _config_schema_row's own
 # exit 4 covers, just caught mid-row instead of at the row or file boundary.
-# Called by both _config_schema_field and _config_value so the two can't
+# Called by both _config_schema_field and _config_resolve so the two can't
 # drift on the warning text.
 _config_warn_truncated_row() {
   local key="$1" field="$2"
@@ -454,7 +454,7 @@ _config_warn_truncated_row() {
 # config-keys.psv's grammar), so an empty value there is never treated as
 # truncation.
 # Every caller must treat 3 and 4 identically to whatever direction it
-# takes for 3 already, never collapsed into 1 -- see _config_value's own
+# takes for 3 already, never collapsed into 1 -- see _config_resolve's own
 # exit-code comment for why, and _lib.sh's enforcement-critical callers for
 # the concrete case arms.
 _config_schema_field() {
@@ -524,7 +524,7 @@ _config_schema_known_keys() {
 
 # _config_location_value KEY DIR
 # KEY's effective value as seen from DIR alone: DIR is assumed already
-# resolved (no resolution-failure handling here — see _config_value for
+# resolved (no resolution-failure handling here — see _config_resolve for
 # that). Precedence: DIR/claude-config.toml is checked first, and
 # any conforming row there for KEY is authoritative; only when KEY is
 # entirely absent from that file does DIR's own legacy file get consulted
@@ -679,9 +679,39 @@ _config_memo_reset() {
   _CONFIG_MEMO_CACHE=" "
 }
 
-# _config_value KEY [CONFIG_DIR_OVERRIDE]
-# Prints KEY's effective value ("true", "false", or an enum literal) to
-# stdout. Exit 0: resolved (value printed). Exit 2: the config dir could not
+# _config_resolve_fail_safe LEGACY_PROBE DEFAULT
+# Sets _CONFIG_RESOLVED_VALUE (global) to the fail-safe value for a
+# _config_location_value internal failure.
+# Clears _CONFIG_RESOLVED_MEMOIZABLE (global). Shared by all three of
+# _config_resolve's internal-failure paths below (the union fold and both
+# single-location calls) so they can't drift from each other on which key
+# gets which direction.
+# worktree_required is the only key whose own schema DEFAULT ("false") is
+# not already its fail-closed direction.
+# LEGACY_PROBE overrides to "true" in that case -- it's "true" only for
+# worktree_required, per config-keys.psv's own column comment.
+# Every other key's DEFAULT is already its own fail-closed direction -- the
+# same invariant _config_location_value's own unrecognized-legacy-polarity
+# case states for a different failure path.
+_config_resolve_fail_safe() {
+  local legacy_probe="$1" default="$2"
+  _CONFIG_RESOLVED_MEMOIZABLE=""
+  if [ "$legacy_probe" = "true" ]; then
+    _CONFIG_RESOLVED_VALUE="true"
+  else
+    _CONFIG_RESOLVED_VALUE="$default"
+  fi
+}
+
+# _config_resolve KEY [CONFIG_DIR_OVERRIDE]
+# Sets _CONFIG_RESOLVED_VALUE (global) to KEY's effective value ("true",
+# "false", or an enum literal) instead of printing it.
+# Sets _CONFIG_RESOLVED_MEMOIZABLE (global) to "1" by default, or empty on
+# any of this function's three internal-failure fail-safe paths below -- the
+# union fold and both single-location _config_location_value calls.
+# This function performs no memoization itself -- see _config_lookup below
+# for the single memo gate shared by _config_value and _config_enabled.
+# Exit 0: resolved (_CONFIG_RESOLVED_VALUE set). Exit 2: the config dir could not
 # be resolved and KEY's schema row does not authorize a raw $HOME/.claude
 # probe on that failure (legacy-probe-on-resolution-failure) — see
 # _config_enabled below for why this 2 is a different meaning from
@@ -690,7 +720,7 @@ _config_memo_reset() {
 # and _config_schema_row takes no FIELD argument to get wrong. Exit 3 and
 # exit 4 are both propagated unchanged from _config_schema_row (missing/
 # unreadable schema, or KEY's row not found), or raised directly by this
-# function's own truncation check on the row's `resolution`/
+# function's own truncation check on the row's `default`, `resolution`, and
 # `legacy-probe-on-resolution-failure` columns -- never collapsed into 1
 # either way. A caller must not treat exit 3 or 4 the same as "KEY has no
 # schema row" (exit 1, a code only _config_schema_field itself can still
@@ -714,16 +744,9 @@ _config_memo_reset() {
 # _lib_worktree_enforcement_active already preserves today. Only run when
 # CONFIG_DIR_OVERRIDE is unset: an override caller has already opted out of
 # the union (see above).
-#
-# Resolves a key at most once per process; a same-process change to a
-# legacy sentinel file or a direct claude-config.toml write bypasses the
-# memo and is not seen.
-_config_value() {
+_config_resolve() {
   local key="$1" config_dir_override="${2:-}"
-  if [ -z "$config_dir_override" ] && _config_memo_lookup "$key"; then
-    printf '%s' "$_CONFIG_MEMO_LOOKUP_RESULT"
-    return 0
-  fi
+  _CONFIG_RESOLVED_MEMOIZABLE=1
   _config_schema_row "$key"
   local row_status=$?
   [ "$row_status" -eq 0 ] || return "$row_status"
@@ -731,12 +754,20 @@ _config_value() {
   # closing `default` fallback below makes a further _config_schema_field
   # call that overwrites _CONFIG_ROW_* for the same key, so nothing past
   # this point may re-read those globals directly.
-  # Every call to _config_location_value below also goes through $(...),
-  # so that overwrite is structurally confined to a child subshell regardless
-  # -- relevant only if a future edit ever called it bare.
+  # Every _config_location_value call inside this function is still
+  # $(...)-wrapped, so that overwrite stays confined to a child subshell
+  # regardless.
+  # _config_lookup calls this function bare (no $(...)), including via
+  # _config_enabled, so _CONFIG_ROW_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_*
+  # persist into the calling shell after a bare _config_enabled call too.
   local resolution="$_CONFIG_ROW_RESOLUTION" legacy_probe="$_CONFIG_ROW_LEGACY_PROBE"
   local key_type="$_CONFIG_ROW_TYPE" legacy_filename="$_CONFIG_ROW_LEGACY_FILENAME"
   local legacy_polarity="$_CONFIG_ROW_LEGACY_POLARITY" known_keys="$_CONFIG_ROW_KNOWN_KEYS"
+  local default="$_CONFIG_ROW_DEFAULT"
+  if [ -z "$default" ]; then
+    _config_warn_truncated_row "$key" default
+    return 4
+  fi
   if [ -z "$resolution" ]; then
     _config_warn_truncated_row "$key" resolution
     return 4
@@ -778,52 +809,42 @@ _config_value() {
       home_value=$(_config_location_value "$key" "$home_dir" \
         "$known_keys" "$key_type" "$legacy_filename" "$legacy_polarity")
       home_status=$?
-      # Unreachable today, since both calls above always pass exactly 6
-      # args -- but a future edit to this block that miscounts one must not
-      # let the resulting empty stdout fall through to the "true" checks
-      # below, where _config_enabled's any-value-but-false rule would read
-      # it as enabled regardless of which key this is.
-      # $legacy_probe is "true" only for worktree_required.
-      # worktree_required's failure-safe default is "enabled", so
-      # enforcement stays armed.
-      # Every other config-dir-or-home key's failure-safe default is
-      # "false", so a resolution failure never grants.
+      # config-keys.psv's legacy-probe-on-resolution-failure column is the
+      # source of truth for which keys fail open vs. closed here.
+      # Empty stdout must not fall through to the "true" checks below,
+      # where _config_enabled's any-value-but-false rule would misread it
+      # as enabled regardless of which key this is.
       if [ "$primary_status" -ne 0 ] || [ "$home_status" -ne 0 ]; then
-        if [ "$legacy_probe" = "true" ]; then
-          _config_memo_store "$key" "true"
-          printf 'true'
-        else
-          _config_memo_store "$key" "false"
-          printf 'false'
-        fi
+        # An internal-failure fail-safe, not a genuine resolution -- left
+        # unmemoized so a same-process retry re-resolves instead of
+        # replaying this stale fail-safe value.
+        _config_resolve_fail_safe "$legacy_probe" "$default"
         return 0
       fi
-      # Assumes every config-dir-or-home key is bool, comparing against the
-      # literal "true".
-      # A future enum-typed config-dir-or-home key would silently defeat
-      # this union.
-      # Verify no config-keys.psv row combines config-dir-or-home with a
-      # non-bool type before adding one.
+      # Assumes every config-dir-or-home key is bool, compared against the
+      # literal "true". A future enum-typed config-dir-or-home key would
+      # silently defeat this union. Verify no config-keys.psv row combines
+      # config-dir-or-home with a non-bool type before adding one.
       if [ "$primary_value" = "true" ] || [ "$home_value" = "true" ]; then
-        _config_memo_store "$key" "true"
-        printf 'true'
+        _CONFIG_RESOLVED_VALUE="true"
       else
-        _config_memo_store "$key" "$primary_value"
-        printf '%s' "$primary_value"
+        _CONFIG_RESOLVED_VALUE="$primary_value"
       fi
       return 0
     fi
     primary_value=$(_config_location_value "$key" "$primary_dir")
     local primary_only_status=$?
-    # Gated on the real exit status, not just override-emptiness -- a
-    # truncated/missing schema default (_config_location_value's own
-    # non-zero exit) must not be memoized as a genuine resolution, or a
-    # same-process race gets replayed for the rest of the process instead
-    # of self-correcting on the next lookup the way it did before caching.
-    if [ -z "$config_dir_override" ] && [ "$primary_only_status" -eq 0 ]; then
-      _config_memo_store "$key" "$primary_value"
+    if [ "$primary_only_status" -eq 0 ]; then
+      _CONFIG_RESOLVED_VALUE="$primary_value"
+    else
+      # Same per-key fail-safe substitution as the union branch above -- see
+      # _config_resolve_fail_safe's own comment for the rationale. A
+      # truncated or missing schema default (_config_location_value's own
+      # non-zero exit) must not resolve as an empty value, which
+      # _config_enabled's any-value-but-false rule would misread as enabled
+      # regardless of key.
+      _config_resolve_fail_safe "$legacy_probe" "$default"
     fi
-    printf '%s' "$primary_value"
     return 0
   fi
 
@@ -836,19 +857,71 @@ _config_value() {
     local home_only_value
     home_only_value=$(_config_location_value "$key" "${HOME%/}/.claude")
     local home_only_status=$?
-    # Same exit-status gate as the single-primary_dir branch above.
-    [ "$home_only_status" -eq 0 ] && _config_memo_store "$key" "$home_only_value"
-    printf '%s' "$home_only_value"
+    if [ "$home_only_status" -eq 0 ]; then
+      _CONFIG_RESOLVED_VALUE="$home_only_value"
+    else
+      # Same per-key fail-safe substitution as the union branch above -- see
+      # _config_resolve_fail_safe's own comment for the rationale. This
+      # branch's own guard just above already requires legacy_probe =
+      # "true" to be reached, so the substitution always takes the "true"
+      # arm here regardless of default.
+      _config_resolve_fail_safe "$legacy_probe" "$default"
+    fi
     return 0
   fi
   return 2
 }
 
+# _config_lookup KEY [CONFIG_DIR_OVERRIDE]
+# Single memo gate shared by _config_value and _config_enabled -- both call
+# this instead of memoizing independently.
+# Sets _CONFIG_LOOKUP_VALUE (global) to KEY's resolved value on success.
+# Returns whatever _config_resolve returns unchanged (see its own docstring
+# for the 0/2/3/4 contract).
+# A memo hit returns 0 without calling _config_resolve at all.
+# Memoizes only when CONFIG_DIR_OVERRIDE is empty and _config_resolve left
+# _CONFIG_RESOLVED_MEMOIZABLE non-empty.
+#
+# Resolves a key at most once per process for either of these two cases:
+# - A bare (uncaptured) call.
+# - A $(...)-captured call whose ancestor frame already populated the memo
+#   via an earlier bare call.
+# A $(...)-captured call's own store never escapes its subshell -- only a
+# bare call's store is visible to a later lookup in the same shell.
+# A same-process change to a legacy sentinel file or a direct
+# claude-config.toml write bypasses the memo and is not seen.
+_config_lookup() {
+  local key="$1" config_dir_override="${2:-}"
+  if [ -z "$config_dir_override" ] && _config_memo_lookup "$key"; then
+    _CONFIG_LOOKUP_VALUE="$_CONFIG_MEMO_LOOKUP_RESULT"
+    return 0
+  fi
+  _config_resolve "$key" "$config_dir_override"
+  local status=$?
+  [ "$status" -eq 0 ] || return "$status"
+  _CONFIG_LOOKUP_VALUE="$_CONFIG_RESOLVED_VALUE"
+  [ -z "$config_dir_override" ] && [ -n "$_CONFIG_RESOLVED_MEMOIZABLE" ] \
+    && _config_memo_store "$key" "$_CONFIG_LOOKUP_VALUE"
+  return 0
+}
+
+# _config_value KEY [CONFIG_DIR_OVERRIDE]
+# Thin wrapper over _config_lookup: prints the looked-up value to stdout on
+# success.
+# Same exit-code contract as _config_resolve (0/2/3/4; see its own
+# docstring for the meanings).
+# Never expands or collapses those codes.
+_config_value() {
+  _config_lookup "$1" "${2:-}" || return $?
+  printf '%s' "$_CONFIG_LOOKUP_VALUE"
+  return 0
+}
+
 # _config_enabled KEY [CONFIG_DIR_OVERRIDE]
-# Boolean wrapper over _config_value: 0 (true/enabled), 1 (false/disabled),
+# Boolean wrapper over _config_lookup: 0 (true/enabled), 1 (false/disabled),
 # 2 (config dir unresolvable), 3 (config-keys.psv unreadable), 4 (KEY's row
 # missing from an otherwise-readable, non-empty config-keys.psv) — 2, 3, and
-# 4 are all propagated from _config_value unchanged, never collapsed into 1.
+# 4 are all propagated from _config_lookup unchanged, never collapsed into 1.
 # Any resolved value other than the literal "false" counts as enabled — an
 # enum-typed key's only "off" value is "false", so e.g. pr_cost_disclosure
 # resolving to "dollars" is enabled.
@@ -858,22 +931,12 @@ _config_value() {
 # checks for an unknown key first, before ever calling into this file's
 # functions, so the two 2s never collide in practice, but a future edit to
 # either file's exit-code table must not transpose them.
+#
+# Shares _config_lookup's single memo gate with _config_value, so a memo
+# written by one is visible to the other in the same process.
 _config_enabled() {
-  local key="$1" config_dir_override="${2:-}"
-  # Checked before _config_value's own $(...) fork, so a hit skips that
-  # fork too. _config_value's own memo store on this same lookup is lost to
-  # the subshell that captures it below, so this function stores on a miss
-  # in its own frame instead.
-  if [ -z "$config_dir_override" ] && _config_memo_lookup "$key"; then
-    [ "$_CONFIG_MEMO_LOOKUP_RESULT" = "false" ] && return 1
-    return 0
-  fi
-  local value status
-  value=$(_config_value "$key" "$config_dir_override")
-  status=$?
-  [ "$status" -eq 0 ] || return "$status"
-  [ -n "$config_dir_override" ] || _config_memo_store "$key" "$value"
-  [ "$value" = "false" ] && return 1
+  _config_lookup "$1" "${2:-}" || return $?
+  [ "$_CONFIG_LOOKUP_VALUE" = "false" ] && return 1
   return 0
 }
 

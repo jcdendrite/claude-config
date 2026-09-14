@@ -86,8 +86,8 @@
 # The five enforcement-critical keys (worktree_required, autonomous_shipping,
 # round_consult_gate, commit_stall_block, authorization_boundary_restore)
 # require claude-hook-review on any future change to this file's
-# resolution, legacy-probe-on-resolution-failure, or legacy-import-locations
-# column for their own row — see docs/config-file.md.
+# default, resolution, legacy-probe-on-resolution-failure, or
+# legacy-import-locations column for their own row — see docs/config-file.md.
 worktree_required|bool|false|config-dir-or-home|true|config-dir-and-home|worktree-required|presence-enables|Worktree enforcement|README.md § Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.
 autonomous_shipping|bool|false|config-dir-or-home|false|config-dir-and-home|autonomous-shipping-required|presence-enables|Autonomous shipping|README.md § Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.
 permission_prompt_tracking|bool|false|config-dir|false|config-dir-and-home|track-permission-prompts|presence-enables|Permission-prompt tracking|docs/permission-prompt-tracking.md|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.
