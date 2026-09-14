@@ -27,11 +27,13 @@ from helpers import (
     push_conflicting_edit_to_origin,
     read_input,
     run_hook,
+    scaled_shim_sleep,
     skill_review_marker_path,
     staged_diff_hash,
     staged_diff_hash_at_base,
     write_marker,
     write_plan_review_marker,
+    write_scaled_timeout_shim,
     write_skill_review_marker,
 )
 
@@ -2198,8 +2200,11 @@ class TestMarkerScriptPlanModeSibling:
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep 10; fi\nexec {real_sha256sum} "$@"\n')
+        stub.write_text(
+            f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep {scaled_shim_sleep(10)}; fi\nexec {real_sha256sum} "$@"\n'
+        )
         stub.chmod(0o755)
 
         sid = self.SID
@@ -2208,20 +2213,15 @@ class TestMarkerScriptPlanModeSibling:
         plan_mode_file.write_text("# plan\n")
         self._declare_sibling(isolated_home, plan_mode_file, sid)
 
-        start = time.monotonic()
-        result = _run(
-            ["write", "plan-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["write", "plan-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode != 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
         marker_dir = isolated_home / ".claude" / "plan-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a timed-out write must not write a marker: {stray}"
@@ -2380,18 +2380,19 @@ class TestMarkerScriptStatusCompletionMarkers:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        with assert_cap_engaged():
+        with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
                 ["status"],
                 cwd=git_repo,
@@ -3760,31 +3761,27 @@ class TestMarkerScriptCheck:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_stat_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
@@ -3797,28 +3794,24 @@ class TestMarkerScriptCheck:
         real_stat = shutil.which("stat")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "stat"
-        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_stat} "$@"\n')
+        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_stat} "$@"\n')
         stub.chmod(0o755)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        # Both the GNU and BSD stat forms are individually capped at 5s and
+        # tried in sequence, so both invocations are killed.
+        with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=2):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        # Both the GNU and BSD stat forms are individually capped at 5s and
-        # tried in sequence, so the bounded worst case is ~10s, not a hang.
-        assert elapsed < 14.5, (
-            f"expected both 5s _lib_capped_for stat timeouts to fire (stub "
-            f"sleeps 10s per call if they do not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_grep_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
@@ -3835,6 +3828,7 @@ class TestMarkerScriptCheck:
         real_grep = shutil.which("grep")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "grep"
         invocation_counter = tmp_path / "grep-qFx-invocation-count"
         stub.write_text(
@@ -3843,7 +3837,7 @@ class TestMarkerScriptCheck:
             f'  count=$(( $(cat {invocation_counter} 2>/dev/null || echo 0) + 1 ))\n'
             f'  printf "%s" "$count" > {invocation_counter}\n'
             '  if [ "$count" -ge 2 ]; then\n'
-            '    sleep 10\n'
+            f'    sleep {scaled_shim_sleep(10)}\n'
             '  fi\n'
             'fi\n'
             f'exec {real_grep} "$@"\n'
@@ -3851,21 +3845,16 @@ class TestMarkerScriptCheck:
         stub.chmod(0o755)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped_for grep timeout to fire (stub "
-            f"sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
     def test_only_one_git_diff_invocation_on_the_check_path(
         self, isolated_home, git_repo, tmp_path
@@ -3887,13 +3876,14 @@ class TestMarkerScriptCheck:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         invocation_log = tmp_path / "git-invocation-args"
         stub.write_text(
             '#!/bin/bash\n'
             f'echo "$@" >> {invocation_log}\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )

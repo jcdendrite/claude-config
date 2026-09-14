@@ -1536,10 +1536,13 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
 # running the real binary, so the test waits a fraction of the production
 # cap. Production hooks never see this shim, so their behavior is
 # unaffected. The same shim is the suite's evidence a cap fired: it appends
-# the duration it was asked for to a `started` log before running the real
-# binary, and appends it again to a `completed` log only when the real
-# binary reports the command finished on its own. A duration present in
+# a "<duration> <command>" line to a `started` log before running the real
+# binary, and appends the same line to a `completed` log only when the real
+# binary reports the command finished on its own. A line present in
 # `started` with no matching `completed` entry is a killed invocation.
+# The command field lets a test distinguish which stage of a same-duration
+# pipe was actually killed, rather than only that some stage at that
+# duration was.
 
 TIMEOUT_SCALE_DIVISOR = 3
 
@@ -1581,13 +1584,14 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
         "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
         "  shift\n"
         "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
-        f"  printf '%s\\n' \"$requested\" >> {shlex.quote(str(started_log))}\n"
+        "  # $1 is the wrapped command; the shift above already consumed the duration.\n"
+        f"  printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(started_log))}\n"
         f'  {shlex.quote(str(real_timeout))} "$scaled" "$@"\n'
         "  status=$?\n"
         "  # Assumes exit 124 only comes from timeout's own kill; a race with\n"
         "  # an external kill (OOM, outer test-runner) is a test-infra\n"
         "  # concern only, not production-reachable.\n"
-        f"  [[ $status -eq 124 ]] || printf '%s\\n' \"$requested\" >> {shlex.quote(str(completed_log))}\n"
+        f"  [[ $status -eq 124 ]] || printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
         '  exit "$status"\n'
         "fi\n"
         f'exec {shlex.quote(str(real_timeout))} "$@"\n'
@@ -1604,7 +1608,8 @@ def _scaled_timeout_log_counts(bin_dir: Path, name: str) -> Counter[str]:
 
 
 def caps_that_fired(bin_dir: Path) -> Counter[str]:
-    """Caller-supplied cap durations whose invocation started and never completed."""
+    """Caller-supplied "<duration> <command>" pairs whose invocation started
+    and never completed."""
     return _scaled_timeout_log_counts(bin_dir, "started") - _scaled_timeout_log_counts(bin_dir, "completed")
 
 
@@ -1635,8 +1640,26 @@ def _cap_key(production_cap: float) -> str:
     return str(int(production_cap))
 
 
+def _log_key_duration(log_key: str) -> str:
+    """The duration field of a scaled-shim "<duration> <command>" log key."""
+    duration, _, _command = log_key.partition(" ")
+    return duration
+
+
+def _counts_at_duration(counts: Counter[str], production_cap: float) -> int:
+    """Sum a log Counter's values across every command recorded at
+    production_cap's duration, aggregating across a pipe's stages."""
+    duration_key = _cap_key(production_cap)
+    return sum(count for log_key, count in counts.items() if _log_key_duration(log_key) == duration_key)
+
+
 @contextmanager
-def assert_cap_engaged(bin_dir: Path, production_cap: float | None = None, killed_calls: int = 1):
+def assert_cap_engaged(
+    bin_dir: Path,
+    production_cap: float | None = None,
+    killed_calls: int = 1,
+    command: str | None = None,
+):
     """Assert a timeout(1) cap killed the wrapped block's capped call(s),
     read from the scaled `timeout` shim's started/completed logs rather
     than a wall-clock floor. 124 is timeout(1)'s documented exit status for
@@ -1646,6 +1669,10 @@ def assert_cap_engaged(bin_dir: Path, production_cap: float | None = None, kille
     bin_dir isn't double-counted. Raises when the shim recorded nothing at
     all (never invoked), with a message distinct from "every invocation
     completed on its own" (invoked, but nothing killed).
+
+    command: with production_cap, asserts the kill count for that exact
+    (duration, command) pair instead of summing across commands -- needed
+    to tell which stage of a same-duration piped pair was killed.
     """
     started_before = _scaled_timeout_log_counts(bin_dir, "started")
     completed_before = _scaled_timeout_log_counts(bin_dir, "completed")
@@ -1663,15 +1690,19 @@ def assert_cap_engaged(bin_dir: Path, production_cap: float | None = None, kille
             f"expected a capped timeout(1) call to be killed inside {bin_dir}, but "
             "every invocation completed on its own"
         )
-    if production_cap is None:
-        assert sum(fired_delta.values()) == killed_calls, (
-            f"expected {killed_calls} kill(s) inside {bin_dir}, got {dict(fired_delta)}"
-        )
+    if command is not None:
+        assert production_cap is not None, "assert_cap_engaged(command=...) requires production_cap"
+        got = fired_delta[f"{_cap_key(production_cap)} {command}"]
+        cap_desc = f"at cap {_cap_key(production_cap)}s for {command!r} "
+    elif production_cap is None:
+        got = sum(fired_delta.values())
+        cap_desc = ""
     else:
-        key = _cap_key(production_cap)
-        assert fired_delta[key] == killed_calls, (
-            f"expected {killed_calls} kill(s) at cap {key}s inside {bin_dir}, got {dict(fired_delta)}"
-        )
+        got = _counts_at_duration(fired_delta, production_cap)
+        cap_desc = f"at cap {_cap_key(production_cap)}s "
+    assert got == killed_calls, (
+        f"expected {killed_calls} kill(s) {cap_desc}inside {bin_dir}, got {dict(fired_delta)}"
+    )
 
 
 @contextmanager
@@ -1691,9 +1722,10 @@ def assert_cap_not_engaged(bin_dir: Path, production_cap: float | None = None):
             "never invoked"
         )
     if production_cap is not None:
-        key = _cap_key(production_cap)
-        assert started_delta[key] >= 1, (
-            f"expected an invocation at cap {key}s inside {bin_dir}, got {dict(started_delta)}"
+        got = _counts_at_duration(started_delta, production_cap)
+        assert got >= 1, (
+            f"expected an invocation at cap {_cap_key(production_cap)}s inside {bin_dir}, "
+            f"got {dict(started_delta)}"
         )
     fired_delta = caps_that_fired(bin_dir) - fired_before
     assert not fired_delta, (

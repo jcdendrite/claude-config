@@ -54,11 +54,18 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
-from helpers import bash_input, build_path_without, run_hook, write_input
+from helpers import (
+    assert_cap_engaged,
+    bash_input,
+    build_path_without,
+    run_hook,
+    scaled_shim_sleep,
+    write_input,
+    write_scaled_timeout_shim,
+)
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #
@@ -1597,10 +1604,9 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     ~5s — measured directly against require-code-review.sh, not assumed.
 
     Builds its own fake-slow-jq PATH rather than reusing test_lib.py's
-    idiom verbatim: that idiom's symlinked-tool list omits `sleep`, so its
-    fake jq script (`sleep 10`) fails instantly with "command not found"
-    there instead of actually hanging — it still passes (a crashed jq also
-    denies), but it does not exercise the timeout backstop it's named for.
+    idiom verbatim: that idiom targets `require-code-review.sh`'s own
+    single-jq-call harness shape, not this test's two-chained-call
+    assertion on `require-code-review.sh` proper.
     """
     timeout_path = shutil.which("timeout")
     if not timeout_path:
@@ -1612,7 +1618,7 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     stub_bin = tmp_path / "stub_bin"
     stub_bin.mkdir()
     fake_jq = stub_bin / "jq"
-    fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
     fake_jq.chmod(0o755)
     (stub_bin / "timeout").symlink_to(timeout_path)
     (stub_bin / "bash").symlink_to(bash_path)
@@ -1620,18 +1626,16 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (stub_bin / cmd).symlink_to(cmd_path)
+    # write_scaled_timeout_shim replaces the timeout symlink above, since
+    # Path.write_text follows a symlink rather than replacing it.
+    write_scaled_timeout_shim(stub_bin)
 
     hook = _MAIN_HOOKS_DIR / "require-code-review.sh"
-    start = time.monotonic()
-    result = _run_hook_raw(hook, "not json", env={"PATH": str(stub_bin)})
-    elapsed = time.monotonic() - start
+    with assert_cap_engaged(stub_bin, production_cap=5, killed_calls=2):
+        result = _run_hook_raw(hook, "not json", env={"PATH": str(stub_bin)})
 
     assert result.returncode == 2, (
         f"expected exit 2 once both timeout backstops fire, got {result.returncode}: "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "jq" in result.stderr, repr(result.stderr)
-    # 12s = 2 x _lib_jq's 5s backstop (measured ~10.0s end-to-end) plus the
-    # same ~20% buffer test_lib.py's single-call hung-jq test gives its own
-    # 5s backstop (elapsed < 6).
-    assert elapsed < 12, f"hung-jq test took {elapsed:.1f}s — timeout backstops did not fire as expected"

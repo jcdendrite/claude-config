@@ -84,13 +84,13 @@ def test_scaled_shim_kills_a_real_hung_command_and_records_both_directions(tmp_p
     elapsed = time.monotonic() - start
     assert killed.returncode == 124, repr(killed)
     assert elapsed < 2.5, f"the scaled ~1.67s cap should kill `sleep 3` well before the full 3s, took {elapsed:.2f}s"
-    assert caps_that_fired(bin_dir) == Counter({"5": 1})
+    assert caps_that_fired(bin_dir) == Counter({"5 sleep": 1})
 
     completed = subprocess.run(
         [str(bin_dir / "timeout"), "5", "true"], capture_output=True, text=True, check=False
     )
     assert completed.returncode == 0, repr(completed)
-    assert caps_that_fired(bin_dir) == Counter({"5": 1}), (
+    assert caps_that_fired(bin_dir) == Counter({"5 sleep": 1}), (
         "a completing invocation must record its duration in both started and "
         "completed, leaving the fired count unchanged"
     )
@@ -133,7 +133,8 @@ def test_regex_rejected_inputs_pass_through_unscaled_and_record_nothing(monkeypa
 
 def test_multiple_invocations_are_counted_not_overwritten(monkeypatch, tmp_path):
     """Three invocations of which one is killed leave caps_that_fired() ==
-    {"5": 1} — the append-and-count behavior a 21-call hook run depends on."""
+    {"5 __KILL__": 1} — the append-and-count behavior a 21-call hook run
+    depends on."""
     _install_recording_real_timeout(monkeypatch, tmp_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -144,7 +145,7 @@ def test_multiple_invocations_are_counted_not_overwritten(monkeypatch, tmp_path)
     subprocess.run([shim, "5", "__KILL__"], check=False)
     subprocess.run([shim, "5", "true"], check=False)
 
-    assert caps_that_fired(bin_dir) == Counter({"5": 1})
+    assert caps_that_fired(bin_dir) == Counter({"5 __KILL__": 1})
 
 
 def test_assert_cap_not_engaged_passes_on_completion_and_raises_on_kill(monkeypatch, tmp_path):
@@ -284,3 +285,38 @@ class TestCapMarkersDetectNonFiringCap:
 
         with pytest.raises(AssertionError), assert_cap_engaged(tmp_path, production_cap=5, killed_calls=3):
             _run_twice()
+
+    def test_command_attribution_distinguishes_which_stage_of_a_same_duration_pipe_was_killed(
+        self, monkeypatch, tmp_path
+    ):
+        """The property command-attributed marker logging exists to prove:
+        two same-duration capped stages of a pipe (mirroring
+        _lib_active_bypass_marker_live's `cat | tr`) are distinguished by
+        command, not merged into one duration-only count.
+        assert_cap_engaged(command=...) must attribute a kill to the stage
+        that was actually killed, in either direction."""
+        _install_recording_real_timeout(monkeypatch, tmp_path)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        assert write_scaled_timeout_shim(bin_dir) is True
+        shim = str(bin_dir / "timeout")
+
+        with assert_cap_engaged(bin_dir, production_cap=5, killed_calls=1, command="cat"):
+            subprocess.run([shim, "5", "cat", "__KILL__"], check=False)
+            subprocess.run([shim, "5", "tr", "true"], check=False)
+        with (
+            pytest.raises(AssertionError),
+            assert_cap_engaged(bin_dir, production_cap=5, killed_calls=1, command="tr"),
+        ):
+            subprocess.run([shim, "5", "cat", "__KILL__"], check=False)
+            subprocess.run([shim, "5", "tr", "true"], check=False)
+
+        with assert_cap_engaged(bin_dir, production_cap=5, killed_calls=1, command="tr"):
+            subprocess.run([shim, "5", "cat", "true"], check=False)
+            subprocess.run([shim, "5", "tr", "__KILL__"], check=False)
+        with (
+            pytest.raises(AssertionError),
+            assert_cap_engaged(bin_dir, production_cap=5, killed_calls=1, command="cat"),
+        ):
+            subprocess.run([shim, "5", "cat", "true"], check=False)
+            subprocess.run([shim, "5", "tr", "__KILL__"], check=False)

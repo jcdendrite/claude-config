@@ -15,10 +15,10 @@ import os
 import shutil
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
+from helpers import assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_shim
 
 from .conftest import (
     _base_test_env,
@@ -889,13 +889,10 @@ def test_stdin_reading_envrc_does_not_hang(fake_gh):
 def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path):
     # direnv_export_bash caps `direnv export bash` at 5s (_direnv-lib.sh) —
     # a stalled .envrc must not wedge ci-watch.sh's unattended background
-    # run indefinitely. The shim sleeps 30s (well past the cap) without
-    # reading stdin, so elapsed time itself proves the wall-clock cap fired
-    # rather than the </dev/null guard test_stdin_reading_envrc_does_not_hang
-    # already covers. The wide margin below the sleep duration (mirroring
-    # TestFetchLoopCapInterruptsHungRemote's 15s-cap/30s-sleep precedent in
-    # test_cleanup_merged_branches.py) absorbs subprocess-spawn contention
-    # from concurrent test runs on a shared machine.
+    # run indefinitely. The shim sleeps well past the cap without reading
+    # stdin, so the scaled timeout(1) shim's own started/completed record
+    # proves the wall-clock cap fired, rather than the </dev/null guard
+    # test_stdin_reading_envrc_does_not_hang already covers.
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
     token_log = tmp_path / "token.log"
@@ -908,20 +905,13 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
         json_payload=checks,
         token_log=token_log,
         extra_env={"CI_CHECKS_GH_TOKEN": "ambient-survives-token"},
-        direnv_source=_direnv_shim_source_stalls_without_reading_stdin(30),
+        direnv_source=_direnv_shim_source_stalls_without_reading_stdin(scaled_shim_sleep(30)),
     )
-    start = time.monotonic()
-    result = _run(env, _PR_NUMBER)
-    elapsed = time.monotonic() - start
+    shim_dir = Path(env["PATH"].split(os.pathsep)[0])
+    write_scaled_timeout_shim(shim_dir)
+    with assert_cap_engaged(shim_dir, production_cap=5):
+        result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
-    assert elapsed >= 4.5, (
-        f"elapsed {elapsed:.1f}s is too fast for the shim to have actually stalled — "
-        f"this doesn't prove the cap interrupted anything"
-    )
-    assert elapsed < 20, (
-        f"expected the 5s direnv_export_bash cap to fire (shim sleeps 30s if it "
-        f"does not), took {elapsed:.1f}s"
-    )
     # A timed-out direnv resolution must degrade to the existing "ambient
     # value untouched" fallback, not just avoid crashing.
     calls = _parse_token_log(token_log)

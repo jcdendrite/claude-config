@@ -14,11 +14,14 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     agent_input,
+    assert_cap_engaged,
     install_resume_context_script,
     read_input,
     run_hook,
     run_hook_advisory,
+    scaled_shim_sleep,
     symlink_hooks_lib_chain,
+    write_scaled_timeout_shim,
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
@@ -358,23 +361,24 @@ class TestConsumeDurableContinuityFileOnRead:
         scripts_dir = isolated_home / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
         stub = scripts_dir / "resume-context.sh"
-        stub.write_text("#!/bin/bash\nsleep 10\n")
+        stub.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
         stub.chmod(0o755)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
 
-        start = time.monotonic()
-        run_hook(
-            CONSUME_HOOK,
-            read_input(str(fixture)),
-            home=isolated_home,
-            extra_env={"RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS": "1"},
-        )
-        elapsed = time.monotonic() - start
+        stub_dir = isolated_home / "stub-bin"
+        stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
 
-        assert elapsed < 5, (
-            f"hook took {elapsed:.1f}s — RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS "
-            "did not bound the hang"
-        )
+        with assert_cap_engaged(stub_dir, production_cap=1):
+            run_hook(
+                CONSUME_HOOK,
+                read_input(str(fixture)),
+                home=isolated_home,
+                extra_env={
+                    "RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS": "1",
+                    "PATH": f"{stub_dir}:{os.environ['PATH']}",
+                },
+            )
 
     def test_timeout_absent_fallback_still_consumes(self, isolated_home, tmp_path):
         """Mirrors test_lib.py's test_timeout_absent_fallback_valid_payload_returns_ok:

@@ -29,7 +29,16 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, TRAVERSAL_SESSION_ID
+from helpers import (
+    HOOKS_DIR,
+    SCRIPTS_DIR,
+    TRAVERSAL_SESSION_ID,
+    assert_cap_engaged,
+    assert_cap_not_engaged,
+    scaled_shim_sleep,
+    scaled_under_cap_sleep,
+    write_scaled_timeout_shim,
+)
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-error-mode-analysis.sh"
 
@@ -495,15 +504,17 @@ class TestNudgeErrorModeAnalysis:
     def test_friction_count_timeout_is_silent(self, tmp_path):
         """friction-count hanging past the timeout wrapper: hook exits 0 with
         no stdout. Uses a python3 shim that sleeps past the hook's 10s
-        `timeout` wrapper — this test intentionally runs for ~10s."""
+        `timeout` wrapper."""
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "hangs")
+        write_scaled_timeout_shim(fake_bin)
         shim_path = _fake_python3(
             fake_bin,
-            '#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep 15\necho 99\n',
+            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep {scaled_shim_sleep(15)}\necho 99\n',
         )
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
+        with assert_cap_engaged(fake_bin, production_cap=10):
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
@@ -517,13 +528,13 @@ class TestNudgeErrorModeAnalysis:
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "slow-but-under-cap")
+        write_scaled_timeout_shim(fake_bin)
         shim_path = _fake_python3(
             fake_bin,
-            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep 3.5\necho {FRICTION_THRESHOLD}\n',
+            f'#!/bin/bash\n[ "$1" = "-c" ] && exit 0\nsleep {scaled_under_cap_sleep(3.5)}\necho {FRICTION_THRESHOLD}\n',
         )
-        start = time.perf_counter()
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
-        elapsed = time.perf_counter() - start
+        with assert_cap_not_engaged(fake_bin, production_cap=10):
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env={"PATH": shim_path})
         assert result.returncode == 0
         assert result.stdout.strip() != "", (
             "hook stayed silent for a python3 shim that finishes in 3.5s -- "
@@ -531,7 +542,6 @@ class TestNudgeErrorModeAnalysis:
         )
         payload = json.loads(result.stdout)
         assert "/error-mode-analysis" in payload["hookSpecificOutput"]["additionalContext"]
-        assert elapsed >= 3.5, f"hook returned in {elapsed:.1f}s -- faster than the shim's own 3.5s sleep"
 
     def test_malformed_jsonl_is_silent(self, tmp_path):
         """Transcript file with invalid JSON lines exits silently without crashing."""
