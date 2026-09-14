@@ -111,9 +111,9 @@ def _head_tree_hash(repo) -> str:
 
 def _commit_the_fixtures_staged_change(repo):
     """git_repo's own fixture leaves file.txt's modification staged, not
-    committed -- `verification`'s write guard now refuses on any
-    uncommitted change, so a test whose actual purpose is unrelated to that
-    guard must land this staged change first to reach the write."""
+    committed -- `verification`'s write guard refuses on any uncommitted
+    change, so a test whose actual purpose is unrelated to that guard must
+    land this staged change first to reach the write."""
     subprocess.run(
         ["git", "commit", "-q", "-m", "land the fixture's staged change"],
         cwd=repo,
@@ -350,6 +350,7 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["write", "plan-review"],
     ["write", "ready-for-review"],
     ["write", "cumulative-review"],
+    ["write", "verification"],
     ["activate", "plan-review"],
     ["activate", "ready-for-review"],
     ["activate", "respond-pr"],
@@ -1268,7 +1269,7 @@ class TestMarkerDirectoryNamingConvention:
     preserves the invariant.
     """
 
-    WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review")
+    WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review", "verification")
 
     SID = "test-session-naming"
 
@@ -1286,7 +1287,7 @@ class TestMarkerDirectoryNamingConvention:
         plan_file.write_text("# plan\n")
         # Staged, not left untracked: plan-review's active-set detection
         # (untracked OR tracked-and-modified-vs-HEAD) still counts a staged
-        # new file. `verification`'s write arm now refuses on any untracked
+        # new file. `verification`'s write arm refuses on any untracked
         # file, so it must stay off this fixture's tree regardless.
         subprocess.run(["git", "add", str(plan_file)], cwd=git_repo, check=True)
         if skill == "skill-review":
@@ -1343,7 +1344,7 @@ class TestMarkerDirectoryNamingConvention:
         plan_file.write_text("# plan\n")
         # Staged, not left untracked: plan-review's active-set detection
         # (untracked OR tracked-and-modified-vs-HEAD) still counts a staged
-        # new file. `verification`'s write arm now refuses on any untracked
+        # new file. `verification`'s write arm refuses on any untracked
         # file, so it must stay off this fixture's tree regardless.
         subprocess.run(["git", "add", str(plan_file)], cwd=git_repo, check=True)
         extra_env = None
@@ -3544,6 +3545,7 @@ class TestMarkerScriptVerification:
         untracked file present when step 2's checks ran would be invisible
         to the cache key -- write must refuse rather than record a marker
         that doesn't cover it."""
+        _commit_the_fixtures_staged_change(git_repo)
         (git_repo / "untracked.txt").write_text("not tracked\n")
         _seed_session(isolated_home, self.SID)
         result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
@@ -3557,7 +3559,7 @@ class TestMarkerScriptVerification:
     ):
         """git_repo's own fixture stages a tracked-file modification
         (file.txt) on top of its committed content -- exactly the shape the
-        widened guard must catch, since a staged change is just as invisible
+        guard must catch, since a staged change is just as invisible
         to `HEAD^{tree}` as an untracked file."""
         _seed_session(isolated_home, self.SID)
         result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
@@ -3588,8 +3590,11 @@ class TestMarkerScriptVerification:
         self, isolated_home, git_repo
     ):
         """`git status --porcelain` collapses an untracked directory to one
-        `?? dir/` line rather than listing each file inside it -- confirms
-        the guard's `^??` match still catches that collapsed form."""
+        `?? dir/` line rather than listing each file inside it -- the guard
+        aborts on any non-empty porcelain output, so this collapsed line is
+        exercised as one instance of that broader contract, not proof of a
+        dedicated pattern-matcher."""
+        _commit_the_fixtures_staged_change(git_repo)
         nested_dir = git_repo / "untracked_dir"
         nested_dir.mkdir()
         (nested_dir / "nested.txt").write_text("not tracked\n")
@@ -3683,8 +3688,8 @@ class TestMarkerScriptVerification:
     def test_check_no_match_when_uncommitted_change_present_despite_matching_tree_hash(
         self, isolated_home, git_repo
     ):
-        """`check` gains the same uncommitted-changes guard `write` already
-        has: an untracked file leaves `HEAD^{tree}` -- and so the stored
+        """`check` applies the same uncommitted-changes guard `write` has:
+        an untracked file leaves `HEAD^{tree}` -- and so the stored
         hash -- unchanged, but must still flip the result to no-match. Unlike
         `write`, a dirty tree is not an error here -- `check` is read-only,
         so a dirty tree just reads as a cache miss."""
@@ -3970,6 +3975,46 @@ class TestMarkerScriptVerification:
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "verification"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
+            f"it does not), took {elapsed:.1f}s"
+        )
+
+    @pytest.mark.timing
+    def test_check_status_call_times_out_to_no_match(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Load-bearing: the uncommitted-changes guard's own `git status
+        --porcelain` call runs capped, same as the `_lib_head_tree_hash
+        capped` call it precedes. A stalled `git status` must not hang
+        `check` indefinitely, and a killed call must fall through to
+        no-match, never a false match."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "status" ] && [ "$4" = "--porcelain" ] && [ "$#" -eq 4 ]; then\n'
             '  sleep 10\n'
             'fi\n'
             f'exec {real_git} "$@"\n'

@@ -985,11 +985,11 @@ case "$SUBCOMMAND" in
         # a hash match here only means something when the tree is clean too.
         # Unlike `write`, a dirty tree is not an error here -- `check` is
         # read-only, so it just reads as a cache miss.
-        UNCOMMITTED_STATUS=$(git -C "$REPO_ROOT" status --porcelain) || { printf 'no-match\n'; exit 1; }
-        if [ -n "$UNCOMMITTED_STATUS" ]; then
-          printf 'no-match\n'
-          exit 1
-        fi
+        # Capped like every other check-path git call in this file, unlike
+        # write's own uncapped guard -- this one runs on every invocation.
+        UNCOMMITTED_STATUS=$(_lib_capped git -C "$REPO_ROOT" status --porcelain 2>/dev/null)
+        STATUS_EXIT=$?
+        [ "$STATUS_EXIT" -eq 0 ] && [ -z "$UNCOMMITTED_STATUS" ] || { printf 'no-match\n'; exit 1; }
         MARKER_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # A hash match older than VERIFICATION_CHECK_MAX_AGE_SECONDS reads as
