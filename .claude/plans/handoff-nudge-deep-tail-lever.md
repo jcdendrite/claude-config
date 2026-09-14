@@ -130,6 +130,80 @@ python3 <branch-worktree>/claude/.claude/scripts/transcript-analysis.py rearm-ba
 
 **One discarded run, disclosed not pasted.** A peer session on the macOS machine already ran the pre-correction invocation and returned a report resolving 6 roots across 118 project dirs. It is unusable for any gate — its lag median was computed from one root's log while its sessions spanned six, which is the defect this plan fixes. Record that it happened and why it was discarded; paste none of its figures, since a number produced by a known-biased join would otherwise sit in the plan file looking like evidence.
 
+### Run results
+
+**Linux machine, the only run.** No gate below recommends a change, so per the replication rule's case 3, macOS replication was unnecessary and not run.
+
+```
+python3 <branch-worktree>/claude/.claude/scripts/transcript-analysis.py rearm-backtest \
+  --this-repo --since 14d --spacings 40000,80000,120000,160000
+```
+
+```
+REARM BACKTEST SOURCES (this repo (41 project dirs); 4 roots)
+  account-1 nudge log: 253,672 bytes
+  account-2 nudge log: 4,635 bytes
+  account-3 nudge log: 356 bytes
+  account-4 nudge log: 51,695 bytes
+
+## Re-arm spacing backtest (last 14d, generated 2026-09-14)
+
+Sessions in scope: 274
+  (35 unpriced turns / 0 tokens excluded from priced spend)
+Operator-response-lag sample: 526 joined 'nudged' log line(s) (1041 excluded -- no matching session in scope), median lag 107,262 tokens past the fire point
+
+   Spacing        Model              $   DeltaUSD      C_bar    DeltaCbar
+-------------------------------------------------------------------------
+  baseline       actual       2,077.34         --    202,480           --
+    40,000      perfect       1,446.41    -630.93    114,844      -87,636
+    40,000    realistic       1,587.85    -489.50    148,849      -53,631
+    80,000      perfect       1,440.94    -636.40    123,941      -78,539
+    80,000    realistic       1,597.63    -479.71    153,054      -49,426
+   120,000      perfect       1,486.52    -590.82    133,002      -69,478
+   120,000    realistic       1,626.32    -451.02    157,675      -44,805
+   160,000      perfect       1,515.12    -562.22    137,545      -64,935
+   160,000    realistic       1,646.52    -430.82    159,916      -42,564
+
+## Nudge->handoff conversion (last 14d, generated 2026-09-14)
+
+Fired sessions in scope: 245 (432 dropped -- no in-scope trace)
+
+Bucket                      Count     Rate
+------------------------------------------
+voluntary                     202    82.4%
+forced                         17     6.9%
+blocked-no-handoff              0     0.0%
+no-compliance-observed         26    10.6%
+
+Conversion rate (voluntary + forced / fired): 89.4% (219/245)
+Block-reach rate (forced + blocked-no-handoff / fired): 6.9% (17/245)
+Join validity (handoff lines matching an in-scope fired session): 219
+Re-arms tolerated at voluntary compliance: median ignored=1 across 198 voluntary session(s) (4 voluntary session(s) missing ignored=)
+```
+`[verified: rearm-backtest --this-repo --since 14d --spacings 40000,80000,120000,160000, Linux machine, run 2026-09-14]`
+
+**Gate evaluation:**
+
+- **Gate A — admissible.**
+  - Sessions in scope: 274 (≥30 floor).
+  - Lag samples: 526 (≥10 floor).
+- **Gate B — no change.**
+  - No candidate's realistic `DeltaUSD` beats 80,000's (-479.71) by the $50 floor.
+  - Closest challenger, 40,000, beats it by only $9.79 (-489.50 vs -479.71).
+  - 120,000 and 160,000 are both worse than 80,000.
+- **Gate C — no change, margin erosion documented.**
+  - New median lag (107,262) exceeds the 40,000 trigger, so 80,000 no longer clears its original 2x grounding margin (previously 30,624).
+  - Restoring 2x would require a spacing ≥ 214,524, above the 120,000 ceiling the tie-break forecloses.
+  - Per that tie-break: 80,000 is kept, and the margin erosion is recorded as a documented limitation rather than acted on.
+- **Gate D — admissible.**
+  - Fired sessions: 245 (≥10 floor).
+  - Join validity: 219 (nonzero — the join key is confirmed working, not a systematic mismatch).
+  - Largest per-root log: account-1 at 253,672 bytes (under the 2 MB truncation cap).
+- **Gate E — decline a phrasing change.**
+  - Pooled conversion: 89.4% (≥0.60 floor).
+  - Pooled block-reach: 6.9% (≤0.20 ceiling).
+  - Median `ignored=1` at voluntary compliance (≤2 ceiling).
+
 ### Replication rule — applies to Gates A/B/C
 
 **Gate A is evaluated per machine.** Each run is separately admissible. This is mechanical, not stylistic: a median lag cannot be pooled from two printed medians.
@@ -266,7 +340,7 @@ Declined, not deferred. Three reasons, in order of weight:
 | 4b | **The report joins its nudge log at one hardcoded path while scanning every root**, so the median lag is measured on one account and applied to six. This is the defect the plan fixes, and it biases the realistic-compliance arm and Gate C. | `[verified: transcript-analysis.py:10627 vs. the multi-root `session_traces` built at :10619]` |
 | 4c | **No flag combination scopes `rearm-backtest` to one root today.** Its subcommand `--config-dir` is additive and deduped, so pinning the default root is a no-op; the top-level `--config-dir` reassigns `scope.PROJECTS_DIR`, which `_resolve_cost_roots` never reads. Both fail silently. Recorded so a future session does not retry the flag. | `[verified: scope.py:488-548, transcript-analysis.py:10539, main():12030-12049; `rearm-backtest` absent from `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR` at scope.py:480-485]` |
 | 4d | The exclusion count in the lag header is **not** a measure of the multi-root defect — it counts log lines whose session falls outside `--this-repo`/`--since`, and multi-root can only reduce it. The defect is the asymmetry in 4b. | `[verified: transcript-analysis.py:10394-10409]` |
-| 5 | How many sessions and joined log lines survive into the scoped window on either machine. | `[unverified]` — resolved by each run's own header; Gate A exists precisely because this is unknown at authoring time. |
+| 5 | How many sessions and joined log lines survive into the scoped window on either machine. | `[verified: Linux run's own header — 274 sessions in scope, 526 joined lag samples]`; macOS was not run (row 27). |
 | 6 | Worktree-retention practice on either machine is not encoded in the repo, so surviving-session count is an output of each run, not a premise. | `[unverified]` |
 | 7 | The incumbent 80,000 clears 2.6x the then-measured 30,624-token median lag; 2x separation corresponds to a median-lag ceiling of exactly 40,000. | `[verified: docs/handoff-nudge.md:20; .claude/plans/rearm-hook-band-spacing.md:31,47-60; 80,000/30,624 = 2.61]` |
 | 8 | An unresolved lag-figure discrepancy (30,624 vs 52,184) was left open for "whoever next touches that figure." The re-run recomputes the same-lineage figure via `_operator_response_lag_from_log`; if the discrepancy reflects instrument bias rather than method, Gate C inherits it. | `[verified: .claude/plans/handoff-nudge-cap-recalibration.md:375-378]` for its existence; `[unverified]` for its cause. |
@@ -292,7 +366,7 @@ Declined, not deferred. Three reasons, in order of weight:
 | 24 | `rearm-backtest`'s end-to-end tests read the spacing table via `_table_cols(out, header_contains="Spacing", …)` plus substring assertions, so an appended section with its own heading and no second `Spacing` column header leaves them passing. | `[verified: claude/.claude/scripts/tests/test_transcript_analysis.py:18428-18540]` |
 | 25 | `config_dir()` resolves from `$CLAUDE_CONFIG_DIR` or `$HOME`, never from the script's own location, so a branch checkout run on either machine reads that machine's own live roots and logs. | `[verified: claude/.claude/scripts/_config_dir.py:22-30]` |
 | 26 | Each machine is a stow consumer, so `claude/.claude/**` changes reach it only on `git pull` — the second machine's run needs a checkout of this branch, which row 25 makes sufficient. | `[verified: CLAUDE.md, "Changes under `claude/.claude/**` go live on `git pull`"]` |
-| 27 | Whether the second machine's corrected run returns before this plan concludes. | `[unverified]` — the replication rule's case 3 fixes the handling in advance so nothing blocks. |
+| 27 | Whether the second machine's corrected run returns before this plan concludes. | `[verified: Run results]` — it does not, by deliberate choice: every gate resolved to "no change" on the Linux run alone, so the replication rule's case 3 (`:141`) made a macOS run unnecessary rather than merely unblocked. |
 | 28 | Every historical variant of the advisory and block message text stayed advisory and addressed to the agent as a relay request; the threshold framing moved from percent-of-window to absolute tokens and a cost-comparison clause was added then simplified, but no imperative or all-caps variant ever shipped — so no retrospective A/B for a phrasing change exists. | `[verified: git log -p across ~10 revisions of the hook's advisory and block message text]` |
 | 29 | Today's copy asks the agent to relay a suggestion to the human; the engineer's example directs the agent to act on its own. Different behaviors, not two tones of one behavior. | `[verified: nudge-handoff-near-context-cap.sh:660]` for the current copy; `[engineer-verified]` for the proposed phrasing and its intent. |
 | 30 | "No compliance observed" is a legitimate outcome the nudge's own copy invites, so Gate E treats it as neutral rather than as failure. | `[verified: nudge-handoff-near-context-cap.sh:660, "If the task is nearly complete, ignore this and finish."]` |
