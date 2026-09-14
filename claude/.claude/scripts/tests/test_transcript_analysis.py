@@ -10751,7 +10751,10 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         """A root paying both tiers simultaneously in this window (mixed
         evidence) is excluded from the bucket's verdict entirely, the same
         as a root with no data -- the break-even algebra
-        assumes a single live tier per root per window."""
+        assumes a single live tier per root per window. The row still
+        prints with its own exclusion reason, and the four summary fields
+        below stay exactly what they were before that row started
+        printing -- the guard that showing the row never moved the gate."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
             _priced(
@@ -10768,11 +10771,43 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert summary["excluded"] == "1"
         assert summary["verdict"] == "no verdict"
 
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "excluded(mixed-tier)"
+
+    def test_tie_between_w5m_and_w1h_resolves_deterministically_to_5m_tier_for_display(
+        self, fake_projects, capsys
+    ):
+        """A root whose W5m and W1h accumulate to exactly the same nonzero
+        total is still excluded(mixed-tier) -- the tie only decides which
+        tier's own accumulators the display row names, via the per-root
+        loop's `if root_w5m >= root_w1h` comparison resolving equality to
+        the 5m branch. This pins today's tie-break as a display-only
+        convention with no verdict consequence, since the row is excluded
+        from the verdict either way -- a future gate change reading this
+        branch's own outcome, rather than only the row's Clears label,
+        could make the choice load-bearing."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=400_000, ts="2026-08-01T10:00:00.000Z", request_id="tie-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=400_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="tie-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Tier"] == "5m"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Share"] == "0.500"
+        assert root_row["Clears"] == "excluded(mixed-tier)"
+
     def test_zero_consistent_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
         """A corpus with cache activity but no cache-write/read tokens
         crossing either direction's own accumulation gate (plain
         input/output tokens only) leaves neither direction with data --
-        'no verdict', never a vacuous 'adopt'."""
+        'no verdict', never a vacuous 'adopt'. The root's own row still
+        prints, labelled excluded(no-data), in both buckets."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
         ])
@@ -10784,6 +10819,9 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             assert summary["consistent_5m"] == "0"
             assert summary["consistent_1h"] == "0"
             assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
 
     def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
         """root_label's own redact branch prints "account-N"; the
@@ -10805,7 +10843,9 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         """--ttl-verdict against zero in-scope calls prints clean
         no-verdict output for both buckets rather than crashing (e.g. a
         division by zero in the margin check, already guarded by
-        _cache_rebuild_margin_clears' own non-positive-volume branch)."""
+        _cache_rebuild_margin_clears' own non-positive-volume branch). The
+        zero-data root still gets its own excluded(no-data) row rather than
+        vanishing from the table."""
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
@@ -10813,6 +10853,83 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         for origin in ("main", "subagent"):
             summary = _extract_ttl_verdict_summary(out, origin)
             assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
+            assert root_row["Net$"] == "n/a"
+            assert root_row["Share"] == "n/a"
+
+    def test_no_data_root_alongside_a_real_root_leaves_the_real_roots_verdict_untouched(
+        self, tmp_path, capsys
+    ):
+        """Two roots in the same bucket: account-1 has real 5m-tier data
+        and reaches 'adopt' on its own; account-2 has no cache-tier data at
+        all. Both rows render, but the no-data root's presence must not
+        change account-1's own verdict, and its own Net$/Share render as
+        n/a rather than the $0.00/0.000 a naive zero-accumulator print
+        would show."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["Clears"] == "excluded(no-data)"
+        assert root_2["Net$"] == "n/a"
+        assert root_2["Share"] == "n/a"
+
+    def test_mixed_root_row_shows_the_dominant_tiers_own_accumulators_not_a_combined_figure(
+        self, tmp_path, capsys
+    ):
+        """A mixed root's row is still excluded(mixed-tier) -- the XOR
+        eligibility test is unchanged -- but must display its dominant
+        (1h) tier's own W1h/Z/Net$/Favors, identical to what a control root
+        carrying only that same 1h-tier write and read (no minority 5m
+        write at all) shows. The control's leading no-cache-tokens call
+        mirrors the mixed fixture's own session-start/idle-gap timing, so
+        the 1h write and read are classified identically in both -- the
+        only difference between the two fixtures is the minority 5m
+        write's presence, isolating exactly what it does and does not
+        leak into the displayed row."""
+        mixed_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:00:00.000Z", request_id="dom-1"),
+            _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="dom-2"),
+            _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="dom-3"),
+        ]
+        pure_1h_records = [
+            _priced("claude-sonnet-5", input=10, output=5, ts="2026-08-01T10:00:00.000Z", request_id="pure-0"),
+            _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="pure-1"),
+            _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="pure-2"),
+        ]
+        mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
+        pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_1h_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        mixed_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        pure_out = capsys.readouterr().out
+
+        mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
+        pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
+        assert mixed_row["W5m/W1h"] == pure_row["W5m/W1h"] == "800,000"
+        assert mixed_row["X/Z"] == pure_row["X/Z"] == "150,000"
+        assert mixed_row["Net$"] == pure_row["Net$"]
+        assert mixed_row["Favors"] == pure_row["Favors"]
+        assert mixed_row["Clears"] == "excluded(mixed-tier)"
+        assert mixed_row["Share"] == "0.800"
+        assert pure_row["Clears"] == "True"
+        assert pure_row["Share"] == "1.000"
 
 
 class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:

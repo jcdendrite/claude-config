@@ -6040,6 +6040,17 @@ _TTL_VERDICT_NO_VERDICT = "no verdict"
 _CACHE_REBUILD_TIER_5M = "5m"
 _CACHE_REBUILD_TIER_1H = "1h"
 
+# --ttl-verdict's own per-root row labels: a root excluded from a bucket's
+# verdict names why in the Clears column, instead of only being absorbed
+# into that bucket's lumped exclusion count. Each token stays whitespace-
+# free -- _extract_ttl_verdict_root_row maps columns by splitting the row
+# on whitespace, so a space in any label would shift every column after it.
+_TTL_EXCLUDE_MIXED_TIER = "excluded(mixed-tier)"
+_TTL_EXCLUDE_NO_DATA = "excluded(no-data)"
+_TTL_ROW_NOT_APPLICABLE = "--"
+_TTL_TIER_NONE = "none"
+_TTL_ROW_NA = "n/a"
+
 _CAUSE_SESSION_START = "session start"
 _CAUSE_IDLE_5M_1H = "idle 5m-1h"
 _CAUSE_IDLE_OVER_1H = "idle >1h"
@@ -7110,7 +7121,10 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             excluded_roots = 0
             root_inputs: list[dict[str, object]] = []
             print(f"\n### {ttl_origin}\n")
-            print(f"{'Root':<12} {'Tier':>6} {'W5m/W1h':>14} {'X/Z':>14} {'Net$':>10} {'Favors':>8} {'Clears':>8}")
+            print(
+                f"{'Root':<12} {'Tier':>6} {'W5m/W1h':>14} {'X/Z':>14} {'Net$':>10}"
+                f" {'Favors':>8} {'Clears':>8} {'Share':>8}"
+            )
             for root_ordinal in all_root_ordinals:
                 root_key = (ttl_origin, root_ordinal)
                 # --no-redact is refused once more than one root is in
@@ -7119,14 +7133,26 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 root_label = f"account-{root_ordinal}" if redact else str(scan_roots[0].parent)
                 root_w5m = w5m_by_origin_root.get(root_key, 0)
                 root_w1h = w1h_by_origin_root.get(root_key, 0)
-                if (root_w5m > 0) == (root_w1h > 0):
-                    # Both nonzero (mixed tier in this window) or both zero
-                    # (no data) -- excluded from this bucket's verdict
-                    # either way (Approach section).
+                if root_w5m == 0 and root_w1h == 0:
+                    # No data in either tier excludes this root from the
+                    # bucket's verdict. The row still prints so the reason
+                    # is visible rather than only folded into the lumped
+                    # count.
                     excluded_roots += 1
+                    print(
+                        f"{root_label:<12} {_TTL_TIER_NONE:>6} {0:>14,} {0:>14,} {_TTL_ROW_NA:>10}"
+                        f" {_TTL_ROW_NOT_APPLICABLE:>8} {_TTL_EXCLUDE_NO_DATA:>8} {_TTL_ROW_NA:>8}"
+                    )
                     continue
-                if root_w5m > 0:
-                    consistent_5m_roots += 1
+                # A mixed root (both tiers nonzero) still gets its own row
+                # below, naming the dominant tier's own accumulators.
+                # Those accumulators are computed for display only, since
+                # the XOR eligibility test right after decides whether the
+                # row contributes.
+                is_mixed = root_w5m > 0 and root_w1h > 0
+                share = max(root_w5m, root_w1h) / (root_w5m + root_w1h)
+                if root_w5m >= root_w1h:
+                    tier = _CACHE_REBUILD_TIER_5M
                     net_primary = _negate_switch_delta_for_display(
                         switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
                     )
@@ -7139,14 +7165,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         positive_favors=_CACHE_REBUILD_TIER_1H, negative_favors=_CACHE_REBUILD_TIER_5M,
                         apply_tiebreaker=False,
                     )
-                    root_inputs.append(root_input)
-                    print(
+                    row_prefix = (
                         f"{root_label:<12} {_CACHE_REBUILD_TIER_5M:>6} {root_w5m:>14,}"
                         f" {x_by_origin_root.get(root_key, 0):>14,} {_fmt_usd(net_primary):>10}"
-                        f" {root_input['favors']:>8} {str(root_input['clears']):>8}"
+                        f" {root_input['favors']:>8}"
                     )
                 else:
-                    consistent_1h_roots += 1
+                    tier = _CACHE_REBUILD_TIER_1H
                     net_primary = _negate_switch_delta_for_display(
                         switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
                     )
@@ -7161,11 +7186,20 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         apply_tiebreaker=True,
                         tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
                     )
-                    root_inputs.append(root_input)
-                    print(
+                    row_prefix = (
                         f"{root_label:<12} {_CACHE_REBUILD_TIER_1H:>6} {root_w1h:>14,} {root_z:>14,}"
-                        f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8} {str(root_input['clears']):>8}"
+                        f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8}"
                     )
+                if is_mixed:
+                    excluded_roots += 1
+                    print(f"{row_prefix} {_TTL_EXCLUDE_MIXED_TIER:>8} {share:>8.3f}")
+                    continue
+                if tier == _CACHE_REBUILD_TIER_5M:
+                    consistent_5m_roots += 1
+                else:
+                    consistent_1h_roots += 1
+                root_inputs.append(root_input)
+                print(f"{row_prefix} {str(root_input['clears']):>8} {share:>8.3f}")
             verdict = _cache_rebuild_ttl_verdict(root_inputs)
             print(
                 f"\n{ttl_origin}: consistent 5m roots={consistent_5m_roots}"
