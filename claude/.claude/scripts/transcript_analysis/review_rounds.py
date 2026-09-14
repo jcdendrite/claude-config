@@ -397,6 +397,47 @@ def compute_review_round_costs(
     return {"rounds": filtered_rounds, "branch_totals": dict(branch_totals)}
 
 
+def compute_review_round_counts(
+    session_iter,
+    *,
+    branch_filter: set[str] | None = None,
+) -> dict[str, int]:
+    """Per-skill round counts across session_iter, main-thread only.
+
+    Every REVIEW_SKILLS member is a key in the returned dict, zeros
+    included, so a caller never has to special-case an absent skill.
+
+    Detection reuses the same three helpers in the same order as
+    compute_review_round_costs -- pricing.dedup_turns_by_request_id,
+    detect_round_windows, _session_record_branches -- so the two functions
+    can never disagree on what counts as one round. Dedup runs before
+    detection here too, not only before pricing (see
+    pricing.dedup_turns_by_request_id's own docstring): without it, one API
+    call's Skill tool_use can appear in more than one record and count as
+    two rounds.
+
+    branch_filter matches a round's own opening record's raw gitBranch,
+    carried forward when absent -- the same attribution
+    compute_review_round_costs uses for branch_key's second element.
+
+    No pricing, no dispatch index, no recursion: unlike
+    compute_review_round_costs, this never opens a dispatched subagent's own
+    transcript.
+    """
+    counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
+    for _jsonl, records in session_iter:
+        records = pricing.dedup_turns_by_request_id(records)  # dedup before detection, not only before pricing -- see pricing.py
+        windows = detect_round_windows(records)
+        if not windows:
+            continue
+        record_branches = _session_record_branches(records, windows)
+        for open_idx, _window_end, skill in windows:
+            if branch_filter is not None and record_branches[open_idx] not in branch_filter:
+                continue
+            counts[skill] += 1
+    return counts
+
+
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
     """Per-branch review-round dollar cost.
 

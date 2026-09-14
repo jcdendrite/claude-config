@@ -840,9 +840,10 @@ class TestCostResolveRoots:
     def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
         """Mechanism 1 narrows _resolve_cost_roots only for subcommand ==
         "cost" -- a populated declared-roots file still unions for every
-        other _SUBCOMMANDS_WITH_OWN_CONFIG_DIR caller, since only cost's
-        argparser defines --summary today and the gate is on `subcommand`,
-        not on a bare summary_mode check."""
+        other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR caller that goes
+        through this function, since only cost's argparser defines --summary
+        today and the gate is on `subcommand`, not on a bare summary_mode
+        check."""
         active = tmp_path / "acct-a"
         (active / "projects").mkdir(parents=True)
         other = tmp_path / "acct-b"

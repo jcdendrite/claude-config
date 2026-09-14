@@ -127,6 +127,7 @@ from transcript_analysis.review_rounds import (
     # exception documented in docs/transcript-analysis-architecture.md.
     REVIEW_SKILLS,
     cmd_review_round_cost,
+    compute_review_round_counts,
 )
 from transcript_analysis.reviewer_yield import (
     # The six names below are read only via _mod.<name> from test files (unit-testing a
@@ -154,7 +155,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.reviewer_yield import compute_reviewer_yield_data as _compute_reviewer_yield_data
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR,
+    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
@@ -2651,7 +2652,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 name = block.get("name")
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
-                    stype = inp.get("subagent_type") or "unknown"
+                    stype = inp.get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
                     session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
@@ -2786,6 +2787,41 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
+def _spawn_counts_by_agent_type(
+    session_iter, branch_filter: set[str] | None,
+) -> dict[str, int]:
+    """Raw (undisclosed) subagent_type spawn counts across session_iter,
+    for cost-counts.
+
+    Main-thread dispatches only: excludes isSidechain records before ever
+    reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
+    subagent's own gitBranch never reaches this count. branch_filter matches
+    a record's own literal gitBranch, not review_rounds' carry-forward
+    attribution. For a main-thread record the two agree in every case that
+    matters here, since cost._attributed_branch's own carry-forward logic
+    exists only to resolve a worktree-agent-* sidechain record.
+
+    No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
+    for the allowlist partition this raw count feeds.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for _jsonl, records in session_iter:
+        for rec in records:
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            branch = rec.get("gitBranch") or ""
+            if branch_filter is not None and branch not in branch_filter:
+                continue
+            for block in (rec.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") not in _SPAWN_TOOL_NAMES:
+                    continue
+                stype = (block.get("input") or {}).get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
+                counts[stype] += 1
+    return dict(counts)
+
+
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 
@@ -2813,6 +2849,12 @@ _DECLARED_PIN_BUILT_IN = "built-in"
 # subagent_type disclosure, regardless of whether this repo's own agents/
 # tree tracks a same-named file.
 _BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
+# Fallback subagent_type for a spawn tool_use whose input carries no
+# subagent_type field -- shared between cmd_subagent_mix and
+# _spawn_counts_by_agent_type so the two never disagree on which raw string
+# means "input missing this field."
+_UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
 # "general-purpose") -- never containing "/" or "..". _declared_pin enforces
@@ -2904,6 +2946,134 @@ def _repo_tracked_agent_type_names() -> frozenset[str]:
         if entry and "/" not in entry and entry.endswith(".md")
     }
     return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
+
+
+# The one folded row a subagent_type this repo's own agents/ tree does not
+# track (and is not a Claude Code built-in) collapses into -- an em dash,
+# not a hyphen, and parenthesized so it reads unambiguously as a caption,
+# never as an agent name.
+_WITHHELD_AGENT_TYPE_LABEL = "(withheld — untracked agent type)"
+
+
+def _partition_spawn_counts_by_disclosure(raw_counts: dict[str, int]) -> list[tuple[str, int]]:
+    """Partition raw subagent_type spawn counts into disclosed rows plus one
+    folded withheld row, for cost-counts.
+
+    The _repo_tracked_agent_type_names() allowlist gate is applied here
+    unconditionally, unlike _stype_label's `disclose=this_repo and stype in
+    _repo_tracked_agent_type_names()` (reached only under multi-root):
+    _repo_tracked_agent_type_names() resolves its allowlist from
+    _REPO_AGENT_DEFINITIONS_DIR, this installed toolkit's own agents/ tree --
+    never a consumer repo's own tracked agents/ directory (see that
+    function's own docstring). So a stow consumer's own real,
+    project-tracked agent types are exactly as unresolvable here as a
+    genuinely ad hoc dispatch. Both fold into the same withheld row
+    regardless of whose branch cost-counts is scoring.
+
+    Disclosed rows sort by (-count, name), matching cmd_subagent_mix's own
+    `top` ordering. The withheld row -- when its folded total is nonzero --
+    is always appended last, never merged into that sort, so its count can
+    never place it ahead of a named row and be mistaken for one.
+    """
+    tracked = _repo_tracked_agent_type_names()
+    disclosed = sorted(
+        ((stype, count) for stype, count in raw_counts.items() if stype in tracked),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    withheld_total = sum(count for stype, count in raw_counts.items() if stype not in tracked)
+    rows = list(disclosed)
+    if withheld_total:
+        rows.append((_WITHHELD_AGENT_TYPE_LABEL, withheld_total))
+    return rows
+
+
+_COST_COUNTS_ROUNDS_CAPTION = (
+    "Each invocation of a review skill is one round, whether or not it produced findings."
+    " Counts reflect this section's last render; a review round that ran afterward may not"
+    " be included yet."
+)
+
+_COST_COUNTS_SPAWNS_CAPTION = (
+    "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
+    " counted."
+)
+
+
+def cmd_cost_counts(args: argparse.Namespace) -> None:
+    """Per-branch review-round and subagent-spawn counts, for embedding in a
+    public PR body -- counts only, no dollar attribution anywhere.
+
+    Requires --this-repo and --branches; always resolves to a single root,
+    `[config_dir() / "projects"]`, the active account alone. Prints exactly
+    two GFM subsections, `### Review rounds` and `### Subagent spawns`, and
+    nothing else. See docs/transcript-analysis.md's `cost-counts` section
+    for the branch-attribution-model distinction, the rounds/spawns
+    zero-count rendering asymmetry, and the disclosure-allowlist assertion
+    backstop.
+    """
+    this_repo = bool(getattr(args, "this_repo", False))
+    projects_arg = getattr(args, "projects", None)
+    if not this_repo or projects_arg not in (None, "*"):
+        print(
+            "cost-counts: requires --this-repo and refuses any --projects scope"
+            " (including the default glob) — see docs/transcript-analysis.md",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    branches_arg: str | None = getattr(args, "branches", None) or None
+    if not branches_arg:
+        print(
+            "cost-counts: --branches is required — a corpus-wide count is never a"
+            " legitimate PR-body figure",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    branch_filter = _branch_filter(args)
+
+    roots = [config_dir() / "projects"]
+
+    session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    # Fully materialized (unlike every other cmd_* here, which streams one session at a
+    # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
+    # session history, small enough to hold in memory at once.
+    sessions = list(session_iter)
+
+    round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
+    spawn_rows = _partition_spawn_counts_by_disclosure(
+        _spawn_counts_by_agent_type(sessions, branch_filter)
+    )
+
+    print("### Review rounds\n")
+    print(f"{_COST_COUNTS_ROUNDS_CAPTION}\n")
+    print("| Skill | Rounds |")
+    print("|---|---|")
+    total_rounds = 0
+    for skill in REVIEW_SKILLS:
+        n = round_counts[skill]
+        total_rounds += n
+        print(f"| {_sanitize_table_cell(skill)} | {n} |")
+    print(f"| **total** | **{total_rounds}** |")
+
+    print("\n### Subagent spawns\n")
+    print(f"{_COST_COUNTS_SPAWNS_CAPTION}\n")
+    if not spawn_rows:
+        print("No subagent spawns found in scope.")
+    else:
+        tracked = _repo_tracked_agent_type_names()
+        print("| Agent type | Spawns |")
+        print("|---|---|")
+        total_spawns = 0
+        for row_index, (label, count) in enumerate(spawn_rows):
+            if not (label == _WITHHELD_AGENT_TYPE_LABEL or label in tracked):
+                raise AssertionError(
+                    f"cost-counts: spawn row {row_index} is neither the withheld label nor a"
+                    " repo-tracked agent type. Refusing to print the value; it is withheld"
+                    " from this message by design."
+                )
+            total_spawns += count
+            print(f"| {_sanitize_table_cell(label)} | {count} |")
+        print(f"| **total** | **{total_spawns}** |")
 
 
 def _dispatch_usage_summary(
@@ -5848,12 +6018,44 @@ _CACHE_REBUILD_DEFAULT_SINCE = "30d"
 _CACHE_REBUILD_IDLE_5M_SECONDS = 300
 _CACHE_REBUILD_IDLE_1H_SECONDS = 3600
 
+# --ttl-verdict's second boundary point for its two-point sensitivity check
+# (.claude/plans/cache-ttl-tuning-analysis.md's Approach section): the
+# vendor's own illustrative "about 1 minute" margin a 4-minute-streaming
+# response leaves inside a 5-minute TTL, used here as an alternate idle-band
+# lower bound. A direction adopts only when its margin clears at both this
+# boundary and _CACHE_REBUILD_IDLE_5M_SECONDS.
+_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS = 60
+
+# --ttl-verdict's own per-root margin requirement: a direction's net savings
+# must clear at least this fraction of that root's own dollar-equivalent
+# volume to adopt -- a pre-registered decision threshold from the plan's
+# Approach section, not a vendor-sourced rate.
+_CACHE_REBUILD_TTL_MARGIN_FRACTION = 0.10
+
+_TTL_VERDICT_ADOPT = "adopt"
+_TTL_VERDICT_DECLINE = "decline"
+_TTL_VERDICT_ROOTS_DISAGREE = "roots disagree"
+_TTL_VERDICT_NO_VERDICT = "no verdict"
+
+# --ttl-verdict's tier-direction discriminator, shared by root["favors"],
+# _cache_rebuild_root_verdict_input's positive_favors/negative_favors, and
+# the printed Tier/Favors table columns.
+_CACHE_REBUILD_TIER_5M = "5m"
+_CACHE_REBUILD_TIER_1H = "1h"
+
 _CAUSE_SESSION_START = "session start"
 _CAUSE_IDLE_5M_1H = "idle 5m-1h"
 _CAUSE_IDLE_OVER_1H = "idle >1h"
 _CAUSE_MODEL_SWITCH = "model switch"
 _CAUSE_UNEXPLAINED = "unexplained"
 _CAUSE_TS_ANOMALY = "excluded (timestamp anomaly)"
+
+# _cache_miss_reason's own vendor-emitted type value for a real model
+# switch. Compared against the gap-derived idle-5m-1h cause as a
+# cross-check, never fed back into any accumulator.
+# Named as a constant, not a bare string, so it stays byte-identical to
+# _classify_cache_rebuild_cause's own _CAUSE_MODEL_SWITCH trigger.
+_CACHE_MISS_REASON_MODEL_CHANGED = "model_changed"
 
 # Print order for the cause-breakdown table: the two TTL-explained idle
 # buckets first, then the non-idle tail, then the excluded diagnostic bucket
@@ -5919,7 +6121,8 @@ def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> f
 
 
 def _classify_cache_rebuild_cause(
-    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool
+    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool,
+    *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
 ) -> str:
     """Classify one threshold-crossing cache-write call's cause.
 
@@ -5928,7 +6131,9 @@ def _classify_cache_rebuild_cause(
     the call's cache-write tokens are entirely ephemeral_1h-tier (no
     ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
     the 1h-TTL cache would still be warm, so it falls to "unexplained"
-    instead of "idle 5m-1h".
+    instead of "idle 5m-1h". idle_5m_boundary_seconds overrides the idle
+    band's lower bound for --ttl-verdict's own two-point sensitivity check;
+    every other caller uses the default, vendor-grounded boundary.
     """
     if is_first_call:
         return _CAUSE_SESSION_START
@@ -5936,7 +6141,7 @@ def _classify_cache_rebuild_cause(
         return _CAUSE_TS_ANOMALY
     if gap_seconds >= _CACHE_REBUILD_IDLE_1H_SECONDS:
         return _CAUSE_IDLE_OVER_1H
-    if gap_seconds >= _CACHE_REBUILD_IDLE_5M_SECONDS:
+    if gap_seconds >= idle_5m_boundary_seconds:
         return _CAUSE_UNEXPLAINED if pure_1h_tier_write else _CAUSE_IDLE_5M_1H
     if model_changed:
         return _CAUSE_MODEL_SWITCH
@@ -6091,6 +6296,125 @@ def _cache_rebuild_switch_delta_dollars(
     return delta_dollars, 0
 
 
+def _cache_rebuild_1h_to_5m_delta_dollars(
+    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
+) -> tuple[float | None, int]:
+    """One call's signed contribution to a per-root 1h-to-5m cacheTtl switch
+    delta -- the algebraic mirror of _cache_rebuild_switch_delta_dollars for
+    the opposite direction (see .claude/plans/cache-ttl-tuning-analysis.md's
+    Approach section for the derivation). The 5m/1h-write rate difference
+    must be resolved per call via _model_rates, never hardcoded, for the
+    same mixed-rate-corpus reason as the sibling. Positive is
+    switch-cost-positive, matching the sibling's own convention: the report
+    negates the accumulated sum before printing it as a savings-positive
+    net. is_idle_5m_1h_cause marks a call whose prior-call gap fell in
+    [idle_5m_boundary, 3600) -- under a live 1h tier this call was served as
+    a warm read, so its own cache_read_input_tokens are the plan's Z
+    contribution, not eph_5m (near-zero by construction on the population
+    this function is called for). Returns (None, unpriced_tokens) for a
+    model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's own
+    contract.
+    """
+    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
+    if dollars_by_class is None:
+        return None, unpriced_tokens
+    rates = _model_rates(model)
+    eph_1h, _eph_5m = _cache_write_split(usage)
+    tier_savings_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
+    delta_dollars = -(eph_1h / 1_000_000 * tier_savings_per_token)
+    if is_idle_5m_1h_cause:
+        read_tokens = int(usage.get("cache_read_input_tokens", 0))
+        expiry_cost_per_token = rates["cache_write_5m"] - rates["cache_read"]
+        delta_dollars += read_tokens / 1_000_000 * expiry_cost_per_token
+    # Mirrors _price_turn's own fast/geo multiplier application -- neither
+    # leg above goes through _price_turn's own dollars_by_class, so both
+    # need the same multiplier applied here instead.
+    if usage.get("speed") == "fast":
+        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
+    if usage.get("inference_geo") == "us":
+        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
+    return delta_dollars, 0
+
+
+def _cache_rebuild_margin_clears(net_dollars: float, dollar_volume: float) -> bool:
+    """Whether a direction's net savings clears --ttl-verdict's own
+    _CACHE_REBUILD_TTL_MARGIN_FRACTION of that root's own dollar-equivalent
+    volume -- shared by both the 5m-to-1h and 1h-to-5m per-root checks
+    (Approach section), since the fraction and comparison are identical;
+    only the two inputs' own derivation differs per direction. A
+    non-positive volume never clears, rather than dividing by zero or by a
+    negative number.
+    """
+    if dollar_volume <= 0:
+        return False
+    return net_dollars / dollar_volume >= _CACHE_REBUILD_TTL_MARGIN_FRACTION
+
+
+def _cache_rebuild_token_tiebreaker_favors_5m(z: int, w1h: int) -> bool | None:
+    """Raw-token, zero-price tiebreaker for a 1h-tier root (the vendor
+    publishes nothing on how cache writes weigh against subscription rate
+    limits, which matters only for a root currently paying the 1h tier):
+    True favors dropping to 5m (Z < W1h), False disfavors it (Z > W1h),
+    None when Z == W1h -- a wash counts as a disagreement, never a
+    favorable tie, so a root whose dollar accounting disagrees with this
+    sign, or whose Z and W1h are exactly equal, declines regardless of
+    its own dollar margin.
+    """
+    if z == w1h:
+        return None
+    return z < w1h
+
+
+def _cache_rebuild_root_verdict_input(
+    *, net_primary: float, net_sensitivity: float, volume: float,
+    positive_favors: str, negative_favors: str,
+    apply_tiebreaker: bool, tiebreaker_favors_5m: bool | None = None,
+) -> dict[str, object]:
+    """Reduce one consistent root's own net-dollar figures (at both
+    sensitivity boundaries) and dollar-equivalent volume into the
+    {"favors", "clears"} shape _cache_rebuild_ttl_verdict consumes.
+    positive_favors/negative_favors name the direction net_primary's own
+    sign resolves to -- "1h"/"5m" for a 5m-tier root, "5m"/"1h" for a
+    1h-tier root, since the two directions' savings-positive sign points
+    opposite ways. apply_tiebreaker is False for a 5m-tier root, so clears
+    is the dollar margin alone. W1h is always 0 for a 5m-tier root by
+    construction -- that's what "consistent 5m" means. A raw-token
+    comparison against it would therefore be degenerate rather than a
+    real tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
+    tiebreaker_favors_5m must agree with the dollar accounting's own sign
+    -- a None (Z == W1h wash) result never agrees, so clears is forced
+    False regardless of margin.
+    """
+    favors = positive_favors if net_primary > 0 else negative_favors
+    margin_ok = (
+        _cache_rebuild_margin_clears(net_primary, volume)
+        and _cache_rebuild_margin_clears(net_sensitivity, volume)
+    )
+    if not apply_tiebreaker:
+        return {"favors": favors, "clears": margin_ok}
+    tiebreaker_agrees = (
+        tiebreaker_favors_5m is not None and tiebreaker_favors_5m == (favors == _CACHE_REBUILD_TIER_5M)
+    )
+    clears = margin_ok and tiebreaker_agrees
+    return {"favors": favors, "clears": clears}
+
+
+def _cache_rebuild_ttl_verdict(root_inputs: Sequence[dict[str, object]]) -> str:
+    """Reduce one bucket's own consistent-root inputs to the plan's four-way
+    verdict (Approach section's "ship rule"). Roots-disagree is checked
+    before clears, so a direction conflict wins even when every root's own
+    margin happens to clear.
+    """
+    if not root_inputs:
+        return _TTL_VERDICT_NO_VERDICT
+    favored_directions = {root["favors"] for root in root_inputs}
+    if len(favored_directions) > 1:
+        return _TTL_VERDICT_ROOTS_DISAGREE
+    if all(root["clears"] for root in root_inputs):
+        return _TTL_VERDICT_ADOPT
+    return _TTL_VERDICT_DECLINE
+
+
 def _negate_switch_delta_for_display(accumulated_delta: float) -> float:
     """Savings-positive negation of an accumulated switch-delta sum, cents-
     rounded. Two per-call contributions that cancel exactly at the rational
@@ -6137,16 +6461,20 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
 
     Also splits idle-gap rebuilds and the 5m-tier cache-write-token volume
     by origin (main vs. subagent), and prices the dollar delta a 5m-to-1h
-    cacheTtl switch would make to subagent traffic -- see
+    cacheTtl switch would make to subagent traffic. That delta is not
+    simply the subagent share of the priced excess above, because the
+    switch raises the write rate from 1.25x to 2x on every 5m-tier write
+    the origin makes, not only the idle-gap-rebuilt tokens the excess
+    figure already prices -- see
     .claude/plans/subagent-idle-gap-cache-rebuild-split.md's Approach
-    section for why that delta is not simply the subagent share of the
-    priced excess above.
+    section for the full derivation.
 
     roots is None only for this module's own tests exercising the report
     body directly; --this-repo/--config-dir CLI validation happens once in
     cmd_cache_rebuild.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
+    ttl_verdict: bool = bool(getattr(args, "ttl_verdict", False))
     scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
@@ -6236,6 +6564,36 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
     unpriced_switch_delta_turns = 0
     unpriced_switch_delta_tokens = 0
+    # This family is never read on the default path: w5m_by_origin/x_by_origin/
+    # switch_delta_by_origin above remain the sole source for every
+    # default-path figure.
+    w5m_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    w5m_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    x_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    switch_delta_5m_to_1h_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
+    switch_delta_5m_to_1h_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    w1h_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    w1h_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    z_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    switch_delta_1h_to_5m_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
+    switch_delta_1h_to_5m_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Calls this family skips for lacking a price-table entry, pooled across
+    # both directions and every root -- disclosed in the --ttl-verdict
+    # section rather than split per root, since a call is unpriced by model,
+    # not by which root or direction it landed in.
+    unpriced_ttl_verdict_turns = 0
+    unpriced_ttl_verdict_tokens = 0
+    # Cross-tab of the gap-derived idle-5m-1h cause against
+    # pricing._cache_miss_reason's own "model_changed" signal -- never feeds
+    # back into any accumulator above.
+    cache_miss_reason_agree = 0
+    cache_miss_reason_discrepancy = 0
     # One entry per subagent-file group (one dispatch's own conversation),
     # for the ex-post per-dispatch dispersion figures -- kept separate from
     # w5m_by_origin/x_by_origin above, which pool every subagent-origin
@@ -6356,6 +6714,96 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                             group_delta_dollars += delta_dollars
                             if origin == "subagent":
                                 subagent_origin_w5m_in_groups += eph_5m
+
+                # --ttl-verdict's own second, parallel accumulation: keyed
+                # on (origin, root_ordinal), never read on the default
+                # path above. root_key's own ordinal is always an int here
+                # (redact_ordinals seeds single_root_ordinal too), but the
+                # None guard mirrors the per_account_* sites' own defensive
+                # style.
+                if ttl_verdict and in_scope and account_ordinal is not None:
+                    root_key = (origin, account_ordinal)
+                    read_tokens = int(usage.get("cache_read_input_tokens", 0))
+                    # is_idle_5m_1h_cause (the primary, vendor-grounded
+                    # boundary) is exactly `cause == _CAUSE_IDLE_5M_1H`,
+                    # already computed above -- reused here rather than
+                    # re-running _classify_cache_rebuild_cause at its own
+                    # default boundary a second time.
+                    is_idle_primary = cause == _CAUSE_IDLE_5M_1H
+                    is_idle_sensitivity = _classify_cache_rebuild_cause(
+                        is_first_call, gap_seconds, model_changed, pure_1h_tier_write,
+                        idle_5m_boundary_seconds=_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS,
+                    ) == _CAUSE_IDLE_5M_1H
+
+                    in_w5m_branch = eph_5m > 0
+                    # A call in the sensitivity idle band (the wider of the
+                    # two boundaries) may carry read tokens the mirror
+                    # direction needs even when it wrote no 1h-tier tokens
+                    # at all -- the common case for a live-1h-tier root's
+                    # warm read.
+                    in_w1h_branch = eph_1h > 0 or (read_tokens > 0 and is_idle_sensitivity)
+
+                    # Unpriced-ness depends only on model/usage, the same
+                    # regardless of which branch(es) below this record
+                    # enters, so it's resolved once here rather than once
+                    # per branch -- a record eligible for both branches (a
+                    # mixed-tier write, or a sensitivity-band warm read
+                    # alongside a 5m-tier write) is counted at most once.
+                    if in_w5m_branch or in_w1h_branch:
+                        dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+                        if dollars_by_class is None:
+                            unpriced_ttl_verdict_turns += 1
+                            unpriced_ttl_verdict_tokens += turn_unpriced_tokens
+
+                    if in_w5m_branch:
+                        w5m_by_origin_root[root_key] += eph_5m
+                        rates = _model_rates(model)
+                        if rates is not None:
+                            w5m_dollars_by_origin_root[root_key] += eph_5m / 1_000_000 * rates["cache_write_5m"]
+                        # X is a primary-boundary-only quantity (the report's
+                        # own display column) -- only switch_delta_5m_to_1h_*
+                        # needs the sensitivity boundary too, for the
+                        # two-point margin check.
+                        if is_idle_primary:
+                            x_by_origin_root[root_key] += eph_5m
+                        for is_idle_at_boundary, delta_dict in (
+                            (is_idle_primary, switch_delta_5m_to_1h_by_origin_root),
+                            (is_idle_sensitivity, switch_delta_5m_to_1h_at_60_by_origin_root),
+                        ):
+                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
+                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
+                            )
+                            if boundary_delta is not None:
+                                delta_dict[root_key] += boundary_delta
+
+                    if in_w1h_branch:
+                        w1h_by_origin_root[root_key] += eph_1h
+                        rates = _model_rates(model)
+                        if rates is not None:
+                            w1h_dollars_by_origin_root[root_key] += eph_1h / 1_000_000 * rates["cache_write_1h"]
+                        # Z is a primary-boundary-only quantity, the same
+                        # reason as X above.
+                        if is_idle_primary:
+                            z_by_origin_root[root_key] += read_tokens
+                        for is_idle_at_boundary, delta_dict in (
+                            (is_idle_primary, switch_delta_1h_to_5m_by_origin_root),
+                            (is_idle_sensitivity, switch_delta_1h_to_5m_at_60_by_origin_root),
+                        ):
+                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_1h_to_5m_delta_dollars(
+                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
+                            )
+                            if boundary_delta is not None:
+                                delta_dict[root_key] += boundary_delta
+
+                    # Disclosed only, never fed back into any accumulator
+                    # above -- see _CAUSE_IDLE_5M_1H's own docstring caveat
+                    # that a model/effort switch outside the classified
+                    # window can masquerade as idle-gap expiry.
+                    if cause == _CAUSE_IDLE_5M_1H:
+                        if _cache_miss_reason(msg) == _CACHE_MISS_REASON_MODEL_CHANGED:
+                            cache_miss_reason_discrepancy += 1
+                        else:
+                            cache_miss_reason_agree += 1
 
                 write_tokens = eph_1h + eph_5m
                 in_tail = write_tokens >= threshold
@@ -6644,6 +7092,105 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         " transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound"
         " above has exact W5m coverage, not merely assumed)"
     )
+
+    if ttl_verdict:
+        print(
+            "\n## TTL-verdict per-root analysis (--ttl-verdict) [unverified]\n\n"
+            "Per-root break-even verdict for each bucket's own live TTL tier -- see"
+            " .claude/plans/cache-ttl-tuning-analysis.md's Approach section for the derivation, the ship rule,"
+            " and every caveat this print omits. A root is consistent by whichever tier it is currently paying"
+            " for this bucket (nonzero W5m XOR nonzero W1h); a root paying both or neither in this window is"
+            " excluded from this bucket's verdict entirely, never counted toward either direction. Clears"
+            " requires the margin to hold at both the"
+            f" {_CACHE_REBUILD_IDLE_5M_SECONDS}s and {_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS}s boundary,"
+            " and, for every 1h-tier root, the raw-token tiebreaker to agree with the dollar accounting's own"
+            " sign. [unverified]\n"
+        )
+        all_root_ordinals: tuple[int, ...] = tuple(sorted(set(redact_ordinals.values())))
+        for ttl_origin in _CACHE_REBUILD_ORIGINS:
+            consistent_5m_roots = 0
+            consistent_1h_roots = 0
+            excluded_roots = 0
+            root_inputs: list[dict[str, object]] = []
+            print(f"\n### {ttl_origin}\n")
+            print(f"{'Root':<12} {'Tier':>6} {'W5m/W1h':>14} {'X/Z':>14} {'Net$':>10} {'Favors':>8} {'Clears':>8}")
+            for root_ordinal in all_root_ordinals:
+                root_key = (ttl_origin, root_ordinal)
+                # --no-redact is refused once more than one root is in
+                # scope, so scan_roots[0] is the only root this branch can
+                # reach when not redact.
+                root_label = f"account-{root_ordinal}" if redact else str(scan_roots[0].parent)
+                root_w5m = w5m_by_origin_root.get(root_key, 0)
+                root_w1h = w1h_by_origin_root.get(root_key, 0)
+                if (root_w5m > 0) == (root_w1h > 0):
+                    # Both nonzero (mixed tier in this window) or both zero
+                    # (no data) -- excluded from this bucket's verdict
+                    # either way (Approach section).
+                    excluded_roots += 1
+                    continue
+                if root_w5m > 0:
+                    consistent_5m_roots += 1
+                    net_primary = _negate_switch_delta_for_display(
+                        switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
+                    )
+                    net_sensitivity = _negate_switch_delta_for_display(
+                        switch_delta_5m_to_1h_at_60_by_origin_root.get(root_key, 0.0)
+                    )
+                    volume = w5m_dollars_by_origin_root.get(root_key, 0.0)
+                    root_input = _cache_rebuild_root_verdict_input(
+                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
+                        positive_favors=_CACHE_REBUILD_TIER_1H, negative_favors=_CACHE_REBUILD_TIER_5M,
+                        apply_tiebreaker=False,
+                    )
+                    root_inputs.append(root_input)
+                    print(
+                        f"{root_label:<12} {_CACHE_REBUILD_TIER_5M:>6} {root_w5m:>14,}"
+                        f" {x_by_origin_root.get(root_key, 0):>14,} {_fmt_usd(net_primary):>10}"
+                        f" {root_input['favors']:>8} {str(root_input['clears']):>8}"
+                    )
+                else:
+                    consistent_1h_roots += 1
+                    net_primary = _negate_switch_delta_for_display(
+                        switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
+                    )
+                    net_sensitivity = _negate_switch_delta_for_display(
+                        switch_delta_1h_to_5m_at_60_by_origin_root.get(root_key, 0.0)
+                    )
+                    volume = w1h_dollars_by_origin_root.get(root_key, 0.0)
+                    root_z = z_by_origin_root.get(root_key, 0)
+                    root_input = _cache_rebuild_root_verdict_input(
+                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
+                        positive_favors=_CACHE_REBUILD_TIER_5M, negative_favors=_CACHE_REBUILD_TIER_1H,
+                        apply_tiebreaker=True,
+                        tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
+                    )
+                    root_inputs.append(root_input)
+                    print(
+                        f"{root_label:<12} {_CACHE_REBUILD_TIER_1H:>6} {root_w1h:>14,} {root_z:>14,}"
+                        f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8} {str(root_input['clears']):>8}"
+                    )
+            verdict = _cache_rebuild_ttl_verdict(root_inputs)
+            print(
+                f"\n{ttl_origin}: consistent 5m roots={consistent_5m_roots}"
+                f"  consistent 1h roots={consistent_1h_roots}"
+                f"  excluded (mixed-tier or no data) roots={excluded_roots}  verdict={verdict}"
+            )
+
+        if unpriced_ttl_verdict_turns:
+            print(
+                f"\n  ({unpriced_ttl_verdict_turns:,} calls / {unpriced_ttl_verdict_tokens:,} tokens excluded from"
+                " every Net$ figure and its own margin volume above -- model has no price-table entry)"
+            )
+
+        cache_miss_reason_total = cache_miss_reason_agree + cache_miss_reason_discrepancy
+        if cache_miss_reason_discrepancy:
+            print(
+                f"\n  (cache-miss-reason cross-tab: {cache_miss_reason_discrepancy:,} of"
+                f" {cache_miss_reason_total:,} idle-5m-1h-classified calls carry a vendor cache_miss_reason of"
+                f" {_CACHE_MISS_REASON_MODEL_CHANGED!r} -- a discrepancy between the gap-derived cause and Claude"
+                " Code's own miss signal. Every W5m/X/W1h/Z figure above still reflects the gap-derived"
+                " classification, never this signal.)"
+            )
 
 
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
@@ -11711,6 +12258,16 @@ def build_parser() -> argparse.ArgumentParser:
             " Refused when --config-dir puts more than one root in scope."
         ),
     )
+    p_cache_rebuild.add_argument(
+        "--ttl-verdict", action="store_true",
+        help=(
+            "Also report a per-root, per-bucket (main / everything-else) adopt/decline verdict on"
+            " each bucket's live prompt-cache TTL, covering both the 5m-to-1h and the mirrored,"
+            " inferred 1h-to-5m direction. Ships a shared default only when every consistent root"
+            " agrees -- see .claude/plans/cache-ttl-tuning-analysis.md's Approach section. Adds"
+            " no new output when omitted; every figure without this flag is unchanged."
+        ),
+    )
     p_cache_rebuild.set_defaults(func=cmd_cache_rebuild)
 
     p_cost_ledger = sub.add_parser(
@@ -11876,6 +12433,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
     )
     p_author_outcome.set_defaults(func=cmd_author_outcome)
+
+    p_cost_counts = sub.add_parser(
+        "cost-counts",
+        help=(
+            "Per-branch review-round and subagent-spawn counts, as two GFM subsections for a"
+            " public PR body -- counts only, no dollar attribution. Requires --this-repo and"
+            " --branches; always scoped to the active account alone."
+        ),
+    )
+    _add_project_scope_args(p_cost_counts)
+    p_cost_counts.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Branch name filter. Required at runtime (see cmd_cost_counts's own docstring).",
+    )
+    p_cost_counts.set_defaults(func=cmd_cost_counts)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
@@ -12111,17 +12683,31 @@ def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
     if parsed.config_dir:
-        # These subcommands resolve their own scan roots via their own
-        # --config-dir (_resolve_cost_roots), never reading the reassignment
-        # below -- refuse outright rather than let the two same-named flags
-        # silently diverge (this top-level one would validate one account
-        # while the subcommand scans another).
-        if parsed.subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR:
+        # These subcommands each refuse the top-level --config-dir outright
+        # rather than let it silently diverge from whatever scan roots the
+        # subcommand actually resolves (this top-level one would validate
+        # one account while the subcommand scans another). Most resolve
+        # their own scan roots via their own --config-dir (_resolve_cost_roots);
+        # cost-counts is the one exception, registering no --config-dir flag
+        # of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
+            # hasattr, not a hardcoded subcommand list: True only when the
+            # invoked subparser itself registered --config-dir (dest
+            # extra_config_dirs), so the hint never recommends a flag that
+            # doesn't exist on cost-counts's own parser.
+            if hasattr(parsed, "extra_config_dirs"):
+                own_scope_clause = (
+                    "this subcommand resolves its own scan roots via its own --config-dir "
+                    "(repeatable, additive) -- use that instead: "
+                    f"transcript-analysis.py {parsed.subcommand} --config-dir PATH"
+                )
+            else:
+                own_scope_clause = (
+                    "this subcommand is scoped to the active account's config dir with no override"
+                )
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "
-                f"this subcommand resolves its own scan roots via its own --config-dir "
-                f"(repeatable, additive) -- use that instead: "
-                f"transcript-analysis.py {parsed.subcommand} --config-dir PATH",
+                f"{own_scope_clause}",
                 file=sys.stderr,
             )
             sys.exit(2)

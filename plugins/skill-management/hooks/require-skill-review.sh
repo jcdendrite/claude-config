@@ -60,7 +60,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by skill-review gate: could not source _lib.sh."
   exit 0
 fi

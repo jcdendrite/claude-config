@@ -18,7 +18,9 @@ that PR. This plan covers those four, now that PR #950 has merged:
    engineer go-ahead even after this plan is approved, per the redaction
    doc's own remediation paragraph (`docs/private-project-redaction.md:177-181`),
    which routes discovery of an already-published non-compliant figure
-   through "stop and report," not a unilateral agent rewrite.
+   through "stop and report," not a unilateral agent rewrite. See
+   "Status update: Phases C and D" at the end of this file for this
+   item's corrected status.
 2. A second hard-wrapped, untested citation to the "Publishing a pooled
    tooling measurement" heading exists at `CLAUDE.md:164-165`, alongside
    the already-known one at
@@ -38,7 +40,8 @@ that PR. This plan covers those four, now that PR #950 has merged:
    `CLAUDE.md`'s existing rule rather than adjudicating the question.
    Scope what adjudicating it would require (who decides, what
    evidence, where the answer gets recorded) — this plan does not
-   answer the question itself.
+   answer the question itself. See "Status update: Phases C and D" at
+   the end of this file: this item is resolved.
 
 Why now: PR #950 is merged, so nothing blocks starting on these, and
 the engineer asked for this plan in the same session the merge was
@@ -186,3 +189,10 @@ Phases C and D produce no code and have no test. Their verification is a review 
 - **Loosening `_CITATION_WITH_TARGET_RE` to tolerate a wrapped heading.** Rejected on the M-A grounds above; recorded here rather than as a given because the plan could change it and deliberately will not.
 - **The two "Deferred review findings" items PR #950 flagged** (G4).
 - **Widening `_all_doc_paths()` to include `docs/case-studies/**`.** Its exclusion is a state-path-contract scoping decision, not a redaction one, and changing it would pull an unrelated test's corpus into this plan.
+
+## Status update: Phases C and D
+
+Recorded by `.claude/plans/redaction-split-repeat-cap-amendment.md`, which found both statuses stale while amending the pooled-measurement carve-out's repeat cap for an unrelated reason.
+
+- **Phase C (Context item 4 / M-C) — resolved.** Both sub-questions are answered in substance by `docs/private-project-redaction.md` § "Own-history counts were never inside this class" and § "Account and machine scope". Q1 (single machine, several accounts): a `transcript-analysis.py` Count or Cost/Duration measurement stays inside the carve-out's machinery regardless of `--this-repo` scoping — the own-history exemption explicitly does not extend to it. Q2 (across machines): governed identically, with a single-account-and-machine default and a dimensionless share as the only exception. The answer landed in this doc rather than in root `CLAUDE.md` as M-C prescribed; that is consistent, not a gap, because `CLAUDE.md` already delegates the carve-out's scope limits to the doc by name. Whether a GitHub issue was ever filed under M-C is unknown here — this status update neither files nor closes one.
+- **Phase D (Context item 1 / M-D) — status corrected, not resolved.** PR #977 (`.claude/plans/redact-account-root-count.md`) executed a large repo-wide sweep reaching both case studies, and deliberately preserved this-repo-scoped totals, dimensionless shares, and a per-machine median under its own per-site scope test. Neither case study is in full compliance with the doc's current text. Remaining gap classes, by file and category, with no line numbers and no values: `docs/case-studies/handoff-threshold-impact.md` — raw pooled dollar totals, a raw token decomposition, a mean published beside its own pool-size count (the composition bar's barred raw-total equivalent), an interquartile range, per-era pool sizes, and a three-era progression; `docs/case-studies/handoff-hard-block-position.md` — a mean beside its own pool-size count, an interquartile range, per-machine dollar medians, and per-era pool sizes. Full remediation is deferred to a separate future plan on this one's own scale; this status update attempts none of it.

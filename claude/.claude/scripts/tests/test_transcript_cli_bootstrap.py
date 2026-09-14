@@ -200,7 +200,7 @@ def _isolated_config_env(config_dir: Path, tmp_path: Path) -> dict[str, str]:
     config_dir() (CLAUDE_CONFIG_DIR) and declared_transcript_roots()
     (TRANSCRIPT_CONFIG_DIRS_FILE) directly -- neither goes through the
     top-level --config-dir flag main() refuses for this subcommand family
-    (_SUBCOMMANDS_WITH_OWN_CONFIG_DIR), and a real subprocess doesn't inherit
+    (_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR), and a real subprocess doesn't inherit
     conftest.py's autouse env-isolation fixture, so both must be pinned here
     to avoid scanning this workstation's real ~/.claude."""
     return {

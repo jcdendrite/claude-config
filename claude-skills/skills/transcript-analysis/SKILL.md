@@ -41,6 +41,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
 | How much does idle-gap prompt-cache TTL-expiry rebuild cost, and is it concurrent-session switching or real breaks? | `cache-rebuild --since 30d` |
+| Which prompt-cache TTL should the main or everything-else bucket run, and does every root agree? | `cache-rebuild --ttl-verdict --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
