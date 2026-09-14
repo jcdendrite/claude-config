@@ -206,6 +206,53 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
   trust policy rather than having its own. No separate composite-action
   citation applies.
 
+## Terraform conventions
+
+Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
+2026-09-12.
+
+- **`user_pool_tier` valid values** — verbatim-confirmed against
+  `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool.html.markdown`:
+  > `user_pool_tier` - (Optional) The user pool feature plan, or tier.
+  > Valid values: `LITE`, `ESSENTIALS`, `PLUS`.
+- **Custom Validation Rules (the `validation` block)** — VERIFIED at
+  `developer.hashicorp.com/terraform/language/values/variables` §
+  "Reference Variable Values", illustrating the `environment` variable:
+  > ```
+  > validation {
+  >   condition     = contains(["dev", "staging", "prod"], var.environment)
+  >   error_message = "Environment must be dev, staging, or prod."
+  > }
+  > ```
+  Triangulated against the Style Guide,
+  `developer.hashicorp.com/terraform/language/style`: "Only use variable
+  validation when your variable values have uniquely restrictive
+  requirements."
+- **`nullable` argument** — VERIFIED at
+  `developer.hashicorp.com/terraform/language/block/variable`: "Enabling
+  the `nullable` argument lets module consumers assign the value `null`
+  to the variable." Defaults to `true`; when `false`, the variable must
+  have a non-null value. That same page: "If nullable is true and the
+  variable has a default argument, you can explicitly set the variable
+  value to null, overwriting the default argument" — the mechanism the
+  rule's null-validation-branch guidance rests on.
+- **Type a provider-native string enum as its own type, not a `bool`
+  mapped through a ternary — confirmed negative as a HashiCorp
+  recommendation.** Neither the Style Guide nor the Types reference
+  (`developer.hashicorp.com/terraform/language/expressions/types`) states
+  a preference between the two. Terraform has no native enum type at
+  all, tracked as open feature request
+  `github.com/hashicorp/terraform/issues/33916`. This bullet's preference
+  is this repo's own convention, reasoned from the `validation`-block
+  mechanism above, not a stated HashiCorp rule.
+- **Major-version bump on a breaking change** — VERIFIED via two
+  triangulated sources:
+  `developer.hashicorp.com/terraform/registry/modules/publish` requires a
+  Git tag matching semantic versioning, and `semver.org` itself states
+  the rule that format defers to: "MAJOR version X (X.y.z | X > 0) MUST
+  be incremented if any backward incompatible changes are introduced to
+  the public API."
+
 ## `paths:` glob-dialect conventions
 
 Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified
