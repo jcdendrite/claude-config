@@ -372,7 +372,7 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
     MSG_CONTENT=$(_lib_capped cat "$msg_path" 2>/dev/null)
     MSG_CONTENT_STATUS=$?
     if [ "$MSG_CONTENT_STATUS" -eq 124 ]; then
-      emit_deny "Blocked by PII commit gate: could not read message-source file '${msg_path}' within the scan timeout. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards."
+      emit_deny "Commit — could not read message-source file '${msg_path}' within the scan timeout. Fail-closed — unscanned content is the leak vector this hook guards."
       exit 0
     fi
     SCAN_TARGET+=$'\n'"$MSG_CONTENT"
