@@ -141,8 +141,13 @@ changes alongside a deploy is config, not a toggle.
      control. The cache-population and cache-invalidation path must be
      gated by the same authorization check as the mutator itself.
    - A toggle that disables a security control globally must use a
-     stronger bar than a single-subject grant: a time-boxed override or
-     two-person approval.
+     stronger bar than a single-subject grant. The two options below are
+     not interchangeable:
+     - **Two-person approval** — when the threat is a single compromised
+       or malicious principal acting alone.
+     - **Time-boxed override** — when the threat is only how long an
+       authorized unilateral action stays in effect; it does not by
+       itself require collusion to misuse.
 3. **Multi-variant targeting, percentage rollout, or experimentation
    with metrics attribution** — a dedicated platform, and only here. A
    vendor's SaaS/cloud-hosted tier means the per-subject targeting

@@ -452,8 +452,12 @@ _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
     ),
     pytest.param(
         "A toggle that disables a security control globally must use a "
-        "stronger bar than a single-subject grant: a time-boxed override "
-        "or two-person approval.",
+        "stronger bar than a single-subject grant. The two options below "
+        "are not interchangeable: - **Two-person approval** — when the "
+        "threat is a single compromised or malicious principal acting "
+        "alone. - **Time-boxed override** — when the threat is only how "
+        "long an authorized unilateral action stays in effect; it does "
+        "not by itself require collusion to misuse.",
         id="global-disable-stronger-bar",
     ),
 )

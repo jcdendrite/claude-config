@@ -9,7 +9,7 @@ paths:
 ## Terraform conventions
 
 HashiCorp's own Terraform documentation grounds the `validation`,
-`nullable`, and module-versioning guidance below; `terraform-provider-aws`
+`nullable`, and module-versioning guidance below. `terraform-provider-aws`
 supplies the one worked enum example. See `docs/rules-references.md` for
 citations (2026-09). This rule covers input-variable design — typing,
 validation, defaults, and changing a default on an existing module. State,
