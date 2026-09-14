@@ -548,6 +548,24 @@ class TestReviewLedgerRoundScopedDedup:
         lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
         assert len(lines) == 1, f"identical CLEAN retry within the same round must dedup, got: {lines}"
 
+    def test_disposition_alone_discriminates_within_the_same_round(self, isolated_home, git_repo):
+        """The shipped dedup filter projects `disposition` among its fields,
+        so two appends differing only on that field -- same round, same
+        finding, same rationale -- must land as two lines, not collapse to
+        one. Guards against a future narrowing of the filter (e.g. down to
+        just `{round}`) that would silently dedup every append after the
+        first within a round."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1", disposition="ADDRESS"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1", disposition="DEFER"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            f"a disposition-only difference within the same round must not dedup, got: {lines}"
+        )
+        dispositions = {json.loads(line)["disposition"] for line in lines}
+        assert dispositions == {"ADDRESS", "DEFER"}
+
 
 def _split_shell_args(statement: str) -> list[str]:
     """Splits STATEMENT (a single logical shell line, backslash-continuations

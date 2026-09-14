@@ -136,11 +136,12 @@ class TestLibAppendJsonLineLocked:
         )
 
     def test_malformed_dedup_filter_fails_open_and_logs_the_failure(self, tmp_path):
-        """A DEDUP_KEY_JQ_FILTER that isn't valid jq must not silently
-        disable dedup nor block the append: the append still succeeds (fail
-        open, same fallback as a genuine lock-race duplicate), but the
-        failure is distinguishable on stderr from a jq call that actually
-        resolved "not a duplicate"."""
+        """A DEDUP_KEY_JQ_FILTER that passes the runtime shape guard but
+        still isn't valid jq (a double comma) must not silently disable
+        dedup nor block the append: the append still succeeds (fail open,
+        same fallback as a genuine lock-race duplicate), but the failure is
+        distinguishable on stderr from a jq call that actually resolved
+        "not a duplicate"."""
         target = tmp_path / "state.jsonl"
         lock_file = tmp_path / "state.jsonl.lock"
         _append_json_line_locked(
@@ -148,7 +149,7 @@ class TestLibAppendJsonLineLocked:
         )
 
         result = _append_json_line_locked(
-            target, lock_file, '{"round":2,"disposition":"ADDRESS"}', "{round,",
+            target, lock_file, '{"round":2,"disposition":"ADDRESS"}', "{round,,disposition}",
         )
 
         assert result.returncode == 0, result.stderr
@@ -182,6 +183,66 @@ class TestLibAppendJsonLineLocked:
         assert target.read_text().splitlines() == [first_line], (
             "a dedup-key value carrying an unbalanced quote and brace must still dedup"
         )
+
+    def test_shipped_static_literal_still_works(self, tmp_path):
+        """The exact literal review-ledger.sh ships -- a multi-field
+        object-projection -- must still pass the runtime allowlist check
+        unchanged."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        shipped_filter = "{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}"
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', shipped_filter,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+
+    @pytest.mark.parametrize("unsafe_filter", ['{round, "$(whoami)"}', "{round, `id`}"])
+    def test_filter_with_dollar_or_backtick_fails_open_without_reaching_jq(self, tmp_path, unsafe_filter):
+        """A DEDUP_KEY_JQ_FILTER carrying a character outside a jq
+        object-projection literal's charset must never be spliced into the
+        jq program text. The append still succeeds (fail open, same
+        fallback as any other malformed filter), but the guard's own
+        stderr note distinguishes this from a jq call that actually ran."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', unsafe_filter,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+        assert "is not a brace-delimited" in result.stderr
+
+    @pytest.mark.parametrize("bad_char", ["\\", ";", "|", "'", "-", "."])
+    def test_single_disallowed_character_fails_open_in_isolation(self, tmp_path, bad_char):
+        """Each character is tested alone, not only bundled, so a future
+        charset change is pinned per-character. Backslash matters most
+        because the guard's `{`/`}` anchors sit outside any bracket
+        expression."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        unsafe_filter = "{round" + bad_char + "}"
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', unsafe_filter,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+
+    @pytest.mark.parametrize("unsafe_filter", ["env", "now", "input"])
+    def test_bare_jq_builtin_without_braces_fails_open_without_reaching_jq(self, tmp_path, unsafe_filter):
+        """A charset-legal but brace-free identifier can be a real 0-arity
+        jq builtin (e.g. `env` returns the process environment), not the
+        inert field-shorthand the object-projection contract assumes. The
+        guard rejects it by shape before it ever reaches jq, not only by
+        charset."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', unsafe_filter,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+        assert "is not a brace-delimited" in result.stderr
 
     def test_malformed_neighbor_line_does_not_blind_dedup_against_the_rest(self, tmp_path):
         """A non-JSON line anywhere in the file (e.g. a partial write from a

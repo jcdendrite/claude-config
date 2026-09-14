@@ -6446,3 +6446,30 @@ class TestStagedDiffHash:
         result = _staged_diff_hash(repo, "", env=env, timeout=30)
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+class TestLibAcquireAppendLockCalledTwice:
+    """_lib_acquire_append_lock's own docstring documents that calling it
+    twice in the same process orphans the first call's lock file, since the
+    second call's `trap ... EXIT` replaces rather than stacks on the
+    first's. review-ledger.sh and log-reviewer-round.sh each call it at
+    most once per process, so this exercises the primitive directly rather
+    than through either caller."""
+
+    def test_second_call_orphans_the_first_lock_file(self, tmp_path: Path) -> None:
+        first_lock = tmp_path / "first.lock"
+        second_lock = tmp_path / "second.lock"
+        result = subprocess.run(
+            ["bash", "-c",
+             f'. "{_LIB_SH}"; _lib_acquire_append_lock "$1"; _lib_acquire_append_lock "$2"',
+             "_", str(first_lock), str(second_lock)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not second_lock.exists(), "the second call's own lock must be released on exit"
+        assert first_lock.exists(), (
+            "the first call's lock must be left orphaned once the second "
+            "call's EXIT trap replaces the first's"
+        )

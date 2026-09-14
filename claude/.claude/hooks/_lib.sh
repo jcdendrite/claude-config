@@ -3246,10 +3246,8 @@ _LIB_APPEND_LOCK_RETRIES=5
 # _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
 # the caller proceeds unlocked, trading a low-consequence duplicate line
 # for never blocking.
-# A future caller that dedups under this lock could check this return
-# status to log that its own dedup check raced a concurrent writer --
-# _lib_append_json_line_locked does not do so today (it discards the
-# status via `|| true`).
+# _lib_append_json_line_locked discards this return status via `|| true`,
+# so a lock-contention race is not currently logged by that caller.
 # A matching projection is still a genuine duplicate regardless of lock
 # state: losing the lock only risks a false negative (missing a concurrent
 # duplicate), never a false positive.
@@ -3316,12 +3314,12 @@ _lib_append_line_locked() {
 # DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
 # bypassing the --arg/--argjson data/code separation this file uses for
 # every other jq input. It MUST therefore be a static, developer-authored
-# jq literal, never derived from session- or user-controlled data. Today
-# this is enforced only by this contract plus review-ledger.sh's own
-# TestReviewLedgerDedupFilterIsStaticLiteral regression test in
-# test_review_ledger_script.py. A future caller of this primitive must
-# add its own equivalent test -- this docstring does not inherit one for
-# it.
+# jq literal, never derived from session- or user-controlled data. This is
+# enforced by this contract, the runtime shape check below, and
+# review-ledger.sh's own TestReviewLedgerDedupFilterIsStaticLiteral
+# regression test in test_review_ledger_script.py. A future caller of this
+# primitive must add its own equivalent test -- this docstring does not
+# inherit one for it.
 # A duplicate is a no-op but still touches FILE's mtime, per
 # _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
 # above.
@@ -3332,10 +3330,33 @@ _lib_append_line_locked() {
 # _lib_append_line_locked's whole-line match.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
+  # A DEDUP_KEY_JQ_FILTER outside a brace-delimited, comma-separated
+  # identifier list is a programmer error at the call site. A charset
+  # check alone is insufficient: a charset-legal but brace-free string
+  # like `env` is a real 0-arity jq builtin returning the process
+  # environment, not the inert field-shorthand this contract assumes. The
+  # check below therefore anchors the whole string to the `{...}` shape,
+  # before the string is ever spliced into jq below. This is still not a
+  # full grammar check: a syntactically invalid but shape-legal literal
+  # (e.g. `{,}`) still reaches jq and fails open via the dup_check_exit
+  # branch below.
+  # A shape-invalid filter fails open the same way, rather than exiting
+  # the process. Every other failure path in this function -- a missing
+  # jq, a shape-legal-but-invalid filter, a lock-acquisition failure --
+  # already degrades to an unconditional append with a stderr note.
+  # `exit` from inside this shared, sourced primitive would also collide
+  # with _lib_emit_deny's own exit-2 harness convention the first time a
+  # PreToolUse or PostToolUse hook caller reuses this function.
+  local dedup_filter_shape_valid=1
+  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]]; then
+    dedup_filter_shape_valid=0
+    printf '_lib_append_json_line_locked: DEDUP_KEY_JQ_FILTER %q is not a brace-delimited, comma-separated list of identifiers (a jq object-projection literal) -- proceeding with unconditional append\n' \
+      "$dedup_filter" >&2
+  fi
   # Bare top-level call, not inside $(...): a nonzero return here must not
   # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
   _lib_acquire_append_lock "$2" || true
-  if [ -f "$file" ] && [ -s "$file" ]; then
+  if [ "$dedup_filter_shape_valid" = 1 ] && [ -f "$file" ] && [ -s "$file" ]; then
     local dup_check_program is_duplicate
     # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is
     # jq's own --argjson-bound variable, meant to expand inside the jq

@@ -1198,6 +1198,7 @@ Data quality
 **Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED.
 
 **When to reach for it.** Answer "what share of `code-writer`'s own diffs failed their own downstream review" -- no other subcommand joins the review's own structured disposition back to the dispatch that authored the reviewed diff. `reviewer-yield` classifies a *reviewer's* own verdict shape (findings-found/zero-finding/unclassified), not whether the diff under review passed; `review-round-cost` prices a round's dollars with no pass/fail axis at all.
+
 ## cost-counts
 
 **Purpose.** Per-branch review-round and subagent-spawn counts, as two GFM subsections (`### Review rounds`, `### Subagent spawns`) meant for splicing directly into a public PR body -- counts only, no dollar attribution anywhere. `pr-cost-section.sh` calls this as a second, independently-degrading call alongside `cost --summary`, splicing its output between the dollar tables and the reproducibility trailer; a failed call substitutes a one-line caveat instead of changing the wrapper's own exit code.
