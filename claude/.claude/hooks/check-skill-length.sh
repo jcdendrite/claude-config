@@ -113,11 +113,12 @@ limit_for() {
 # - stowed skills: claude-skills/skills/
 # - project-scoped plugins: plugins/*/skills/
 # - repo-root plugin layouts: skills/*/SKILL.md (marketplace declares "source": "./")
-# - this repo's own project-layer skills: .claude/skills/. The `.claude/skills/`
-#   alternative is anchored at line start so it cannot also match
-#   claude/.claude/skills/ (the stowed source tree, a different thing from
-#   this repo's own project-layer skills). In other repos this pattern
-#   matches nothing and the gate exits 0 silently.
+# - project-layer skills: .claude/skills/. This is README.md's documented
+#   `.claude/skills/<parent>-<project>/SKILL.md` composition pattern, which any
+#   stow consumer's repo can use to extend a base skill — so this alternative
+#   is a live 200-line gate for every consuming repo that adopts it, not a
+#   claude-config-internal no-op. Anchored at line start so it cannot also
+#   match claude/.claude/skills/ (the stowed source tree).
 # - the single hardcoded plan-review/ROUTING.md exception (see limit_for() above)
 #
 # A repo-root skill has no override path in limit_for() and resolves to the

@@ -7,11 +7,11 @@
 # git helpers, no worktree-enforcement helpers.
 #
 # _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
-# same functions in the stowed claude/.claude/hooks/_lib.sh — marker.sh (the
-# write side) always sources the stowed copy directly
-# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one, so a divergence
-# here breaks either the config directory or the repo-hash used to key
-# markers between the write side and this hook's read side.
+# same functions in the stowed claude/.claude/hooks/_lib.sh. marker.sh (the
+# write side) always sources that stowed copy directly
+# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one. A divergence
+# here would break the config-directory resolution or the repo-hash key
+# shared between the write side and this hook's read side.
 # _lib_marker_value_present is duplicated from that same file for the same
 # reason the others are: a plugin cannot source across the plugin boundary.
 
@@ -65,6 +65,9 @@ _lib_jq() {
 # binary present) fails with "command not found" (exit 127) instead of
 # running cmd at all. A caller that reads any nonzero exit as a real
 # failure would then deny permanently on that class of machine.
+# Deliberate trade on that same machine class: the uncapped fallback swaps a
+# fast, loud exit-127 failure for a rare, silent unbounded-hang risk if CMD
+# itself stalls. Same trade as claude/.claude/hooks/_lib.sh's _lib_capped_for.
 # Duplicated from claude/.claude/hooks/_lib.sh's function of the same name
 # (see this file's header for why plugin hooks duplicate rather than
 # source). Callers MUST check the exit status themselves -- this wrapper

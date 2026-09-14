@@ -183,13 +183,11 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
       # Strip the tmp-dir prefix so the user sees the original repo-relative
       # SKILL.md path in the deny reason rather than /tmp/tmp.XXXX/...
       VALIDATOR_STDERR=${VALIDATOR_STDERR//"$STAGED_BLOB_DIR/"/}
-      # A timeout-killed process (124) is stopped by SIGTERM before it can
-      # flush stderr, so VALIDATOR_STDERR is typically empty/truncated for
-      # that case. This case gets its own message instead of the generic
-      # wrapped-stderr deny used for real structural violations.
-      # 127 ("command not found") is handled the same way for defensive
-      # symmetry. _lib_capped_for's fallback means a missing timeout/gtimeout
-      # binary no longer produces exit 127 here.
+      # 124 (SIGTERM before stderr flush) and 127 get their own messages
+      # since VALIDATOR_STDERR is unreliable for both, rather than the
+      # generic wrapped-stderr deny used for real structural violations.
+      # _lib_capped_for's fallback means 127 can no longer actually occur
+      # here, so that branch is defensive-only.
       case "$VALIDATOR_EXIT" in
         124)
           emit_deny "Commit blocked by skill-management structural validator: validator timed out after 10s."
