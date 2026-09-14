@@ -1422,10 +1422,16 @@ class TestRequireSkillReview:
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
         timeout_path = shutil.which("timeout")
-        if not bash_path or not sleep_path:
-            pytest.skip("bash or sleep not found in PATH")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
 
         # Case 1: timeout(1) present -- both copies cap a hung command at exit 124.
+        # dirname must be on PATH too: the stowed _lib.sh sources _config.sh via
+        # `$(dirname "${BASH_SOURCE[0]}")`, so a PATH stripped down to just
+        # timeout/bash/sleep fails that source step before _lib_capped_for is
+        # even defined, surfacing as a spurious "command not found" (127) here
+        # rather than the fallback behavior this case actually targets.
         if not timeout_path:
             pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         timeout_bin_dir = tmp_path / "bin-with-timeout"
@@ -1433,6 +1439,7 @@ class TestRequireSkillReview:
         (timeout_bin_dir / "timeout").symlink_to(timeout_path)
         (timeout_bin_dir / "bash").symlink_to(bash_path)
         (timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (timeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(timeout_bin_dir), "HOME": str(timeout_bin_dir)}
         plugin_result, stowed_result = _run_both(["1", "sleep", "5"], env)
         assert plugin_result.returncode == stowed_result.returncode == 124, (
@@ -1447,6 +1454,7 @@ class TestRequireSkillReview:
         (gtimeout_bin_dir / "gtimeout").symlink_to(timeout_path)
         (gtimeout_bin_dir / "bash").symlink_to(bash_path)
         (gtimeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (gtimeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(gtimeout_bin_dir), "HOME": str(gtimeout_bin_dir)}
         plugin_result, stowed_result = _run_both(["1", "sleep", "5"], env)
         assert plugin_result.returncode == stowed_result.returncode == 124, (
@@ -1461,6 +1469,7 @@ class TestRequireSkillReview:
         no_timeout_bin_dir.mkdir()
         (no_timeout_bin_dir / "bash").symlink_to(bash_path)
         (no_timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (no_timeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(no_timeout_bin_dir), "HOME": str(no_timeout_bin_dir)}
         # seconds (0.2) is well under the sleep duration (0.6) -- a real cap would
         # kill this early, so both copies exiting 0 proves both ran uncapped.
