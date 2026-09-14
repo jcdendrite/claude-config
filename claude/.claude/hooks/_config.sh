@@ -789,9 +789,14 @@ _config_resolve() {
   # for the identical key -- known_keys/key_type/legacy_filename/
   # legacy_polarity above already came from the single _config_schema_row
   # call this function made at its own top, so no further schema pass is
-  # needed here. union_active stays empty for every other shape
-  # (single-location keys, or a caller-supplied CONFIG_DIR_OVERRIDE), so
-  # _config_location_value falls back to its plain 2-arg self-deriving form.
+  # needed here. Every _config_location_value call below (union, single-
+  # location, and home-only-fallback branches alike) threads those same
+  # four locals through its 6-arg precomputed form, so none of them re-forks
+  # _config_schema_row for a key this function has already read.
+  # legacy_filename/legacy_polarity sit after default/resolution/legacy_probe
+  # in config-keys.psv's column order, so a row passing this function's own
+  # truncation checks above cannot have had those trailing columns truncated
+  # either.
   local home_dir="" union_active=""
   if [ -n "$primary_dir" ] && [ -z "$config_dir_override" ] \
      && [ "$resolution" = "config-dir-or-home" ] && [ -n "${HOME:-}" ]; then
@@ -832,7 +837,8 @@ _config_resolve() {
       fi
       return 0
     fi
-    primary_value=$(_config_location_value "$key" "$primary_dir")
+    primary_value=$(_config_location_value "$key" "$primary_dir" \
+      "$known_keys" "$key_type" "$legacy_filename" "$legacy_polarity")
     local primary_only_status=$?
     if [ "$primary_only_status" -eq 0 ]; then
       _CONFIG_RESOLVED_VALUE="$primary_value"
@@ -855,7 +861,8 @@ _config_resolve() {
   # direction for a mechanism that removes a human checkpoint.
   if [ -z "$config_dir_override" ] && [ "$resolution" = "config-dir-or-home" ] && [ "$legacy_probe" = "true" ] && [ -n "${HOME:-}" ]; then
     local home_only_value
-    home_only_value=$(_config_location_value "$key" "${HOME%/}/.claude")
+    home_only_value=$(_config_location_value "$key" "${HOME%/}/.claude" \
+      "$known_keys" "$key_type" "$legacy_filename" "$legacy_polarity")
     local home_only_status=$?
     if [ "$home_only_status" -eq 0 ]; then
       _CONFIG_RESOLVED_VALUE="$home_only_value"

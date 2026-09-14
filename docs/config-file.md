@@ -282,22 +282,24 @@ that walk:
   memoized after its first resolution, at the cost of one string-glob scan
   of an in-memory cache and no further filesystem I/O.
 
-Measured directly (real `bash script.sh` subprocess invocations, 20
+Measured directly (real `bash script.sh` subprocess invocations, 40
 iterations each, otherwise-idle machine). `_config_enabled` resolves through
 a single bare call with no subshell fork of its own; the "config-dir key"
 and `advance-past-commit-stall.sh` figures below were not re-measured
 against this shape and should be treated as an upper bound for that path:
 
-- A bare `. _lib.sh` with no config call: ~13ms.
-- Adding one `_config_enabled` call for a `config-dir` key: ~34ms.
+- A bare `. _lib.sh` with no config call: ~15ms.
+- Adding one `_config_enabled` call for a `config-dir` key: ~23ms.
 - `advance-past-commit-stall.sh`'s real shape (`commit_stall_block`, then
   `autonomous_shipping` twice -- once via
   `_lib_autonomous_shipping_sentinel_present`'s own pre-`REPO_ROOT` fast
-  path, again via `_lib_autonomous_shipping_active`) with no state file
-  yet written: ~54ms. This is the more expensive of the two shapes below,
-  since an absent state file still reaches `_config_location_value`'s
-  closing schema-default pass at each location.
-- The same real shape once a state file exists: ~43ms.
+  path, again via `_lib_autonomous_shipping_active`) with no state file yet
+  written, or once a state file exists: ~33-35ms either way, with no
+  reliable ordering between the two shapes. Every `_config_location_value`
+  call threads the precomputed schema locals through, capping the gap
+  between the two shapes at one further schema pass per location. That gap
+  is small enough to sit within this machine's own run-to-run measurement
+  noise across repeated 40-iteration batches.
 
 The second `autonomous_shipping` lookup above is a memo hit, not a second
 resolution.

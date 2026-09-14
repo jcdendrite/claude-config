@@ -30,8 +30,6 @@ _LIB_SH = HOOKS_DIR / "_lib.sh"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _INSTALL_SH = REPO_ROOT / "install.sh"
-_CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
-_MIGRATE_LEGACY_CONFIG_SH = SCRIPTS_DIR / "migrate-legacy-config.sh"
 
 
 def _first_available_non_c_utf8_locale() -> str | None:
@@ -69,6 +67,19 @@ def _write_state_file(home, content: str, config_dir=None) -> None:
     target = (config_dir or (home / ".claude")) / "claude-config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
+
+
+def _schema_row_call_count_wrapper(count_file: Path) -> str:
+    """A shell prefix that renames the real _config_schema_row aside, then
+    redefines it to count into `count_file` before delegating. Counts into
+    a file rather than a shell variable because _config_location_value can
+    run inside a `$(...)` subshell capture, whose variable mutations don't
+    propagate back to the counting caller's shell."""
+    return (
+        'eval "$(declare -f _config_schema_row | '
+        "sed '1s/.*/_config_schema_row_real ()/')\"; "
+        f'_config_schema_row() {{ printf x >> "{count_file}"; _config_schema_row_real "$@"; }}; '
+    )
 
 
 def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProcess:
@@ -871,6 +882,103 @@ class TestPrecomputedArgsArityGuard:
         assert "unrecognized key" not in result.stderr
 
 
+class TestSingleLocationBranchSchemaRowCallCount:
+    """Pins the call-count reduction the single-location branch gets from
+    threading known_keys/key_type/legacy_filename/legacy_polarity into
+    _config_location_value's 6-arg precomputed form. Wraps
+    _config_schema_row via the declare-f-plus-sed rename technique used
+    elsewhere in this file. Counts into a tmp_path file, not a shell
+    variable, because _config_location_value runs inside _config_resolve's
+    own `$(...)` subshell capture, whose variable mutations don't propagate
+    back."""
+
+    def test_schema_row_called_once_for_a_state_file_backed_key(self, isolated_home, tmp_path):
+        """commit_stall_block's row is present in the state file, so
+        _config_location_value's state-file read resolves it directly --
+        the only schema pass is _config_resolve's own front-of-function
+        _config_schema_row call."""
+        _write_state_file(isolated_home, "commit_stall_block = true\n")
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run(
+            f"{_schema_row_call_count_wrapper(count_file)}_config_value commit_stall_block"
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "x", (
+            "a single-location key whose row is present in the state file "
+            "must call _config_schema_row exactly once -- a second call "
+            "means _config_location_value re-derived schema state instead "
+            "of using the locals _config_resolve already threaded through: "
+            f"{count_file.read_text()!r}"
+        )
+
+    def test_schema_row_called_twice_when_falling_through_to_the_schema_default(self, tmp_path):
+        """Counterpart for the path that reaches _config_location_value's
+        closing _config_schema_field "$key" default call (_config.sh:644),
+        which is not one of the four threaded locals, so it still makes its
+        own _config_schema_row pass. No real config-keys.psv row reaches
+        this path today: every real legacy-polarity value
+        (presence-enables/presence-disables/content-matches) resolves
+        definitively regardless of legacy-file presence. Exercising the
+        fallback needs a synthetic empty legacy-polarity
+        (TestUnrecognizedLegacyPolarityFallback's own
+        test_empty_legacy_polarity_falls_through_silently shape, via
+        _isolated_hooks_dir_with_legacy_polarity_override)."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(
+            tmp_path, "commit_stall_block", ""
+        )
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'{_schema_row_call_count_wrapper(count_file)}_config_value commit_stall_block "{target_dir}"',
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "xx", (
+            "a single-location key falling through to the schema default "
+            "must call _config_schema_row exactly twice: once from "
+            "_config_resolve's own lookup, once from "
+            "_config_location_value's closing _config_schema_field default "
+            f"call: {count_file.read_text()!r}"
+        )
+
+
+class TestHomeOnlyFallbackBranchSchemaRowCallCount:
+    """Same call-count property as TestSingleLocationBranchSchemaRowCallCount,
+    pinned for the home-only-fallback branch instead. worktree_required is
+    the only key that reaches this branch, when primary_dir is unresolvable.
+    A relative CLAUDE_CONFIG_DIR makes _lib_config_dir fail, landing here --
+    the same technique TestMemoizationHomeOnlyFallbackBranch uses above."""
+
+    def test_schema_row_called_once_for_a_state_file_backed_key(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """worktree_required's row is present in $HOME/.claude's state
+        file, so _config_location_value's state-file read resolves it
+        directly -- the only schema pass is _config_resolve's own
+        front-of-function _config_schema_row call."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        _write_state_file(isolated_home, "worktree_required = true\n")
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run(
+            f"{_schema_row_call_count_wrapper(count_file)}_config_value worktree_required"
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "x", (
+            "the home-only-fallback branch's success path must call "
+            "_config_schema_row exactly once -- a second call means "
+            "_config_location_value re-derived schema state instead of "
+            "using the locals _config_resolve already threaded through: "
+            f"{count_file.read_text()!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # _config_resolve's union branch must check _config_location_value's own exit
 # status before treating its captured stdout as authoritative. The
@@ -1552,13 +1660,9 @@ class TestMemoizationUnionBranch:
         the same _CONFIG_RESOLVED_MEMOIZABLE reset through the union fold's
         other branch.
 
-        A mutant that couples the _CONFIG_RESOLVED_MEMOIZABLE reset to only
-        the legacy_probe = "true" arm would pass the worktree_required test
-        above, since that test only takes that arm. The same mutant would
-        silently memoize autonomous_shipping's fail-safe value here instead
-        of catching it. That is the exact regression this test exists to
-        catch on the one key whose fail-safe direction must never be
-        granted by staleness.
+        Catches a reset gated on only the legacy_probe="true" arm, which the
+        sibling worktree_required test above can't -- it never exercises
+        the "false"-default arm.
 
         The real state-file-backed value "true" this test drives it to is
         genuinely different from the fail-safe "false", the same
@@ -2001,6 +2105,27 @@ class TestSingleLocationBranchNeverExercisesLegacyProbeArm:
         )
 
 
+class TestConfigDirOrHomeRowsAreAllBoolTyped:
+    def test_no_config_dir_or_home_row_has_a_non_bool_type(self):
+        """_config_resolve's union branch (_config.sh:824-827) compares
+        each location's resolved value against the literal "true" to decide
+        the OR, which only works for a bool-typed key. Pins that assumption
+        against config-keys.psv via the independent parser oracle above, so
+        a future non-bool config-dir-or-home row flags here instead of
+        silently miscomputing the union."""
+        offending_rows = [
+            row["key"]
+            for row in _SCHEMA_ROWS_BY_KEY.values()
+            if row["resolution"] == "config-dir-or-home" and row["type"] != "bool"
+        ]
+        assert offending_rows == [], (
+            "a resolution=config-dir-or-home row is not bool-typed -- "
+            "_config_resolve's union branch's 'true'-literal comparison "
+            "does not generalize to an enum value; update that branch "
+            f"before landing this schema change: {offending_rows!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # No function in this file may declare a `local`/`declare` sharing one of
 # _config_schema_row's or _CONFIG_MEMO_CACHE's global names, since bash's
@@ -2040,10 +2165,10 @@ def _join_backslash_continuations(text: str) -> list[tuple[int, str]]:
 # elsewhere in this file. `declare` is function-scoped by default too.
 _LOCAL_OR_DECLARE_RE = re.compile(r"\b(?:local|declare)\b")
 # A real declaration target is a bare `_CONFIG_ROW_*`/`_CONFIG_MEMO_*`/
-# `_CONFIG_RESOLVED_*`/`_CONFIG_LOOKUP_*` token (optionally followed by
-# `=value`); a value-position usage is always written `$_CONFIG_ROW_*`/
-# `${_CONFIG_ROW_*}` in this file, so excluding a token immediately preceded
-# by `$` or `${` tells the two apart.
+# `_CONFIG_RESOLVED_*`/`_CONFIG_LOOKUP_*` token, optionally followed by
+# `=value`. A value-position usage is always written `$_CONFIG_ROW_*`/
+# `${_CONFIG_ROW_*}` in this file. Excluding a token immediately preceded
+# by `$` or `${` distinguishes the two.
 _SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_(?:ROW|MEMO|RESOLVED|LOOKUP)_[A-Z_]+")
 
 
@@ -2053,17 +2178,17 @@ class TestGlobalReturnShadowingInvariant:
         # and _config_enabled. _config_resolve in turn calls _config_schema_row
         # bare. These globals therefore persist into every bare
         # caller's shell, not just _config.sh's own functions. Scan _lib.sh,
-        # every hook script, and _config.sh's other three direct sourcers:
-        # install.sh, config-get.sh, migrate-legacy-config.sh. These three
-        # are named in _config.sh's own header. HOOKS_DIR.glob("*.sh")
-        # doesn't recurse into tests/. That directory holds no .sh files anyway.
+        # install.sh (_config.sh's header names it as a direct sourcer), and
+        # every hook/script file -- glob, not an enumerated list, since a
+        # list must be kept in sync by hand as new sourcers are added and a
+        # glob doesn't. Neither glob recurses into tests/; those directories
+        # hold no .sh files anyway.
         scanned_files = sorted({
             _CONFIG_SH,
             _LIB_SH,
             _INSTALL_SH,
-            _CONFIG_GET_SH,
-            _MIGRATE_LEGACY_CONFIG_SH,
             *HOOKS_DIR.glob("*.sh"),
+            *SCRIPTS_DIR.glob("*.sh"),
         })
         violations = [
             (path.name, lineno, logical_line)
@@ -2087,9 +2212,9 @@ class TestGlobalReturnShadowingInvariant:
         ],
     )
     def test_regex_catches_compound_statement_shadowing(self, shadowing_line):
-        """Pins the fix for a real false-negative shape a prior version of
-        this check missed: a `local` that isn't the first token on its
-        line, via a one-liner idiom already used elsewhere in this file."""
+        """A shadowing `local` need not be the first token on its line --
+        e.g. a compound one-liner like `[ cond ] && local x=1`, an idiom
+        already used elsewhere in this file."""
         assert _LOCAL_OR_DECLARE_RE.search(shadowing_line)
         assert _SHADOWING_TOKEN_RE.search(shadowing_line)
 
