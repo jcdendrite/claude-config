@@ -740,12 +740,10 @@ _lib_cumulative_diff_hash() {
 }
 
 # _lib_head_tree_hash CAP_MODE REPO_ROOT
-# Prints `git rev-parse HEAD^{tree}` for REPO_ROOT -- the content-address of
-# the tree ready-for-review step 2 actually executes, used by the
-# `verification` marker kind's write, check, and status paths. CAP_MODE is
-# "capped" to run the git call through _lib_capped's 5s timeout, or
-# "uncapped" to run it directly, mirroring _hash_staged_diff's mode-argument
-# shape in marker.sh.
+# Prints `git rev-parse HEAD^{tree}` for REPO_ROOT, mirroring
+# _hash_staged_diff's mode-argument shape in marker.sh. CAP_MODE is "capped"
+# to run the git call through _lib_capped's 5s timeout, or "uncapped" to run
+# it directly.
 # Check git's exit status, not stdout emptiness: an unborn HEAD exits 128 but
 # still echoes the literal string "HEAD^{tree}", which an emptiness-only
 # check would misread as a real hash.
@@ -761,7 +759,7 @@ _lib_head_tree_hash() {
     uncapped) hash=$(git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
     *)
       printf '_lib_head_tree_hash: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
-      return 1
+      return 2
       ;;
   esac
   [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1

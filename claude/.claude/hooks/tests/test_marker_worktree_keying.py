@@ -320,14 +320,15 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
     - plan-review: with no `.claude/plans/` at all, the hash computes
       cleanly over an empty plan set, which is itself a successful write,
       not a failure exit.
-    - verification: `_stage_a_change` stages a diff, which the write-time
-      guard below would itself refuse. The allow-path test commits that
-      staged change first, so `HEAD^{tree}` resolves against a clean tree and
-      the write reaches the marker, proving the refusal doesn't fire from a
-      linked worktree. The deny-path test leaves the change staged: `write
-      verification`'s own guard code never runs there, since
-      `_resolve_repo_root`'s refusal fires and exits first, so that test
-      exercises the refusal only, not the guard.
+    - verification (allow path): `_stage_a_change` stages a diff, which the
+      write-time guard below would itself refuse, so the allow-path test
+      commits that staged change first; `HEAD^{tree}` then resolves against
+      a clean tree and the write reaches the marker, proving the refusal
+      doesn't fire from a linked worktree.
+    - verification (deny path): the test leaves the change staged, so `write
+      verification`'s own guard code never runs there -- `_resolve_repo_root`'s
+      refusal fires and exits first, so this test exercises the refusal
+      only, not the guard.
 
     That is what makes returncode 2 attributable to the refusal
     specifically, not to some other precondition failing.
