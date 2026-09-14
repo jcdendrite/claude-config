@@ -1,5 +1,6 @@
 """Tests for transcript-analysis.py."""
 import argparse
+import errno
 import fcntl
 import importlib.util
 import json
@@ -20168,8 +20169,7 @@ class TestNudgeConversionFromLog:
     TestOperatorResponseLagFromLog's own convention for its sibling
     function -- plain session_traces/log_entries_by_root dicts, no
     filesystem or report-rendering plumbing. Pins the pre-registered
-    classification from .claude/plans/handoff-nudge-deep-tail-lever.md's
-    "The classification, frozen before any run" table."""
+    classification from .claude/plans/handoff-nudge-deep-tail-lever.md."""
 
     def test_nudged_then_handoff_is_voluntary(self):
         session_traces = {"s": [100]}
@@ -20668,6 +20668,61 @@ class TestRearmBacktestReport:
         acct_b_ordinal = _mod._redaction_ordinals([fake_projects.parent, acct_b_root])[acct_b_root.resolve()]
         assert f"account-{acct_b_ordinal} nudge log: 0 bytes" in out
 
+    @pytest.mark.parametrize(
+        "unreadable_error",
+        [
+            PermissionError(13, "Permission denied"),
+            OSError(errno.ESTALE, "Stale file handle"),
+        ],
+        ids=["permission-denied", "estale"],
+    )
+    def test_unreadable_root_nudge_log_is_flagged_unreadable_without_crash_or_path_leak(
+        self, fake_projects, fake_config_dir_factory, tmp_path, capsys, monkeypatch, unreadable_error
+    ):
+        """An OSError from an unreadable log must not crash the report or
+        leak the root's path, and a sibling readable root must still print
+        normally. Uses a targeted Path.exists() monkeypatch rather than
+        chmod, since chmod-ing the whole account directory would also
+        block the unrelated project-dir scan."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        acct_b = fake_config_dir_factory("acct-b")
+        acct_b_root = acct_b / "projects"
+        unreadable_log = acct_b / ".handoff-nudge.log"
+        unreadable_log.write_text(
+            "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        ordinals = _mod._redaction_ordinals([fake_projects.parent, acct_b_root])
+        default_ordinal = ordinals[fake_projects.parent.resolve()]
+        acct_b_ordinal = ordinals[acct_b_root.resolve()]
+
+        real_exists = Path.exists
+
+        def fake_exists(self, *args, **kwargs):
+            if self == unreadable_log:
+                raise unreadable_error
+            return real_exists(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        # Unreadable root iterates first so a regression turning `continue`
+        # into `break` would abort before the readable sibling ever prints.
+        _mod._rearm_backtest_report(
+            _rearm_backtest_args(), date(2026, 8, 2), roots=[acct_b_root, fake_projects.parent]
+        )
+        out, err = capsys.readouterr()
+        assert str(acct_b) not in out
+        # Guards a not-yet-existing stderr-writing path on this code branch;
+        # currently vacuous under redact=True, kept for forward safety.
+        assert str(acct_b) not in err
+        assert f"account-{acct_b_ordinal} nudge log: unreadable" in out
+        assert f"account-{default_ordinal} nudge log: " in out  # sibling root still prints
+        assert f"account-{default_ordinal} nudge log: unreadable" not in out  # ...with a real byte count
+
     def test_oversized_root_log_is_flagged_truncated_in_the_size_line(
         self, fake_projects, tmp_path, capsys, monkeypatch
     ):
@@ -20797,6 +20852,27 @@ class TestRearmBacktestReport:
         spacing_cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
         assert spacing_cols["$"] != ""
 
+    def test_non_overlapping_session_ids_report_states_zero_join_validity(
+        self, fake_projects, tmp_path, capsys
+    ):
+        """Gate D condition 2's report-level half: well-formed,
+        never-coincident session ids from the two writers (hookid-A
+        nudged, pidwalk-B handoff) must print join validity 0, not
+        merely return it from _nudge_conversion_from_log. The
+        pure-function half is pinned separately by
+        TestNudgeConversionFromLog.test_non_overlapping_session_ids_yield_zero_join_validity."""
+        _write_jsonl(fake_projects / "hookid-A.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=hookid-A est=100000 model=claude-sonnet-5"
+            " window=1000000 event=Stop\n"
+            "handoff session=pidwalk-B\n"
+        )
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Join validity (handoff lines matching an in-scope fired session): 0" in out
+
     def test_zero_fired_sessions_prints_the_degenerate_conversion_branch_text(self, fake_projects, capsys):
         """No .handoff-nudge.log at all (an account that has never fired a
         nudge) still yields a priced spacing table plus a conversion section
@@ -20818,16 +20894,10 @@ class TestRearmBacktestReport:
     def test_current_format_action_block_line_with_ignored_and_skills_parses_through_full_stack(
         self, fake_projects, tmp_path, capsys
     ):
-        """Every action=block fixture among the report-level integration
-        tests in TestRearmBacktestReport/TestNudgeConversionFromLog, before
-        this one, omits ignored=/skills= (test_ignored_and_skills_fields_are_
-        captured_when_present covers the combined fields, but only against
-        _parse_nudge_log_entries directly, not classification).
-        nudge-handoff-near-context-cap.sh:644 always emits ignored=%s
-        skills=%s on a current action=block line -- this fixture routes that
-        current-format line through the real text-log parser (not a
-        hand-built dict) into _nudge_conversion_from_log, so a field-name or
-        type regression in that parsing path fails this test."""
+        """Routes a current-format action=block line (ignored=/skills=, per
+        nudge-handoff-near-context-cap.sh:644) through the real text-log
+        parser into _nudge_conversion_from_log, so a field-name or type
+        regression in that parsing path fails here."""
         _write_jsonl(fake_projects / "forced-tele.jsonl", [
             _priced("claude-sonnet-5", input=100, output=100, ts="2026-05-19T10:00:00.000Z"),
         ])
@@ -20888,6 +20958,7 @@ class TestRearmBacktestReport:
         _mod._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert str(tmp_path / ".handoff-nudge.log") in out
+        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
         assert "leaky-session-1" not in out
 
 
