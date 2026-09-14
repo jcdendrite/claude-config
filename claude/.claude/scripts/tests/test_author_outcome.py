@@ -193,6 +193,22 @@ class TestReadLedgerRowsForSession:
 
         assert ao._read_ledger_rows_for_session(jsonl) == []
 
+    def test_unreadable_ledger_path_prints_diagnostic_to_stderr(self, tmp_path, capsys):
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        ledger_path = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        ledger_path.mkdir()
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        ao._read_ledger_rows_for_session(jsonl)
+
+        captured = capsys.readouterr()
+        assert str(ledger_path) in captured.err
+        assert captured.out == ""
+
 
 class TestRoundNumberMismatch:
     def test_matching_sequence_is_not_a_mismatch(self):
@@ -1449,6 +1465,22 @@ class TestCmdAuthorOutcomeReport:
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "reserved sentinel" in err
+
+    def test_agent_empty_string_passes_through_not_remapped_to_default(self, fake_projects, capsys):
+        """--agent "" is a literal empty string, not the code-writer default
+        -- an explicit empty value must not be silently remapped."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", agent_type=""),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _mod.cmd_author_outcome(self._args(agent=""))
+        out = capsys.readouterr().out
+        assert "agent=  window=all time" in out
+        assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
 
     def test_report_prints_zero_resolved_dispatches_without_zero_division(self, fake_projects, capsys):
         """A session with only an UNRESOLVED dispatch (no code-review round

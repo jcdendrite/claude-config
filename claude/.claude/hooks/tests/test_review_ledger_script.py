@@ -344,6 +344,37 @@ class TestReviewLedgerAuthoringAgentEnum:
         assert not _ledger_path(isolated_home, git_repo).exists()
 
 
+class TestReviewLedgerAuthoringEffortEnum:
+    """Proves only that each case-pattern value is accepted and one bad
+    value is rejected -- it does not prove the case pattern accepts *only*
+    those four values (a 5th added literal would still pass). Drives the
+    CLI rather than scanning source text, per test-conventions §9."""
+
+    @pytest.mark.parametrize("authoring_effort", ["low", "medium", "high", "xhigh"])
+    def test_each_case_pattern_value_is_accepted(self, isolated_home, git_repo, authoring_effort):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort=authoring_effort), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 0, (
+            f"review-ledger.sh must accept --authoring-effort {authoring_effort!r}: "
+            f"{result.stderr}"
+        )
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_effort"] == authoring_effort
+
+    def test_value_outside_case_pattern_is_rejected(self, isolated_home, git_repo):
+        """A value not among the case pattern's four levels must be
+        rejected -- accepting it would let review-ledger.sh log an
+        authoring_effort no routing rule can ever match."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort="not-a-real-effort"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+
 class TestReviewLedgerRoundValidation:
     def test_missing_round_rejected_with_exact_error_text(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -456,6 +487,33 @@ class TestReviewLedgerCleanDisposition:
         result = _run(_append_args(disposition="MAYBE"), cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert "must be ADDRESS, DEFER, or CLEAN" in result.stderr
+
+    def test_clean_disposition_with_authoring_fields_lands_all_four(self, isolated_home, git_repo):
+        """Production code (code-review/SKILL.md's Step 0.1 short-circuit)
+        always pairs --disposition CLEAN with
+        --authoring-agent/--authoring-effort. This confirms CLEAN's relaxed
+        finding/rationale requirements don't block those two fields from
+        landing in the record."""
+        _seed_session(isolated_home, SID)
+        args = [
+            "append",
+            "code-review",
+            "--disposition",
+            "CLEAN",
+            "--round",
+            "1",
+            "--authoring-agent",
+            "code-writer",
+            "--authoring-effort",
+            "high",
+        ]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["disposition"] == "CLEAN"
+        assert record["round"] == 1
+        assert record["authoring_agent"] == "code-writer"
+        assert record["authoring_effort"] == "high"
 
 
 class TestReviewLedgerRoundScopedDedup:
@@ -691,15 +749,15 @@ class TestReviewLedgerDedupFilterIsStaticLiteral:
 class TestIterLibAppendJsonLineLockedCallSitesShapes:
     """Unit-level coverage of the call-site iterator's own matching rules,
     using a synthetic fixture under tmp_path rather than scanning
-    CLAUDE_DIR. The repo currently has only one real call site,
-    review-ledger.sh's own plain statement-start call. That shape is one
-    the predecessor regex already matched, so the scan above can't
-    distinguish the widened regex from the old one."""
+    CLAUDE_DIR. The repo's only real call site (review-ledger.sh's own
+    plain statement-start call) doesn't exercise the mid-statement/
+    assignment/chained shapes below, so it can't validate them on its
+    own."""
 
     def test_matches_if_test_assignment_and_mid_statement_call_shapes(self, tmp_path: Path) -> None:
-        """The regex was widened specifically to catch these three shapes,
-        none of which start a line: an `if`-condition call, a command-
-        substitution assignment, and a call chained after `;`."""
+        """Covers three call shapes that don't start a line: an
+        `if`-condition call, a command-substitution assignment, and a call
+        chained after `;`."""
         fixture = tmp_path / "synthetic.sh"
         fixture.write_text(
             "if _lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding' ; then\n"

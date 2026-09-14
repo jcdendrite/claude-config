@@ -3239,6 +3239,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # already registered in the calling process -- a future caller sharing
 # either primitive must ensure no other EXIT trap is active in the same
 # process.
+# This primitive must be called at most once per process: a second call's
+# EXIT trap replaces rather than stacks on the first, orphaning the first
+# call's lock file until the process exits.
 # Always returns rather than blocking indefinitely: after
 # _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
 # the caller proceeds unlocked, trading a low-consequence duplicate line

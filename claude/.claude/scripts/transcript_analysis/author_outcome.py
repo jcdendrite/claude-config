@@ -213,7 +213,11 @@ def _read_ledger_rows_for_path(ledger_path: Path | None) -> list[dict]:
                     continue
                 if isinstance(row, dict):
                     rows.append(row)
-    except OSError:
+    except OSError as exc:
+        print(
+            f"author-outcome: couldn't read ledger file {ledger_path}: {exc}",
+            file=sys.stderr,
+        )
         return []
     return rows
 
@@ -533,7 +537,7 @@ def cmd_author_outcome(args: argparse.Namespace) -> None:
     output shape, every named bias/counter, and this subcommand's
     documented scope gaps (e.g. a cross-session handoff split).
     """
-    agent_type: str = getattr(args, "agent", None) or _AUTHORING_AGENT_CODE_WRITER
+    agent_type: str = args.agent
     # Exact-case match only -- a near-miss (e.g. "INLINE") doesn't collide with
     # the sentinel this guards against, so it's accepted, not normalized.
     if agent_type == _AUTHORING_AGENT_INLINE:
