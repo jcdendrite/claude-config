@@ -1660,7 +1660,7 @@ class TestCmdReviewRoundCostPooled:
         assert exc.value.code == 2
         assert "--this-repo" in capsys.readouterr().err
 
-    def test_refuses_this_repo_on_two_root_fixture(self, tmp_path, monkeypatch):
+    def test_refuses_this_repo_on_two_root_fixture(self, tmp_path, monkeypatch, capsys):
         """--this-repo is checked in the flag block, not the root-count
         clause, so it must refuse identically on a machine that already has
         more than one declared root -- not only on the single-root fixture
@@ -1669,6 +1669,7 @@ class TestCmdReviewRoundCostPooled:
         with pytest.raises(SystemExit) as exc:
             _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
         assert exc.value.code == 2
+        assert "--this-repo" in capsys.readouterr().err
 
     def test_refuses_single_resolved_root_naming_declared_roots_file(self, fake_projects, capsys):
         """The one-resolved-root row has no flag to name, unlike every other
