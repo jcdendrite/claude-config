@@ -20,13 +20,24 @@ RootsFileState = Literal["absent", "unreadable", "present"]
 
 
 def config_dir() -> Path:
-    """Return the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set (must be absolute), else ~/.claude."""
+    """Return the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set (must be absolute), else ~/.claude.
+
+    Raises ValueError when $HOME is unset or empty and CLAUDE_CONFIG_DIR is
+    not set -- Path.home() otherwise falls through to a pwd-database lookup
+    or an empty-string path (os.path.expanduser's own behavior for a set-
+    but-empty HOME), silently producing a relative or nonsensical directory
+    instead of surfacing the same "unresolvable" outcome
+    claude/.claude/hooks/_config.sh's _lib_config_dir already gives this
+    exact input shape.
+    """
     override = os.environ.get("CLAUDE_CONFIG_DIR")
     if override:
         path = Path(override)
         if not path.is_absolute():
             raise ValueError(f"CLAUDE_CONFIG_DIR must be an absolute path, got: {override!r}")
         return path
+    if not os.environ.get("HOME"):
+        raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
     return Path.home() / ".claude"
 
 
@@ -53,7 +64,7 @@ def declared_roots_file_state() -> RootsFileState:
     fix. Not Path.is_file() either, for the same masking reason.
     """
     try:
-        declared_roots_file().read_text(errors="replace")
+        declared_roots_file().read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return "absent"
     except OSError:
@@ -97,7 +108,7 @@ def declared_roots_matching(is_valid: Callable[[Path], bool], *, warn_prefix: st
     """
     roots_file = declared_roots_file()
     try:
-        raw_text = roots_file.read_text(errors="replace")
+        raw_text = roots_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
 

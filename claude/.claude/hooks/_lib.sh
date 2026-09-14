@@ -7,6 +7,21 @@
 # fork and `dirname` exec per invocation. It also fails closed rather than
 # open on the one reachable divergent `$0` shape: a bare filename.
 
+# _config.sh defines _lib_config_dir (config-dir resolution) and the
+# _config_*/config-key primitives every hook needs — sourced here, via
+# BASH_SOURCE rather than $0, so it resolves to this file's own directory
+# regardless of how _lib.sh itself was sourced (a test harness that sources
+# _lib.sh via `bash -c ". <path>; ..."` carries no meaningful $0). Every
+# hook that already sources _lib.sh gets these transitively, with no
+# per-hook edit needed.
+# _lib.sh has no `set -e`, so without this explicit check a missing/broken
+# _config.sh would let sourcing continue silently instead of tripping every
+# hook's own `if ! . ".../_lib.sh"; then exit 0/deny; fi` guard the same way
+# a syntax-broken _lib.sh itself already does.
+if ! . "$(dirname "${BASH_SOURCE[0]}")/_config.sh"; then
+  return 1
+fi
+
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
 # Probes timeout(1) then gtimeout(1) (Homebrew coreutils' g-prefixed name),
@@ -139,32 +154,9 @@ _lib_advance_offset_past_complete_lines() {
   printf '%s' "$(( offset + complete_bytes ))"
 }
 
-# Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
-# (must be absolute — a relative value resolves differently per invocation
-# cwd, the same path-mismatch bug this function exists to fix), else
-# $HOME/.claude. Returns 1 with no stdout when CLAUDE_CONFIG_DIR is relative,
-# or when CLAUDE_CONFIG_DIR is unset/empty and $HOME is also unset/empty.
-# Call-site contract (load-bearing): bare interpolation,
-# "$(_lib_config_dir)/whatever", is unsafe — under `set -e`, a failing
-# *nested* command substitution does not abort the script, so a resolver
-# failure silently collapses to "/whatever" (root-anchored) instead of being
-# caught. Every call site must capture and check the exit status first:
-#   config_dir=$(_lib_config_dir) || { <fail-open-or-deny per this caller>; }
-_lib_config_dir() {
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    case "$CLAUDE_CONFIG_DIR" in
-      /*) ;;
-      *) return 1 ;;  # relative values resolve differently per invocation
-                      # cwd — the exact read/write path-mismatch bug this
-                      # function fixes, just triggered a different way.
-    esac
-    printf '%s\n' "${CLAUDE_CONFIG_DIR%/}"
-    return 0
-  fi
-  local home_norm="${HOME%/}"
-  [ -n "$home_norm" ] || return 1
-  printf '%s\n' "$home_norm/.claude"
-}
+# _lib_config_dir is defined in _config.sh (sourced above) — see that
+# file for the function's own contract comment. This comment stays as the
+# pointer a reader searching this file for it would otherwise miss.
 
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently
@@ -1241,7 +1233,16 @@ _lib_fragment_invokes_tool() {
   local fragment="$1" tool="$2"
   local cmd
   cmd=$(_lib_fragment_command_word "$fragment")
-  [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]
+  # nocasematch: macOS's default APFS volume is case-insensitive, so a
+  # capitalized invocation (TEE, Sed) resolves to the real tool on such a
+  # filesystem.
+  shopt -s nocasematch
+  local matched=1
+  if [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]; then
+    matched=0
+  fi
+  shopt -u nocasematch
+  return "$matched"
 }
 
 # True iff $2 appears in $1 as a standalone whitespace-delimited token — for
@@ -1727,6 +1728,13 @@ _lib_chains_marker_write_before_commit() {
     "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
 }
 
+# Shared parenthetical explaining worktree_required's config-dir-or-home
+# union, quoted verbatim into every worktree-enforcement deny message in
+# require-worktree-for-file-writes.sh and require-worktree-for-git-writes.sh.
+# A single string, not a copy per call site, so the two legacy/config-dir
+# names it cites can't drift out of sync with each other.
+_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION="(repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too))"
+
 # _lib_worktree_enforcement_active REPO_ROOT
 # Returns 0 (true) when worktree discipline is active for the given repo root.
 # Three-marker logic:
@@ -1744,47 +1752,49 @@ _lib_worktree_enforcement_active() {
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1                                     # degenerate: no repo, never enforce
   [ -f "$repo_root/.claude/worktree-required" ] && return 0           # committed requirement (opt-out has no effect)
-  # Machine default, minus per-repo opt-out.
-  # An unresolvable config dir (empty/unset $HOME, no CLAUDE_CONFIG_DIR) skips
-  # the resolved-config-dir arm rather than probing a root-anchored path —
-  # same load-bearing guard as before, now expressed via _lib_config_dir.
-  # Union, not swap: checks the resolved config dir first, then falls back
-  # to the literal $HOME/.claude sentinel — a machine-wide `worktree-required`
-  # armed before CLAUDE_CONFIG_DIR adoption must not silently go dark under a
-  # differentiated profile, the same enforcement-invariant-regression shape
-  # the guard-config hooks (deny-credential-file-reads.sh et al.) fix for
-  # their own opt-in configs. Mirrors require-worktree-for-file-writes.sh's
-  # exemption union.
-  local config_dir
-  if config_dir=$(_lib_config_dir) && [ -f "$config_dir/worktree-required" ]; then
-    [ ! -f "$repo_root/.claude/worktree-optout" ] && return 0
-    return 1
-  fi
-  [ -f "$HOME/.claude/worktree-required" ] \
-    && [ ! -f "$repo_root/.claude/worktree-optout" ] \
-    && return 0
+  # Machine default, minus per-repo opt-out. Union/legacy-probe logic lives
+  # in _config_enabled itself, via worktree_required's own schema row — an
+  # unresolvable config dir propagates as exit 2, which this function treats
+  # the same as "not enforced" per the `*)` arm below (an accepted,
+  # pre-existing tradeoff, unlike exit 3/4 immediately below).
+  _config_enabled worktree_required
+  case "$?" in
+    0) ;;
+    # config-keys.psv itself unreadable (3), or readable but missing
+    # worktree_required's own row (4): either way, worktree_required's safe
+    # direction is enforced, not disarmed, so this falls through to the
+    # same opt-out check as the enabled arm above rather than "not
+    # enforced" — a transiently unreadable or torn schema file must not
+    # silently disable worktree enforcement.
+    3|4) ;;
+    *) return 1 ;;
+  esac
+  [ ! -f "$repo_root/.claude/worktree-optout" ] && return 0
   return 1
 }
 
-# _lib_autonomous_shipping_sentinel_present CONFIG_DIR
-# Returns 0 (true) iff the autonomous-shipping-required sentinel exists at
-# either CONFIG_DIR or the literal ~/.claude/autonomous-shipping-required —
-# a union, not a swap, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
-# still activates.
+# _lib_autonomous_shipping_sentinel_present
+# Returns 0 (true) iff autonomous_shipping is enabled per its config-keys.psv
+# schema row — a union across the resolved config dir and the literal
+# ~/.claude legacy location, so a sentinel armed before CLAUDE_CONFIG_DIR
+# adoption still activates. Delegates to _config_enabled, which owns the
+# union/legacy-probe logic (config-keys.psv's autonomous_shipping row).
 # Sentinel presence only: this is NOT the full autonomous-shipping-active
 # verdict, which also requires the per-repo .claude/autonomous-shipping-optout
 # check — see _lib_autonomous_shipping_active below.
-# CONFIG_DIR is a required argument rather than resolved internally via
-# _lib_config_dir so that a caller which already has it resolved (e.g. the
-# fast path, once per Stop event) skips a redundant _lib_config_dir call.
-# Inherits, rather than introduces, the case where CONFIG_DIR is set but
-# $HOME is empty or unset: the legacy-location check then evaluates against
-# a root-anchored path. This is unguarded by design.
+# Zero-arity: _config_enabled resolves and unions both locations itself, so
+# there is no CONFIG_DIR argument to thread through. Propagates
+# _config_enabled's exit code unchanged, including its exit code 2
+# (config-dir resolution failure), exit code 3 (config-keys.psv unreadable),
+# and exit code 4 (config-keys.psv readable but missing
+# autonomous_shipping's own row) — this function has no `case` of its own to
+# fold any of them into 1. Harmless because every caller
+# (_lib_autonomous_shipping_active, advance-past-commit-stall.sh) treats any
+# nonzero exit identically via `||`, and autonomous_shipping's own
+# documented safe direction is NOT shipping regardless of which failure
+# caused it.
 _lib_autonomous_shipping_sentinel_present() {
-  [ "$#" -eq 1 ] || return 1
-  local config_dir="$1"
-  [ -n "$config_dir" ] || return 1
-  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ]
+  _config_enabled autonomous_shipping
 }
 
 # _lib_autonomous_shipping_active REPO_ROOT
@@ -1802,45 +1812,33 @@ _lib_autonomous_shipping_sentinel_present() {
 # per-repo opt-out (.claude/autonomous-shipping-optout), narrows the machine
 # default off for this repo only. Every error path fails toward NOT shipping
 # — the safe direction for a granting mechanism:
-#   - filesystem error
-#   - empty $HOME
+#   - config-dir resolution failure (_lib_autonomous_shipping_sentinel_present's
+#     own fail direction, now delegated to _config_enabled)
 #   - empty REPO_ROOT
 #   - wrong argument count
 _lib_autonomous_shipping_active() {
   [ "$#" -eq 1 ] || return 1
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1
-  # Load-bearing, same reasoning as _lib_worktree_enforcement_active above:
-  # an unresolvable config dir would otherwise probe a root-anchored path,
-  # and a stray root-owned file there would force-activate autonomous
-  # shipping — a materially worse consequence here than for worktree
-  # enforcement, since this mechanism removes a human checkpoint rather
-  # than adding one.
-  local config_dir
-  config_dir=$(_lib_config_dir) || return 1
-  _lib_autonomous_shipping_sentinel_present "$config_dir" || return 1
+  _lib_autonomous_shipping_sentinel_present || return 1
   [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
   return 0
 }
 
 # _lib_permission_prompt_tracking_active
 # Returns 0 (true) when this machine has opted into permission-prompt
-# tracking (~/.claude/track-permission-prompts exists) — gates
-# track-permission-prompts.sh. Same sentinel-file shape as
-# _lib_autonomous_shipping_active above, minus the per-repo optout: this
-# mechanism only appends to a local log and changes no git/PR/tool
-# behavior, so there is no per-repo axis to narrow (see
+# tracking — gates track-permission-prompts.sh. Delegates to
+# _config_enabled's permission_prompt_tracking schema row, minus the
+# per-repo optout: this mechanism only appends to a local log and changes
+# no git/PR/tool behavior, so there is no per-repo axis to narrow (see
 # docs/permission-prompt-tracking.md). Zero-arity by design — unlike
 # _lib_autonomous_shipping_active, which takes a repo root to check a
 # per-repo optout against, this sentinel is machine-global with nothing
-# repo-scoped to look up. Fails toward NOT tracking on an unresolvable
-# config dir, the same error direction every other opt-in gate in this
-# file takes.
+# repo-scoped to look up. Fails toward NOT tracking on _config_enabled's
+# exit code 2 (unresolvable config dir), the same error direction every
+# other opt-in gate in this file takes.
 _lib_permission_prompt_tracking_active() {
-  local config_dir
-  config_dir=$(_lib_config_dir) || return 1
-  [ -f "$config_dir/track-permission-prompts" ] || return 1
-  return 0
+  _config_enabled permission_prompt_tracking
 }
 
 # _lib_valid_session_id_component SESSION_ID
@@ -2477,12 +2475,23 @@ _lib_config_lines() {
 # shell-word tokenization: variable expansion and command substitution
 # remain an accepted residual, same as the documented indirection gap (see
 # docs/security-hardening.md).
+# Accepted residual: ANSI-C `$'...'` escape sequences (`\xHH`, `\nnn`,
+# `\uHHHH`, and similar) are not decoded, only quote-stripped -- e.g.
+# `marker$'\x2e'sh` becomes `markerx2esh`, not `marker.sh`, so a caller
+# using this to build a detection substring/regex still misses that form.
+# Decoding them would require running attacker-controlled text through
+# `printf '%b'`, which introduces its own truncation-evasion risk (`\c`
+# stops output early) — accepted as a documented gap rather than fixed.
 # Call-site contract (load-bearing): the underlying sed/tr pipeline can fail
 # (missing, killed, or erroring), and no caller runs under `set -e`, so
 # every call site must capture and check the exit status immediately and
 # fail closed on non-zero, rather than proceeding with a silently empty or
 # partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
 # computation for the pattern.
+# Not idempotent: never call this twice on the same string, or feed its own
+# output back through it — a second pass can further collapse an
+# already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
+# pass, `ab` on a second).
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
@@ -3180,18 +3189,30 @@ _lib_reviewer_round_state_value() {
 }
 
 # _lib_round_consult_gate_disabled
-# Returns 0 (true) iff <config-dir>/.round-consult-gate-disabled is present
-# -- the presence-only kill switch for require-architect-consult.sh, same
-# shape as _lib_permission_prompt_tracking_active above. Zero-arity: this
-# sentinel is machine-global with nothing repo- or session-scoped to look
-# up. Fails toward NOT disabled (i.e. the gate stays armed) on an
-# unresolvable config dir, matching every other opt-in-sentinel check in
-# this file's fail direction.
+# Returns 0 (true) iff round_consult_gate is disabled per its config-keys.psv
+# schema row (presence-disables legacy polarity) -- the kill switch for
+# require-architect-consult.sh, same shape as
+# _lib_permission_prompt_tracking_active above. Zero-arity: this sentinel is
+# machine-global with nothing repo- or session-scoped to look up. Fails
+# toward NOT disabled (i.e. the gate stays armed) on _config_enabled's exit
+# code 2 (unresolvable config dir), exit code 3 (config-keys.psv unreadable),
+# or exit code 4 (config-keys.psv readable but missing round_consult_gate's
+# own row), matching every other opt-in-sentinel check in this file's fail
+# direction -- round_consult_gate's own safe direction is armed, so a
+# transiently unreadable or torn schema must not silently disable it either.
 _lib_round_consult_gate_disabled() {
-  local config_dir
-  config_dir=$(_lib_config_dir) || return 1
-  [ -f "$config_dir/.round-consult-gate-disabled" ] || return 1
-  return 0
+  # Not a bare `! _config_enabled ...`: `!` collapses every nonzero exit
+  # code (1 disabled, 2 unresolvable config dir, 3 unreadable schema, 4
+  # schema row missing) into the same negated-true result, but this function
+  # must return 1 (not disabled, gate stays armed) for every code except 1,
+  # and 0 (disabled) only for 1 -- an explicit case distinguishes them, and
+  # the `*)` arm below already covers 2, 3, and 4 identically with no
+  # separate case needed.
+  _config_enabled round_consult_gate
+  case "$?" in
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Shared bounded-retry count for _lib_append_line_locked below, used by both

@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
+import _config
 from _config_dir import config_dir
 
 # corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
@@ -7739,13 +7740,66 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         _print_cost_ledger_read(existing_rows, args, roots)
         return
 
-    sentinel_path = config_dir() / ".cost-ledger-enabled"
-    if not sentinel_path.exists():
-        # Hardcodes the conventional ~/.claude path rather than sentinel_path
-        # itself -- same don't-print-a-resolved-home-rooted-path discipline
-        # as the ledger-file-missing message above, applied to a fixed
-        # docstring instead of an f-string since CLAUDE_CONFIG_DIR overrides
-        # are rare enough that the canonical hint reads clearer.
+    # No config_dir_override -- this is the single-account path, not the
+    # --all-accounts loop below, which passes its own account_config_dir.
+    try:
+        cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    except _config.ConfigSchemaEmptyError:
+        # config-keys.psv was read successfully but produced zero schema
+        # rows (see that class's own docstring) -- distinct from the
+        # unreadable-file case below, which this file was not.
+        print(
+            "cost-ledger: --record found config-keys.psv empty or malformed"
+            " (no parseable schema rows) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except _config.ConfigSchemaRowTruncatedError:
+        # cost_ledger_recording's own row is present but truncated after an
+        # earlier column (see that class's own docstring) -- a torn schema
+        # row, not a renamed or typo'd key literal at this call site.
+        print(
+            "cost-ledger: --record found cost_ledger_recording's config-keys.psv"
+            " row truncated (partial stow-relink or interrupted git pull)"
+            " -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except KeyError as exc:
+        if _config.schema():
+            # config-keys.psv parsed fine (schema() returned rows), so this
+            # KeyError is a real unknown-key bug -- a renamed or typo'd
+            # literal at this call site -- not the infrastructure cause the
+            # message below assumes.
+            print(f"cost-ledger: --record: unknown config key {exc}", file=sys.stderr)
+            sys.exit(1)
+        # config-keys.psv itself was unreadable at the moment of this call
+        # (see _config.py's module docstring) -- a partial stow-relink or
+        # interrupted `git pull`, not a caller-side key-name typo.
+        print(
+            "cost-ledger: --record could not read config-keys.psv (partial stow-relink"
+            " or interrupted git pull) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if cost_ledger_recording_enabled is None:
+        # Distinguishes "config dir unresolvable" from "disabled" -- the
+        # single message below would otherwise misdiagnose an unresolvable
+        # CLAUDE_CONFIG_DIR as a missing opt-in, the same three-way branch
+        # _cost_ledger_path() above already makes for its own ValueError.
+        print(
+            "cost-ledger: --record could not resolve the Claude Code config"
+            " directory (CLAUDE_CONFIG_DIR is set to a relative path, or"
+            " $HOME is unset/empty) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not cost_ledger_recording_enabled:
+        # Hardcodes the conventional ~/.claude path rather than the resolved
+        # config dir -- same don't-print-a-resolved-home-rooted-path
+        # discipline as the ledger-file-missing message above, applied to a
+        # fixed docstring instead of an f-string since CLAUDE_CONFIG_DIR
+        # overrides are rare enough that the canonical hint reads clearer.
         print(
             "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
             " -- see docs/cost-ledger.md",
@@ -8992,12 +9046,76 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             )
             continue
 
-        sentinel_path = account_config_dir / ".pr-cost-enabled"
-        if not sentinel_path.exists():
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except _config.ConfigSchemaEmptyError:
+            # config-keys.psv was read successfully but produced zero
+            # schema rows (see that class's own docstring) -- distinct
+            # from the unreadable-file case below, which this file was
+            # not.
+            print(
+                "pr-cost: --record found config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            # pr_cost_recording's own row is present but truncated after an
+            # earlier column (see that class's own docstring) -- a torn
+            # schema row, not a renamed or typo'd key literal at this call
+            # site.
+            print(
+                "pr-cost: --record found pr_cost_recording's config-keys.psv"
+                " row truncated (partial stow-relink or interrupted git pull)"
+                " -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except KeyError as exc:
+            if _config.schema():
+                # config-keys.psv parsed fine (schema() returned rows), so
+                # this KeyError is a real unknown-key bug -- a renamed or
+                # typo'd literal at this call site -- not the infrastructure
+                # cause the message below assumes.
+                print(f"pr-cost: --record: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            # config-keys.psv itself was unreadable at the moment of this
+            # call (see _config.py's module docstring) -- a partial
+            # stow-relink or interrupted `git pull`, not a caller-side
+            # key-name typo.
+            print(
+                "pr-cost: --record could not read config-keys.psv (partial stow-relink"
+                " or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always a concrete, already-resolved
+            # directory here (root.parent) -- not expected to be reachable
+            # in practice -- handled explicitly anyway so a future
+            # account_config_dir computation change fails loud rather than
+            # silently misreporting "not opted in".
             if all_accounts:
-                # account-N, not sentinel_path, to avoid a resolved
-                # home-rooted path in output -- same discipline as the
-                # single-account refusal message below.
+                print(
+                    f"pr-cost: account-{ordinal}'s config directory could not be resolved --"
+                    " skipped, see docs/pr-cost.md",
+                    file=sys.stderr,
+                )
+                skipped_other += 1
+                continue
+            print(
+                "pr-cost: --record could not resolve the Claude Code config directory --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            if all_accounts:
+                # account-N, not the resolved config dir, to avoid a
+                # resolved home-rooted path in output -- same discipline as
+                # the single-account refusal message below.
                 print(
                     f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
                     " skipped, see docs/pr-cost.md",
@@ -9005,9 +9123,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not sentinel_path, to avoid a
-            # resolved home-rooted path in output -- same discipline as
-            # cost-ledger's equivalent message above.
+            # Prints the conventional path, not the resolved config dir, to
+            # avoid a resolved home-rooted path in output -- same discipline
+            # as cost-ledger's equivalent message above.
             print(
                 "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
                 " see docs/pr-cost.md",
@@ -9378,8 +9496,16 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
 
 
 def _print_nudge_log_diagnostic() -> None:
-    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
-    log_path = config_dir() / ".handoff-nudge.log"
+    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if
+    present. Silently skips the diagnostic (never raises) when config_dir()
+    can't resolve, since the primary report this footer follows has already
+    printed and succeeded. Matches _read_bounded_log_lines' own
+    absent/unreadable-file degrade above."""
+    try:
+        config_directory = config_dir()
+    except ValueError:
+        return
+    log_path = config_directory / ".handoff-nudge.log"
     lines = _read_bounded_log_lines(log_path)
     drift_count = sum(1 for ln in lines if ln.startswith("schema-drift"))
     if drift_count:
@@ -11253,7 +11379,15 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    try:
+        config_directory = config_dir()
+    except ValueError as exc:
+        # Mirrors _cost_ledger_path's callers' own stderr+exit convention.
+        # The rest of this report can't locate the recorded corpus it
+        # backtests against without a resolved config dir.
+        print(f"rearm-backtest: {exc}", file=sys.stderr)
+        sys.exit(1)
+    log_entries = _parse_nudge_log_entries(config_directory / ".handoff-nudge.log")
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)

@@ -59,7 +59,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "file-writes arm. could not source _lib.sh."
+  emit_deny "file-writes arm. could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -145,7 +145,7 @@ GIT_COMMON_DIR=$(git -C "$lookup_dir" rev-parse --path-format=absolute --git-com
 # Untestable deterministically without simulating a race between the two
 # rev-parse calls above, so no regression test pins this boundary.
 if [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_DIR" ]; then
-  emit_deny "file-writes arm. could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/."
+  emit_deny "file-writes arm. could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active ${_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION}. To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/."
   exit 0
 fi
 
@@ -157,7 +157,7 @@ if [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
   WAS_UNLOCKED=false
   _lib_worktree_lock_absent "$GIT_DIR_ABS" && WAS_UNLOCKED=true
   COLLISION_REASON=$(_lib_worktree_collision_guard "$lookup_dir" "$GIT_COMMON_DIR") || {
-    emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+    emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active ${_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION}."
     exit 0
   }
   if $WAS_UNLOCKED; then
@@ -168,5 +168,5 @@ fi
 
 # In the main working tree: deny.
 REL_PATH="${FILE_PATH#"$REPO_ROOT"/}"
-emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH.$(_lib_stray_marker_hint "$REPO_ROOT")"
+emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active ${_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION}. To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH.$(_lib_stray_marker_hint "$REPO_ROOT")"
 exit 0
