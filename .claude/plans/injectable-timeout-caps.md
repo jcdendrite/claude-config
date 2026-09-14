@@ -554,23 +554,44 @@ gate.
     so `write_scaled_timeout_shim` must `unlink(missing_ok=True)` its target
     before writing — writing through the surviving symlink would overwrite
     the host's real `timeout` binary.
-20. `[unverified]` — no cap-boundary site nests one `_lib_capped` call
-    inside another. A nested pair would let the outer cap's kill orphan the
-    inner shim before it records completion, which reads as the inner cap
-    firing. `production_cap=` pinning makes a nest at a *different* duration
-    harmless; a same-duration nest would not be. Dispatch B confirms this
+20. `[verified: found and fixed during Dispatch B implementation]` — no
+    cap-boundary site **nests** one `_lib_capped` call inside another. A
+    nested pair would let the outer cap's kill orphan the inner shim before
+    it records completion, which reads as the inner cap firing.
+    `production_cap=` pinning makes a nest at a *different* duration
+    harmless; a same-duration nest would not be. Dispatch B confirmed this
     per site while re-deriving each assertion, and the four chained sites
-    of row 8 are sequential, not nested. **This is a one-time check, not a
-    standing gate:** unlike the discriminator's other three failure modes
-    (rows 5, 7, and the wrong-cap/wrong-count cases), a same-duration nest
-    gets no committed test, so a future PR adding a new capped call site
-    nested at the same duration as an existing one would not be caught by
-    anything in this plan. Accepted as residual risk for this PR — see Out
-    of scope — because a repo-wide static check for "a capped call
-    reachable from within another capped call's own subprocess tree" is
-    call-graph analysis across bash and Python, a heavier primitive than
-    the risk (a false-positive-shaped test result, not a security bypass)
-    justifies building now.
+    of row 8 are sequential, not nested.
+
+    A **piped** pair (concurrent, not nested, not sequential) turned out to
+    be a third shape with the same attribution failure: two same-duration
+    `_lib_capped` calls joined by a shell pipe race each other's own cap
+    rather than one containing the other. Dispatch B's own audit missed
+    this and shipped `killed_calls=2` at two piped sites
+    (`_lib_active_bypass_marker_live`'s `cat | tr`,
+    `read_latest_usage`'s `tail | jq`). A `/code-review` round caught it as
+    a scheduling race. Fixed by adding command attribution to the marker log
+    (`caps_that_fired`'s key is now `"<duration> <command>"`, and
+    `assert_cap_engaged` gained a `command=` parameter — see Critical files
+    item 1) so each piped site asserts on its own deterministic stage's
+    kill rather than the racy joint count.
+
+    Command attribution disambiguates by binary name, not call site: it
+    would not distinguish two same-duration pipe stages that share a
+    binary name (e.g. `tail | tail`). No site in this plan has that shape
+    today, and a future mismatch fails loudly rather than passing silently
+    wrong, so this residual is accepted rather than solved further.
+
+    **This is a one-time check, not a standing gate:** unlike the
+    discriminator's other three failure modes (rows 5, 7, and the
+    wrong-cap/wrong-count cases), neither a same-duration nest nor a
+    same-command same-duration pipe gets a committed test, so a future PR
+    introducing either shape would not be caught by anything in this plan.
+    Accepted as residual risk for this PR — see Out of scope — because a
+    repo-wide static check for "a capped call reachable from within another
+    capped call's own subprocess tree" is call-graph analysis across bash
+    and Python, a heavier primitive than the risk (a false-positive-shaped
+    test result, not a security bypass) justifies building now.
 
 **Passthrough is never a silent pass, and it is no longer merely tolerable.**
 A `$1` the regex rejects runs at the caller's own unscaled duration and
@@ -608,14 +629,18 @@ B starts.**
      rounding, for the one site whose sleep must **finish inside** its cap
      (row 7).
    - `caps_that_fired(bin_dir: Path) -> Counter[str]` — the multiset
-     difference `started - completed`, keyed by the caller-supplied duration
-     as written. Empty when no records exist.
-   - `assert_cap_engaged(bin_dir, production_cap=None, killed_calls=1)` — a
-     `@contextmanager`. Snapshots both logs on entry, re-reads on exit, and
-     asserts on the delta so a second hook run inside the same `tmp_path`
-     is not counted twice. Raises when the shim recorded nothing at all
-     (the never-invoked case), with a message distinct from the one for
-     "every invocation completed."
+     difference `started - completed`, keyed by `"<duration> <command>"` as
+     written (the command distinguishes which pipe stage was killed at a
+     shared duration — row 20). Empty when no records exist.
+   - `assert_cap_engaged(bin_dir, production_cap=None, killed_calls=1,
+     command=None)` — a `@contextmanager`. Snapshots both logs on entry,
+     re-reads on exit, and asserts on the delta so a second hook run inside
+     the same `tmp_path` is not counted twice. Raises when the shim
+     recorded nothing at all (the never-invoked case), with a message
+     distinct from the one for "every invocation completed." `command`
+     narrows the count to one exact `(duration, command)` pair instead of
+     summing across every command at that duration. The two piped sites
+     in the Dispatch B table below require it.
    - `assert_cap_not_engaged(bin_dir, production_cap=None)` — the inverse:
      the shim must have been invoked (at `production_cap`, when given) and
      nothing may have been killed. Used at row 7's inverted site and in the
