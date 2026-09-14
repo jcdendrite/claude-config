@@ -71,7 +71,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by plugin-version-bump gate: could not source _lib.sh."
   exit 0
 fi

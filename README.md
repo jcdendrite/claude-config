@@ -185,6 +185,7 @@ flowchart LR
 | `redact-credential-values.sh` | — (PostToolUse `Bash`/`Read`/`WebFetch`/`Grep`/`Task`, informational) | Redacts a credential-shaped value in the tool result via `updatedToolOutput`; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — copy the file to `/tmp` and mutate the copy there |
 | `require-architect-consult.sh` | Reviewer-persona `Agent`/`Task` spawn when a branch is entering its third distinct reviewed state | A `plan-architect MODE=consult` dispatch (self-initiated or gate-prescribed), which `log-reviewer-round.sh` records as a per-branch latch; or `<config-dir>/.round-consult-gate-disabled` |
+| `deny-no-op-dispatch.sh` | `Agent`/`Task` spawn whose prompt is under 600 characters and matches a closed no-work idiom list | No clear — state the dispatch's actual work in the prompt, or end the turn without a tool call |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
@@ -259,8 +260,8 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, settings.json conventions, and test-tree packaging.
-- **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and test-tree packaging.
+- **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, settings.json conventions, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.base.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)).
   - Ships no repo-chosen default `model` — a fresh install relies on Claude Code's own built-in default until your first `/config`. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`).
   - `settings.json` — the file Claude Code actually reads — is generated, not hand-edited.
@@ -379,7 +380,7 @@ echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
 
 The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its content (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not neutral — session count, turn count, per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch counts are an engagement-scale, duration, model-mix, and review-cadence signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
 
 ### Prose tightening pass
 
@@ -553,7 +554,7 @@ For a faster local dev loop, `select-tests.py` runs pytest against just the test
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
 ```
 
-Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push.
+Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
 
 ## Acknowledgments
 

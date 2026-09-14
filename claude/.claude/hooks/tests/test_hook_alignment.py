@@ -12,7 +12,7 @@ hook that gates it — both files present, and the hook still wired into a
 PreToolUse matcher group — asserts that same PreToolUse wiring for every
 hook-class: gate hook regardless of skill pairing, and pins standalone
 config-value invariants in settings.json unrelated to gate/skill pairing
-(e.g. the plan-mode-entry deny/defaultMode declarations). Three further
+(e.g. the plan-mode-entry deny/defaultMode declarations). Four further
 static shape checks:
 - Every `jq` invocation in claude/.claude/hooks/*.sh goes through a
   `_lib_*` wrapper (bare `jq` outside one reintroduces the per-hook
@@ -26,6 +26,15 @@ static shape checks:
 - No hook regex in claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
   either directory's _lib.sh uses GNU grep's `\\s` extension, which a
   POSIX-strict grep reads as a literal `s`.
+- Every hook entry object inside `hooks.<Event>[].hooks[]` in
+  claude/.claude/settings.json carries non-empty `type` and `command`
+  fields — catches an entry left with only a `timeout` key and no `type`
+  or `command`, the shape a scripted edit produces when it writes to the
+  wrong object.
+- record-session-end.sh's SessionEnd registration in
+  claude/.claude/settings.json carries an integer `timeout` between 10 and
+  60 — catches a deleted or corrupted `timeout` field silently
+  reintroducing the "Hook cancelled" regression it exists to fix.
 
 The first two carry a small, named exemption dict for a structural holdout
 that resisted conversion. The `\\s` check has none: no live `\\s`
@@ -226,6 +235,72 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
     """Every PreToolUse command string wired to `hook` — see
     _pretooluse_entries_for for the matching rules."""
     return [entry.get("command", "") for entry in _pretooluse_entries_for(hook)]
+
+
+def test_every_registered_hook_entry_has_type_and_command() -> None:
+    """Every hook entry under `hooks.<Event>[].hooks[]` must carry
+    non-empty `type` and `command` — see the module docstring's static
+    checks list for what this guards against."""
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    for event_name, groups in settings.get("hooks", {}).items():
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks", []):
+                assert isinstance(entry, dict), (
+                    f"{event_name}: hook entry is not an object: {entry!r}"
+                )
+                assert entry.get("type"), (
+                    f"{event_name}: hook entry missing non-empty 'type': {entry!r}"
+                )
+                assert entry.get("command"), (
+                    f"{event_name}: hook entry missing non-empty 'command': {entry!r}"
+                )
+
+
+def test_record_session_end_timeout_stays_within_ceiling() -> None:
+    """The declared config-value backing record-session-end.sh's raised
+    SessionEnd execution budget.
+
+    This proves the *declared* config state — the SessionEnd hook entry
+    whose command ends in `record-session-end.sh` carries an integer
+    `timeout` between 10 and 60 — not that the harness actually honors it
+    at runtime. That live-session verification is unavailable outside a
+    real SessionEnd fire; this test only pins the declaration so a future
+    edit can't silently drop the `timeout` field and reintroduce the
+    "Hook cancelled" regression record-session-end.sh's own header
+    documents.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    session_end_entries = [
+        entry
+        for group in settings.get("hooks", {}).get("SessionEnd", [])
+        if isinstance(group, dict)
+        for entry in group.get("hooks", [])
+        if isinstance(entry, dict)
+    ]
+    matching_entries = [
+        entry
+        for entry in session_end_entries
+        if entry.get("command", "").endswith("record-session-end.sh")
+    ]
+    assert matching_entries, (
+        "no SessionEnd hook entry with a command ending in "
+        f"'record-session-end.sh' found in {_SETTINGS_PATH.relative_to(_REPO_ROOT)}"
+    )
+    timeout = matching_entries[0].get("timeout")
+    # bool is an int subclass in Python, so a corrupted "timeout": true would
+    # otherwise pass a bare isinstance(x, int) check.
+    assert isinstance(timeout, int) and not isinstance(timeout, bool), (
+        f"record-session-end.sh's SessionEnd 'timeout' is not an int: {timeout!r}"
+    )
+    # Floor-and-ceiling range, not an exact `== 10` match, so a legitimate
+    # future retune isn't a test edit.
+    assert 10 <= timeout <= 60, (
+        f"record-session-end.sh's SessionEnd 'timeout' {timeout} is outside "
+        f"the [10, 60] range -- 60 is the documented per-hook ceiling "
+        f"(code.claude.com/docs/en/hooks)"
+    )
 
 
 # Review skills whose descriptions advertise a gate, paired with the hook that
@@ -953,12 +1028,113 @@ class TestHookClassHeader:
         )
         assert lib_source_line is not None, (
             f"{hook.name}: _lib.sh source line not found — "
-            "gate hooks must source _lib.sh via '. \"$(dirname \"$0\")/_lib.sh\"'"
+            'gate hooks must source _lib.sh via \'. "${0%/*}/_lib.sh"\''
         )
         assert emit_deny_line < lib_source_line, (
             f"{hook.name}: emit_deny() defined at line {emit_deny_line + 1} but "
             f"_lib.sh sourced at line {lib_source_line + 1} — "
             "emit_deny must be defined BEFORE sourcing _lib.sh"
+        )
+
+
+# Matches the $0-relative _lib.sh source line in either of its two known
+# forms: the current `${0%/*}` parameter expansion, or the obsolete
+# `$(dirname "$0")` command substitution (matched too, so a hook that
+# regresses to it stays inside this test's domain instead of silently
+# exempting itself).
+#
+# Excludes plugins/lovable-cloud/hooks/validate-migration-filename.sh — see
+# _SWEPT_GATE_HOOKS below for why.
+_LIB_SOURCE_LINE_RE = re.compile(r'^if ! \. "(?:\$\{0%/\*\}|\$\(dirname "\$0"\))/_lib\.sh" 2>/dev/null; then$')
+
+
+def _sources_lib_via_dollar_zero(hook: Path) -> bool:
+    return any(_LIB_SOURCE_LINE_RE.match(ln.strip()) for ln in hook.read_text().splitlines())
+
+
+_LIB_SOURCE_HOOKS = [h for h in ALL_HOOKS if _sources_lib_via_dollar_zero(h)]
+
+# Hooks with no $0-relative _lib.sh source line at all, named so a hook's
+# source line silently drifting to an unrecognized shape fails this count
+# instead of quietly shrinking _LIB_SOURCE_HOOKS's parametrized case count.
+_KNOWN_NON_SOURCING_HOOKS: frozenset[str] = frozenset(
+    {
+        "provision-validator-venv.sh",
+        "consume-migration-token.sh",
+        "validate-migration-filename.sh",
+    }
+)
+
+
+def test_lib_source_hooks_exhaustive() -> None:
+    """_LIB_SOURCE_HOOKS must equal ALL_HOOKS minus exactly the known
+    non-sourcing hooks by name, not merely by count — a set check names the
+    diverging hook directly instead of masking it against a compensating
+    drift elsewhere."""
+    expected_names = {h.name for h in ALL_HOOKS} - _KNOWN_NON_SOURCING_HOOKS
+    actual_names = {h.name for h in _LIB_SOURCE_HOOKS}
+    assert actual_names == expected_names, (
+        f"_LIB_SOURCE_HOOKS diverges from ALL_HOOKS minus "
+        f"{sorted(_KNOWN_NON_SOURCING_HOOKS)}: "
+        f"missing={sorted(expected_names - actual_names)}, "
+        f"unexpected={sorted(actual_names - expected_names)}"
+    )
+
+
+@pytest.mark.parametrize("hook", _LIB_SOURCE_HOOKS, ids=[h.name for h in _LIB_SOURCE_HOOKS])
+def test_lib_sh_sourced_via_parameter_expansion(hook: Path) -> None:
+    """Every $0-relative source line must use `${0%/*}`, not
+    `$(dirname "$0")`; see _lib.sh's header for why."""
+    source_lines = [
+        ln.strip() for ln in hook.read_text().splitlines() if _LIB_SOURCE_LINE_RE.match(ln.strip())
+    ]
+    assert len(source_lines) == 1, (
+        f"{hook.name}: expected exactly one $0-relative _lib.sh source line, found {len(source_lines)}"
+    )
+    line = source_lines[0]
+    assert line == 'if ! . "${0%/*}/_lib.sh" 2>/dev/null; then', (
+        f"{hook.name}: _lib.sh source line must use the ${{0%/*}} parameter expansion; got: {line!r}"
+    )
+
+
+# Files carrying a second, unrelated dirname "$0" site alongside their swept
+# _lib.sh source line — both lines share the substring `dirname "$0")`, so a
+# future sweep (or well-meaning cleanup) that widens past the single
+# intended line would silently mutate these too without a positive check.
+_SECOND_DIRNAME_SITE_HOOKS: dict[str, list[str]] = {
+    "nudge-handoff-near-context-cap.sh": [
+        '\' _ "$(dirname "$0")/_lib.sh" "$CONFIG_DIR" "$SESSION_ID" 2>/dev/null)',
+    ],
+    "require-worktree-for-git-writes.sh": [
+        'PARSER="$(dirname "$0")/parse-git-command.py"',
+    ],
+    "ask-new-dependency-disclosure.sh": [
+        'HELPER_SCRIPT="$(dirname "$0")/parse-manifest-dependencies.py"',
+    ],
+    "require-skill-review.sh": [
+        'VALIDATOR_SCRIPT="$(dirname "$0")/../scripts/validate_skill_structure.py"',
+        'HOOK_OWN_GIT_COMMON_DIR=$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)',
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "hook_name", sorted(_SECOND_DIRNAME_SITE_HOOKS), ids=sorted(_SECOND_DIRNAME_SITE_HOOKS)
+)
+def test_second_dirname_site_not_swept(hook_name: str) -> None:
+    """The sweep to ${0%/*} touches only the $0-relative _lib.sh source line.
+
+    These four hooks carry one or more second, unrelated `dirname "$0"` uses
+    (locating a sibling script or resolving git state, not _lib.sh) that
+    must survive unchanged.
+    """
+    hook = next(h for h in ALL_HOOKS if h.name == hook_name)
+    expected_lines = _SECOND_DIRNAME_SITE_HOOKS[hook_name]
+    lines = [ln.strip() for ln in hook.read_text().splitlines()]
+    for expected_line in expected_lines:
+        assert expected_line in lines, (
+            f"{hook_name}: expected unswept dirname \"$0\" line not found verbatim — "
+            f"expected {expected_line!r}"
         )
 
 
@@ -968,15 +1144,22 @@ class TestHookClassHeader:
 
 
 def _run_hook_raw(
-    hook: Path, stdin_text: str, cwd: Path | None = None, env: dict | None = None
+    hook: Path,
+    stdin_text: str,
+    cwd: Path | None = None,
+    env: dict | None = None,
+    argv: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `hook` with raw stdin. `env`, when given, is merged on top of the
     real environment (not a replacement) — every case below only means to
     override PATH and/or HOME, and the hook still needs the rest of the real
-    environment (e.g. TERM, LANG) to behave normally."""
+    environment (e.g. TERM, LANG) to behave normally. `argv`, when given,
+    overrides the invocation argument list (default: the hook's own absolute
+    path) — used by the slash-free-$0 behavioral test below to invoke
+    `["bash", hook.name]` instead."""
     subprocess_env = {**os.environ, **env} if env is not None else None
     return subprocess.run(
-        [str(hook)],
+        argv if argv is not None else [str(hook)],
         input=stdin_text,
         capture_output=True,
         text=True,
@@ -1077,6 +1260,55 @@ class TestGateHookBehavior:
         if not result.stdout.strip():
             pytest.skip("hook did not emit output on malformed input — tested by test_malformed_input_denied")
         _assert_deny_schema(result, hook.name, "schema-shape")
+
+
+# Gate hooks only: every other hook-class documents fail-open on a missing
+# _lib.sh, so a fail-closed assertion doesn't apply to them. Excludes
+# validate-migration-filename.sh: it is hook-class: gate but sources
+# _lib.sh via "${CLAUDE_PLUGIN_ROOT}", a mechanism this sweep doesn't touch.
+_SWEPT_GATE_HOOKS = [h for h in _LIB_SOURCE_HOOKS if _hook_class(h) == "gate"]
+
+# The one hook-class: gate hook excluded above by construction, named so
+# this count stays independently checkable rather than self-referential.
+_NON_SWEPT_GATE_HOOKS: frozenset[str] = frozenset({"validate-migration-filename.sh"})
+
+
+def test_swept_gate_hooks_exhaustive() -> None:
+    """_SWEPT_GATE_HOOKS must equal GATE_HOOKS minus exactly the known
+    excluded gate hook by name, not merely by count — a set check names the
+    diverging hook directly instead of masking it against a compensating
+    drift elsewhere."""
+    expected_names = {h.name for h in GATE_HOOKS} - _NON_SWEPT_GATE_HOOKS
+    actual_names = {h.name for h in _SWEPT_GATE_HOOKS}
+    assert actual_names == expected_names, (
+        f"_SWEPT_GATE_HOOKS diverges from GATE_HOOKS minus "
+        f"{sorted(_NON_SWEPT_GATE_HOOKS)}: "
+        f"missing={sorted(expected_names - actual_names)}, "
+        f"unexpected={sorted(actual_names - expected_names)}"
+    )
+
+
+@pytest.mark.parametrize("hook", _SWEPT_GATE_HOOKS, ids=[h.name for h in _SWEPT_GATE_HOOKS])
+def test_slash_free_dollar_zero_fails_closed(hook: Path) -> None:
+    """`executable=` is invalid here: the kernel rewrites `argv[0]` before
+    bash sees it, so use `bash <bare-name>` with `cwd=hook.parent` instead.
+    Both invocations below fail at the `_lib.sh` source line before any
+    git/worktree logic runs, so running against the live tree (not an
+    isolated copy) is safe here.
+    """
+    payload = json.dumps(bash_input("echo hello"))
+
+    control = _run_hook_raw(hook, payload, cwd=hook.parent)
+    assert control.returncode == 0, (
+        f"{hook.name} [control-absolute-path]: expected exit 0 (allow), got "
+        f"{control.returncode}: stdout={control.stdout!r} stderr={control.stderr!r}"
+    )
+    assert not control.stdout.strip(), (
+        f"{hook.name} [control-absolute-path]: expected silent allow, got stdout={control.stdout!r}"
+    )
+
+    bare_result = _run_hook_raw(hook, payload, cwd=hook.parent, argv=["bash", hook.name])
+    _assert_blocks(bare_result, hook.name, "slash-free-dollar-zero", "could not source _lib.sh")
 
 
 # ------------------------------------------------------------------ #

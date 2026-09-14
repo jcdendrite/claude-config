@@ -207,13 +207,14 @@ def _append_to_transcript(path: Path, records: list[dict]) -> None:
 
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's fire path invokes
-    (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
-    `tail`/`wc`/`tr`/`head` for read_latest_usage_cached's incremental scan,
-    `mkdir`/`find`/`touch` for the marker dir, `bash`/`basename` for the
-    active-bypass marker enumeration and `sort`/`paste` to join its labels),
-    omitting both timeout(1) and gtimeout(1). Skips (does not silently
-    under-symlink) when a needed real binary is itself absent from the test
-    machine."""
+    (`cat`/`jq` for the payload/output JSON, `dirname` for the active-bypass
+    marker enumeration's own nested `$(dirname "$0")/_lib.sh` re-source (the
+    top-level bootstrap does not call it), `tail`/`wc`/`tr`/`head` for
+    read_latest_usage_cached's incremental scan, `mkdir`/`find`/`touch` for
+    the marker dir, `bash`/`basename` for the active-bypass marker
+    enumeration and `sort`/`paste` to join its labels), omitting both
+    timeout(1) and gtimeout(1). Skips (does not silently under-symlink) when
+    a needed real binary is itself absent from the test machine."""
     for tool in (
         "bash", "basename", "cat", "dirname", "find", "head", "jq", "mkdir",
         "paste", "sort", "tail", "touch", "tr", "wc",
@@ -227,11 +228,11 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
 
 def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries run_check_mode's --check path
-    invokes (`dirname` to locate _lib.sh, `jq` for the reported JSON,
-    `ps`/`head`/`sed`/`tr` for the ancestor walk, `env` for the pinned-locale
-    live-start read, `tail` for read_latest_usage), omitting both timeout(1)
-    and gtimeout(1). Skips when a needed real binary is itself absent from
-    the test machine."""
+    invokes (`dirname` kept as a harmless superset entry `run_check_mode`
+    never calls, `jq` for the reported JSON, `ps`/`head`/`sed`/`tr` for the
+    ancestor walk, `env` for the pinned-locale live-start read, `tail` for
+    read_latest_usage), omitting both timeout(1) and gtimeout(1). Skips when
+    a needed real binary is itself absent from the test machine."""
     for tool in ("dirname", "env", "head", "jq", "ps", "sed", "tail", "tr"):
         real = shutil.which(tool)
         if not real:

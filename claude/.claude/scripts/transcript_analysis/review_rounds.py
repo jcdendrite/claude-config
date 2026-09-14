@@ -392,6 +392,47 @@ def compute_review_round_costs(
     return {"rounds": filtered_rounds, "branch_totals": dict(branch_totals)}
 
 
+def compute_review_round_counts(
+    session_iter,
+    *,
+    branch_filter: set[str] | None = None,
+) -> dict[str, int]:
+    """Per-skill round counts across session_iter, main-thread only.
+
+    Every REVIEW_SKILLS member is a key in the returned dict, zeros
+    included, so a caller never has to special-case an absent skill.
+
+    Detection reuses the same three helpers in the same order as
+    compute_review_round_costs -- pricing.dedup_turns_by_request_id,
+    _detect_round_windows, _session_record_branches -- so the two functions
+    can never disagree on what counts as one round. Dedup runs before
+    detection here too, not only before pricing (see
+    pricing.dedup_turns_by_request_id's own docstring): without it, one API
+    call's Skill tool_use can appear in more than one record and count as
+    two rounds.
+
+    branch_filter matches a round's own opening record's raw gitBranch,
+    carried forward when absent -- the same attribution
+    compute_review_round_costs uses for branch_key's second element.
+
+    No pricing, no dispatch index, no recursion: unlike
+    compute_review_round_costs, this never opens a dispatched subagent's own
+    transcript.
+    """
+    counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
+    for _jsonl, records in session_iter:
+        records = pricing.dedup_turns_by_request_id(records)  # dedup before detection, not only before pricing -- see pricing.py
+        windows = _detect_round_windows(records)
+        if not windows:
+            continue
+        record_branches = _session_record_branches(records, windows)
+        for open_idx, _window_end, skill in windows:
+            if branch_filter is not None and record_branches[open_idx] not in branch_filter:
+                continue
+            counts[skill] += 1
+    return counts
+
+
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
     """Per-branch review-round dollar cost.
 
@@ -412,7 +453,8 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     See docs/transcript-analysis.md's review-round-cost section for the
     round/non-round reconciliation-line formula, and for the
-    "Non-round dollars"/"Dangling dispatches"/"Unpriced turns" footer lines.
+    "Non-round dollars"/"Reviewer-dispatch dollars"/"Dangling dispatches"/
+    "Unpriced turns" footer lines.
     Under multi-root scope the footer prints one block per root, never
     blended across roots.
 
@@ -482,6 +524,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         "skill_dollar_totals": defaultdict(float),
         "total_round_dollars": 0.0,
         "total_branch_dollars": 0.0,
+        "total_agent_dollars": 0.0,
         "total_unpriced_turns": 0,
         "total_dangling": 0,
     })
@@ -529,6 +572,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             root_totals["total_dangling"] += e["dangling"]
         root_totals["total_round_dollars"] += branch_round_dollars
         root_totals["total_branch_dollars"] += branch_dollars
+        root_totals["total_agent_dollars"] += sum(e["agent_dollars"] for e in branch_rounds)
 
     def _print_footer(totals: dict, *, prefix: str = "") -> None:
         skill_round_counts = totals["skill_round_counts"]
@@ -547,6 +591,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         print(
             f"{prefix}Non-round dollars: {render._pct_of(non_round_dollars, totals['total_branch_dollars'])}"
             " of branch dollars fell outside every round window"
+        )
+        print(
+            f"{prefix}Reviewer-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
+            " of branch dollars, inside round windows"
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
         print(f"{prefix}Unpriced turns inside round windows: {totals['total_unpriced_turns']}")

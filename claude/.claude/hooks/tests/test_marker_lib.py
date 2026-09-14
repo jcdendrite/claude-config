@@ -56,10 +56,14 @@ def _hash_diff_text(text: str) -> subprocess.CompletedProcess:
     )
 
 
-def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
-    """Shell out to the real _lib_active_plan_hash against `repo`."""
+def _active_plan_hash(
+    repo: Path, base: str = "", env_overrides: dict | None = None
+) -> str:
+    """Shell out to the real _lib_active_plan_hash against `repo`. `base`
+    defaults to "" (no trusted in-progress state)."""
     result = subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_hash "$1"', "_active_plan_hash", str(repo)],
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_hash "$1" "$2"',
+         "_active_plan_hash", str(repo), base],
         capture_output=True,
         text=True,
         check=True,
@@ -68,12 +72,15 @@ def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
     return result.stdout.strip()
 
 
-def _active_plan_files(repo: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+def _active_plan_files(
+    repo: Path, base: str = "", env_overrides: dict | None = None
+) -> subprocess.CompletedProcess:
     """Shell out to the real _lib_active_plan_files against `repo`, returning
     the raw CompletedProcess so callers can assert on exit status and stdout
-    together."""
+    together. `base` defaults to "" (no trusted in-progress state)."""
     return subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1"', "_active_plan_files", str(repo)],
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1" "$2"',
+         "_active_plan_files", str(repo), base],
         capture_output=True,
         text=True,
         env={**os.environ, **(env_overrides or {})},
@@ -162,6 +169,21 @@ class TestMarkerLibRepoHash:
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
         )
+
+    def test_sha256sum_failure_returns_nonzero_with_empty_stdout(self):
+        """_marker_lib_repo_hash delegates to _lib_hash_diff_text, so a
+        broken sha256sum must propagate as a failing exit status with empty
+        stdout rather than fail open -- callers like
+        pr-diff-against-base.sh run this unchecked under set -euo
+        pipefail and rely on a nonzero exit to abort instead of silently
+        continuing with an empty hash."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _marker_lib_repo_hash "/tmp/test-repo"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
 
 
 class TestLibHashDiffText:

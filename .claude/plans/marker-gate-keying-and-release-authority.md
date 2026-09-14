@@ -27,10 +27,9 @@ enforcement gate.
 one-off. Two repo hashes each hold two byte-identical completion markers under
 different session ids: `6bf5f7c2…` (02:17 and 02:59) and `6618085c…` (01:36
 and 02:54). Six worktrees currently sit with armed plan gates, so the next
-resume reproduces the trigger. Independently, issue #426's census of 1120 hook
-denials across 335 sessions found `require-plan-review` at 79 denials with 19
-false positives (24%) — every one an `already-satisfied` case of this same
-over-keying defect.
+resume reproduces the trigger. Independently, the denial census from issue #426 found
+`require-plan-review`'s false-positive rate at 24% — every one an
+`already-satisfied` case of this same over-keying defect.
 
 **Intended outcome:** a resumed or parallel session inherits any review that
 covers the exact state it is about to act on; and `marker.sh write` /
@@ -256,7 +255,7 @@ review from one written by an agent that could not have.
 | 6 | `.agent_type` is present on PreToolUse payloads for both Bash and Edit/Write, and empty for the main session | anchors: row 8 | `[verified: deny-reviewer-tree-mutation.sh:130–143, merged 3ea14d4; wired under both matchers]` |
 | 7 | `activate` releases the plan gate with no hash check | anchors: row 9 | `[verified: require-plan-review.sh:118–127 active-marker bypass]` |
 | 8 | Agent types in the no-release set cannot invoke a review skill (no `Skill` tool), making any marker write from them unearned | anchors: row 8 | `[verified: agent roster tool lists]` |
-| 9 | #426's repro is a same-repository worktree copy, so a sibling-worktree glob closes it without cross-repo release | anchors: row 4 | `[verified: issue #426 body — "copied into a fresh worktree path"; plan hash uses repo-RELATIVE paths per _lib.sh:104–108, so a copy at the same relative path hashes identically]` |
+| 9 | The repro documented in issue #426 is a same-repository worktree copy, so a sibling-worktree glob closes it without cross-repo release | anchors: row 4 | `[verified: issue #426 body — "copied into a fresh worktree path"; plan hash uses repo-RELATIVE paths per _lib.sh:104–108, so a copy at the same relative path hashes identically]` |
 | 10 | Marker directories are unbounded and already large (~1000+ entries), so the read must not fork per file | anchors: row 1 | `[verified: plan-review-markers/ listing 111.7KB]` |
 | 11 | Stage 2 of `enforce-marker-script-shape.sh` fast-exits wrapped forms, so an agent check placed after it is bypassable | anchors: row 10 | `[verified: enforce-marker-script-shape.sh:68–70 + its own header comment]` |
 | 12 | `permissions.allow` is not a dependable backstop for wrapped forms under permissive permission modes | anchors: row 10 | `[unverified]` — asserted from the hook's own "permissions.allow is their gate" comment; not tested per-mode. Does not change the design (placing the check early is correct regardless) but do not cite it as fact in a code comment. |

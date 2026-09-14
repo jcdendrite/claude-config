@@ -261,6 +261,65 @@ def test_rule_has_parseable_paths_frontmatter(rule_file: Path, is_stowed: bool):
     assert not violations, "; ".join(violations)
 
 
+def find_duplicate_paths_sets(
+    entries: list[tuple[Path, list[str]]],
+) -> dict[frozenset[str], list[Path]]:
+    """Group entries by identical `paths` set, returning only groups with
+    more than one file.
+
+    Extracted from test_no_two_rule_files_declare_the_same_full_paths_set so
+    the duplicate-detection logic can be exercised against a constructed
+    fixture, independent of whatever this repo's real rule corpus currently
+    contains.
+    """
+    paths_set_to_files: dict[frozenset[str], list[Path]] = {}
+    for rule_file, paths in entries:
+        paths_set_to_files.setdefault(frozenset(paths), []).append(rule_file)
+    return {
+        paths_set: files
+        for paths_set, files in paths_set_to_files.items()
+        if len(files) > 1
+    }
+
+
+def test_no_two_rule_files_declare_the_same_full_paths_set():
+    """No two discovered rule files (project-scope ∪ user-scope) declare the
+    identical full `paths` set.
+
+    A single shared glob between two files is not itself a defect — two
+    orthogonal rules legitimately co-fire on the same trigger, the same way
+    multiple hooks can match one tool call (e.g. `review-pipeline-dispatch.md`
+    and `skill-and-agent-self-review.md` both match `SKILL.md`/agent-file
+    edits with unrelated content). What this test catches is two files whose
+    entire `paths` set is identical — a full redundant copy of a rule with no
+    way for a reader to tell which is canonical (e.g. two files both
+    declaring `paths: ["**/settings.json"]`).
+    `test_rule_has_parseable_paths_frontmatter` checks frontmatter shape
+    only — its own docstring disclaims verifying that any glob is
+    well-formed or matches a real target — so it provides no coverage of
+    this.
+    """
+    entries: list[tuple[Path, list[str]]] = []
+    for rule_file, _is_stowed in _RULE_FILES:
+        try:
+            frontmatter = parse_frontmatter(rule_file)
+        except (yaml.YAMLError, ValueError):
+            # Malformed frontmatter is already flagged by
+            # test_rule_has_parseable_paths_frontmatter above.
+            continue
+        paths = frontmatter.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            continue
+        entries.append((rule_file, paths))
+
+    duplicates = find_duplicate_paths_sets(entries)
+    assert not duplicates, "; ".join(
+        f"{sorted(paths_set)!r} declared identically by multiple rule files: "
+        f"{[str(f.relative_to(_REPO_ROOT)) for f in files]}"
+        for paths_set, files in duplicates.items()
+    )
+
+
 @pytest.mark.skipif(
     not _CLAUDE_MD_CONVENTIONS_RULE.is_file(),
     reason="claude-md-conventions.md not present",
@@ -633,3 +692,40 @@ class TestRuleFrontmatterViolations:
         f = self._write_rule(tmp_path, '---\npaths:\n  - "docs/{en,es}/**"\n---\n\nbody\n')
         repo_root = self._make_repo_root(tmp_path, dirs=("docs",))
         assert rule_frontmatter_violations(f, is_stowed=False, repo_root=repo_root) == []
+
+
+class TestFindDuplicatePathsSets:
+    """Unit tests for find_duplicate_paths_sets() — uses tmp_path fixtures.
+
+    test_no_two_rule_files_declare_the_same_full_paths_set only ever sees
+    this repo's current, presumably-duplicate-free rule files — it has never
+    observed its own assertions fail on a constructed duplicate. These
+    fixtures prove the grouping logic actually discriminates a duplicate
+    `paths` set from a partial overlap, independent of what the current
+    repo's rule files happen to contain (mirrors TestRuleFrontmatterViolations
+    above).
+    """
+
+    def test_identical_paths_lists_are_flagged_as_duplicate(self, tmp_path):
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+        duplicates = find_duplicate_paths_sets(
+            [(file_a, ["**/*.sql"]), (file_b, ["**/*.sql"])]
+        )
+        assert duplicates == {frozenset(["**/*.sql"]): [file_a, file_b]}
+
+    def test_partial_overlap_paths_lists_are_not_flagged(self, tmp_path):
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+        duplicates = find_duplicate_paths_sets(
+            [(file_a, ["**/*.sql", "**/*.py"]), (file_b, ["**/*.sql"])]
+        )
+        assert duplicates == {}
+
+    def test_paths_lists_in_different_order_are_still_flagged_as_duplicate(self, tmp_path):
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+        duplicates = find_duplicate_paths_sets(
+            [(file_a, ["**/*.sql", "**/*.py"]), (file_b, ["**/*.py", "**/*.sql"])]
+        )
+        assert duplicates == {frozenset(["**/*.sql", "**/*.py"]): [file_a, file_b]}

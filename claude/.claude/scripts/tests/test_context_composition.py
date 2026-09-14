@@ -729,7 +729,7 @@ class TestDirectCallerDefenseInDepth:
 
 class TestConfigDirRouting:
     def test_context_composition_registered_in_subcommands_with_own_config_dir(self):
-        assert "context-composition" in _mod._SUBCOMMANDS_WITH_OWN_CONFIG_DIR
+        assert "context-composition" in _mod._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
 
     def test_top_level_config_dir_refused_end_to_end(self, monkeypatch, tmp_path, capsys):
         other_account = tmp_path / "other-account"

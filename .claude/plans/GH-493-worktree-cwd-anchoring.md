@@ -11,7 +11,7 @@ Worktree discipline is enforced on two tool verbs — git writes
 (`require-worktree-for-file-writes.sh`). Command *execution* is
 ungoverned, and the harness's cwd behavior actively pulls a
 worktree-anchored session back toward the main checkout. GH-493 sampled
-11 incidents across five repositories in roughly one week: four
+11 incidents across several repositories in roughly one week: four
 misleading-green verification runs, one mutation of the main working
 tree, one review marker recorded against the wrong repository, four
 wrong-tree subagent reads, and one poisoned session-start header.

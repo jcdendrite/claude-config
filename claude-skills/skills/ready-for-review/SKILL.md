@@ -49,7 +49,7 @@ those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
-**Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline".
+**Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4. The read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
@@ -73,14 +73,15 @@ Before computing anything, run `~/.claude/scripts/marker.sh status`: if its `cum
 On a cache miss, compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
-~/.claude/scripts/pr-diff-against-base.sh --record
+~/.claude/scripts/pr-diff-against-base.sh --record --diff-file
 ```
 
+**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged — halt `/ready-for-review` and report both facts.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
+Run `/code-review` against that diff, passing it the path the `DIFF_FILE:` line named. If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -93,7 +94,7 @@ Check that skills this branch invoked were executed, not silently abbreviated �
 `skill-invocation` defaults to this repo (omit `--projects`); `review-trace` defaults machine-wide, so `--this-repo` is required — branch names aren't unique across repos, and omitting it leaks another repo's same-named branch in as false spawn evidence.
 
 - Empty list → state no skills were invoked on this branch and continue (an affirmative no-op, not a silent skip).
-- Otherwise, run `~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null` as its own Bash call: it prints `DIFF_FILE: <path>` on stderr and no diff bytes on stdout. If no `DIFF_FILE:` line appears, halt — do not dispatch and do not fall back to pasted diff text. Quote the script's own stderr line in the halt report when one is present, naming the actual cause (an unresolvable config dir, a failed `mkdir`, a failed `mv`); name a likely skill/script version mismatch only when no such line appeared.
+- Otherwise, resolve the diff-file artifact, which is the same cumulative diff step 3 reviews. If step 3 ran this turn, reuse the path its `DIFF_FILE:` line already named — do not recompute it; a second invocation resolves a fresh diff that can differ from the one step 3 recorded as the review subject. If step 3 was skipped via the cache-hit branch, nothing was computed this turn: run `~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null` yourself as its own Bash call — it prints `DIFF_FILE: <path>` on stderr and no diff bytes on stdout. Either way, if no `DIFF_FILE:` path is available, halt — do not dispatch and do not fall back to pasted diff text. Quote the script's own stderr line in the halt report when one is present, naming the actual cause: an unresolvable config dir, a failed `mkdir`, or a failed `mv`. Name a likely skill/script version mismatch only when no such line appeared.
 - Otherwise, before dispatch, run `~/.claude/scripts/findings-path-suffix.sh` and take its printed `<suffix>` (the script's last line of output, so ignore any earlier warning line) — the script also adds `agent-reviews/` to the repo's ignore list (see `docs/design-decisions.md` §12 for the append's duplicate-tolerance). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the path the `DIFF_FILE:` line named, written out as literal text — never a range expression and never the command that produced it, since the agent has `Read` but no `Bash`; the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<suffix>.md`. `Read` the findings file after it returns.
 
 Name the pipeline's own skills **out of scope** in the prompt (the agent body also excludes them) — `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`, plus still-executing invocations — else the reviewer audits the gate running it. Exception: `code-review`'s Ripple effect triage spawn-dispatch obligation, checked only against the `review-trace` timeline, never `code-review`'s own reasoning.
@@ -195,5 +196,5 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
    | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — same as `CI_RESULT: none`, not a failure. Done. |
 
 3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
-4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again.
+4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again. That dispatch carries step 2's "Test-to-fit is forbidden" — a make-the-check-green prompt is the shape most likely to produce a weakened assertion.
 5. **Land the fix.** Step 8 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, land the fix through step 3's pattern (new commit → staged-diff `/code-review` + marker gate → push), then re-run step 8's `marker.sh deactivate` command.

@@ -61,7 +61,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
   exit 0
 fi
@@ -94,7 +94,7 @@ The canonical pattern — define `emit_deny` **before** sourcing `_lib.sh`, then
 ```bash
 emit_deny() { ... }  # defined before sourcing so a missing _lib.sh can still deny
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
   exit 0
 fi

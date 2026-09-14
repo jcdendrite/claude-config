@@ -2,6 +2,8 @@
 
 *2026-09-03. Formerly `docs/design-decisions.md` §51.*
 
+**Superseded by [the no-op-dispatch hook gate](no-op-dispatch-hook-gate.md) (2026-09-08):** the behavior recurred after this rule shipped, which is the evidence this entry's own Revisit clause named as the trigger for a `PreToolUse` hook.
+
 A session that spawns a subagent whose only instruction is to wait, occupy the turn, or report back immediately pays a full agent's context for an empty return. The prohibition first shipped as prose in `subagent-delegation/SKILL.md` Step 1 on 2026-09-02. It recurred on 2026-09-03 in a session that never loaded the skill body — only the one-line trigger description from the available-skills listing. That is the whole failure: a skill-body rule reaches a session only when the skill is in context, and this impulse arrives at moments that do not look like delegation decisions. Two occurrences are confirmed, both in this repo's own history:
 
 - `memory-content-migration`, 2026-08-30

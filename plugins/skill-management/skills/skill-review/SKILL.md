@@ -11,7 +11,9 @@ user-invocable: false
 
 ## 1. What makes a skill load
 
-A skill file is `claude-skills/skills/<name>/SKILL.md`. Required
+A skill file is `claude-skills/skills/<name>/SKILL.md`,
+`plugins/<plugin>/skills/<name>/SKILL.md`, or (for a repo whose
+plugin root is the repo root) `skills/<name>/SKILL.md`. Required
 frontmatter:
 
 - **`name`** — must match the directory name; the harness keys on it.
@@ -195,4 +197,4 @@ blockers), record completion by running this command exactly once:
 ~/.claude/scripts/marker.sh write skill-review
 ```
 
-The pathspecs `claude-skills/skills/**/SKILL.md`, `plugins/*/skills/**/SKILL.md`, and `claude-skills/skills/plan-review/ROUTING.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering stowed skills, project-scoped plugin skills, and the hardcoded `ROUTING.md` exception.
+The pathspecs `claude-skills/skills/**/SKILL.md`, `plugins/*/skills/**/SKILL.md`, `skills/**/SKILL.md`, and `claude-skills/skills/plan-review/ROUTING.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering stowed skills, project-scoped plugin skills, plugin-root-equals-repo-root skills, and the hardcoded `ROUTING.md` exception.

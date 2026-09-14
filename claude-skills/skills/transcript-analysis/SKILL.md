@@ -41,6 +41,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
 | How much does idle-gap prompt-cache TTL-expiry rebuild cost, and is it concurrent-session switching or real breaks? | `cache-rebuild --since 30d` |
+| Which prompt-cache TTL should the main or everything-else bucket run, and does every root agree? | `cache-rebuild --ttl-verdict --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
@@ -94,9 +95,23 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - `user-input` prints raw prompt text verbatim regardless of `--redact` — that flag anonymizes project labels and session IDs only, matching every other `--redact` implementation in this file (none scrub message content). Review output before pasting it anywhere public.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.
+- `cost`'s default redaction makes labels safe, not figures. Under a multi-root scope its totals, rates, and medians are pooled absolutes across accounts — see `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" before quoting one anywhere public. `--share-only` and `--summary` are the two modes scoped for publication.
 - `cost --config-dir` unions extra account profiles into one report on top of the declared-roots default; `--this-repo` and `--no-redact` are refused in that mode. Redacted labels (`private-project-N`, `account-N`) are comparable between two reports only when the same declared-roots file produced both — a changed root set renumbers every ordinal (each run still prints a corpus fingerprint).
 - `--projects` defaults to `*` — every project across every declared root; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
 - `review-trace` output is not publish-safe under the default multi-root scope — each event line's branch string can carry a ticket ID or project name. No flag currently guarantees single-account scope on `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, or `pr-link` short of an explicit single `--config-dir` — `--this-repo` does not imply single-account scope, since it unions across every declared root by default. Name `--config-dir` as the one narrowing control before quoting any of these seven anywhere public.
+
+## Writing up a finding for a durable or public document
+
+- **Resolving real identity to read a session's own trace content is a legitimate internal step, but never let it leave your own reasoning — the write-up states the generalized fact only.** (`--branches`/`--this-repo` filtering matches the real underlying value, so correlating a redacted, opaque `account-N/branch-M` figure back to its actual transcript may require temporarily resolving the real branch or repo — for example, to judge a long round-tail's genuine-work-vs-thrash.) Never state any of:
+  - the branch
+  - the repo
+  - the PR number
+  - the account name
+- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached 50 review rounds" is fine on its own — nothing to redact. (Use a made-up round number for this kind of illustration, not a real observed figure — a real one drifts out of date the next time someone re-measures.) Any of the following turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out:
+  - a date
+  - a dollar figure specific to that one item
+  - detail specific enough to narrow which branch or project it could be (e.g. naming the exact hook, gate, or denial message that fired)
+- **Don't enumerate account or project *types* in a write-up, even generically.** A phrase like "across every account (type-A, type-B, type-C)" discloses the operator's own business structure — how many kinds of relationships exist — independent of any name. Prefer an aggregate phrasing ("across the corpus," "pooled across N accounts") that states the scope was multi-account without characterizing what the accounts are.
 
 ## Example usage
 

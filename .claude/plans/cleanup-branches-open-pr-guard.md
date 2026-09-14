@@ -2,7 +2,7 @@
 
 ## Context
 
-On 2026-07-19, an open PR in a private project repo (referred to below as **PR #14**) was closed and its branch deleted — not by a human, and not by an agent "deciding" to close it. The user ran a routine disk-cleanup task (*"run through all directories … and run cleanup-merged-branches"*). The agent faithfully ran `~/.claude/scripts/cleanup-merged-branches.sh` across ~37 repos; a latent bug in that script destroyed the branch.
+On 2026-07-19, an open PR in a private project repo (referred to below as **PR #14**) was closed and its branch deleted — not by a human, and not by an agent "deciding" to close it. The user ran a routine disk-cleanup task (*"run through all directories … and run cleanup-merged-branches"*). The agent faithfully ran `~/.claude/scripts/cleanup-merged-branches.sh` across every repo on the machine; a latent bug in that script destroyed the branch.
 
 **Root cause — Tier A matches a merged PR by branch *name* only, with no verification that the current branch tip belongs to that merge.** The script's `classify` logic:
 
@@ -13,7 +13,7 @@ A single head-branch name had been used by **PR #7 (merged 2026-06-16)**, then *
 
 The existing plan `~/.claude/plans/cleanup-merged-branches-needs-to-account-toasty-dream.md` contains a "Safety analysis: do we ever delete un-merged work? **No.**" proof — but it only reasons about the **reachability** path. It never analyzed Tier A, which is exactly the hole.
 
-**Blast radius (verified across every repo in the affected org):** the run deleted 19 remote branches; **PR #14 was the only casualty.** The other 18 branches all belonged to already-merged PRs (harmless post-merge cleanup). No other open/unmerged PR was affected.
+**Blast radius (verified across every repo in the affected org):** the run deleted several remote branches; **PR #14 was the only casualty.** The other branches all belonged to already-merged PRs (harmless post-merge cleanup). No other open/unmerged PR was affected.
 
 **Recovery status:** already complete — the user restored the branch and reopened PR #14 (`reopened` 2026-07-21T05:49:11Z; currently OPEN). This plan is prevention only.
 

@@ -118,6 +118,9 @@
 #   push/pr-create/pr-ready commands, so any latent portability gap in that
 #   shared path is now fully exposed, not reached only by a narrow slice of
 #   commands.
+# - The active-marker bypass check now also runs before that same
+#   command-shape scan, so its cost is paid on every Bash call during an
+#   active /ready-for-review run, not only at the terminal push/PR command.
 
 set -uo pipefail
 
@@ -132,7 +135,7 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition

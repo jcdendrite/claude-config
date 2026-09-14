@@ -472,16 +472,18 @@ _DO_NOT_PUBLISH_BANNER = (
     "DO NOT PUBLISH — this output contains real project names and session IDs."
 )
 
-# Subcommands that resolve their own multi-root scan via their own
-# subcommand-level --config-dir (_resolve_cost_roots) instead of the
-# top-level --config-dir main() reassigns PROJECTS_DIR from — main() refuses
-# the top-level flag outright for each of these, so the two same-named flags
-# can never validate against two different accounts.
-_SUBCOMMANDS_WITH_OWN_CONFIG_DIR = (
+# Subcommands for which main() refuses a top-level --config-dir outright,
+# so the flag can never validate against a different account than the one
+# the subcommand itself resolves. Most members resolve their own multi-root
+# scan via their own subcommand-level --config-dir (_resolve_cost_roots);
+# cost-counts is the one exception, constructing its single root directly
+# with no --config-dir flag of its own at all (see _resolve_cost_roots's own
+# docstring).
+_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
-    "instrument-authoring", "pr-cost",
+    "instrument-authoring", "pr-cost", "cost-counts",
 )
 
 
@@ -515,10 +517,12 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     entirely -- --summary is a single-account, aggregate-only mode, and
     unioning declared_transcript_roots() here would publish another
     account's spend inside a PR authored under this one. Gated on
-    `subcommand` too, not just the flag: this function is shared by every
-    entry in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, and only cost's argparser
-    defines --summary today, so a bare summary check would silently narrow
-    a future subcommand that happens to add a same-named flag.
+    `subcommand` too, not just the flag, since only `cost`'s argparser
+    defines `--summary` today -- a bare `summary` check would silently
+    narrow a future subcommand adding a same-named flag. This function is
+    shared by every `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR` member
+    except `cost-counts`, which bypasses it and builds its own single root
+    directly.
     """
     if subcommand == "cost" and bool(getattr(args, "summary", False)):
         return [config_dir() / "projects"]

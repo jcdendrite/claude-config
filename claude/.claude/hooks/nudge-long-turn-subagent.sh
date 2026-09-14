@@ -59,7 +59,7 @@
 #   $CONFIG_DIR mount hangs any of these on every fire, not just the
 #   sampled 1-in-10.
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 

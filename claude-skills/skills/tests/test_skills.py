@@ -601,6 +601,33 @@ class TestCodeWriterSelfReviewScope:
         assert "Never use `git diff HEAD`" in self._body()
 
 
+_TEST_TO_FIT_RULE = "fix the code, not the test"
+
+
+class TestCodeWriterTestToFitRule:
+    """Pin code-writer's Charter bullet on fixing a red check.
+
+    The second literal is verbatim-shared with ready-for-review/SKILL.md's
+    "Test-to-fit is forbidden" line, making the accepted duplication across
+    the two files mechanically detectable rather than a silent drift risk.
+    """
+
+    def _body(self) -> str:
+        return _agent_body("code-writer")
+
+    def test_names_test_to_fit(self):
+        """The Charter must name the failure mode as test-to-fit."""
+        assert "test-to-fit" in self._body().lower()
+
+    def test_states_fix_the_code_not_the_test(self):
+        """The Charter must carry the canonical rule statement verbatim."""
+        assert _TEST_TO_FIT_RULE in self._body()
+
+    def test_ready_for_review_shares_the_same_literal(self):
+        """ready-for-review/SKILL.md must carry the identical literal, pinning the cross-file duplication."""
+        assert _TEST_TO_FIT_RULE in _skill_body("ready-for-review")
+
+
 class TestSkillFidelityReviewerUndecidableDismissal:
     """Pin the decidability-keyed dismissal rule and its visible output slot.
 
@@ -2692,6 +2719,7 @@ class _Citation(NamedTuple):
     line: int
     target: str | None  # None means "resolve against the citing file itself"
     heading: str
+    span: tuple[int, int]  # match.span() in the (frontmatter-blanked) prose
 
 
 def _extract_citations(markdown_text: str) -> list[_Citation]:
@@ -2718,7 +2746,9 @@ def _extract_citations(markdown_text: str) -> list[_Citation]:
         lineno = _lineno(match.start())
         if (lineno - 1) in fenced_lines:
             continue
-        citations.append(_Citation(lineno, match.group("target"), match.group("heading")))
+        citations.append(
+            _Citation(lineno, match.group("target"), match.group("heading"), match.span())
+        )
 
     for match in _BARE_CITATION_RE.finditer(prose):
         if any(start <= match.start() < end for start, end in consumed_spans):
@@ -2726,7 +2756,7 @@ def _extract_citations(markdown_text: str) -> list[_Citation]:
         lineno = _lineno(match.start())
         if (lineno - 1) in fenced_lines:
             continue
-        citations.append(_Citation(lineno, None, match.group("heading")))
+        citations.append(_Citation(lineno, None, match.group("heading"), match.span()))
 
     return citations
 
@@ -2875,6 +2905,40 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     )
 
 
+def _assert_citation_resolves_to_heading(
+    doc_path: Path,
+    expected_target: str,
+    expected_heading_raw: str,
+    *,
+    repo_root: Path,
+) -> None:
+    """Shared body for the doc → SKILL.md-heading citation tests below:
+    find the citation, resolve its target file, and confirm the target
+    heading actually exists there."""
+    expected_heading = _normalize_heading(expected_heading_raw)
+    citations = [
+        citation
+        for citation in _extract_citations(doc_path.read_text())
+        if citation.target == expected_target
+        and _normalize_heading(citation.heading) == expected_heading
+    ]
+    assert citations, (
+        f"{doc_path} no longer cites {expected_target}'s "
+        f'"{expected_heading_raw}" section'
+    )
+
+    resolved = _resolve_citation_target(
+        citations[0].target, citing_file=doc_path, repo_root=repo_root
+    )
+    assert resolved is not None, (
+        f"{doc_path}'s citation target {expected_target!r} failed to resolve"
+    )
+    assert expected_heading in _heading_texts(resolved.read_text()), (
+        f"{doc_path}'s citation resolved to {resolved} but it has no "
+        f"heading matching {expected_heading!r}"
+    )
+
+
 def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     """docs/handoff-nudge.md's cross-reference to handoff/SKILL.md's
     warrant-check section resolves to a real heading there.
@@ -2884,29 +2948,198 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
-    repo_root = REPO_ROOT
-    doc_path = repo_root / "docs" / "handoff-nudge.md"
-    expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
-    citations = [
-        citation
-        for citation in _extract_citations(doc_path.read_text())
-        if citation.target == "handoff/SKILL.md"
-        and _normalize_heading(citation.heading) == expected_heading
-    ]
-    assert citations, (
-        "docs/handoff-nudge.md no longer cites handoff/SKILL.md's "
-        "warrant-check section"
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "handoff-nudge.md",
+        "handoff/SKILL.md",
+        "Before writing: is a handoff warranted?",
+        repo_root=REPO_ROOT,
     )
 
-    resolved = _resolve_citation_target(
-        citations[0].target, citing_file=doc_path, repo_root=repo_root
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "CLAUDE.md",
+        "docs/cost-levers-considered.md",
+        "docs/design-decisions/schedulewakeup-misapplied-documented.md",
+        "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
+        "docs/transcript-analysis.md",
+    ],
+)
+def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
+    relative_path: str,
+) -> None:
+    """Each sibling withholding site's `docs/private-project-redaction.md`
+    § "Publishing a pooled tooling measurement" citation resolves to a real
+    heading there.
+
+    `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
+    plus its REFERENCES.md/ROUTING.md siblings only), so
+    test_skill_citations_resolve_to_real_headings never sees these citations
+    — targeted narrowly here instead of widening that corpus.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / relative_path,
+        "docs/private-project-redaction.md",
+        "Publishing a pooled tooling measurement",
+        repo_root=REPO_ROOT,
     )
-    assert resolved is not None, (
-        "docs/handoff-nudge.md's citation target 'handoff/SKILL.md' failed to resolve"
+
+
+def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
+    """docs/transcript-analysis.md's `cost-trend`/`--share-only` exclusion
+    cites `docs/private-project-redaction.md` § "Three standing bars" for
+    why a calendar-anchored series is barred outright — resolves to a real
+    heading there.
+
+    A prior wording of this same citation named the wrong section ("What it
+    permits", a requirement `cost-trend` already satisfies) and shipped
+    without any test catching it — this test exists so a future rename or
+    mis-citation on this line fails here instead of requiring manual review.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        "docs/private-project-redaction.md",
+        "Three standing bars",
+        repo_root=REPO_ROOT,
     )
-    assert expected_heading in _heading_texts(resolved.read_text()), (
-        f"docs/handoff-nudge.md's citation resolved to {resolved} but it has "
-        f"no heading matching {expected_heading!r}"
+
+
+# A citation-shaped construct `_extract_citations` misses is a silent miss,
+# not an error (both extractor regexes require `\s+` before the quote; a
+# no-space opener or a line-wrapped heading yields zero matches instead of a
+# wrong one).
+# This regex uses `\s*` (looser than the extractor's `\s+`) so a candidate
+# can be checked against what the extractor actually returned, rather than
+# re-implementing its notion of a citation.
+# ASCII straight quote only, per this repo's plain-ASCII convention — widen
+# to `["""]` if that changes.
+_CITATION_CANDIDATE_RE = re.compile(r'§\s*"')
+
+
+def _unextracted_citation_candidate_report(paths: Iterable[Path], *, repo_root: Path) -> list[str]:
+    """Every `§\\s*"` construct in `paths` that `_extract_citations` did not
+    recognize as a citation. Excludes frontmatter and closed fenced code
+    blocks, matching `_extract_citations`'s own exclusions. A bare `§4`
+    section reference is never a candidate — it isn't followed by a quote —
+    so no allowlist is needed for that shape.
+    """
+    violations: list[str] = []
+    for path in paths:
+        text = path.read_text()
+        prose = _blank_frontmatter(text)
+        lines = prose.split("\n")
+        fenced_lines = _closed_fence_line_indices(lines)
+        citation_spans = [citation.span for citation in _extract_citations(text)]
+        for match in _CITATION_CANDIDATE_RE.finditer(prose):
+            lineno = prose.count("\n", 0, match.start())
+            if lineno in fenced_lines:
+                continue
+            if any(start <= match.start() < end for start, end in citation_spans):
+                continue
+            violations.append(f"{path.relative_to(repo_root)}:{lineno + 1}")
+    return violations
+
+
+def test_every_citation_shaped_construct_is_extracted() -> None:
+    """Asserts every `` `target` § "Heading" `` (or bare `§ "Heading"`)
+    construct in the skill/doc corpus was recognized by `_extract_citations`.
+
+    Catches a hard-wrapped or no-space citation that
+    `_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` silently miss.
+
+    Complements test_skill_citations_resolve_to_real_headings and
+    test_pooled_tooling_measurement_citation_resolves_to_real_heading, which
+    never see such a construct since it was never extracted as a citation in
+    the first place.
+
+    Scanned corpus:
+
+    - `_citation_sources_for_skill_md`'s expansion of every
+      `_all_skill_md_files()` entry.
+    - Every path `_all_citation_extraction_doc_paths()` covers:
+      `_all_doc_paths()`'s corpus, plus both CLAUDE.md files, plus every
+      `.claude/rules/*.md`/`claude/.claude/rules/*.md` file.
+
+    This checks extraction only — the `docs/rules-references.md`
+    external-URL citation is intentionally never asserted to resolve here.
+    """
+    repo_root = REPO_ROOT
+    skill_md_sources: list[Path] = []
+    for skill_md_path in _all_skill_md_files():
+        skill_md_sources.extend(_citation_sources_for_skill_md(skill_md_path))
+
+    violations = _unextracted_citation_candidate_report(
+        skill_md_sources + _all_citation_extraction_doc_paths(), repo_root=repo_root
+    )
+    assert not violations, (
+        "Citation-shaped construct not recognized by "
+        "`_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` — check for a missing "
+        "space before the opening quote or a heading hard-wrapped across a "
+        "line break:\n" + "\n".join(f"  {violation}" for violation in violations)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_violation_count"),
+    [
+        pytest.param(
+            '## Real Heading\n\nCitation: `sibling.md` §"No Space Heading"\n',
+            1,
+            id="no-space-opener-goes-unextracted",
+        ),
+        pytest.param(
+            'Wrapped: `sibling.md` § "Hard\nWrapped Heading"\n',
+            1,
+            # The heading class `[^"\n]+` can't span the newline, so this
+            # candidate matches neither `_CITATION_WITH_TARGET_RE` nor
+            # `_BARE_CITATION_RE` — a hard-wrap is a distinct failure shape
+            # from the no-space case above, caught by the same guard.
+            id="hard-wrapped-heading-goes-unextracted",
+        ),
+        pytest.param(
+            '## Real Heading\n\nCitation: `sibling.md` § "Well Formed Heading"\n',
+            0,
+            id="well-formed-citation-is-extracted",
+        ),
+        pytest.param(
+            "See §4 for the full rule text, not a citation.\n",
+            0,
+            id="bare-section-number-is-not-a-candidate",
+        ),
+        pytest.param(
+            '## Real Heading\n\n```\nFenced: `sibling.md` §"No Space Heading"\n```\n',
+            0,
+            id="candidate-inside-closed-fence-not-scanned",
+        ),
+    ],
+)
+def test_unextracted_citation_candidate_report_cases(
+    tmp_path: Path, source_text: str, expected_violation_count: int
+) -> None:
+    """`_unextracted_citation_candidate_report` flags a `§ "` construct only
+    when `_extract_citations` did not return a matching citation for it —
+    not merely when the construct spans a line break."""
+    doc_path = tmp_path / "example.md"
+    doc_path.write_text(source_text)
+    violations = _unextracted_citation_candidate_report([doc_path], repo_root=tmp_path)
+    assert len(violations) == expected_violation_count, violations
+
+
+def test_pooled_tooling_measurement_code_review_skill_citation_is_still_present() -> None:
+    """Pins presence of this specific citation: no other test asserts
+    that this SKILL.md still cites this heading at all, only that any
+    citation it does carry resolves correctly. A re-wrap that breaks
+    extraction is also caught by
+    test_every_citation_shaped_construct_is_extracted; this test's own
+    unique coverage is the citation being deleted or paraphrased away
+    with no `§ "..."` construct left for either test to see.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / ".claude/skills/code-review-claude-config/SKILL.md",
+        "docs/private-project-redaction.md",
+        "Publishing a pooled tooling measurement",
+        repo_root=REPO_ROOT,
     )
 
 
@@ -3528,15 +3761,13 @@ def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str
     )
 
 
-def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
-    """Left-column shorthand of every data row in the Change-type table.
+def _change_type_table_rows(skill_md_path: Path) -> list[str]:
+    """Raw row-line strings of every data row in the Change-type table.
 
-    Truncates a left-column cell at its first embedded `|`. Not exercised
-    by any current Change-type row. A future row using pipe-containing
-    inline-code shorthand would truncate here. At the current call sites
-    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
-    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
-    mismatch surfaces as a loud assertion failure, not silently.
+    Shared header-lookup-and-row-walk for every reader of the Change-type
+    table — `_change_type_table_left_columns` and
+    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
+    both build on this instead of re-walking the table themselves.
     """
     lines = skill_md_path.read_text().splitlines()
     header_index = next(
@@ -3549,8 +3780,21 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
         if not line.startswith("|"):
             break
-        rows.append(line.split("|")[1].strip())
+        rows.append(line)
     return rows
+
+
+def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
+    """Left-column shorthand of every data row in the Change-type table.
+
+    Truncates a left-column cell at its first embedded `|`. Not exercised
+    by any current Change-type row. A future row using pipe-containing
+    inline-code shorthand would truncate here. At the current call sites
+    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
+    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
+    mismatch surfaces as a loud assertion failure, not silently.
+    """
+    return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
 
 
 class TestChangeTypeTableLeftColumns:
@@ -3676,8 +3920,14 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     """The step-4 diff-file handoff contract: anchored instruction-phrase
     presence, the mechanism `_MARKER_TRIPLE_SITES` already implements, not a
     full-clause anchor pin. Four literals catch deletion, rename, command
-    drop, and halt-clause removal independently; step 3's section carries none
-    of them, pinning that the cache-hit branch materializes nothing.
+    drop, and halt-clause removal independently. Step 4's reuse-vs-recompute
+    split is pinned by its own text in Step 4 directly. The two
+    reuse-vs-recompute literals below are anchored-phrase-presence checks.
+    An ordering check further asserts the reuse literal precedes the
+    cache-hit literal, catching a branch-assignment swap between the two
+    clauses. This is not a full-clause anchor pin. The trailing
+    `reviewer_body` assertions guard `skill-fidelity-reviewer`'s own
+    Input contract wording, which Step 4's prose points a reader at.
     """
     skill_md_path = _skill_file("ready-for-review")
     lines = skill_md_path.read_text().splitlines(keepends=True)
@@ -3696,9 +3946,26 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
             f"{skill_md_path}: step 4 no longer carries the exact literal {literal!r}"
         )
 
-    assert "--diff-file" not in step3_text, (
-        f"{skill_md_path}: step 3 must never reference --diff-file -- that "
-        "artifact write belongs to step 4 alone"
+    assert "pr-diff-against-base.sh --record --diff-file" in step3_text, (
+        f"{skill_md_path}: step 3 must record its own --diff-file artifact "
+        "alongside --record"
+    )
+    assert "If step 3 ran this turn" in step4_text, (
+        f"{skill_md_path}: step 4 no longer carries the exact literal "
+        "'If step 3 ran this turn'"
+    )
+    for literal in (
+        "reuse the path its `DIFF_FILE:` line already named",
+        "If step 3 was skipped via the cache-hit branch",
+    ):
+        assert literal in step4_text, (
+            f"{skill_md_path}: step 4 no longer carries the exact literal {literal!r}"
+        )
+    assert step4_text.index("reuse the path its `DIFF_FILE:` line already named") < step4_text.index(
+        "If step 3 was skipped via the cache-hit branch"
+    ), (
+        f"{skill_md_path}: the reuse clause must precede the cache-hit clause "
+        "it governs, or the two branches' assigned actions may have been swapped"
     )
 
     pr_diff_script_source = (SCRIPTS_DIR / "pr-diff-against-base.sh").read_text()
@@ -3706,7 +3973,74 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
 
     reviewer_body = _agent_body("skill-fidelity-reviewer")
     assert "a path to a diff file" in reviewer_body
-    assert "continuing with `offset` until a read returns no further lines" in reviewer_body
+    # Also pinned independently in claude/.claude/hooks/tests/test_agent_roster.py's
+    # DIFF_INPUT_CONTRACT_SHARED_SENTENCES — update both on a wording change.
+    assert "page onward with `offset` until one doesn't" in reviewer_body
+
+
+def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> None:
+    """The comment-discipline-reviewer diff-artifact-resolution procedure
+    lives in its own subsection directly below the Change-type table, not
+    inside the row itself and not in Step 0. A file-wide `in` check would
+    pass just as well if a later edit moved the instruction back into the
+    row or into Step 0, so this locates the note's own text before also
+    checking the file-wide occurrence count.
+    """
+    skill_md_path = _skill_file("code-review")
+    text = skill_md_path.read_text()
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+
+    row_text = None
+    for line in _change_type_table_rows(skill_md_path):
+        # line.split("|")[1] truncates at an embedded pipe in the left cell,
+        # same caveat as _change_type_table_left_columns's identical parse.
+        if line.split("|")[1].strip() == exempt_shorthand:
+            row_text = line
+            break
+    assert row_text is not None, (
+        f"{skill_md_path}: no Change-type row's left column matches "
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
+    )
+
+    note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
+    next_heading = "**Invalid skip rationales.**"
+    assert note_heading in text, (
+        f"{skill_md_path}: the diff-artifact-resolution note heading is missing"
+    )
+    note_start = text.index(note_heading)
+    note_end = text.index(next_heading, note_start)
+    note_text = text[note_start:note_end]
+
+    staged_diff_literal = "pr-diff-against-base.sh --staged --diff-file"
+    assert staged_diff_literal not in row_text, (
+        f"{skill_md_path}: the comment-discipline-reviewer row should point to "
+        "the resolution note below the table, not restate the procedure inline"
+    )
+    assert staged_diff_literal in note_text, (
+        f"{skill_md_path}: the resolution note no longer carries the "
+        "diff-artifact-resolution instruction"
+    )
+    assert text.count(staged_diff_literal) == 1, (
+        f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
+        "the resolution note only -- not duplicated into Step 0 or the row"
+    )
+
+    for literal in (
+        "DIFF_EMPTY:",
+        "pasted-snippet or ad-hoc review with no git diff behind it at all",
+        "quote the script's own stderr line",
+        "halt the review",
+    ):
+        assert literal in note_text, (
+            f"{skill_md_path}: the resolution note no longer carries "
+            f"the exact literal {literal!r}"
+        )
+
+    pr_diff_script_source = (SCRIPTS_DIR / "pr-diff-against-base.sh").read_text()
+    assert "--staged)" in pr_diff_script_source, (
+        "pr-diff-against-base.sh: expected the --staged case-arm label, not just "
+        "the flag name in the usage line or header comment"
+    )
 
 
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
@@ -4012,6 +4346,20 @@ def test_session_id_redaction_present_at_every_check_output_site() -> None:
     )
 
 
+def test_ready_for_review_step3_halts_on_empty_cumulative_diff() -> None:
+    """A legitimately empty cumulative diff (the branch's PR is already
+    merged) must halt the skill before it reaches `/code-review`, rather
+    than running a vacuous review and then failing at the marker.sh write
+    gate with a message naming causes that never fired."""
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+    assert "the branch's cumulative diff against its base is empty" in section_text, (
+        f"{skill_md_path}: Step 3 must name the empty-diff halt condition explicitly"
+    )
+
+
 def _step4_tripwire_names() -> set[str]:
     """Bolded tripwire names from plan-review/SKILL.md's Step 4 bullet list.
 
@@ -4240,6 +4588,56 @@ def _all_doc_paths() -> list[Path]:
     if evals_readme.exists():
         paths.append(evals_readme)
     return paths
+
+
+def _all_citation_extraction_doc_paths() -> list[Path]:
+    """`_all_doc_paths()`'s corpus, plus the always-loaded instruction files
+    and lazy-loaded rule files where a citation-shaped construct could also
+    hide unextracted: the repo-root CLAUDE.md, `_GLOBAL_CLAUDE_MD`
+    (`claude/.claude/CLAUDE.md`), every `.claude/rules/*.md` file, and every
+    `claude/.claude/rules/*.md` file. Kept separate from `_all_doc_paths()`
+    so this wider corpus doesn't also widen TestPerAccountStatePathContract's
+    scope, which parametrizes directly off that helper."""
+    paths = list(_all_doc_paths())
+    repo_root = REPO_ROOT
+    root_claude_md = repo_root / "CLAUDE.md"
+    if root_claude_md.exists():
+        paths.append(root_claude_md)
+    if _GLOBAL_CLAUDE_MD.exists():
+        paths.append(_GLOBAL_CLAUDE_MD)
+    project_rules_dir = repo_root / ".claude" / "rules"
+    project_rules = sorted(project_rules_dir.glob("*.md"))
+    assert project_rules, f"{project_rules_dir}/*.md matched no *.md files — this glob root is wrong"
+    paths += project_rules
+
+    global_rules_dir = CLAUDE_DIR / "rules"
+    global_rules = sorted(global_rules_dir.glob("*.md"))
+    assert global_rules, f"{global_rules_dir}/*.md matched no *.md files — this glob root is wrong"
+    paths += global_rules
+
+    return paths
+
+
+def test_all_citation_extraction_doc_paths_raises_when_project_rules_dir_empty(tmp_path, monkeypatch):
+    """Guards the `assert project_rules, ...` non-emptiness check itself — a
+    typo checking an always-truthy variable (e.g. `project_rules_dir`
+    instead of the glob result `project_rules`) would otherwise never fire
+    under test."""
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="matched no"):
+        _all_citation_extraction_doc_paths()
+
+
+def test_all_citation_extraction_doc_paths_raises_when_global_rules_dir_empty(tmp_path, monkeypatch):
+    """Same guard as above, for the sibling `assert global_rules, ...` check
+    over `CLAUDE_DIR / "rules"`."""
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "CLAUDE_DIR", tmp_path)
+    with pytest.raises(AssertionError, match="matched no"):
+        _all_citation_extraction_doc_paths()
 
 
 class TestPerAccountStatePathContract:
