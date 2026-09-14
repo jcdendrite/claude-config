@@ -3139,11 +3139,11 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
         "docs/transcript-analysis.md",
     ],
 )
-def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
+def test_tooling_measurement_citation_resolves_to_real_heading(
     relative_path: str,
 ) -> None:
     """Each sibling withholding site's `docs/private-project-redaction.md`
-    § "Publishing a pooled tooling measurement" citation resolves to a real
+    § "Publishing a tooling measurement" citation resolves to a real
     heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
@@ -3154,16 +3154,16 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
     _assert_citation_resolves_to_heading(
         REPO_ROOT / relative_path,
         "docs/private-project-redaction.md",
-        "Publishing a pooled tooling measurement",
+        "Publishing a tooling measurement",
         repo_root=REPO_ROOT,
     )
 
 
 def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
     """docs/transcript-analysis.md's `cost-trend`/`--share-only` exclusion
-    cites `docs/private-project-redaction.md` § "Three standing bars" for
-    why a calendar-anchored series is barred outright — resolves to a real
-    heading there.
+    cites `docs/private-project-redaction.md` § "A wider corpus goes to
+    the owner, never into a public artifact" for why a calendar-anchored
+    series is barred outright — resolves to a real heading there.
 
     A prior wording of this same citation named the wrong section ("What it
     permits", a requirement `cost-trend` already satisfies) and shipped
@@ -3173,8 +3173,54 @@ def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
     _assert_citation_resolves_to_heading(
         REPO_ROOT / "docs" / "transcript-analysis.md",
         "docs/private-project-redaction.md",
-        "Three standing bars",
+        "A wider corpus goes to the owner, never into a public artifact",
         repo_root=REPO_ROOT,
+    )
+
+
+_CASE_STUDY_POOLED_FIGURE_MARKERS_RE = re.compile(
+    r"pooled across|machine-wide|cross-machine|multi-account", re.IGNORECASE
+)
+
+# Case studies published after the single-account bar took effect that use a
+# marker phrase without publishing a pooled figure under the old carve-out —
+# extend this set, never delete a prior entry, when
+# test_case_study_pooled_figure_markers_are_registered_or_new below flags a
+# new false positive.
+_CASE_STUDY_POOLED_MARKER_ALLOWLIST: frozenset[str] = frozenset()
+
+
+def test_case_study_pooled_figure_markers_are_registered_or_new() -> None:
+    """Every docs/case-studies/*.md file using a pooled-figure marker phrase
+    is named in docs/private-project-redaction.md's Remediation section, or
+    is explicitly allowlisted as a new-since-this-bar file.
+
+    Heuristic completeness check, not a mechanical citation-resolution test
+    — it catches the shape of gap where a published case study matches the
+    grandfathered set's own description (a machine-wide, multi-account
+    corpus) but is missing from Remediation's enumerated list, breaking the
+    residual-narrowing check that list feeds.
+    """
+    remediation_text = (REPO_ROOT / "docs" / "private-project-redaction.md").read_text()
+    remediation_section = remediation_text[remediation_text.index("### Remediation") :]
+
+    case_studies_dir = REPO_ROOT / "docs" / "case-studies"
+    unregistered = [
+        path.name
+        for path in sorted(case_studies_dir.glob("*.md"))
+        if path.stem not in _CASE_STUDY_POOLED_MARKER_ALLOWLIST
+        and _CASE_STUDY_POOLED_FIGURE_MARKERS_RE.search(path.read_text())
+        and path.name not in remediation_section
+    ]
+
+    assert not unregistered, (
+        "docs/case-studies/*.md file(s) use a pooled-figure marker phrase "
+        "(pooled across / machine-wide / cross-machine / multi-account) but "
+        "are not named in docs/private-project-redaction.md's Remediation "
+        "section. Add each to that list if it predates the single-account "
+        "bar, or to _CASE_STUDY_POOLED_MARKER_ALLOWLIST above if it's a new, "
+        "compliant file using the phrase incidentally:\n"
+        + "\n".join(f"  {name}" for name in unregistered)
     )
 
 
@@ -3222,7 +3268,7 @@ def test_every_citation_shaped_construct_is_extracted() -> None:
     `_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` silently miss.
 
     Complements test_skill_citations_resolve_to_real_headings and
-    test_pooled_tooling_measurement_citation_resolves_to_real_heading, which
+    test_tooling_measurement_citation_resolves_to_real_heading, which
     never see such a construct since it was never extracted as a citation in
     the first place.
 
@@ -3299,7 +3345,7 @@ def test_unextracted_citation_candidate_report_cases(
     assert len(violations) == expected_violation_count, violations
 
 
-def test_pooled_tooling_measurement_code_review_skill_citation_is_still_present() -> None:
+def test_tooling_measurement_code_review_skill_citation_is_still_present() -> None:
     """Pins presence of this specific citation: no other test asserts
     that this SKILL.md still cites this heading at all, only that any
     citation it does carry resolves correctly. A re-wrap that breaks
@@ -3311,7 +3357,7 @@ def test_pooled_tooling_measurement_code_review_skill_citation_is_still_present(
     _assert_citation_resolves_to_heading(
         REPO_ROOT / ".claude/skills/code-review-claude-config/SKILL.md",
         "docs/private-project-redaction.md",
-        "Publishing a pooled tooling measurement",
+        "Publishing a tooling measurement",
         repo_root=REPO_ROOT,
     )
 

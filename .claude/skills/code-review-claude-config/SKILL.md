@@ -9,30 +9,27 @@ disable-model-invocation: true
 P1. **Private-corpus provenance** — Flag any measurement, example, log excerpt,
 or command output the diff adds whose only known source is private engagement
 material. See CLAUDE.md's "Also redact structural fingerprints and
-provenance" rule and `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" for the carve-out's conditions. A figure
+provenance" rule and `docs/private-project-redaction.md` § "Publishing a tooling measurement" for the publication bar. A figure
 decomposed by project, account, or engagement is a P1 finding on sight.
 So is any of:
 
-- a raw pooled cost or duration total
-- a figure that composes with another published figure into a barred total
-- a cadence-revealing figure
-- a time series of an otherwise-permitted whole-period figure, or a
-  before/after split that fails any condition of the carve-out's
-  permitted split
-- a second before/after pivot in the same artifact
-- a per-side pool size on either side of a before/after pivot
-- any computed figure (including pool size) for a held-out transition
-  window bracketing a before/after pivot
-- two sides of a before/after pivot drawn from different account or
-  machine compositions
-- a split of the same statistic already published under this
-  carve-out in another artifact, composing with this one into more
-  than two calendar points
+- a figure computed over a corpus wider than this repository on one
+  account, unless that section's own-history-count exemption covers it
+- `--share-only` output in any artifact, regardless of dimensionality —
+  it exists only to keep a wider corpus's raw absolutes out of the
+  agent's own context, never to publish from
+- a figure citing no command, or citing one that cannot refuse a wider
+  corpus
+- a count of how many accounts or declared config-dir roots exist
+- a new figure that lets a reader subtract a previously-published
+  pooled figure down to its non-this-repo remainder
+- a diff that widens the scope of an auto-publishing script (for
+  example, adding a flag to `pr-cost-section.sh` or loosening
+  `cost-counts`'s hardcoded single root)
+- a diff that weakens a scope refusal a publication instrument depends
+  on
 
 Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches
 this item is disproportionately content already generalized enough to
-clear them. A pooled figure needs both a stated, checkable source
-(command, file, citation) and a cited approval of that specific figure
-from the owner's own account. Either missing is itself the finding —
-ask for the missing one.
+clear them.
