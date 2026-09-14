@@ -11663,10 +11663,11 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
 
     # Per-root join is required: a single hardcoded config_dir() read would
     # bias the lag/conversion signal toward one account while session_traces
-    # spans every resolved root. No local config_dir() call or try/except is
-    # needed here -- _resolve_cost_roots already resolved scan_roots via
-    # config_dir() with its own stderr+exit(2) convention before this
-    # function was ever called.
+    # spans every resolved root.
+    # No local config_dir() call or try/except is needed here.
+    # _resolve_cost_roots already resolved scan_roots via config_dir(),
+    # using its own stderr+exit(2) convention, before this function was
+    # ever called.
     # Computed unconditionally, not gated on multi_root -- correct and cheap
     # on a single-element sequence too.
     redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
@@ -11676,7 +11677,8 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
         log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
         root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
         log_size = log_path.stat().st_size if log_path.exists() else 0
-        print(f"  {root_label} nudge log: {log_size:,} bytes")
+        truncated_note = " [truncated -- oldest lines dropped]" if log_size > _NUDGE_LOG_MAX_READ else ""
+        print(f"  {root_label} nudge log: {log_size:,} bytes{truncated_note}")
     log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
