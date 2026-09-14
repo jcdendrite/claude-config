@@ -1191,7 +1191,7 @@ Data quality
   authoring_agent inconsistent with the transcript join                             1
 ```
 
-`Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. Output carries no per-project, per-branch, or per-session dimension by construction: one aggregate table plus counters, so there is nothing for redaction to pseudonymize and no figure that could carry a per-engagement dimension.
+`Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.
 
 **Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED.
 

@@ -93,11 +93,8 @@ _reject_missing_round() {
 
 --round is the 1-based review round number for *this* /code-review run in
 this session: 1 for the first round, incrementing once per subsequent
-/code-review invocation you've made. Retry with --round added:
-
-  ~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" \
-    --disposition ADDRESS|DEFER --rationale "<one line>" --round <N> \
-    --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high
+/code-review invocation you've made. Retry the same append with --round <N>
+added to whatever other flags you already passed.
 
 Required so two rounds raising an identical finding don't collapse into one
 ledger line under this script's round-scoped dedup key. Abort without writing.
@@ -299,9 +296,8 @@ case "$SUBCOMMAND" in
     # relies on for atomicity.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
-    # schema_version carries no reader that branches on it today. It's for
-    # a future migration to distinguish row shapes without re-deriving them
-    # from which optional keys are present or absent.
+    # schema_version is unread today; it lets a future migration distinguish
+    # row shapes without re-deriving them from optional-key presence.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \

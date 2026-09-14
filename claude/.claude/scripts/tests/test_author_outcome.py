@@ -152,6 +152,26 @@ class TestReadLedgerRowsForSession:
             "rows must still be returned in file order"
         )
 
+    def test_non_dict_json_line_is_skipped_not_fatal(self, tmp_path):
+        """A bare JSON array parses cleanly but isn't a row.
+        Distinct from the JSONDecodeError branch
+        test_malformed_line_is_skipped_not_fatal exercises above."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        ledger_path = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        ledger_path.write_text('[1,2,3]\n{"round":1,"disposition":"ADDRESS"}\n')
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        rows = ao._read_ledger_rows_for_session(jsonl)
+
+        assert [r["round"] for r in rows] == [1], (
+            "the non-dict line must be dropped, and the surrounding valid "
+            "row must still be returned"
+        )
+
     def test_unreadable_ledger_path_returns_empty_list(self, tmp_path):
         config_dir_root = tmp_path
         ledger_dir = config_dir_root / "review-narrative-ledger"

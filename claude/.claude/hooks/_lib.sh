@@ -2872,9 +2872,10 @@ _lib_append_line_locked() {
 
 # _lib_append_json_line_locked FILE LOCK_FILE LINE DEDUP_KEY_JQ_FILTER
 # Sibling to _lib_append_line_locked, sharing its lock/retry logic via
-# _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER (caller-
-# supplied, e.g. '{round, finding, disposition}' -- never hardcoded here)
-# instead of a whole-line match.
+# _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER instead of a
+# whole-line match.
+# DEDUP_KEY_JQ_FILTER is caller-supplied (e.g. '{round, finding,
+# disposition}') and must never be hardcoded here.
 # DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
 # bypassing the --arg/--argjson data/code separation this file uses for
 # every other jq input. It MUST therefore be a static, developer-authored
