@@ -17,8 +17,8 @@ import math
 import os
 import random
 import re
+import secrets
 import shlex
-import socket
 import stat
 import statistics
 import subprocess
@@ -7437,6 +7437,137 @@ def _cost_ledger_path() -> Path:
     return config_dir() / "cost-ledger.md"
 
 
+_MACHINE_IDENTITY_FILENAME = "machine-id"
+# Deliberately narrower than _MACHINE_LABEL_RE: secrets.token_hex(4) can only
+# ever produce exactly eight lowercase hex characters, so a hand-written
+# value that is well-formed under the wider _MACHINE_LABEL_RE (e.g. "acme1")
+# is refused here rather than silently adopted. \Z (not $), matching
+# _MACHINE_LABEL_RE's own anchor, so a trailing newline doesn't slip past it.
+_MACHINE_IDENTITY_RE = re.compile(r"^[0-9a-f]{8}\Z")
+
+
+def _machine_identity_path(config_dir_override: Path | None = None) -> Path:
+    """Path to the generated, per-config-dir machine identity file.
+    Mirrors _pr_cost_ledger_path's own override-parameter shape. Resolved
+    through the module-global config_dir binding only, deliberately never
+    through COST_LEDGER_PATH/PR_COST_LEDGER_PATH: either override may point
+    at a shared or synced location distinct from this machine's own config
+    directory, and an identity resolved there would be shared by every
+    machine writing to it."""
+    return (config_dir_override or config_dir()) / _MACHINE_IDENTITY_FILENAME
+
+
+def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label: str) -> str:
+    """Read and validate an already-existing machine identity file, exiting
+    1 unless its content matches _MACHINE_IDENTITY_RE exactly. Refuses on:
+
+    - a missing file, including a dangling symlink
+    - an unreadable file
+    - an empty file
+    - hand-written content that doesn't match the regex
+
+    Never echoes the resolved path, matching this module's other
+    home-rooted-path redaction discipline. `location_label` names the
+    identity file's location in the refusal message instead. Deleting the
+    file mints a new identity, under which existing rows read as a
+    different machine, so the message says that rather than auto-healing
+    it."""
+    try:
+        # errors="replace" (not read_text()'s strict decode), so non-UTF-8
+        # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
+        # rather than raising UnicodeDecodeError uncaught.
+        # Assumes path is a regular file or a symlink to one; a FIFO or
+        # other special file would block indefinitely here. Below current
+        # scale to defend against (would need a planted special file in a
+        # config dir the attacker already writes to) -- revisit if this
+        # file's threat model extends to a shared or multi-tenant config dir.
+        raw = path.read_bytes()
+    except OSError:
+        raw = None
+    stripped = raw.decode("utf-8", errors="replace").strip() if raw is not None else None
+    if stripped is None or not _MACHINE_IDENTITY_RE.match(stripped):
+        print(
+            f"{subcommand}: {location_label} does not hold a well-formed"
+            " machine identity -- delete it to mint a new one (existing rows will then read as a"
+            " different machine)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return stripped
+
+
+def _resolve_machine_identity(
+    subcommand: str, config_dir_override: Path | None = None, location_label: str | None = None
+) -> str:
+    """Generates and persists a per-config-dir identity via
+    secrets.token_hex(4) on first use, publishing it through mkstemp+os.link
+    so a losing racer adopts the winner's value instead of a torn write
+    (see docs/pr-cost.md's "Machine identity"). `subcommand` labels this
+    function's own stderr diagnostics, the same role the parameter
+    _ledger_path_is_git_tracked already carries. `location_label` names the
+    identity file's location in a refusal message. It defaults to the
+    conventional ~/.claude path. A caller resolving a non-default
+    config dir (e.g. pr-cost's --all-accounts loop) passes its own
+    account label instead, so the message never claims a path that may be
+    wrong for that account. No mkdir: both callers' own opt-in sentinel
+    checks already require config_dir() to exist.
+    """
+    path = _machine_identity_path(config_dir_override)
+    if location_label is None:
+        location_label = f"~/.claude/{_MACHINE_IDENTITY_FILENAME}"
+    if path.exists():
+        return _read_machine_identity_or_refuse(subcommand, path, location_label)
+
+    # 8 lowercase hex chars is a 32-bit collision budget (see docs/pr-cost.md's
+    # "Refusals" section for the cloud-sync-duplication collision discussion).
+    token = secrets.token_hex(4)
+    tmp_name: str | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{_MACHINE_IDENTITY_FILENAME}.")
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return _read_machine_identity_or_refuse(subcommand, path, location_label)
+    except OSError:
+        # Not exc's str(): a real mkstemp/os.link failure embeds the full
+        # temp-file path via exc.filename/filename2, which sits inside
+        # this machine's own config dir.
+        print(
+            f"{subcommand}: could not create the machine identity file ({location_label})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    finally:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+    return token
+
+
+def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
+    """Print a one-time stderr notice when `rows` is non-empty and none of
+    them carries `identity` -- the expected split the first --record run
+    under a freshly generated identity produces, since a generated identity
+    is never adopted from an existing row. Fires at most once per ledger per
+    --record run: once a row carrying `identity` lands, the guard no longer
+    applies.
+    """
+    if not rows:
+        return
+    if any(row["machine"] == identity for row in rows):
+        return
+    print(
+        f"{subcommand}: this machine's generated identity ({identity}) carries no rows yet, but"
+        f" {len(rows)} existing row(s) do under a different machine value -- the next captured row"
+        " for any PR/week already captured under that other value is expected to produce a second"
+        " row, which is safe to sum (see docs/pr-cost.md). Rule out a synced or dotfile-tracked"
+        " config directory before treating this as the ordinary upgrade case.",
+        file=sys.stderr,
+    )
+
+
 def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledger") -> bool:
     """Return True iff the nearest existing ancestor of ledger_path sits
     inside a git working tree -- scopes --record's multi-root refusal to
@@ -7898,7 +8029,6 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     """
     record: bool = bool(getattr(args, "record", False))
     force: bool = bool(getattr(args, "force", False))
-    machine_label: str | None = getattr(args, "machine_label", None) or None
     note: str = getattr(args, "note", None) or ""
 
     try:
@@ -8001,12 +8131,6 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
 
-    if not machine_label:
-        print("cost-ledger: --record requires --machine-label", file=sys.stderr)
-        sys.exit(1)
-    if not _MACHINE_LABEL_RE.match(machine_label):
-        print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
     if len(roots) > 1 and _ledger_path_is_git_tracked(ledger_path):
         # --record writes to a single resolved ledger path; unioning multiple
         # declared accounts into that one write only risks silently
@@ -8023,18 +8147,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(2)
-    # Rejection names the rule, never the compared hostname value -- echoing
-    # it would persist recon-value data into the session transcript, the same
-    # discipline deny-private-project-refs.sh applies to its own matches.
-    # Covers the POSIX hostname only, not macOS's separate ComputerName
-    # (`scutil --get ComputerName`) -- see docs/cost-ledger.md.
-    if machine_label.lower() == socket.gethostname().lower():
-        print(
-            "cost-ledger: --machine-label must not equal this machine's hostname"
-            " -- publishing a hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+
+    # Resolved only after the sentinel and git-tracked checks above, so a
+    # run never creates a machine-id file inside a config dir whose owner
+    # never opted in to --record -- same ordering and rationale as
+    # pr-cost's equivalent call.
+    machine = _resolve_machine_identity("cost-ledger")
+
     note_violation = _cost_ledger_note_violation(note)
     if note_violation is not None:
         print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
@@ -8100,7 +8219,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     new_row = {
         "week": week_str,
-        "machine": machine_label,
+        "machine": machine,
         "rates": _PRICING_FETCH_DATE.isoformat(),
         "usd": week_data["total"],
         "context_pct": context_share,
@@ -8128,6 +8247,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
                 print(f"cost-ledger: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            _warn_machine_identity_absent_from_ledger("cost-ledger", machine, existing_rows)
+
             try:
                 new_rows = _upsert_cost_ledger_row(existing_rows, new_row, force)
             except ValueError as exc:
@@ -8142,7 +8263,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
-    print(f"cost-ledger: recorded {week_str} / {machine_label}")
+    print(f"cost-ledger: recorded {week_str} / {machine}")
 
 
 # ---------------------------------------------------------------------------
@@ -8333,8 +8454,7 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     the offending line on any field that doesn't match its column's
     contract. Never embeds a cell's raw value in this message, since
     pr-cost-export echoes it to stderr where another account's concurrent
-    session may be watching. Only the column name and line number are
-    included."""
+    session may be watching."""
     if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
         raise _PrCostLedgerParseError(
             f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
@@ -9177,20 +9297,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     if force and target_pr is None:
         print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
         sys.exit(1)
-    if record and not machine_label:
-        print("pr-cost: --record requires --machine-label", file=sys.stderr)
+    # Precedes the format check below: --record's machine identity is
+    # generated, never operator-supplied, so this must fire before a
+    # malformed --machine-label gets a fix-the-format message that would
+    # invite retrying with --record still set.
+    if record and machine_label is not None:
+        print(
+            "pr-cost: --machine-label is not accepted with --record -- machine identity is"
+            " generated and persisted automatically; see docs/pr-cost.md. --machine-label still"
+            " narrows read mode's uncaptured-PR listing to one machine",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if machine_label is not None and not _MACHINE_LABEL_RE.match(machine_label):
         print(f"pr-cost: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
-    if record and machine_label.lower() == socket.gethostname().lower():
-        # Rejection names the rule, never the compared hostname -- same
-        # discipline as cost-ledger's own equivalent check.
-        print(
-            "pr-cost: --machine-label must not equal this machine's hostname -- publishing a"
-            " hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
     corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
@@ -9230,15 +9350,14 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             print(f"pr-cost: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        existing_rows: list[dict] = []
-        if ledger_path.exists():
-            try:
-                existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-            except _PrCostLedgerParseError as exc:
-                print(f"pr-cost: {exc}", file=sys.stderr)
-                sys.exit(1)
-
         if not record:
+            existing_rows: list[dict] = []
+            if ledger_path.exists():
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
             _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
             _print_pr_cost_uncaptured(
                 branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
@@ -9351,6 +9470,47 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             )
             sys.exit(2)
 
+        # Resolved only after the opt-in gate and the git-tracked refusal
+        # above, so a run never creates a machine-id file for an account
+        # that never opted in to --record.
+        # The refusal message names the account as account-N, not a
+        # resolved path, for the same reason the opt-in/git-tracked
+        # refusals above do -- --all-accounts means account_config_dir
+        # isn't the default ~/.claude the un-labeled convention would
+        # otherwise imply.
+        machine_identity = _resolve_machine_identity(
+            "pr-cost",
+            config_dir_override=account_config_dir,
+            location_label=f"account-{ordinal}" if all_accounts else None,
+        )
+
+        # Read under this account's own write lock, immediately before the
+        # warn call, matching _cost_ledger_report's read-under-lock symmetry --
+        # a read taken before any lock could warn from a state a concurrent
+        # writer has already superseded.
+        # This narrows but doesn't close the race: the ledger write happens
+        # in a later, separate per-branch lock, so a concurrent writer
+        # landing between this lock's release and that lock's acquire still
+        # sees a stale advisory warning.
+        # Below current scale to fix -- revisit if this ledger gains genuine
+        # multi-writer concurrent-record usage at a scale where a stale
+        # advisory message becomes a real operator complaint.
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        with open(lock_path, "w") as lock_f:
+            _acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except FileNotFoundError:
+                    existing_rows = []
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                _warn_machine_identity_absent_from_ledger("pr-cost", machine_identity, existing_rows)
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
         if target_pr is not None:
             pr_by_number = {pr["number"]: pr for pr in merged_prs}
             target_pr_data = pr_by_number.get(target_pr)
@@ -9423,11 +9583,11 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         sys.exit(1)
 
                     already = _latest_pr_cost_row(
-                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
+                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
                     )
                     if already is not None and not force:
                         print(
-                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
+                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_identity} is already"
                             " captured -- pass --force (with --pr) to append a correcting row",
                             file=sys.stderr,
                         )
@@ -9467,7 +9627,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     new_row = _new_pr_cost_row(
                         host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
                         enrichment=enrichment, join_confidence=join_confidence, status=row_status,
-                        machine=machine_label, captured_at=captured_at,
+                        machine=machine_identity, captured_at=captured_at,
                         supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
@@ -9485,7 +9645,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
             existing_rows = updated_rows
             account_recorded_a_row = True
-            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
+            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_identity}")
 
         if account_recorded_a_row:
             recorded += 1  # counts accounts that wrote a row, not total rows written
@@ -9530,12 +9690,10 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
     """One (row, correction_count) pair per distinct (host, repo, pr_number,
     machine) key in `rows`, keeping only the current (latest by
     captured_at) row for each key -- the append-only ledger's full history
-    collapsed to current state. Must run before tokenization: _latest_pr_cost_row
-    compares pr_number as a typed int. Must also run before date-truncation: a
-    same-day tie needs full-precision captured_at to resolve correctly.
-    correction_count is the number of other rows sharing that key (total
-    captures minus one) -- 0 means this is the only capture ever recorded
-    under that key.
+    collapsed to current state. Must run before tokenization (pr_number must
+    stay a typed int) and before date-truncation (same-day ties need
+    full-precision captured_at). correction_count is the number of other
+    rows sharing that key (total captures minus one).
     """
     groups: dict[tuple[str, str, int, str], list[dict]] = {}
     for row in rows:
@@ -9561,7 +9719,7 @@ def _redact_pr_cost_row_for_export(
     - supersedes is replaced by the caller-computed correction_count.
 
     `row["head_branch"]` is re-tokenized here even though it already holds
-    a redacted placeholder from the write path -- that placeholder was
+    a redacted placeholder from the write path. That placeholder was
     assigned under whichever run's own ordinal scheme recorded it, so
     passing it through as-is would put two disagreeing account-K numberings
     in one row.
@@ -9632,7 +9790,11 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         except OSError:
             print(f"pr-cost-export: account-{ordinal}: ledger file could not be read", file=sys.stderr)
             sys.exit(1)
-        if ledger_text.split("\n", 1)[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+        # splitlines(), not split("\n", 1), so a CRLF-terminated first line is
+        # recognized the same way _parse_pr_cost_ledger_file_text's own
+        # canonical line-1 comparison recognizes it.
+        ledger_lines = ledger_text.splitlines()
+        if ledger_lines and ledger_lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
             legacy_header_accounts += 1
         try:
             raw_rows = _parse_pr_cost_ledger_file_text(ledger_text)
@@ -9695,9 +9857,8 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    # Resolved (following any symlink at --out itself) so the early
-    # existence check and the git-tree check both see where the path really
-    # points.
+    # Resolved (following any symlink at --out itself) so the git-tree check
+    # below sees where the path really points.
     # For a dangling symlink, resolve() still reports that the target
     # doesn't exist.
     # This resolved path is never echoed to a diagnostic, since it can embed
@@ -9705,12 +9866,20 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     # path identifies an engagement" discipline.
     # Only the operator's own literal `out` string is echoed below.
     resolved_out = Path(out).resolve()
+    # lexists() here buys nothing over exists(): resolve() above already
+    # followed every symlink, so this is a UX-only fast path that fails
+    # fast on the common case. The actual symlink defense is below, at the
+    # unresolved open_path + os.O_EXCL open.
     if os.path.lexists(str(resolved_out)):
         print(
             f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
             file=sys.stderr,
         )
         sys.exit(2)
+    # resolved_out is re-resolved a second, independent time at the terminal
+    # os.open call below (open_path). A symlink retargeted between these two
+    # checks is a known, accepted TOCTOU window for this tool's
+    # single-operator threat model, not one this check closes.
     if _ledger_path_is_git_tracked(resolved_out, "pr-cost-export"):
         print(
             f"pr-cost-export: --out {out!r} is inside a git working tree -- this repo (and every"
@@ -13793,11 +13962,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled and --machine-label.",
-    )
-    p_cost_ledger.add_argument(
-        "--machine-label", metavar="LABEL",
-        help="Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this machine's hostname.",
+        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -13837,7 +14002,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled and --machine-label.",
+        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",
@@ -13846,8 +14011,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_cost.add_argument(
         "--machine-label", metavar="LABEL",
         help=(
-            "Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this"
-            " machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine."
+            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
+            " (exit 1) together with --record -- machine identity is generated and persisted"
+            " automatically there; see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(

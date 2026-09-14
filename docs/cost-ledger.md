@@ -17,7 +17,7 @@ denominator) were left out.
 | Column | Source | Why it is in the ledger |
 |---|---|---|
 | `week` | ISO week label | Join key |
-| `machine` | operator-supplied `--machine-label` | Distinguishes rows from different machines when an operator compares ledger files by hand across them |
+| `machine` | generated identity (see "Data" below) | Distinguishes rows from different machines when an operator compares ledger files by hand across them |
 | `rates` | `_PRICING_FETCH_DATE` | Rows computed under different price tables are not comparable |
 | `usd` | `cost-trend` | Volume, not efficiency — present for context, not for scoring |
 | `context_pct` | `_compute_cost_trend_data` (`context_class_dollars`) | Context-class (cache read + both cache-write tiers) dollar share of the week's spend — the ~88%-of-the-bill thesis |
@@ -50,10 +50,6 @@ percentage-point figure.
 `usd` is; read it alongside the percentage columns, not as a standalone
 score.
 
-`--machine-label` is checked only against the POSIX hostname
-(`socket.gethostname()`), not macOS's separate `ComputerName` — avoid a
-label matching either.
-
 ## Data
 
 Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/cost-ledger.md`
@@ -64,6 +60,13 @@ record somewhere else instead (a private repo, a synced location) — export
 it from a persistent shell init file, not an ad hoc session variable, since
 an unset override on a later invocation silently falls back to the default
 path instead of erroring.
+
+The `machine` cell is a generated identity, persisted once per config
+directory at `<config-dir>/machine-id` — created on first use, `0600`,
+and deliberately never resolved through `COST_LEDGER_PATH`. Deleting the
+file mints a new identity, under which existing rows read as a different
+machine. See `docs/pr-cost.md`'s "Machine identity" section for the full
+contract — `pr-cost` shares the same one.
 
 `--record` unions multiple accounts (declared via
 `~/.claude/transcript-config-dirs`) into a single row as usual, unless doing

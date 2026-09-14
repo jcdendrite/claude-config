@@ -8731,19 +8731,20 @@ class TestCacheEfficiencyArgparseWiring:
 
 @pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel. Sets
-    CLAUDE_CONFIG_DIR explicitly, rather than relying on
-    _isolate_transcript_corpus_lookups' autouse fixture landing on the same
-    literal tmp-path string by coincidence: _cost_ledger_report's sentinel
-    check goes through _config.config_enabled, which resolves config_dir via
-    _config.py's own independent binding, not _mod's -- patching _mod's
-    config_dir binding alone has no effect on it. Setting the env var instead
-    makes both _mod.config_dir() (the ledger-path resolution
-    _cost_ledger_path() reads) and _config.config_enabled()'s own resolution
-    agree on the same directory."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel and a
+    seeded machine identity. Sets CLAUDE_CONFIG_DIR explicitly, rather than
+    relying on _isolate_transcript_corpus_lookups' autouse fixture landing on
+    the same literal tmp-path string by coincidence: _cost_ledger_report's
+    sentinel check goes through _config.config_enabled, which resolves
+    config_dir via _config.py's own independent binding, not _mod's --
+    patching _mod's config_dir binding alone has no effect on it. Setting the
+    env var instead makes both _mod.config_dir() (the ledger-path resolution
+    _cost_ledger_path() and _machine_identity_path() read) and
+    _config.config_enabled()'s own resolution agree on the same directory."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
+    (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
     return cfg_dir
 
@@ -8753,7 +8754,6 @@ def _cost_ledger_args(
     projects: str = "*",
     this_repo: bool = False,
     record: bool = False,
-    machine_label: str | None = None,
     force: bool = False,
     note: str = "",
 ) -> object:
@@ -8761,7 +8761,6 @@ def _cost_ledger_args(
         "projects": projects,
         "this_repo": this_repo,
         "record": record,
-        "machine_label": machine_label,
         "force": force,
         "note": note,
     })()
@@ -13289,7 +13288,7 @@ class TestCostLedgerRecordParity:
         subagent_denial["isSidechain"] = True
         _write_subagent_jsonl(proj, session_id, "denial-agent", [subagent_denial])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
@@ -13353,7 +13352,7 @@ class TestCostLedgerRecordParity:
                               content=[_edit_use("ez1", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
@@ -13373,7 +13372,7 @@ class TestCostLedgerRecordParity:
             _hook_deny("require-code-review", ts="2026-06-01T00:00:00.000Z"),  # week_start_ts: included
             _hook_deny("require-code-review", ts="2026-06-08T00:00:00.000Z"),  # week_end_ts: excluded
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
@@ -13401,7 +13400,7 @@ class TestCostLedgerWriteFidelity:
             _priced("claude-sonnet-5", input=333_333, ts="2026-06-01T10:00:00.000Z"),
             _priced_opus([], out=100, ts="2026-06-01T11:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
         assert 0 < rows[0]["opus_pct"] < 100
@@ -13441,7 +13440,7 @@ class TestCostLedgerAutoCreate:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         preamble, rows = _mod._parse_cost_ledger_file_text(ledger_path.read_text())
         assert preamble == _mod._default_cost_ledger_preamble()
@@ -13460,7 +13459,7 @@ class TestCostLedgerAutoCreate:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         assert ledger_path.parent.is_dir()
         _preamble, rows = _mod._parse_cost_ledger_file_text(ledger_path.read_text())
@@ -13485,7 +13484,7 @@ class TestCostLedgerAutoCreate:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert not ledger_path.parent.exists()
 
@@ -13497,10 +13496,10 @@ class TestCostLedgerRecordIdempotence:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -13515,28 +13514,28 @@ class TestCostLedgerRecordIdempotence:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1", note="first"), date(2026, 6, 3)
+            _cost_ledger_args(record=True, note="first"), date(2026, 6, 3)
         )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-02T10:00:00.000Z"),
         ])
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1", force=True, note="second"), date(2026, 6, 3)
+            _cost_ledger_args(record=True, force=True, note="second"), date(2026, 6, 3)
         )
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 2
         assert rows[0] == other_row
-        tstm1_row = next(r for r in rows if r["machine"] == "tstm1")
-        assert tstm1_row["note"] == "second"
-        assert tstm1_row["usd"] == pytest.approx(4.0)
+        this_machine_row = next(r for r in rows if r["machine"] == "7e57c0de")
+        assert this_machine_row["note"] == "second"
+        assert this_machine_row["usd"] == pytest.approx(4.0)
 
 
 class TestCostLedgerDegenerateCorpora:
     def test_empty_corpus_refuses_and_writes_nothing(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -13549,7 +13548,7 @@ class TestCostLedgerDegenerateCorpora:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -13565,7 +13564,7 @@ class TestCostLedgerDegenerateCorpora:
         ])
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)  # resolves to 2026-W23
+                _cost_ledger_args(record=True), date(2026, 6, 3)  # resolves to 2026-W23
             )
         assert exc_info.value.code != 0
 
@@ -13582,7 +13581,7 @@ class TestCostLedgerConcurrency:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        args = _cost_ledger_args(record=True, machine_label="tstm1")
+        args = _cost_ledger_args(record=True)
         today = date(2026, 6, 3)
         exit_codes: list[int | None] = [None, None]
 
@@ -13618,7 +13617,7 @@ class TestCostLedgerConcurrency:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        args = _cost_ledger_args(record=True, machine_label="tstm1")
+        args = _cost_ledger_args(record=True)
         today = date(2026, 6, 3)
         exit_codes: list[int | None] = [None, None]
 
@@ -13655,48 +13654,13 @@ class TestCostLedgerPublishSafety:
         _write_jsonl(proj / "SENTINEL-SESSION-marker.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         out = capsys.readouterr().out
         assert "SENTINEL-PROJECT-marker" not in out
         assert "SENTINEL-SESSION-marker" not in out
         file_text = cost_ledger_file.read_text()
         assert "SENTINEL-PROJECT-marker" not in file_text
         assert "SENTINEL-SESSION-marker" not in file_text
-
-    def test_machine_label_equal_to_hostname_refused_without_echoing_it(
-        self, fake_projects, cost_ledger_file, cost_ledger_enabled, monkeypatch, capsys
-    ):
-        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "realhost")
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="realhost"), date(2026, 6, 3))
-        assert exc_info.value.code != 0
-        err = capsys.readouterr().err
-        assert "hostname" in err
-        assert "realhost" not in err
-
-    def test_machine_label_case_insensitive_hostname_comparison_pinned_deterministically(
-        self, fake_projects, cost_ledger_file, cost_ledger_enabled, monkeypatch, capsys
-    ):
-        """A fixed, monkeypatched hostname (rather than the ambient real one)
-        pins the .lower() comparison itself: a distinct label succeeds, and a
-        same-value-different-case label is still rejected."""
-        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "RealHost")
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
-        ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
-        capsys.readouterr()
-        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
-        assert len(rows) == 1
-
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="realhost"), date(2026, 6, 3))
-        assert exc_info.value.code != 0
-        err = capsys.readouterr().err
-        assert "hostname" in err
 
     def test_note_containing_pipe_refused_before_any_write(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled
@@ -13713,7 +13677,7 @@ class TestCostLedgerPublishSafety:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1", note="acme-corp | internal rollout"),
+                _cost_ledger_args(record=True, note="acme-corp | internal rollout"),
                 date(2026, 6, 3),
             )
         assert exc_info.value.code != 0
@@ -13732,7 +13696,7 @@ class TestCostLedgerPublishSafety:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1", note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"),
+                _cost_ledger_args(record=True, note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"),
                 date(2026, 6, 3),
             )
         assert exc_info.value.code != 0
@@ -13750,7 +13714,7 @@ class TestCostLedgerPublishSafety:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1", note="![](https://example.com/t.png)"),
+                _cost_ledger_args(record=True, note="![](https://example.com/t.png)"),
                 date(2026, 6, 3),
             )
         assert exc_info.value.code != 0
@@ -13768,7 +13732,7 @@ class TestCostLedgerPublishSafety:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1", note="[click here](https://example.com/t)"),
+                _cost_ledger_args(record=True, note="[click here](https://example.com/t)"),
                 date(2026, 6, 3),
             )
         assert exc_info.value.code != 0
@@ -13785,7 +13749,7 @@ class TestCostLedgerSentinelGate:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -13808,7 +13772,7 @@ class TestCostLedgerSentinelGate:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
@@ -13828,7 +13792,7 @@ class TestCostLedgerSentinelGate:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         assert "could not read config-keys.psv" in capsys.readouterr().err
 
@@ -13849,14 +13813,37 @@ class TestCostLedgerSentinelGate:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "unknown config key" in err
         assert "cost_ledger_recording" in err
         assert "could not read config-keys.psv" not in err
 
-    def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
+    def test_record_refuses_when_identity_file_content_is_hand_written_well_formed_label(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """A hand-written value well-formed under the wider
+        _MACHINE_LABEL_RE (e.g. "tstm1") is not well-formed under
+        _MACHINE_IDENTITY_RE (exactly 8 lowercase hex chars) -- the direct
+        demonstration that the narrowed class rejects a human-shaped name
+        rather than silently adopting it."""
+        (cost_ledger_enabled / _mod._MACHINE_IDENTITY_FILENAME).write_text("tstm1")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+        err = capsys.readouterr().err
+        assert "well-formed" in err
+
+    def test_record_refuses_when_identity_file_content_is_overlong(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        (cost_ledger_enabled / _mod._MACHINE_IDENTITY_FILENAME).write_text("Too-Long-Label")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -13864,38 +13851,22 @@ class TestCostLedgerSentinelGate:
             _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
 
-    def test_record_refuses_malformed_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
-        ])
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="Too-Long-Label"), date(2026, 6, 3)
-            )
-        assert exc_info.value.code != 0
-
-    def test_record_refuses_machine_label_with_trailing_newline(
-        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    def test_record_accepts_identity_file_content_with_trailing_newline(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled,
     ):
         """Python's `$` (without re.MULTILINE) matches immediately before a
         trailing '\\n' as well as end-of-string, so a naive ^...$ pattern
-        would let "tstm1\\n" slip past _MACHINE_LABEL_RE. Asserts the
-        rejection happens at this CLI validation boundary itself (its own
-        "must match" error text) rather than passing validation and only
-        being caught downstream by _write_cost_ledger_file's
-        write-verification backstop."""
+        would let "7e57c0de\\n" slip past _MACHINE_IDENTITY_RE. The strip
+        in _read_machine_identity_or_refuse runs first, so a trailing
+        newline in a hand-edited or tool-written identity file resolves to
+        the stripped, well-formed value rather than being rejected."""
+        (cost_ledger_enabled / _mod._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de\n")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        before = cost_ledger_file.read_text()
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1\n"), date(2026, 6, 3)
-            )
-        assert exc_info.value.code != 0
-        assert cost_ledger_file.read_text() == before
-        err = capsys.readouterr().err
-        assert "must match" in err
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert rows[0]["machine"] == "7e57c0de"
 
     def test_record_refuses_when_multi_root_and_ledger_path_git_tracked(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, tmp_path, monkeypatch, capsys
@@ -13917,7 +13888,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert "more than one root is in scope" in capsys.readouterr().err
@@ -13939,7 +13910,7 @@ class TestCostLedgerSentinelGate:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         capsys.readouterr()
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
@@ -13963,7 +13934,7 @@ class TestCostLedgerSentinelGate:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         capsys.readouterr()
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
@@ -13989,7 +13960,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
@@ -14015,7 +13986,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
@@ -14047,7 +14018,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
@@ -14073,7 +14044,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
@@ -14117,7 +14088,7 @@ class TestCostLedgerSentinelGate:
         before = ledger_path.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+                _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert ledger_path.read_text() == before
@@ -14142,7 +14113,7 @@ class TestCostLedgerSentinelGate:
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(
-                _cost_ledger_args(record=True, machine_label="tstm1", force=True), date(2026, 6, 3)
+                _cost_ledger_args(record=True, force=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
         assert cost_ledger_file.read_text() == before
@@ -14159,7 +14130,7 @@ class TestCostLedgerSentinelGate:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
@@ -14191,7 +14162,7 @@ class TestCostLedgerSentinelGate:
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         _mod._cost_ledger_report(
-            _cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3)
+            _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
@@ -14232,7 +14203,7 @@ class TestCostLedgerDefaultPathCliWiring:
 
         monkeypatch.setattr(_mod, "datetime", _FixedDatetime)
 
-        _mod.cmd_cost_ledger(_cost_ledger_args(record=True, machine_label="tstm1"))
+        _mod.cmd_cost_ledger(_cost_ledger_args(record=True))
 
         assert _mod._cost_ledger_path() == expected_path
         _preamble, rows = _mod._parse_cost_ledger_file_text(expected_path.read_text())
@@ -23685,6 +23656,14 @@ class TestPlanBoundaryArgparseWiring:
 # ---------------------------------------------------------------------------
 
 
+def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
+    """Opt an account into pr-cost --record and seed its machine identity --
+    pr-cost has no shared opt-in fixture the way cost-ledger's
+    cost_ledger_enabled does, since every test resolves its own config dir(s)."""
+    (config_dir / ".pr-cost-enabled").touch()
+    (config_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text(identity)
+
+
 def _pr_cost_args(
     *,
     projects: str = "*",
@@ -24372,7 +24351,7 @@ class TestPrCostReportOrchestration:
         empty here (genuinely branch-idle), which must stay silent -- the
         renamed-branch mismatch warning in the sibling test below is gated on
         branch_totals being non-empty specifically to not fire on this case."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         merged_prs = [{
@@ -24381,7 +24360,7 @@ class TestPrCostReportOrchestration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=42)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -24406,7 +24385,7 @@ class TestPrCostReportOrchestration:
         which is what surfaces the mismatch: sweep mode instead iterates
         branch_totals's own keys, so "old-name" would never even match this
         PR's "new-name" headRefName."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -24418,7 +24397,7 @@ class TestPrCostReportOrchestration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=99, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=99)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
@@ -24441,7 +24420,7 @@ class TestPrCostReportOrchestration:
         derived (_price_turn vs _token_counts), so a regression in the
         token half of the ledger schema could otherwise ship with every
         existing orchestration test (which only checks *_usd) still green."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -24453,7 +24432,7 @@ class TestPrCostReportOrchestration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -24468,7 +24447,7 @@ class TestPrCostReportOrchestration:
     def test_branch_with_records_but_no_merged_pr_is_skipped_not_errored(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -24476,7 +24455,7 @@ class TestPrCostReportOrchestration:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[]))
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
@@ -24490,7 +24469,7 @@ class TestPrCostReportOrchestration:
         3-day as-of window) refuses outright rather than silently skipping --
         the caller asked for exactly this PR, so there is no other PR left
         to fall back to."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         merged_prs = [{
@@ -24499,7 +24478,7 @@ class TestPrCostReportOrchestration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=1, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=1)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
@@ -24513,7 +24492,7 @@ class TestPrCostReportOrchestration:
         """No --pr (sweep mode): a branch's PR merged too recently is
         skipped, not fatal -- the run continues over any other branch in
         scope, unlike the --pr-targeted case above."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -24525,7 +24504,7 @@ class TestPrCostReportOrchestration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
@@ -24552,7 +24531,7 @@ class TestPrCostReportOrchestration:
         regardless of how many PRs end up in scope -- wraps (not replaces)
         _resolve_project_scope with a counting closure, matching
         TestRootsThreadingSpy's own spy-wrap pattern."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess-a.jsonl", [
@@ -24578,7 +24557,7 @@ class TestPrCostReportOrchestration:
 
         monkeypatch.setattr(_mod, "_resolve_project_scope", counting_resolve)
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert len(calls) == 1
@@ -24712,30 +24691,42 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
-    def test_record_without_machine_label_exits_1(self, fake_projects, monkeypatch):
-        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
-        args = _pr_cost_args(record=True)
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
-        assert exc_info.value.code == 1
-
-    def test_malformed_machine_label_exits_1(self, fake_projects, monkeypatch):
+    def test_malformed_machine_label_in_read_mode_exits_1(self, fake_projects, monkeypatch):
+        """Read mode's own uncaptured-PR filter validation (--record is not
+        set here) -- --machine-label's format check survives the
+        not-accepted-with-record refusal, since read mode still accepts it."""
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(machine_label="Not-Valid!")
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
-    def test_machine_label_equal_to_hostname_exits_1_naming_the_deanonymization_risk(
+    def test_record_with_well_formed_machine_label_exits_1_naming_the_read_mode_only_role(
         self, fake_projects, monkeypatch, capsys,
     ):
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
-        monkeypatch.setattr(_mod.socket, "gethostname", lambda: "realhost")
-        args = _pr_cost_args(record=True, machine_label="realhost")
+        args = _pr_cost_args(record=True, machine_label="ci1")
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
-        assert "deanonymiz" in capsys.readouterr().err
+        assert "not accepted with --record" in capsys.readouterr().err
+
+    def test_record_with_malformed_machine_label_exits_1_with_the_not_accepted_message_not_the_format_message(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """Direct test of the check-ordering claim: the not-accepted-with
+        --record refusal fires before the format check, so a malformed
+        --machine-label combined with --record never gets the fix-the-format
+        message -- that message would invite retrying with --record still
+        set, the elicitation path this change exists to close."""
+        monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
+        args = _pr_cost_args(record=True, machine_label="Not-Valid!")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "not accepted with --record" in err
+        assert "must match" not in err
 
 
 class TestPrCostRecordRefusesGitTrackedLedgerUnconditionally:
@@ -24746,12 +24737,12 @@ class TestPrCostRecordRefusesGitTrackedLedgerUnconditionally:
         pr-cost refuses --record against a git-tracked ledger path even with
         exactly one root resolved -- these rows carry branch/repo data the
         weekly ledger's rows don't."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(git_tracked=True))
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
@@ -24937,7 +24928,7 @@ class TestPrCostLedgerLegacyHostColumnMigration:
         the whole ledger under the current header -- no separate migration
         script needed, since the writer always renders the current schema
         from the in-memory rows the parser already normalized."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         legacy_line = _legacy_row_line(pr_number=7, machine="ci1")
@@ -24952,7 +24943,7 @@ class TestPrCostLedgerLegacyHostColumnMigration:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         written_text = ledger_path.read_text()
@@ -25480,7 +25471,7 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         that row's own status column and the run still completes -- only
         repo-identity-resolution/discovery failures (with no row yet to
         degrade into) abort the whole run."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -25499,7 +25490,7 @@ class TestPrCostPerPrEnrichmentRateLimitDegradesRowNotRun:
         )
         monkeypatch.setattr(time, "sleep", lambda s: None)
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -25515,7 +25506,7 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
         (distinct from the M9-equivalent identity-resolution call) folds
         into _PR_COST_STATUS_DEGRADED_NETWORK before reaching the row --
         _GH_CALL_DEGRADED_AUTH is never a valid ledger status value."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -25533,7 +25524,7 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
             ),
         )
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -25546,7 +25537,7 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
         """Same fold as the auth-shaped case above, for the other
         no-retry-shaped failure kind: _GH_CALL_DEGRADED_HOST_MISMATCH is
         never a valid ledger status value either."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -25568,7 +25559,7 @@ class TestPrCostPerPrEnrichmentNoRetryFailuresFoldToDegradedNetwork:
             ),
         )
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -25809,7 +25800,7 @@ class TestResolvePinnedGhRepoIdentity:
         returned (its own `gh_repo`), confirmed by checking it is fully
         lowercase -- a bug that persisted the raw, differently-cased
         corpus-side value instead would leave mixed case behind."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         merged_prs = [{
@@ -25823,7 +25814,7 @@ class TestResolvePinnedGhRepoIdentity:
             ),
         )
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=42)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -25930,7 +25921,7 @@ class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
         so a regression that drops it fails loud rather than returning a
         stale canned response; the assertions below are a second, explicit
         check against the captured call log."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess-a.jsonl", [
@@ -25953,7 +25944,7 @@ class TestPrCostGhCallsPinnedAfterRepoIdentityResolution:
             ),
         )
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         gh_pr_list_calls = [c for c in call_log if c[:3] == ["gh", "pr", "list"]]
@@ -25980,7 +25971,7 @@ class TestPrCostGheHostQualifiesGhRepoCalls:
         always resolves against api.github.com regardless of the invoking
         directory's own git remote, so an unqualified value here would
         silently query the wrong host under the same owner/repo."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -25998,7 +25989,7 @@ class TestPrCostGheHostQualifiesGhRepoCalls:
             ),
         )
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert ["gh", "auth", "status", "--hostname", "acme-corp.ghe.com"] in call_log
@@ -26026,7 +26017,7 @@ class TestPrCostCrossRepoLedgerIsolation:
         different repos both recording pr_number=42 for the same machine
         must persist as two distinct latest-per-key rows, neither
         superseding the other."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row = _sample_pr_cost_row(repo="repo-a/x", pr_number=42, machine="ci1")
@@ -26040,7 +26031,7 @@ class TestPrCostCrossRepoLedgerIsolation:
             subprocess, "run", _fake_pr_cost_subprocess_run(repo="repo-b/y", merged_prs=merged_prs),
         )
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=42)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -26071,7 +26062,7 @@ class TestPrCostCrossHostLedgerIsolation:
     def test_second_hosts_pr_is_recorded_not_skipped_as_already_captured(
         self, fake_projects, tmp_path, monkeypatch,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
@@ -26081,7 +26072,7 @@ class TestPrCostCrossHostLedgerIsolation:
             _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
         )
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=42)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -26094,7 +26085,7 @@ class TestPrCostCrossHostLedgerIsolation:
         record a fresh row, not a correction: _latest_pr_cost_row correctly
         returns None across hosts, so there is nothing for `supersedes` to
         reference."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         existing_row, merged_prs = self._existing_row_and_merged_prs("acme-corp.ghe.com")
@@ -26104,7 +26095,7 @@ class TestPrCostCrossHostLedgerIsolation:
             _fake_pr_cost_subprocess_run(repo="owner/repo", host="github.com", merged_prs=merged_prs),
         )
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1", force=True)
+        args = _pr_cost_args(record=True, pr=42, force=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
@@ -26205,10 +26196,10 @@ class TestPrCostUnforcedReRecordRefusalRedaction:
         """Also covers the --record loop's per-branch "resolving..."
         progress line, printed just before this refusal fires."""
         distinctive_branch = "acme-corp-secret-initiative-branch"
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)  # seeds machine-id with "c0ffee01"
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=42, machine="ci1")])
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=42, machine="c0ffee01")])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, branch=distinctive_branch),
         ])
@@ -26218,7 +26209,7 @@ class TestPrCostUnforcedReRecordRefusalRedaction:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=42, machine_label="ci1")
+        args = _pr_cost_args(record=True, pr=42)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
@@ -26314,7 +26305,7 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
@@ -26332,7 +26323,7 @@ class TestPrCostAllAccounts:
         acct_a, acct_b = roots[0].parent, roots[1].parent
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
@@ -26361,7 +26352,7 @@ class TestPrCostAllAccounts:
         ]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
@@ -26389,7 +26380,7 @@ class TestPrCostAllAccounts:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())  # no merged PRs at all
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
@@ -26420,7 +26411,7 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=5, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, pr=5, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
@@ -26461,7 +26452,7 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=5, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, pr=5, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
@@ -26494,7 +26485,7 @@ class TestPrCostAllAccounts:
             "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
-        args = _pr_cost_args(record=True, pr=7, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, pr=7, all_accounts=True)
 
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # first call: captures the row
         rows_after_first = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
@@ -26531,7 +26522,7 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, pr=9, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, pr=9, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
@@ -26623,13 +26614,47 @@ class TestPrCostAllAccounts:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
 
         assert (acct_a / "pr-cost-ledger.tsv").exists()
         assert (acct_b / "pr-cost-ledger.tsv").exists()
         out = capsys.readouterr().out
         assert "recorded 2 of 2 declared accounts (0 not opted in, 0 skipped)" in out
+
+    def test_two_opted_in_accounts_record_distinct_machine_identities(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Closes a wiring-regression gap: a bug that hoists
+        account_config_dir incorrectly in the per-account loop (e.g. always
+        resolving identity through the first account's config dir) would
+        collapse both accounts' ledger `machine` values onto one shared
+        identity, with no existing test catching it."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        (acct_b / ".pr-cost-enabled").touch()
+        for root in roots:
+            proj = root / "-home-user-testrepo"
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        rows_b = _mod._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        machine_a, machine_b = rows_a[0]["machine"], rows_b[0]["machine"]
+        assert _mod._MACHINE_IDENTITY_RE.match(machine_a)
+        assert _mod._MACHINE_IDENTITY_RE.match(machine_b)
+        assert machine_a != machine_b
 
 
 class TestPrCostAllAccountsForcedLedgerPathRefusal:
@@ -26654,13 +26679,13 @@ class TestPrCostAllAccountsForcedLedgerPathRefusal:
 
 
 class TestCmdPrCostEndToEndViaRealArgparse:
-    def test_all_accounts_flag_drives_cmd_pr_cost_through_the_real_parser(
+    def test_all_accounts_flag_with_machine_label_and_record_refused_through_the_real_parser(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """Exercises pr-cost through the real argparse CLI (build_parser()),
         not the _pr_cost_args() test-helper shortcut every other pr-cost
         test uses."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -26674,6 +26699,36 @@ class TestCmdPrCostEndToEndViaRealArgparse:
 
         parser = _mod.build_parser()
         args = parser.parse_args(["pr-cost", "--all-accounts", "--record", "--machine-label", "ci1"])
+        assert args.all_accounts is True
+        assert args.func == _mod.cmd_pr_cost
+
+        # Parsing succeeds -- the refusal is body-level, not an
+        # argparse-level constraint -- but cmd_pr_cost itself refuses this
+        # namespace since --machine-label is no longer accepted with --record.
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost(args)
+        assert exc_info.value.code == 1
+
+    def test_all_accounts_and_record_with_no_machine_label_drives_cmd_pr_cost_through_the_real_parser(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """The genuine --record success path through the real argparse CLI,
+        now that --machine-label is refused there and machine identity is
+        generated instead."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        parser = _mod.build_parser()
+        args = parser.parse_args(["pr-cost", "--all-accounts", "--record"])
         assert args.all_accounts is True
         assert args.func == _mod.cmd_pr_cost
 
@@ -28081,7 +28136,7 @@ class TestPrCostExportRedaction:
     def test_host_repo_and_branch_are_tokenized_not_present_raw(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         distinctive_host = "acme-corp.ghe.example"
@@ -28095,20 +28150,22 @@ class TestPrCostExportRedaction:
 
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
+        captured = capsys.readouterr()
         written = out_path.read_text()
-        assert distinctive_host not in written
-        assert distinctive_repo not in written
-        assert distinctive_branch not in written
-        assert distinctive_host not in capsys.readouterr().err
+        for distinctive_value in (distinctive_host, distinctive_repo, distinctive_branch):
+            assert distinctive_value not in written
+            assert distinctive_value not in captured.out
+            assert distinctive_value not in captured.err
         assert "account-1/host-1" in written
         assert "account-1/repo-1" in written
+        assert "account-1/branch-1" in written
         assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
 
-    def test_pr_number_is_tokenized_not_present_raw(self, tmp_path, fake_projects, monkeypatch):
+    def test_pr_number_is_tokenized_not_present_raw(self, tmp_path, fake_projects, monkeypatch, capsys):
         """pr_number=42 is the fixture default reused everywhere else in this
         suite and can't distinguish redacted from coincidentally rare -- a
         distinctive PR number is required."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         distinctive_pr = 918273
@@ -28118,8 +28175,11 @@ class TestPrCostExportRedaction:
 
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
+        captured = capsys.readouterr()
         written = out_path.read_text()
         assert str(distinctive_pr) not in written
+        assert str(distinctive_pr) not in captured.out
+        assert str(distinctive_pr) not in captured.err
         assert "account-1/pr-1" in written
 
     @pytest.mark.parametrize(
@@ -28164,7 +28224,7 @@ class TestPrCostExportRedaction:
 
 class TestPrCostExportSchema:
     def test_header_and_metric_cells_match_ledger_formatting(self, tmp_path, fake_projects, monkeypatch):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         source_row = _sample_pr_cost_row()
@@ -28306,7 +28366,7 @@ class TestPrCostExportCollapseAndTieBreakIntegration:
         row-B and row-C sharing one identical later captured_at, appended in
         that order. A fix that only special-cases exactly two elements
         would pass the plain tie-break test but fail here."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
@@ -28353,7 +28413,7 @@ class TestPrCostExportTimestamps:
     def test_merged_at_and_captured_at_are_date_only_and_rate_stamp_is_unchanged(
         self, tmp_path, fake_projects, monkeypatch,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _mod._write_pr_cost_ledger_file(ledger_path, [
@@ -28634,7 +28694,7 @@ class TestPrCostExportLegacyHeader:
         assert legacy_token == current_token
 
     def test_legacy_header_account_is_counted_in_the_provenance_line(self, tmp_path, fake_projects, monkeypatch):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         ledger_path.write_text(_mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n")
@@ -28656,7 +28716,7 @@ class TestPrCostExportProvenanceLine:
     def test_provenance_line_present_above_header_and_parses_as_key_value_tokens(
         self, tmp_path, fake_projects, monkeypatch,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
@@ -28692,7 +28752,7 @@ class TestPrCostExportProvenanceLine:
         # Keeps declared_transcript_roots' fallback off this machine's real file.
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
@@ -28716,7 +28776,7 @@ class TestPrCostExportProvenanceLine:
         (home / ".claude" / "transcript-config-dirs").write_text("")
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
@@ -28827,7 +28887,7 @@ class TestPrCostExportRefusals:
     def test_malformed_ledger_exits_1_naming_account_with_no_path_or_raw_value_and_no_partial_file(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         ledger_path.write_text("not-the-header\nsome\tbad\trow\n")
@@ -28885,7 +28945,7 @@ class TestPrCostExportRefusals:
         first place -- this covers the branches that used to, proving
         pr-cost-export's own stderr line doesn't leak a peer account's raw
         cell for those either."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(**{column: malformed_value}))
@@ -28913,7 +28973,7 @@ class TestPrCostExportRefusals:
         the guard's tab/newline detection (covered separately by the
         malformed-ledger tests above). A fake value is required here because
         no real _PR_COST_EXPORT_COLUMNS value can contain a tab."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
@@ -28946,7 +29006,7 @@ class TestPrCostExportRefusals:
         """A permission-denied ledger file raises OSError from read_text(),
         distinct from the _PrCostLedgerParseError paths covered above --
         this must exit 1, name the account, and disclose no path either."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
@@ -29029,7 +29089,7 @@ class TestPrCostExportOExclBackstop:
     ):
         """Without this, a later refactor that drops the atomic open in
         favour of the early check alone would pass every other test here."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         out_path = tmp_path / "export.tsv"
         out_path.write_text("preexisting\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -29050,7 +29110,7 @@ class TestPrCostExportWriteOSError:
         has already created --out) is distinct from the open-time OSError
         the O_EXCL backstop above covers -- it must still unlink the
         just-created file rather than leave a truncated one behind."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
@@ -29116,7 +29176,7 @@ class TestPrCostExportArgparseWiring:
         pins the populated case, so cmd_pr_cost_export not forwarding
         args.extra_config_dirs to _resolve_cost_roots would fail here instead
         of passing every existing test silently."""
-        (tmp_path / ".pr-cost-enabled").touch()
+        _enable_pr_cost(tmp_path)
         _mod._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         acct_b = fake_config_dir_factory("acct-b")
         (acct_b / ".pr-cost-enabled").touch()
@@ -29130,3 +29190,476 @@ class TestPrCostExportArgparseWiring:
         assert "declared=2" in text.splitlines()[0]
         rows = text.splitlines()[2:]
         assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# Machine identity (--record's generated `machine` value, replacing operator-
+# supplied --machine-label) -- shared mechanism between cost-ledger and
+# pr-cost. See docs/pr-cost.md's "Machine identity" section for the full
+# contract.
+# ---------------------------------------------------------------------------
+
+
+class TestMachineIdentity:
+    def test_generate_on_first_use_cost_ledger_record(
+        self, fake_projects, cost_ledger_file, tmp_path, monkeypatch,
+    ):
+        cfg_dir = tmp_path / "isolated-claude-config"
+        cfg_dir.mkdir()
+        (cfg_dir / ".cost-ledger-enabled").touch()
+        monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+        assert not (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).exists()
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+
+        content = (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).read_text()
+        assert _mod._MACHINE_IDENTITY_RE.match(content)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert rows[0]["machine"] == content
+
+    def test_generate_on_first_use_pr_cost_record(self, fake_projects, tmp_path, monkeypatch):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        assert not (tmp_path / _mod._MACHINE_IDENTITY_FILENAME).exists()
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+
+        args = _pr_cost_args(record=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        content = (tmp_path / _mod._MACHINE_IDENTITY_FILENAME).read_text()
+        assert _mod._MACHINE_IDENTITY_RE.match(content)
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert rows[0]["machine"] == content
+
+    def test_reuse_leaves_identity_file_byte_identical_cost_ledger(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled,
+    ):
+        identity_path = cost_ledger_enabled / _mod._MACHINE_IDENTITY_FILENAME
+        before = identity_path.read_bytes()
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+
+        after = identity_path.read_bytes()
+        assert before == after
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert rows[0]["machine"] == before.decode()
+
+    def test_reuse_across_two_record_invocations_pr_cost(self, fake_projects, tmp_path, monkeypatch):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        args = _pr_cost_args(record=True, pr=1)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        identity_path = tmp_path / _mod._MACHINE_IDENTITY_FILENAME
+        first = identity_path.read_bytes()
+
+        # Second call hits the "already captured" refusal, but identity
+        # resolution runs before that check -- exercises the read-existing
+        # branch, not the generate branch, for free.
+        with pytest.raises(SystemExit):
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert identity_path.read_bytes() == first
+
+    def test_two_config_dirs_get_two_distinct_generated_identities(self, tmp_path, monkeypatch):
+        """Deterministic monkeypatched token_hex sequence, so this can
+        neither pass by luck nor fail at 2**-32."""
+        values = iter([b"\xaa\xbb\xcc\xdd", b"\x11\x22\x33\x44"])
+        monkeypatch.setattr(_mod.secrets, "token_hex", lambda n: next(values).hex())
+        cfg_a = tmp_path / "cfg-a"
+        cfg_a.mkdir()
+        cfg_b = tmp_path / "cfg-b"
+        cfg_b.mkdir()
+
+        identity_a = _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_a)
+        identity_b = _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_b)
+
+        assert identity_a == "aabbccdd"
+        assert identity_b == "11223344"
+
+    def test_shared_across_subcommands(self, fake_projects, cost_ledger_file, tmp_path, monkeypatch):
+        """One identity, resolved through the same config dir, is shared
+        by both subcommands rather than each minting its own."""
+        (tmp_path / ".cost-ledger-enabled").touch()
+        (tmp_path / ".pr-cost-enabled").touch()
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z", branch="feature-a"),
+        ])
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _preamble, cost_ledger_rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        cost_ledger_identity = cost_ledger_rows[0]["machine"]
+
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _mod._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost_rows = _mod._parse_pr_cost_ledger_file_text((tmp_path / "pr-cost-ledger.tsv").read_text())
+
+        assert pr_cost_rows[0]["machine"] == cost_ledger_identity
+        assert _mod._MACHINE_IDENTITY_RE.match(cost_ledger_identity)
+
+    def test_link_collision_adopts_racers_value_and_cleans_up_temp_file(self, tmp_path, monkeypatch):
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        winner_identity = "deadbeef"
+
+        def racing_link(src, dst):
+            # Simulates a racing process's own link() winning first: its
+            # value is already at the target path by the time this one's
+            # link() call raises EEXIST.
+            Path(dst).write_text(winner_identity)
+            raise FileExistsError(17, "File exists")
+
+        monkeypatch.setattr(_mod.os, "link", racing_link)
+
+        identity = _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+
+        assert identity == winner_identity
+        assert list(cfg_dir.glob(f"{_mod._MACHINE_IDENTITY_FILENAME}.*")) == []
+
+    def test_racing_threads_on_first_use_converge_on_one_identity(self, tmp_path):
+        """Real threads, not a mocked collision -- exercises the actual
+        mkstemp+os.link generate-on-first-use race rather than a
+        single-thread simulation of its outcome, matching
+        TestCostLedgerConcurrency's real-threading.Thread race shape."""
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        identities: list[str | None] = [None] * 8
+
+        def _run(i: int) -> None:
+            identities[i] = _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(len(identities))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(set(identities)) == 1
+        assert _mod._MACHINE_IDENTITY_RE.match(identities[0])
+        assert list(cfg_dir.glob(f"{_mod._MACHINE_IDENTITY_FILENAME}.*")) == []
+
+    def test_malformed_identity_file_exits_1_without_leaking_the_config_dir_path(self, tmp_path, capsys):
+        distinctive_dirname = "distinctive-marker-config-dir"
+        cfg_dir = tmp_path / distinctive_dirname
+        cfg_dir.mkdir()
+        (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text("not-hex!!")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert distinctive_dirname not in err
+        assert str(cfg_dir) not in err
+        assert "mint a new one" in err
+
+    def test_empty_identity_file_exits_1(self, tmp_path, capsys):
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text("")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("pr-cost", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        assert "mint a new one" in capsys.readouterr().err
+
+    def test_non_utf8_identity_file_exits_1(self, tmp_path, capsys):
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).write_bytes(b"\xff\xfe\x00\x01\x02\x03\x04\x05")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("pr-cost", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        assert "mint a new one" in capsys.readouterr().err
+
+    def test_dangling_symlink_at_identity_path_exits_1_without_leaking_the_path(self, tmp_path, capsys):
+        """Path.exists() returns False for a dangling symlink, so this
+        reaches the generate branch, mints a token, and hits os.link's
+        FileExistsError against the existing dirent -- the link-collision
+        retry path, not a direct "does the file exist" short-circuit."""
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).symlink_to(tmp_path / "nowhere" / "machine-id")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("pr-cost", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        assert str(cfg_dir) not in capsys.readouterr().err
+        assert list(cfg_dir.glob(f"{_mod._MACHINE_IDENTITY_FILENAME}.*")) == []
+
+    def test_generated_identity_file_mode_is_0600(self, tmp_path):
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+
+        _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+
+        identity_path = cfg_dir / _mod._MACHINE_IDENTITY_FILENAME
+        assert stat.S_IMODE(identity_path.stat().st_mode) == 0o600
+
+    def test_consent_gate_skipped_account_gets_no_machine_id_file(self, tmp_path, monkeypatch):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()  # acct_b deliberately left without a sentinel
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert (acct_a / _mod._MACHINE_IDENTITY_FILENAME).exists()
+        assert not (acct_b / _mod._MACHINE_IDENTITY_FILENAME).exists()
+
+    def test_all_accounts_malformed_identity_refusal_names_the_account_not_a_fixed_path(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_b = roots[1].parent
+        # acct_a (roots[0].parent) deliberately left without a sentinel, so
+        # this run reaches acct_b (which carries the malformed identity
+        # file) without also needing acct_a's own corpus data.
+        (acct_b / ".pr-cost-enabled").touch()
+        (acct_b / _mod._MACHINE_IDENTITY_FILENAME).write_text("not-hex!!")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[]))
+
+        args = _pr_cost_args(record=True, all_accounts=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "account-2" in err
+        assert "~/.claude/machine-id" not in err
+        assert str(acct_b) not in err
+
+    def test_cost_ledger_machine_label_flag_removed_from_parser(self):
+        parser = _mod.build_parser()
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["cost-ledger", "--machine-label", "x"])
+        assert exc_info.value.code == 2
+
+    def test_cross_machine_notice_names_row_count_and_stops_after_first_matching_row_cost_ledger(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys,
+    ):
+        seeded_legacy_rows = [
+            _cost_ledger_row(week="2026-W20", machine="legacy1"),
+            _cost_ledger_row(week="2026-W21", machine="legacy1"),
+        ]
+        cost_ledger_file.write_text(
+            cost_ledger_file.read_text()
+            + "".join(_mod._format_cost_ledger_row(r) + "\n" for r in seeded_legacy_rows)
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+
+        err = capsys.readouterr().err
+        assert f"{len(seeded_legacy_rows)} existing row" in err
+        assert "safe to sum" in err
+        assert "docs/pr-cost.md" in err
+        assert "synced" in err and "dotfile" in err
+
+        # A second --record, now under this machine's own identity, must not
+        # repeat the notice.
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-08T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 10))
+        assert "safe to sum" not in capsys.readouterr().err
+
+    def test_cross_machine_notice_names_row_count_and_stops_after_first_matching_row_pr_cost(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        seeded_legacy_rows = [_sample_pr_cost_row(pr_number=1, machine="legacy1")]
+        _mod._write_pr_cost_ledger_file(ledger_path, seeded_legacy_rows)
+        merged_prs = [{
+            "number": 2, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+
+        _mod._pr_cost_report(
+            _pr_cost_args(record=True, pr=2), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent],
+        )
+
+        err = capsys.readouterr().err
+        assert f"{len(seeded_legacy_rows)} existing row" in err
+        assert "safe to sum" in err
+
+        merged_prs.append({
+            "number": 3, "headRefName": "feature-b", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        })
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-b"),
+        ])
+        _mod._pr_cost_report(
+            _pr_cost_args(record=True, pr=3), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent],
+        )
+        assert "safe to sum" not in capsys.readouterr().err
+
+    def test_no_cross_machine_notice_on_first_ever_record_against_empty_ledger(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        assert "safe to sum" not in capsys.readouterr().err
+
+    def test_identity_path_independent_of_overridden_ledger_path_cost_ledger(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        cfg_dir = tmp_path / "isolated-claude-config"
+        cfg_dir.mkdir()
+        (cfg_dir / ".cost-ledger-enabled").touch()
+        monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+        overridden_ledger_dir = tmp_path / "elsewhere"
+        overridden_ledger_dir.mkdir()
+        monkeypatch.setenv("COST_LEDGER_PATH", str(overridden_ledger_dir / "cost-ledger.md"))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+
+        assert (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).exists()
+        assert not (overridden_ledger_dir / _mod._MACHINE_IDENTITY_FILENAME).exists()
+
+    def test_identity_path_independent_of_overridden_ledger_path_pr_cost(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        (tmp_path / ".pr-cost-enabled").touch()
+        overridden_ledger_dir = tmp_path / "elsewhere"
+        overridden_ledger_dir.mkdir()
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(overridden_ledger_dir / "pr-cost-ledger.tsv"))
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+
+        _mod._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert (tmp_path / _mod._MACHINE_IDENTITY_FILENAME).exists()
+        assert not (overridden_ledger_dir / _mod._MACHINE_IDENTITY_FILENAME).exists()
+
+    def test_parser_level_elicitation_surface_closure(self, capsys):
+        parser = _mod.build_parser()
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["cost-ledger", "--help"])
+        cost_ledger_help = capsys.readouterr().out
+        assert "--machine-label" not in cost_ledger_help
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["pr-cost", "--help"])
+        pr_cost_help = capsys.readouterr().out
+        assert "read mode" in pr_cost_help
+        assert "Refused" in pr_cost_help and "--record" in pr_cost_help
+
+    def test_cross_account_symlink_escape_hatch_adopts_targets_identity(self, tmp_path):
+        real_account = tmp_path / "real-account"
+        real_account.mkdir()
+        real_identity = _mod._resolve_machine_identity("cost-ledger", config_dir_override=real_account)
+
+        other_account = tmp_path / "other-account"
+        other_account.mkdir()
+        (other_account / _mod._MACHINE_IDENTITY_FILENAME).symlink_to(
+            real_account / _mod._MACHINE_IDENTITY_FILENAME
+        )
+
+        identity = _mod._resolve_machine_identity("pr-cost", config_dir_override=other_account)
+
+        assert identity == real_identity
+
+    def test_mkstemp_non_collision_oserror_refuses_without_a_path_leak(self, tmp_path, monkeypatch, capsys):
+        cfg_dir = tmp_path / "distinctive-cfg-dir-mkstemp"
+        cfg_dir.mkdir()
+
+        def raising_mkstemp(*a, **kw):
+            # 3-arg OSError sets .filename, matching a real mkstemp failure
+            # (e.g. ENOSPC), which embeds the temp-file path -- exercises
+            # the actual leak path rather than a filename-less synthetic.
+            raise OSError(28, "No space left on device", str(cfg_dir / "mkstemp-tmp-file"))
+
+        monkeypatch.setattr(_mod.tempfile, "mkstemp", raising_mkstemp)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("cost-ledger", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        assert str(cfg_dir) not in capsys.readouterr().err
+        assert list(cfg_dir.glob(f"{_mod._MACHINE_IDENTITY_FILENAME}.*")) == []
+
+    def test_link_non_collision_oserror_refuses_and_cleans_up_the_temp_file(self, tmp_path, monkeypatch, capsys):
+        cfg_dir = tmp_path / "distinctive-cfg-dir-link"
+        cfg_dir.mkdir()
+
+        def raising_link(src, dst):
+            # 3-arg OSError sets .filename to src, matching a real link()
+            # failure -- src is the temp file mkstemp already created
+            # inside cfg_dir, so this exercises the actual leak path
+            # rather than a filename-less synthetic.
+            raise OSError(28, "No space left on device", src)
+
+        monkeypatch.setattr(_mod.os, "link", raising_link)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._resolve_machine_identity("pr-cost", config_dir_override=cfg_dir)
+
+        assert exc_info.value.code == 1
+        assert str(cfg_dir) not in capsys.readouterr().err
+        # Load-bearing here, unlike the mkstemp-failure test above:
+        # mkstemp already created a temp file before link() raised, so the
+        # finally block's cleanup is what removes it.
+        assert list(cfg_dir.glob(f"{_mod._MACHINE_IDENTITY_FILENAME}.*")) == []
