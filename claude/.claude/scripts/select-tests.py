@@ -124,6 +124,15 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
 
+# test_config_py.py and test_config_parser_parity.py (SCRIPTS_TESTS_DIR) read
+# this exact file by path to drive _config.py against it; test_config_lib.py
+# (HOOKS_TESTS_DIR) reads it via _config.sh's own schema reader. Already
+# covered for HOOKS_TESTS_DIR by the blanket HOOKS_DIR domain rule -- this
+# row exists so a change here (e.g. a resolution-mode or legacy-polarity
+# column edit) also selects SCRIPTS_TESTS_DIR and SKILLS_TESTS_DIR, which
+# otherwise have no path to it.
+CONFIG_KEYS_PSV = "claude/.claude/hooks/config-keys.psv"
+
 # test_hook_alignment.py (HOOKS_TESTS_DIR) reads this file's permissions.allow
 # entries by path. test_doc_counts.py (HOOKS_TESTS_DIR) reads its
 # skillOverrides counts. test_skills.py (SKILLS_TESTS_DIR) reads its
@@ -445,6 +454,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 # STATUSLINE_COMMAND_SH: see its own comment above for citation.
+# CONFIG_KEYS_PSV: see its own comment above for citation.
 # _is_py_source_under_claude_or_plugins: see its own comment above for
 # citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
 # CLAUDE_TESTS_DIR directly.
@@ -481,6 +491,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
     (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
+    (lambda p: p == CONFIG_KEYS_PSV, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH, CLAUDE_TESTS_DIR)),
     (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )

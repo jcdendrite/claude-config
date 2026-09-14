@@ -67,8 +67,10 @@ def commit_new_toplevel_file(repo: Path, name: str) -> None:
 
 
 def commit_inside_existing_toplevel(repo: Path) -> None:
-    """Add a file inside the already-stowed `skills/` directory. Should
-    NOT trip the gate — `skills/` already exists on main."""
+    """Add a new file inside the already-stowed `skills/` directory. Must
+    still trip the gate — GNU Stow links each file individually, so a new
+    file needs a re-stow regardless of whether its parent directory
+    already existed on main."""
     (repo / "claude" / ".claude" / "skills" / "bar.md").write_text("# new skill\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "add skill bar"], cwd=repo, check=True)
@@ -113,12 +115,14 @@ class TestRequireStowReminder:
         cmd = "gh pr create --title T --body 'no marker here'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=repo) == "allow"
 
-    def test_no_new_toplevel_allowed(self, stow_repo):
-        """File added inside an already-stowed directory does not need
-        a stow re-run; gate must not fire."""
+    def test_new_file_inside_existing_toplevel_denied(self, stow_repo):
+        """A new file added inside an already-stowed directory still
+        needs a stow re-run — this is the exact shape this migration's own
+        `claude/.claude/hooks/_config.sh` (new file, pre-existing `hooks/`)
+        exposed as a detection gap."""
         commit_inside_existing_toplevel(stow_repo)
         cmd = "gh pr create --title T --body 'just a new skill'"
-        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
     def test_new_toplevel_dir_without_marker_denied(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
@@ -157,25 +161,25 @@ class TestRequireStowReminder:
         cmd = "gh pr create --title T --body 'post-merge: run ./install.sh'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
 
-    def test_install_sh_only_reason_names_install_sh_not_toplevel_entries(self, stow_repo):
+    def test_install_sh_only_reason_names_install_sh_not_new_files(self, stow_repo):
         """The install-only branch's REASON_DETAIL must not mention
-        "top-level entries" -- that wording belongs to a trigger that
+        "adds new files" -- that wording belongs to a trigger that
         didn't fire."""
         commit_install_sh_change(stow_repo)
         cmd = "gh pr create --title T --body 'hardens the installer'"
         reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
         assert reason is not None
         assert "changes install.sh" in reason
-        assert "top-level entries" not in reason
+        assert "adds new files" not in reason
 
-    def test_new_toplevel_only_reason_names_toplevel_entries_not_install_sh(self, stow_repo):
-        """The new-top-level-only branch's REASON_DETAIL must not claim
+    def test_new_toplevel_only_reason_names_new_files_not_install_sh(self, stow_repo):
+        """The new-file-only branch's REASON_DETAIL must not claim
         install.sh changed."""
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title 'Add agents' --body 'Adds reviewer agents.'"
         reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
         assert reason is not None
-        assert "adds new top-level entries" in reason
+        assert "adds new files" in reason
         assert "changes install.sh" not in reason
 
     def test_combined_trigger_reason_names_both(self, stow_repo):
@@ -186,7 +190,7 @@ class TestRequireStowReminder:
         cmd = "gh pr create --title T --body 'no marker here'"
         reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
         assert reason is not None
-        assert "adds new top-level entries" in reason
+        assert "adds new files" in reason
         assert "changes install.sh" in reason
 
     def test_marker_install_sh_in_body_allowed(self, stow_repo):

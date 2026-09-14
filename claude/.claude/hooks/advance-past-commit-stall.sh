@@ -52,8 +52,18 @@ fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -d "$CONFIG_DIR" ] || exit 0
 
-# 2. Always-effective kill switch, independent of sentinel state.
-[ -f "$CONFIG_DIR/.commit-stall-block-disabled" ] && exit 0
+# 2. Always-effective kill switch, independent of sentinel state. Delegates
+# to _config_enabled's commit_stall_block schema row (presence-disables).
+# Only exit code 1 (explicitly disabled) turns this hook off -- every other
+# outcome, including config-keys.psv being transiently unreadable (exit 3)
+# or readable but missing commit_stall_block's own row (exit 4), leaves it
+# armed. See config-schema-audit.md's commit_stall_block section for the
+# full fail-direction rationale.
+_config_enabled commit_stall_block
+case "$?" in
+  1) exit 0 ;;
+  *) ;;
+esac
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9
@@ -64,7 +74,7 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # common case. The full check (this file plus the per-repo optout) still
 # runs at step 9, once REPO_ROOT is known. This is a redundant, cheaper
 # pre-filter, not a replacement for it.
-_lib_autonomous_shipping_sentinel_present "$CONFIG_DIR" || exit 0
+_lib_autonomous_shipping_sentinel_present || exit 0
 
 # Six fields in a single jq pass (nudge-handoff-near-context-cap.sh:29-49
 # pattern). Pre-initialized so a failed read leaves empty strings, not

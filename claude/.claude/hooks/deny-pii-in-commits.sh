@@ -130,7 +130,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh — hook cannot evaluate the commit safely."
+  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate the commit safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

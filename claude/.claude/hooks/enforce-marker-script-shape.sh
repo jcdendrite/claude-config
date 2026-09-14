@@ -65,6 +65,26 @@
 #     check their exit status and fail closed, matching
 #     deny-network-installs.sh's COMMAND_UNQUOTED_EXIT/FRAGMENTS_SPLIT_EXIT
 #     pattern.
+#   - A brace-expansion construct anywhere in the command (e.g. `t{ee,ee}`,
+#     which bash executes as `tee tee`) defeats every literal-text scan in
+#     this hook's Bash arms. The write-utility-candidate scan never matches
+#     a literal `tee` against the un-expanded `t{ee,ee}` token. The
+#     marker.sh Stage-1 fast-reject (`grep -qF 'marker.sh'` against raw
+#     `$COMMAND`) is defeated the same way: `marker.s{h,h}` contains no
+#     literal `marker.sh` substring, so the fast-reject exits before the
+#     gate-release check ever runs. The Stage-2 anchor check is defeated
+#     identically. This closes no worse than the eight bypasses already
+#     disclosed above; the `python3 -c 'open(...).write(...)'` and
+#     here-doc-body bypasses are easier for an agent to produce unprompted
+#     than deliberate brace-splitting. This repo has no `permissions.allow`
+#     entry for `tee`, `cp`, `mv`, `install`, `dd`, `sed`, or `python3`. In a
+#     session running under normal permission mode, an unrecognized
+#     invocation of one of those falls through to the harness's
+#     ask-by-default prompt. A session running under `auto`,
+#     `bypassPermissions`, or `dontAsk` mode has no such backstop. Gated
+#     agents including `code-writer` routinely run under those modes. For
+#     that mode, this gap is a live, unmitigated path to forging a
+#     `/code-review` or `/plan-review` completion marker.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed

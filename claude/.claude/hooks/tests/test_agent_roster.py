@@ -817,3 +817,53 @@ class TestNoGateReleaseRosterSync:
             "coverage. Confirm the new name is genuinely a harness built-in with "
             "no agents/*.md file, then update this assertion deliberately."
         )
+
+
+# Pinned so a future edit to ciso-reviewer.md can't silently drop any of
+# these three sentences with no CI signal.
+_CISO_NARROWER_PRINCIPAL_SET_SENTENCE = (
+    'A "narrower principal set" check must actually exclude someone who could '
+    "otherwise perform the action — a second code path the same principals "
+    "still pass isn't narrower at all."
+)
+
+_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE = (
+    "A lookup path that only hashes/compares a password when the account "
+    "exists, or short-circuits sooner for a miss, discloses existence via "
+    "latency even with normalized response bodies."
+)
+
+_CISO_PROVIDER_SETTING_SCOPE_SENTENCE = (
+    "A setting can close the gap for some operations (e.g. sign-in) while "
+    "leaving another (e.g. the initial registration call) unconditionally "
+    "exposed regardless of the setting."
+)
+
+
+class TestCisoReviewerSecurityBulletsPin:
+    """ciso-reviewer.md's "narrower principal set" clause, "Account-existence
+    disclosure" bullet, and "Provider setting scope" bullet must each carry
+    their pinned sentence verbatim -- see _CISO_NARROWER_PRINCIPAL_SET_SENTENCE,
+    _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE, and
+    _CISO_PROVIDER_SETTING_SCOPE_SENTENCE."""
+
+    def test_pinned_narrower_principal_set_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_NARROWER_PRINCIPAL_SET_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned narrower-principal-set "
+            f"sentence verbatim:\n{_CISO_NARROWER_PRINCIPAL_SET_SENTENCE!r}"
+        )
+
+    def test_pinned_account_existence_disclosure_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned account-existence-disclosure "
+            f"sentence verbatim:\n{_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE!r}"
+        )
+
+    def test_pinned_provider_setting_scope_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_PROVIDER_SETTING_SCOPE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned provider-setting-scope "
+            f"sentence verbatim:\n{_CISO_PROVIDER_SETTING_SCOPE_SENTENCE!r}"
+        )

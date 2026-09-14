@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import symlink_hooks_lib_chain
 
 # Shim sleep duration for the git/gh-timeout regression tests below: long
 # enough that a broken (uncapped) call site never returns before the
@@ -266,7 +266,7 @@ def isolated_home(monkeypatch, tmp_path):
     (home / ".claude" / "code-review-markers").mkdir(parents=True)
     hooks_dir = home / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    (hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    symlink_hooks_lib_chain(hooks_dir)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home

@@ -192,7 +192,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh — hook cannot evaluate command detection safely."
+  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate command detection safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -377,11 +377,13 @@ fi
 #                                 tradeoff as GH/BUG rather than a fixed set)
 #   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
 #   happen to match [A-Z]{2,}-\d+:
+#   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
+#                                 as GH/BUG/GPT above rather than a fixed set.
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|UTC|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|UTC|AGPL|BSD|PROJ|TICKET)-'
 
 # Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>

@@ -43,7 +43,7 @@ When the spec and the user problem diverge, flag the divergence as a finding. Ci
 
 **State-transition completeness** — every user-flow state has entries and exits. Entries: back-button, refresh, deep-link, error-retry. Exits: success, cancel, timeout, session expiry.
 
-**Feature flag rollout coherence** — default-off state sensible (existing behavior preserved when flag is off), flag scope (per-user, per-org, global) appropriate, both flag states testable.
+**Feature flag rollout coherence** — default-off state sensible (existing behavior preserved when flag is off), flag scope (per-user, per-org, global) appropriate, both flag states testable. For where the toggle should live and whether it needs a platform, Read `~/.claude/skills/feature-flags/SKILL.md`.
 
 **User-visible billing and entitlement state** — does what the user SEES match the spec? Grandfathering, refund/credit surfacing, proration display. (Correctness of underlying proration math is backend.)
 

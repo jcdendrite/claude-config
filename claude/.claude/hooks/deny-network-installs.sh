@@ -67,7 +67,7 @@ emit_deny() {
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
