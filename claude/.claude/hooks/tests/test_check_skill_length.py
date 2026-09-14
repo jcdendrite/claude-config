@@ -1,6 +1,7 @@
 """Tests for check-skill-length.sh."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,9 +9,14 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_rebase,
+    build_conflicted_revert,
     build_path_without,
     edit_input,
+    push_conflicting_edit_to_origin,
+    resolve_conflicted_rebase,
     run_hook,
     run_hook_reason,
 )
@@ -588,6 +594,11 @@ class TestCheckSkillLength:
 
     # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
     # --is-inside-work-tree` (_lib_staged_length_gate) ---
+    #
+    # Every git call in _lib_staged_length_gate runs as
+    # `git -C "$repo_root" <subcommand> <operand>`, so from the shim's
+    # perspective $1/$2 are always `-C`/the repo path; predicates below
+    # match the subcommand and operand on $3/$4, not $1/$2.
 
     @pytest.mark.timing
     def test_staged_diff_git_timeout_engages_cap(
@@ -602,7 +613,7 @@ class TestCheckSkillLength:
         documents for a machine lacking timeout(1)/gtimeout(1) entirely."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim('[ "$1" = "diff" ]')
+        env = git_timeout_shim('[ "$3" = "diff" ]')
         with assert_cap_engaged():
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -624,10 +635,13 @@ class TestCheckSkillLength:
         hanging — same degrade-not-hang shape. One instance here suffices
         for both check-skill-length.sh and check-claude-md-length.sh: the
         capped call is caller-invariant, running identically for both hooks
-        before either caller's own logic."""
+        before either caller's own logic. The predicate matches on both
+        subcommand and operand so it targets only this call, not the
+        earlier, uncapped `rev-parse --show-toplevel` REPO_ROOT-resolution
+        call each hook makes before _lib_staged_length_gate runs."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim('[ "$1" = "rev-parse" ]')
+        env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--is-inside-work-tree" ]')
         with assert_cap_engaged():
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -638,6 +652,9 @@ class TestCheckSkillLength:
         assert decision == "allow"
 
     # --- Newly-tested `git show` calls (_lib_staged_length_gate) ---
+    #
+    # These calls run as `git -C "$repo_root" show <operand>`, so predicates
+    # below match the subcommand and operand on $3/$4, not $1/$2.
 
     @pytest.mark.timing
     def test_new_content_show_git_timeout_engages_cap(
@@ -650,7 +667,7 @@ class TestCheckSkillLength:
         over the limit regardless of old, so the gate degrades to allow."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = ":{SKILL_PATH}" ]')
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = ":{SKILL_PATH}" ]')
         with assert_cap_engaged():
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -675,7 +692,7 @@ class TestCheckSkillLength:
         is not an instance of the HEAD-timeout false-deny defect."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = "HEAD:{SKILL_PATH}" ]')
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
         with assert_cap_engaged():
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -706,7 +723,7 @@ class TestCheckSkillLength:
         repo = make_repo_with_skill(tmp_path, 300)
         (repo / SKILL_PATH).write_text(make_skill_content(250))
         subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = "HEAD:{SKILL_PATH}" ]')
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
         with assert_cap_engaged():
             reason = run_hook_reason(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -716,3 +733,367 @@ class TestCheckSkillLength:
             )
         assert reason is not None
         assert "was 0" in reason
+
+
+def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
+    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
+    Every other subcommand proxies to the real git. Local copy of
+    test_lib.py's shim of the same name (DAMP test code, per CLAUDE.md's
+    named exception) -- this file's fallback assertion needs its own stub,
+    not a shared import, per the plan's "per call site" mandate."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--write-tree" ]; then\n'
+        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
+        '    exit 129\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
+    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
+    is rejected. Local copy of test_lib.py's shim of the same name."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    --merge-base=*)\n'
+        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
+        '      exit 129\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _build_clean_merge_growing_skill(tmp_path: Path) -> Path:
+    """A conflict-free merge where only upstream grows SKILL.md past the
+    limit: the clone's own commit touches an unrelated file, so the merge
+    cannot fast-forward and leaves MERGE_HEAD, but SKILL.md itself was never
+    independently edited on the clone's side."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(190))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 190"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin grows skill"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+def _build_conflicted_rebase_with_growing_skill(tmp_path: Path) -> Path:
+    """A conflicted rebase (on an unrelated file) with SKILL.md separately
+    grown past the limit as part of the staged resolution -- REBASE_HEAD
+    reaches neither anchor in this ordinary case, so the base stays empty
+    and `old` falls back to mid-rebase HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill at 100"], cwd=repo, check=True)
+
+    build_conflicted_rebase(repo)
+    resolve_conflicted_rebase(repo)
+    (repo / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    return repo
+
+
+def _build_conflicted_revert_with_growing_skill(tmp_path: Path) -> Path:
+    """A conflicted revert of an unrelated file, trusted via the HEAD anchor
+    by construction (REVERT_HEAD is a real ancestor commit), with SKILL.md
+    separately grown past the limit as part of the staged resolution --
+    state=revert is one of the three states whose merge-tree call passes
+    --merge-base=, unlike the merge-state fixture the write-tree-rejection
+    fallback test above reuses."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill at 100"], cwd=repo, check=True)
+
+    build_conflicted_revert(repo)
+    (repo / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    return repo
+
+
+def _build_clean_merge_growing_skill_with_second_skill_file(tmp_path: Path) -> Path:
+    """Same fixture as _build_clean_merge_growing_skill, with a second,
+    independently-staged skill file added on top -- two staged paths
+    matching the length gate's pattern, so its per-file loop over staged
+    paths iterates twice against a single resolved base."""
+    clone = _build_clean_merge_growing_skill(tmp_path)
+    second_skill_dir = clone / "claude-skills" / "skills" / "my-second-skill"
+    second_skill_dir.mkdir(parents=True)
+    (second_skill_dir / "SKILL.md").write_text(make_skill_content(50))
+    subprocess.run(
+        ["git", "add", "claude-skills/skills/my-second-skill/SKILL.md"], cwd=clone, check=True
+    )
+    return clone
+
+
+def _build_delete_modify_conflict_growing_skill(tmp_path: Path) -> Path:
+    """SKILL.md-specific instance of
+    test_require_code_review.py::_build_delete_modify_conflict_via_origin's
+    fixture shape: the clone deletes SKILL.md, origin independently grows
+    it to 250 lines (past the 200-line limit), and the merge surfaces a
+    delete/modify conflict -- distinct from a two-sided content conflict,
+    since one side has no blob at all to three-way-merge against. Resolved
+    by staging content at 220 lines: over the limit either way `old` is
+    read, but strictly between the merge-tree base's `old` (250, origin's
+    surviving content) and a regressed literal-HEAD fallback's `old` (0,
+    since the file doesn't exist at literal HEAD in the clone's own
+    delete commit). That places the two candidate bases on opposite sides
+    of _lib_staged_length_gate's `new > old` deny condition, so the
+    resulting allow/deny outcome discriminates which base the gate
+    actually used -- see
+    test_delete_modify_conflict_growing_skill_allows's own docstring for
+    the two resulting outcomes."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    subprocess.run(["git", "rm", "-q", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "clone deletes skill"], cwd=clone, check=True)
+
+    push_conflicting_edit_to_origin(tmp_path, bare, SKILL_PATH, make_skill_content(250))
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / SKILL_PATH).write_text(make_skill_content(220))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    return clone
+
+
+def _build_clean_merge_mode_bit_only_skill(tmp_path: Path) -> Path:
+    """SKILL.md-specific instance of
+    test_require_code_review.py::_build_clean_merge_mode_bit_only_change's
+    fixture shape: upstream's only contribution to SKILL.md is a mode-bit
+    flip (chmod +x, no content change), auto-resolved with no conflict
+    since the clone's own side never touched the file -- so `new` and
+    `old` read back byte-identical through _lib_staged_length_gate's git
+    show pair."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    os.chmod(push_clone / SKILL_PATH, 0o755)
+    subprocess.run(["git", "add", SKILL_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin marks skill executable"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+class TestCheckSkillLengthMergeAwareBase:
+    """_lib_staged_length_gate's `old` comparison is measured against
+    _lib_gate_diff_base's resolved base, and mid-merge vs. mid-rebase differ
+    in which base gets used."""
+
+    def test_mid_merge_pure_upstream_growth_does_not_fail(self, isolated_home, tmp_path):
+        """Mid-merge, a file that only upstream grew past the limit does not
+        fail the gate: `old` is the resolved base, not the pre-merge feature
+        tip, which never saw the growth at all."""
+        repo = _build_clean_merge_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mid_rebase_growth_past_mid_rebase_head_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Mid-rebase, with the base empty, the gate's `new > old` comparison
+        uses mid-rebase HEAD as `old`."""
+        repo = _build_conflicted_rebase_with_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "deny"
+        )
+
+    def test_fallback_write_tree_rejected_behaves_like_today(self, isolated_home, tmp_path):
+        """`--write-tree` outright rejection (git < 2.38) must fall back to
+        exactly today's plain HEAD-relative recipe for `old` -- literal HEAD,
+        not the resolved base. For this fixture (only upstream grew the
+        file past the limit), literal pre-merge HEAD never saw that growth,
+        so the fallback denies -- the same conservative posture this gate
+        had before the base substitution existed, not the fixed behavior
+        _lib_gate_diff_base's degraded (git-version-fallback) path cannot
+        provide."""
+        repo = _build_clean_merge_growing_skill(tmp_path)
+        bin_dir = tmp_path / "bin-fallback-write-tree"
+        _make_git_rejecting_write_tree(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, isolated_home, tmp_path):
+        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
+        the three states whose merge-tree call passes that flag -- rebase,
+        cherry-pick, revert, not merge -- so this needs its own fixture,
+        unlike the write-tree fallback test above which reuses the merge
+        fixture because that rejection band affects every state uniformly.
+        SKILL.md is untouched by the revert itself, so `old` falls back to
+        mid-revert HEAD either way -- the same "no rebase-specific
+        over-count" _lib_staged_length_gate's own docstring documents for
+        rebase. This fixture's job is proving the rejection is absorbed
+        cleanly into the fallback, not that the verdict differs from a
+        working substitution."""
+        repo = _build_conflicted_revert_with_growing_skill(tmp_path)
+        bin_dir = tmp_path / "bin-fallback-merge-base"
+        _make_git_rejecting_merge_base_flag(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    def test_delete_modify_conflict_growing_skill_allows(self, isolated_home, tmp_path):
+        """A delete/modify conflict on SKILL.md itself, resolved at 220
+        lines -- over the 200-line limit either way `old` is read, but
+        strictly between the merge-tree base's `old` (250) and a
+        regressed literal-HEAD fallback's `old` (0, the file doesn't
+        exist at literal HEAD in the clone's own delete commit). At the
+        correct merge-tree base, 220 > 250 is false, so the gate allows;
+        this discriminates the correct base from a regressed
+        literal-HEAD fallback, where 220 > 0 is true and the gate would
+        instead deny -- the fixture shape
+        .claude/plans/merge-aware-review-gates.md's Verification section
+        names as untested against this gate's own git show pair."""
+        repo = _build_delete_modify_conflict_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mode_bit_only_upstream_change_to_skill_does_not_deny(self, isolated_home, tmp_path):
+        """Upstream's only contribution to SKILL.md is a mode-bit flip --
+        the merge auto-resolves with no conflict, and since the content is
+        byte-identical, `new` never exceeds `old`."""
+        repo = _build_clean_merge_mode_bit_only_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_diff_base_resolved_once_across_multiple_staged_skill_files(
+        self, isolated_home, tmp_path
+    ):
+        """_lib_staged_length_gate resolves _lib_gate_diff_base once above
+        its per-file loop, not once per staged file -- a per-file
+        resolution would spawn state detection and a full merge-tree
+        --write-tree once per staged SKILL.md instead of once per hook run
+        (see _lib_staged_length_gate's own docstring in _lib.sh)."""
+        repo = _build_clean_merge_growing_skill_with_second_skill_file(tmp_path)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-merge-tree-invocations"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "merge-tree" ]; then\n'
+            f'    echo "$@" >> "{invocation_log}"\n'
+            '  fi\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+        extra_env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+        run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo, extra_env=extra_env)
+
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert len(invocations) == 1, (
+            f"expected exactly one merge-tree invocation across both staged "
+            f"SKILL.md files, got: {invocations}"
+        )

@@ -1,0 +1,1188 @@
+"""Tests for _config.sh's config-key reader/writer primitives.
+
+Covers _config_enabled/_config_value's resolution semantics (schema
+default, legacy-file fallback per legacy-polarity, the config-dir-or-home
+union, and the state-file-row-is-authoritative precedence over a
+disagreeing legacy file), _config_set's comment/key-order-preserving
+rewrite and refuse-on-malformed-content contract, and _config_scaffold's
+additive-only and exclude-list contracts.
+
+Drives the real _config.sh via a bash subprocess that sources _lib.sh (the
+canonical caller pattern -- _lib.sh sources _config.sh transitively, see
+that file's own header), mirroring test_marker_lib.py's _run_lib_fn
+pattern. Uses the `isolated_home` fixture (conftest.py) for HOME isolation
+and CLAUDE_CONFIG_DIR clearing, then runs the bash subprocess with the
+default (ambient, monkeypatched) environment -- the same env-then-inherit
+shape run_hook's own home-only call path uses.
+"""
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+from pathlib import Path
+
+import pytest
+from helpers import HOOKS_DIR
+
+_LIB_SH = HOOKS_DIR / "_lib.sh"
+_CONFIG_SH = HOOKS_DIR / "_config.sh"
+_CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
+
+
+def _run(script: str) -> subprocess.CompletedProcess:
+    """Source _lib.sh, then run `script`, inheriting the current (test-
+    monkeypatched) process environment -- HOME/CLAUDE_CONFIG_DIR are set up
+    by each test via the isolated_home fixture and monkeypatch."""
+    return subprocess.run(
+        ["bash", "-c", f'set -uo pipefail; . "{_LIB_SH}"; {script}'],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_state_file(home, content: str, config_dir=None) -> None:
+    target = (config_dir or (home / ".claude")) / "claude-config.toml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+
+
+def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProcess:
+    """Source an isolated _config.sh symlink from `hooks_dir` (which carries
+    its own config-keys.psv), bypassing _lib.sh entirely -- _config_scaffold
+    needs only _config.sh's own functions, matching
+    test_config_parser_parity.py's TestMissingSchemaFile isolation
+    technique. Used for schema shapes (e.g. a key with no legacy-polarity
+    value) that none of today's real 15 keys carry."""
+    return subprocess.run(
+        ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _isolated_hooks_dir_missing_key_row(tmp_path: Path, key: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir with KEY's
+    own row entirely removed -- every other row is left untouched, so this
+    exercises the interrupted-stow-relink/git-pull shape (a readable,
+    non-empty file missing exactly one row), not a wholly synthetic or
+    empty schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = [line for line in _CONFIG_KEYS_PSV.read_text().splitlines() if not line.startswith(f"{key}|")]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
+def _isolated_hooks_dir_with_truncated_key_row(tmp_path: Path, key: str, truncated_row: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, replacing
+    KEY's own row with TRUNCATED_ROW (missing one or more trailing columns)
+    -- every other row is left untouched, so this exercises a schema file
+    truncated mid-row (an interrupted stow-relink/git-pull caught partway
+    through rewriting one row), not a wholly synthetic or empty schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = [
+        truncated_row if line.startswith(f"{key}|") else line
+        for line in _CONFIG_KEYS_PSV.read_text().splitlines()
+    ]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
+def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, polarity: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, replacing
+    KEY's own legacy-polarity column (field 8 of 11) with POLARITY --
+    every other row and field is left untouched, so this exercises the
+    corrupted-single-row shape a config-keys.psv typo would produce, not a
+    wholly synthetic schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = []
+    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
+        if line.startswith(f"{key}|"):
+            fields = line.split("|")
+            fields[7] = polarity
+            line = "|".join(fields)
+        lines.append(line)
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
+def _write_write_attempt_shims(bin_dir: Path, marker: Path) -> None:
+    """Shadow mkdir/mktemp/mv on PATH with stubs that touch `marker` then
+    exit 1, so a broken _config_set/_config_scaffold root guard is caught by
+    the marker's existence regardless of the test runner's own filesystem
+    privileges against the real `/` -- unlike relying on a real write to `/`
+    failing, which only happens for a non-root runner."""
+    for real_binary in ("mkdir", "mktemp", "mv"):
+        shim = bin_dir / real_binary
+        shim.write_text(f"#!/bin/bash\ntouch {shlex.quote(str(marker))}\nexit 1\n")
+        shim.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# _config_value / _config_enabled: default resolution (no state file, no legacy)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultResolution:
+    def test_bool_key_defaulting_false_resolves_false(self, isolated_home):
+        result = _run("_config_value worktree_required")
+        assert result.stdout == "false"
+        assert result.returncode == 0
+
+    def test_bool_key_defaulting_true_resolves_true(self, isolated_home):
+        result = _run("_config_value commit_stall_block")
+        assert result.stdout == "true"
+        assert result.returncode == 0
+
+    def test_config_enabled_maps_true_value_to_exit_0(self, isolated_home):
+        assert _run("_config_enabled commit_stall_block").returncode == 0
+
+    def test_config_enabled_maps_false_value_to_exit_1(self, isolated_home):
+        assert _run("_config_enabled worktree_required").returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# _config_enabled's five-way exit code contract
+# ---------------------------------------------------------------------------
+
+
+class TestExitCodeContract:
+    def test_unresolvable_config_dir_returns_exit_2(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        result = _run("_config_enabled round_consult_gate")
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+    def test_unreadable_schema_returns_exit_3(self, tmp_path):
+        """config-keys.psv itself missing/unreadable must propagate exit 3
+        unchanged from both _config_value and _config_enabled, not collapse
+        into exit 1 ("KEY has no schema row") -- the two mean different
+        things to an enforcement-critical caller (see _config_value's own
+        exit-3 comment). Mirrors test_config_parser_parity.py's
+        TestMissingSchemaFile isolation technique, lighter than
+        _lib_sh_with_unreadable_schema's since _config_value/_config_enabled
+        need only _config.sh itself, not _lib.sh's own sourcing chain:
+        symlink _config.sh alone into a directory with no config-keys.psv
+        sibling."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 3
+        assert value_result.stdout == ""
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 3
+        assert enabled_result.stdout == ""
+
+    def test_schema_row_missing_from_readable_file_returns_exit_4(self, tmp_path):
+        """A config-keys.psv that is readable and parses at least one row,
+        but not KEY's own -- the interrupted stow-relink/git-pull shape,
+        distinct from the wholly-unreadable file above -- must propagate a
+        distinct exit 4 unchanged from both _config_value and
+        _config_enabled, not collapse into exit 1 (indistinguishable from
+        an ordinary typo'd key) or exit 3 (wholly unreadable file)."""
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "worktree_required")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "worktree_required" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+    def test_readable_empty_schema_also_returns_exit_4(self, tmp_path):
+        """A readable schema file that parses to zero rows at all (comments/
+        blank-lines-only, or truly empty) is the same interrupted-write race
+        exit 4's missing-single-row shape covers, just caught at an earlier
+        truncation point, so it must also return exit 4 with a stderr
+        warning naming the schema file, rather than the silent exit 1 an
+        ordinary typo'd key gets. Bash-side counterpart to
+        test_config_parser_parity.py's TestReadableButEmptySchemaFile."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "config-keys.psv").write_text("")
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert result.returncode == 4
+        assert result.stdout == ""
+        assert "parsed zero rows" in result.stderr
+
+    def test_mid_row_truncation_returns_exit_4_not_a_silent_grant(self, tmp_path):
+        """Security regression: a config-keys.psv row present but cut off
+        after the key/type fields (an interrupted stow-relink/git-pull
+        caught mid-row, rather than mid-file) must not resolve as an empty
+        string that _config_enabled's any-value-but-false rule would then
+        read as enabled. autonomous_shipping is the key this matters most
+        for: every other enforcement-critical key's safe direction is
+        "stays armed" regardless of this bug, but autonomous_shipping's safe
+        direction is "not shipping" -- a silent exit 0 with an empty
+        resolution/default here would silently grant it."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+        )
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value autonomous_shipping")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "autonomous_shipping" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled autonomous_shipping")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+    def test_truncation_after_resolution_column_still_returns_exit_4(self, tmp_path):
+        """Security regression: a row truncated one column later than the
+        case above -- key/type/default/resolution all intact, only
+        legacy-probe-on-resolution-failure and beyond missing -- must still
+        return exit 4, not fall through to exit 2 (config-dir-resolution-
+        failure). worktree_required is the key this matters most for: its
+        row is the one real row whose legacy-probe-on-resolution-failure
+        column is `true`, and _lib_worktree_enforcement_active treats exit 2
+        as "not enforced" but exit 3/4 as "stays enforced" -- so this exact
+        truncation shape would otherwise silently disarm worktree_required
+        enforcement."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "worktree_required", "worktree_required|bool|false|config-dir-or-home"
+        )
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "worktree_required" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# CONFIG_DIR_OVERRIDE positional argument to _config_value/_config_enabled.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDirOverrideArgument:
+    def test_override_is_read_from_instead_of_the_environment(self, isolated_home, monkeypatch):
+        """A caller-supplied CONFIG_DIR_OVERRIDE skips CLAUDE_CONFIG_DIR/$HOME
+        resolution entirely -- an override pointed at a directory with its
+        own state file must win even when CLAUDE_CONFIG_DIR names a
+        different, non-conforming one."""
+        override_dir = isolated_home / "override-config"
+        override_dir.mkdir()
+        _write_state_file(isolated_home, "handoff_nudge = false\n", config_dir=override_dir)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(isolated_home / "unrelated-config"))
+        result = _run(f'_config_value handoff_nudge "{override_dir}"')
+        assert result.stdout == "false"
+        assert result.returncode == 0
+
+    def test_empty_string_override_falls_through_to_normal_resolution(self, isolated_home):
+        """CONFIG_DIR_OVERRIDE="" must be treated the same as no override at
+        all, matching bash's `[ -n "$config_dir_override" ]` test. See
+        test_config_parser_parity.py for the Python-side differential
+        coverage of this same parameter."""
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        result = _run('_config_value handoff_nudge ""')
+        assert result.stdout == "false"
+        assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# legacy-probe-on-resolution-failure divergence between worktree_required
+# (true) and autonomous_shipping (false)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyProbeOnResolutionFailure:
+    def test_worktree_required_probes_home_legacy_file_on_resolution_failure(self, isolated_home, monkeypatch):
+        (isolated_home / ".claude" / "worktree-required").touch()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        result = _run("_config_value worktree_required")
+        assert result.returncode == 0
+        assert result.stdout == "true"
+
+    def test_autonomous_shipping_does_not_probe_on_resolution_failure(self, isolated_home, monkeypatch):
+        (isolated_home / ".claude" / "autonomous-shipping-required").touch()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        result = _run("_config_value autonomous_shipping")
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# config-dir-or-home union semantics
+# ---------------------------------------------------------------------------
+
+
+class TestUnionSemantics:
+    def test_explicit_false_in_config_dir_does_not_defeat_true_under_home_legacy(self, isolated_home, monkeypatch):
+        """An explicit `false` state-file row at the resolved config dir must
+        not defeat a `true` produced by $HOME/.claude's legacy file -- the
+        union is OR'd across each location's own independently-resolved
+        effective value, not "first location found wins"."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "worktree_required = false\n", config_dir=config_dir)
+        (isolated_home / ".claude" / "worktree-required").touch()
+
+        result = _run("_config_value worktree_required")
+        assert result.stdout == "true"
+        assert result.returncode == 0
+
+    def test_state_file_present_but_key_absent_still_unions_with_home_legacy(self, isolated_home, monkeypatch):
+        """A state file present at the resolved config dir but with no row
+        for this key falls through to that location's own legacy check
+        (absent here), then still unions against $HOME/.claude's legacy
+        file for a config-dir-or-home key."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "commit_stall_block = true\n", config_dir=config_dir)
+        (isolated_home / ".claude" / "worktree-required").touch()
+
+        result = _run("_config_value worktree_required")
+        assert result.stdout == "true"
+
+
+# ---------------------------------------------------------------------------
+# State-file-row precedence over a disagreeing legacy file, for a
+# content-matches key (pr_cost_disclosure) -- not just a boolean presence
+# check, since content-matches resolution compares trimmed file content
+# against an expected literal rather than mere file existence.
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyPrecedence:
+    def test_state_file_value_wins_over_disagreeing_legacy_file(self, isolated_home):
+        _write_state_file(isolated_home, 'pr_cost_disclosure = "dollars"\n')
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("notdollars\n")
+
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "dollars"
+
+    def test_legacy_file_only_consulted_when_key_entirely_absent_from_state_file(self, isolated_home):
+        _write_state_file(isolated_home, "handoff_nudge = true\n")
+        (isolated_home / ".claude" / ".commit-stall-block-disabled").touch()
+
+        result = _run("_config_value commit_stall_block")
+        assert result.stdout == "false"
+
+
+# ---------------------------------------------------------------------------
+# The enum literal's own quoting requirement -- genuine TOML writes a
+# boolean bare and any other scalar quoted, so pr_cost_disclosure's own
+# literal ("dollars") must be quoted to parse; a bare literal is malformed,
+# not silently accepted.
+# ---------------------------------------------------------------------------
+
+
+class TestEnumValueQuotingGrammar:
+    def test_bare_enum_literal_is_rejected_as_malformed(self, isolated_home):
+        _write_state_file(isolated_home, "pr_cost_disclosure = dollars\n")
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "malformed line" in result.stderr
+        assert "pr_cost_disclosure = dollars" in result.stderr
+
+    def test_quoted_enum_literal_resolves(self, isolated_home):
+        _write_state_file(isolated_home, 'pr_cost_disclosure = "dollars"\n')
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "dollars"
+        assert result.stderr == ""
+
+    def test_bare_boolean_value_on_enum_key_is_rejected_as_malformed(self, isolated_home):
+        """`true`/`false` are always grammar-valid bare tokens, so a bare
+        `true` on an enum-typed key passes the bareness gate the sibling
+        test above exercises and instead reaches the enum:* schema-type
+        check, which must reject it too -- pins today's behavior against a
+        future loosening of that case arm that might otherwise accept a
+        bare boolean as meaning "enabled"."""
+        _write_state_file(isolated_home, "pr_cost_disclosure = true\n")
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "malformed line" in result.stderr
+        assert "pr_cost_disclosure = true" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Legacy-polarity coverage: presence-enables, presence-disables,
+# content-matches.
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyPolarity:
+    def test_presence_enables(self, isolated_home):
+        assert _run("_config_value permission_prompt_tracking").stdout == "false"
+        (isolated_home / ".claude" / "track-permission-prompts").touch()
+        assert _run("_config_value permission_prompt_tracking").stdout == "true"
+
+    def test_presence_disables(self, isolated_home):
+        assert _run("_config_value round_consult_gate").stdout == "true"
+        (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _run("_config_value round_consult_gate").stdout == "false"
+
+    def test_content_matches_wrong_content_resolves_default(self, isolated_home):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("euros\n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    def test_content_matches_crlf_authored_file_still_resolves(self, isolated_home):
+        """A CRLF-authored one-line sentinel must resolve identically to an
+        LF one -- [:space:] trimming (not [:blank:]) strips the trailing
+        CR."""
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_bytes(b"dollars\r\n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
+
+    @pytest.mark.parametrize("content", ["DOLLARS", "Dollars", "DoLLaRs\n"])
+    def test_content_matches_case_folded(self, isolated_home, content):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
+
+    def test_content_matches_whitespace_only_resolves_default(self, isolated_home):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(" \n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    def test_content_matches_second_line_of_junk_resolves_default(self, isolated_home):
+        """Fail-open shape: reading only the first line would treat
+        "dollars\\nallowance" as a match -- the whole (trimmed) content must
+        equal the expected literal, not just its first line."""
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("dollars\nallowance\n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    @pytest.mark.parametrize("content", ["dollars123", "xdollars"])
+    def test_content_matches_glued_extra_characters_resolves_default(self, isolated_home, content):
+        """Fail-open shape: an unanchored substring compare would match
+        extra characters glued onto either end of the expected literal --
+        the compare must be an anchored equality test."""
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses discretionary file-permission bits (CAP_DAC_OVERRIDE on Linux), "
+        "so chmod(0o000) does not make the file unreadable and this would resolve enabled instead of default",
+    )
+    def test_content_matches_unreadable_legacy_file_resolves_default(self, isolated_home):
+        """Proves the guarded read (`|| raw=""`) degrades to the schema
+        default rather than aborting or resolving as enabled."""
+        sentinel_path = isolated_home / ".claude" / "pr-cost-disclosure"
+        sentinel_path.write_text("dollars\n")
+        sentinel_path.chmod(0o000)
+        try:
+            result = _run("_config_value pr_cost_disclosure")
+        finally:
+            sentinel_path.chmod(0o644)
+        assert result.stdout == "false"
+
+
+class TestUnrecognizedLegacyPolarityFallback:
+    """An unrecognized config-keys.psv legacy-polarity value (a schema-file
+    typo, since this column has no other writer) falls through to the
+    key's schema default for four of the five enforcement-critical keys --
+    already that key's fail-closed direction, pinned here explicitly.
+    worktree_required is the one exception: its schema default ("false") is
+    the permissive direction, so _config_location_value fails closed to
+    "true" instead, per its own comment on that arm."""
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("worktree_required", "true"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_enforcement_critical_key_resolves_fail_closed(self, tmp_path, key, expected):
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(
+            tmp_path, key, "not-a-real-polarity"
+        )
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        result = _run_with_schema(isolated_hooks_dir, f'_config_location_value {key} "{target_dir}"')
+        assert result.stdout == expected
+        assert "unrecognized legacy-polarity value" in result.stderr
+
+    @pytest.mark.parametrize(
+        "key,schema_default",
+        [
+            ("worktree_required", "false"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_empty_legacy_polarity_falls_through_silently(self, tmp_path, key, schema_default):
+        """An empty legacy-polarity is the pre-existing, tested schema shape
+        for a plain key with no legacy file to protect (see
+        TestConfigScaffold::test_plain_key_with_no_legacy_polarity_still_gets_its_default_row),
+        not a corrupted schema value -- it must resolve to the key's own
+        schema default with no warning, even for worktree_required, whose
+        fail-closed override applies only to a non-empty unrecognized value."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(tmp_path, key, "")
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        result = _run_with_schema(isolated_hooks_dir, f'_config_location_value {key} "{target_dir}"')
+        assert result.stdout == schema_default
+        assert result.stderr == ""
+
+
+class TestPrCostDisclosureDoesNotUnion:
+    """pr_cost_disclosure's `resolution` column is `config-dir`, not
+    `config-dir-or-home` -- unlike worktree_required/autonomous_shipping, a
+    legacy file present only at $HOME/.claude must never activate it once
+    CLAUDE_CONFIG_DIR diverges from $HOME/.claude, since there is no union
+    for this key to fall back on."""
+
+    def test_home_only_legacy_file_does_not_activate_a_diverged_config_dir(self, isolated_home, monkeypatch):
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
+
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+
+
+# ---------------------------------------------------------------------------
+# A subset-violating line is skipped (with a warning), not treated as
+# a whole-document parse failure -- the remaining valid keys still resolve.
+# ---------------------------------------------------------------------------
+
+
+class TestPartialFileFixture:
+    def test_valid_keys_resolve_despite_one_malformed_line(self, isolated_home):
+        _write_state_file(
+            isolated_home,
+            "# a comment\n"
+            "handoff_nudge = false\n"
+            "this line has no equals sign\n"
+            "commit_stall_block = true\n",
+        )
+        handoff = _run("_config_value handoff_nudge")
+        stall = _run("_config_value commit_stall_block")
+        assert handoff.stdout == "false"
+        assert stall.stdout == "true"
+
+    def test_malformed_line_emits_a_warning(self, isolated_home):
+        _write_state_file(
+            isolated_home,
+            "handoff_nudge = false\nthis line has no equals sign\n",
+        )
+        result = _run("_config_value handoff_nudge")
+        assert "malformed line" in result.stderr
+        assert "this line has no equals sign" in result.stderr
+
+    def test_malformed_key_shape_is_skipped_like_a_malformed_value(self, isolated_home):
+        """A line with a valid `=` but a key that fails the
+        `[A-Za-z0-9_-]+` grammar (a space, here) is malformed -- distinct
+        from a malformed value -- and must be skipped the same way, leaving
+        the remaining valid key resolvable."""
+        _write_state_file(
+            isolated_home,
+            "bad key = true\nhandoff_nudge = false\n",
+        )
+        result = _run("_config_value handoff_nudge")
+        assert result.stdout == "false"
+        assert "malformed line" in result.stderr
+        assert "bad key = true" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# A line whose key is grammatically valid but has no row at all in
+# config-keys.psv (a case- or spelling-typo'd key) is a distinct case from a
+# malformed line -- it parses cleanly and would otherwise sit silently
+# ignored forever.
+# ---------------------------------------------------------------------------
+
+
+class TestUnrecognizedKeyWarning:
+    def test_unrecognized_key_line_is_skipped_with_its_own_warning(self, isolated_home):
+        _write_state_file(
+            isolated_home,
+            "handoff_nudge = false\nWorktree_Required = true\n",
+        )
+        result = _run("_config_value handoff_nudge")
+        assert result.stdout == "false"
+        assert "unrecognized key" in result.stderr
+        assert "Worktree_Required = true" in result.stderr
+        assert "malformed line" not in result.stderr
+
+    def test_unrecognized_key_does_not_shadow_a_similarly_named_real_key(self, isolated_home):
+        """A typo'd key (missing the trailing 'e') never matches the real
+        key it was meant to be, so the real key still falls through to its
+        own legacy-file-then-default chain undisturbed."""
+        _write_state_file(isolated_home, 'pr_cost_disclosur = "dollars"\n')
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "unrecognized key" in result.stderr
+        assert 'pr_cost_disclosur = "dollars"' in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# config-keys.psv itself unreadable must not make _config_read_key_from_file
+# treat every row as unrecognized -- a stow-relink race or interrupted
+# `git pull` is transient, and the key's own row is still the real,
+# authoritative value.
+# ---------------------------------------------------------------------------
+
+
+class TestReadKeyFromFileSchemaUnreadable:
+    def test_existing_row_still_resolves_when_schema_is_unreadable(self, tmp_path):
+        """Calls _config_read_key_from_file directly, not _config_value --
+        _config_value's own earlier _config_schema_field("resolution") call
+        already short-circuits before reaching this function, so it can't
+        exercise this code path."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        # config-keys.psv deliberately never created here, matching
+        # TestMissingSchemaFile's isolation technique.
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file commit_stall_block "{state_file}"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
+
+    def test_existing_row_still_resolves_when_schema_is_readable_but_empty(self, tmp_path):
+        """A schema file that exists, passes [ -r ], and parses zero rows (a
+        mid-write truncation race, not a fully-missing/unreadable file) must
+        degrade the same way as an unreadable schema -- not reject every row
+        as unrecognized, which would reproduce this class's original bug
+        through a narrower trigger."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "config-keys.psv").write_text("")
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file commit_stall_block "{state_file}"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
+
+    def test_type_invalid_value_is_rejected_not_accepted_when_schema_unreadable(self, tmp_path):
+        """Regression test for a latent gap (not reachable by any current
+        caller -- _config_value's own earlier _config_schema_field call
+        already short-circuits on an unreadable schema before ever reaching
+        this function, and migrate-legacy-config.sh's own `set -euo
+        pipefail` schema read aborts first too): with the schema
+        unreadable, key_type is left empty, and a bool key's own
+        semantically-invalid value ("banana", not "true"/"false") must not
+        resolve as authoritative just because its type couldn't be
+        checked -- _config_enabled's any-value-but-false rule would
+        otherwise treat "banana" as enabled. Insurance against a future
+        caller reintroducing this as a live, reachable bug. Written quoted
+        (`"banana"`) -- a bare `banana` now fails the value's own bareness
+        grammar (only true/false may be bare) before ever reaching this
+        schema-type check, which would exercise a different code path than
+        the one this test targets."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        # config-keys.psv deliberately never created here, matching this
+        # class's other tests.
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text('autonomous_shipping = "banana"\n')
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file autonomous_shipping "{state_file}"; echo "status=$?"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "status=1\n", (
+            "a type-invalid value must not print anything and must return 1 "
+            f"(not found), not resolve as authoritative: stdout={result.stdout!r}"
+        )
+        assert "cannot validate its type" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# _config_read_key_from_file/_config_location_value dispatch on argument
+# COUNT between a base 2-arg form and a full precomputed-args form. An
+# intermediate count is a caller-side bug, not "no optional args passed",
+# and must be rejected rather than silently self-deriving.
+# ---------------------------------------------------------------------------
+
+
+class TestPrecomputedArgsArityGuard:
+    def test_read_key_from_file_rejects_three_args(self, tmp_path):
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+        result = _run(
+            f'_config_read_key_from_file commit_stall_block "{state_file}" some_known_keys'
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 4 args, got 3" in result.stderr
+
+    def test_location_value_rejects_three_args(self, isolated_home):
+        result = _run(
+            f'_config_location_value commit_stall_block "{isolated_home}" some_known_keys'
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 6 args, got 3" in result.stderr
+
+    def test_location_value_rejects_five_args(self, isolated_home):
+        result = _run(
+            f'_config_location_value commit_stall_block "{isolated_home}" '
+            "known_keys bool worktree-required"
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 6 args, got 5" in result.stderr
+
+    def test_read_key_from_file_with_full_arity_and_empty_known_keys_skips_membership_check(
+        self, tmp_path
+    ):
+        """An empty KNOWN_KEYS via the 4-arg form must be treated as
+        "schema unreadable" and skip the membership check. The 2-arg
+        self-deriving form would instead re-derive KNOWN_KEYS and reject
+        this key as unrecognized. This test pins that count-based dispatch
+        contract, distinct from the wrong-count rejection tested above."""
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("totally_not_a_real_key = true\n")
+
+        result = _run(f'_config_read_key_from_file totally_not_a_real_key "{state_file}" "" ""')
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# _config_value's union branch must check _config_location_value's own exit
+# status before treating its captured stdout as authoritative -- an
+# arity-guard trip on either call (unreachable today, since both union-branch
+# calls always pass exactly 6 args) must not let the resulting empty stdout
+# fall through to _config_enabled's any-value-but-false "enabled" reading.
+# ---------------------------------------------------------------------------
+
+
+class TestUnionBranchLocationValueFailure:
+    def test_location_value_failure_resolves_autonomous_shipping_to_not_enabled(
+        self, isolated_home, monkeypatch
+    ):
+        """Simulates an arity-guard trip (nonzero status, empty stdout) to
+        confirm the union branch fails closed to "false" instead of reading
+        the empty output as enabled."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        override = "_config_location_value() { return 1; }; "
+
+        value_result = _run(f"{override}_config_value autonomous_shipping")
+        assert value_result.stdout == "false"
+        assert value_result.returncode == 0
+
+        enabled_result = _run(f"{override}_config_enabled autonomous_shipping")
+        assert enabled_result.returncode == 1
+
+    def test_location_value_failure_resolves_worktree_required_to_enabled(
+        self, isolated_home, monkeypatch
+    ):
+        """Mirrors the autonomous_shipping test above, but for
+        worktree_required, whose failure-safe default is the opposite
+        direction: "true", not "false". Resolving "false" here would
+        silently disarm write-safety enforcement instead of merely
+        withholding a permission grant.
+
+        The _config_value assertion below is the one that actually
+        discriminates a regression here: the trailing _config_enabled
+        assertion alone would not catch a union-branch fallthrough that
+        resolves to an "enabled" value for this key."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        override = "_config_location_value() { return 1; }; "
+
+        value_result = _run(f"{override}_config_value worktree_required")
+        assert value_result.stdout == "true"
+        assert value_result.returncode == 0
+
+        enabled_result = _run(f"{override}_config_enabled worktree_required")
+        assert enabled_result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# A grammar-conforming but schema-invalid `bool` value must warn and fall
+# through to the legacy-file-then-default chain, not resolve as authoritative
+# -- otherwise a typo (or a value a hand-editor would believe disables it,
+# e.g. "off") on autonomous_shipping would silently grant it, since
+# _config_enabled treats any value other than the literal "false" as enabled.
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaTypeValidationOnRead:
+    def test_autonomous_shipping_non_boolean_value_warns_and_falls_through(self, isolated_home):
+        """Quoted, not bare: a bare `notabool` would hit the value-subset
+        grammar's bareness gate first (`TestEnumValueQuotingGrammar` already
+        covers that path), never reaching the schema-type check this test
+        targets."""
+        _write_state_file(isolated_home, 'autonomous_shipping = "notabool"\n')
+        result = _run("_config_value autonomous_shipping")
+        assert result.stdout == "false"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert 'autonomous_shipping = "notabool"' in result.stderr
+        assert _run("_config_enabled autonomous_shipping").returncode == 1
+
+    def test_worktree_required_non_boolean_value_warns_and_falls_through(self, isolated_home):
+        """Quoted, not bare -- see the sibling test above for why."""
+        _write_state_file(isolated_home, 'worktree_required = "notabool"\n')
+        result = _run("_config_value worktree_required")
+        assert result.stdout == "false"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert 'worktree_required = "notabool"' in result.stderr
+        assert _run("_config_enabled worktree_required").returncode == 1
+
+    @pytest.mark.parametrize(
+        "key",
+        ["round_consult_gate", "commit_stall_block", "authorization_boundary_restore"],
+    )
+    def test_presence_disables_key_non_boolean_value_falls_closed_without_legacy_file(
+        self, isolated_home, key
+    ):
+        """A malformed row for a presence-disables key is skipped exactly
+        like a fully-absent row, falling through to its own legacy-file
+        check -- absent here, so it resolves "true" (armed), the same as
+        the key's own fail-closed schema default."""
+        _write_state_file(isolated_home, f'{key} = "notabool"\n')
+        result = _run(f"_config_value {key}")
+        assert result.stdout == "true"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert f'{key} = "notabool"' in result.stderr
+        assert _run(f"_config_enabled {key}").returncode == 0
+
+    @pytest.mark.parametrize(
+        "key,legacy_filename",
+        [
+            ("round_consult_gate", ".round-consult-gate-disabled"),
+            ("commit_stall_block", ".commit-stall-block-disabled"),
+            ("authorization_boundary_restore", ".authorization-boundary-disabled"),
+        ],
+    )
+    def test_presence_disables_key_non_boolean_value_resolves_legacy_opt_out(
+        self, isolated_home, key, legacy_filename
+    ):
+        """The same malformed row, with its coexisting legacy opt-out file
+        also present, resolves "false" (disarmed) -- the malformed row
+        never becomes authoritative just because a legacy file happens to
+        coexist with it."""
+        _write_state_file(isolated_home, f'{key} = "notabool"\n')
+        (isolated_home / ".claude" / legacy_filename).touch()
+        result = _run(f"_config_value {key}")
+        assert result.stdout == "false"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert _run(f"_config_enabled {key}").returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# _config_set's atomic, comment/order-preserving rewrite, and its
+# refuse-on-malformed-content contract.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSet:
+    def test_rewrite_preserves_comments_blank_lines_and_key_order(self, isolated_home):
+        _write_state_file(
+            isolated_home,
+            "# a leading comment\n"
+            "commit_stall_block = true\n"
+            "\n"
+            "handoff_nudge = false\n",
+        )
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == (
+            "# a leading comment\n"
+            "commit_stall_block = true\n"
+            "\n"
+            "handoff_nudge = true\n"
+        )
+
+    def test_appends_a_new_row_when_key_absent(self, isolated_home):
+        _write_state_file(isolated_home, "commit_stall_block = true\n")
+        result = _run("_config_set handoff_nudge false")
+        assert result.returncode == 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "commit_stall_block = true\nhandoff_nudge = false\n"
+
+    def test_refuses_to_write_when_file_contains_a_malformed_line(self, isolated_home):
+        original = "handoff_nudge = false\nthis line has no equals sign\n"
+        _write_state_file(isolated_home, original)
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode != 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == original
+
+    def test_bool_key_rejects_a_non_bool_value(self, isolated_home):
+        """handoff_nudge is `bool`-typed -- a write value other than
+        true/false must be rejected before any write is attempted."""
+        result = _run("_config_set handoff_nudge notabool")
+        assert result.returncode != 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists()
+
+    def test_enum_key_accepts_false(self, isolated_home):
+        result = _run("_config_set pr_cost_disclosure false")
+        assert result.returncode == 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "pr_cost_disclosure = false\n"
+
+    def test_enum_key_accepts_its_declared_literal(self, isolated_home):
+        """The written line quotes the enum literal (`"dollars"`) -- a bare
+        `dollars` is not valid TOML, even though the VALUE argument itself
+        stays bare."""
+        result = _run("_config_set pr_cost_disclosure dollars")
+        assert result.returncode == 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == 'pr_cost_disclosure = "dollars"\n'
+
+    def test_enum_key_rejects_a_literal_other_than_its_own_or_false(self, isolated_home):
+        """pr_cost_disclosure is `enum:dollars`-typed -- a write value other
+        than `false` or `dollars` must be rejected before any write is
+        attempted."""
+        result = _run("_config_set pr_cost_disclosure euros")
+        assert result.returncode != 0
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists()
+
+    def test_write_failure_leaves_state_file_untouched_and_cleans_up_temp_file(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """The write block's own exit status is checked before `mv` -- a
+        failed write (simulated here via a `mktemp` shim that hands back an
+        already-read-only temp file, so the write block's own `>` redirect
+        fails) must not install a truncated/empty file over the real state
+        file, and must clean up the temp file rather than leaving it
+        behind."""
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "handoff_nudge = false\n"
+        assert not fixed_tmp_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _config_scaffold is additive-only, honors an exclude-list, and -- for a
+# key whose legacy-polarity is presence-enables/presence-disables/
+# content-matches -- never backfills a default row over an absent one, so
+# that key's own legacy file stays reachable via _config_location_value's
+# read-time fallback for as long as the key has no state-file row of its
+# own.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigScaffold:
+    def test_existing_hand_edited_row_survives_unchanged(self, isolated_home):
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text().splitlines() == ["handoff_nudge = false"]
+
+    def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
+        """Every one of today's 15 keys carries a legacy-polarity value, so
+        scaffold over an empty state file must leave the file with no rows
+        at all -- backfilling any of them would permanently shadow that
+        key's own legacy file with zero warning."""
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_legacy_file_created_after_scaffold_still_takes_effect(self, isolated_home):
+        """A legacy kill switch touched after `install.sh`/
+        migrate-legacy-config.sh has already scaffolded the state file must
+        still flip its key's resolved value."""
+        assert _run("_config_scaffold").returncode == 0
+        assert _run("_config_value round_consult_gate").stdout == "true"
+        (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _run("_config_value round_consult_gate").stdout == "false"
+
+    def test_exclude_list_key_and_every_other_key_both_stay_absent(self, isolated_home):
+        result = _run("_config_scaffold 'worktree_required autonomous_shipping'")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_plain_key_with_no_legacy_polarity_still_gets_its_default_row(self, isolated_home, tmp_path):
+        """A key with an empty legacy-polarity column has no legacy file to
+        protect, so scaffold's original additive-only default-fill contract
+        still applies to it -- a schema shape none of today's real 15 keys
+        carry, exercised via an isolated config-keys.psv fixture."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "brand_new_capability = true\n"
+
+    def test_plain_key_with_no_legacy_polarity_can_still_be_excluded(self, isolated_home, tmp_path):
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold brand_new_capability")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_enum_key_with_no_legacy_polarity_gets_a_quoted_default_row(self, isolated_home, tmp_path):
+        """An enum-typed key with an empty legacy-polarity column (a schema
+        shape none of today's real enum:* rows carry -- see
+        test_every_enum_row_has_false_default in test_config_py.py for why
+        that's currently true) reaches the default-fill loop, so its default
+        must be quoted the same way _config_set quotes its own writes --
+        _config_quote_value_for_write is the shared helper both call."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_enum|enum:widgets|widgets|config-dir|false||||Brand new enum|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == 'brand_new_enum = "widgets"\n'
+
+    def test_write_failure_leaves_state_file_untouched_and_cleans_up_temp_file(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Mirrors TestConfigSet's identical test: the write block's own
+        exit status is checked before `mv` in _config_scaffold too."""
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run("_config_scaffold")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "handoff_nudge = false\n"
+        assert not fixed_tmp_file.exists()
+
+    def test_write_failure_leaves_state_file_untouched_when_a_default_row_would_be_emitted(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Mirrors test_plain_key_with_no_legacy_polarity_still_gets_its_default_row's
+        schema fixture -- a key with no legacy-polarity, so this run's
+        content build actually appends a default row, unlike the sibling
+        failure test above (which reaches the same unconditional write with
+        today's real config-keys.psv, but with no default row appended,
+        since every one of its 15 rows has a legacy-polarity value). This
+        test proves the failure check still fires when the write is reached
+        via that different condition -- scaffold's per-key inclusion logic
+        doesn't accidentally exempt a live, row-appending write from the
+        check."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists()
+        assert not fixed_tmp_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _config_set/_config_scaffold's empty-or-`/`-resolved config dir guard --
+# the first write in this repo routed through _lib_config_dir's resolver,
+# which validates its own output no further than "absolute."
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDirGuard:
+    def test_config_set_refuses_when_config_dir_resolves_to_root(self, isolated_home, monkeypatch, tmp_path):
+        """CLAUDE_CONFIG_DIR=/ resolves, via _lib_config_dir's own
+        `${CLAUDE_CONFIG_DIR%/}` trailing-slash strip, to the empty string --
+        _config_set's `""|/` guard must reject this before any mkdir/write
+        is attempted. mkdir/mktemp/mv are shadowed on PATH so a guard
+        regression is caught by the shim marker's existence, not by relying
+        on a real write to `/` failing (which a root-privileged test runner
+        would not catch)."""
+        bin_dir = tmp_path / "guard-bin"
+        bin_dir.mkdir()
+        write_attempted = tmp_path / "write-attempted"
+        _write_write_attempt_shims(bin_dir, write_attempted)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/")
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode == 2
+        assert not write_attempted.exists()
+        assert not Path("/claude-config.toml").exists()
+
+    def test_config_scaffold_refuses_when_config_dir_resolves_to_root(self, isolated_home, monkeypatch, tmp_path):
+        bin_dir = tmp_path / "guard-bin"
+        bin_dir.mkdir()
+        write_attempted = tmp_path / "write-attempted"
+        _write_write_attempt_shims(bin_dir, write_attempted)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/")
+        result = _run("_config_scaffold")
+        assert result.returncode == 2
+        assert not write_attempted.exists()
+        assert not Path("/claude-config.toml").exists()

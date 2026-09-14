@@ -163,6 +163,46 @@ def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
     assert tmp_path / "projects" == scope_mod.PROJECTS_DIR
 
 
+def test_scope_import_does_not_crash_when_home_unset(monkeypatch):
+    """Importing transcript_analysis.scope must not raise even when $HOME is
+    unset/empty and CLAUDE_CONFIG_DIR is not set -- PROJECTS_DIR resolves
+    lazily, on first access, not at import time, so an importer that never
+    touches PROJECTS_DIR (e.g. analyze-context.py's own `--help` path) never
+    pays for a $HOME-unset resolution failure it doesn't need to hit."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)  # must not raise
+
+
+def test_resolve_scan_roots_default_root_when_home_unset(monkeypatch, tmp_path):
+    """resolve_scan_roots' own internal `PROJECTS_DIR` references -- converted
+    to `_projects_dir()` calls so they go through PEP 562 lazy resolution --
+    must still resolve correctly when $HOME is unset. A bare-name reference
+    left unconverted after PROJECTS_DIR became a lazy module attribute would
+    raise NameError here: a bare global reference inside the module's own
+    function bodies never reaches scope.py's __getattr__, unlike external
+    `scope.PROJECTS_DIR` attribute access.
+    """
+    monkeypatch.setenv("HOME", "")
+    config_dir = tmp_path / "active-account"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_resolve_roots_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)
+
+    roots = scope_mod.resolve_scan_roots(argparse.Namespace())
+
+    assert roots == [config_dir / "projects"]
+
+
 class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
     distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
@@ -8142,15 +8182,20 @@ class TestCacheEfficiencyArgparseWiring:
 
 @pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
-    _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
-    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR, so its sentinel check
-    (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
-    never scope.py's _resolve_cost_roots."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel. Sets
+    CLAUDE_CONFIG_DIR explicitly, rather than relying on
+    _isolate_transcript_corpus_lookups' autouse fixture landing on the same
+    literal tmp-path string by coincidence: _cost_ledger_report's sentinel
+    check goes through _config.config_enabled, which resolves config_dir via
+    _config.py's own independent binding, not _mod's -- patching _mod's
+    config_dir binding alone has no effect on it. Setting the env var instead
+    makes both _mod.config_dir() (the ledger-path resolution
+    _cost_ledger_path() reads) and _config.config_enabled()'s own resolution
+    agree on the same directory."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
-    monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
     return cfg_dir
 
 
@@ -11882,6 +11927,73 @@ class TestCostLedgerSentinelGate:
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
+    def test_record_exits_when_config_dir_unresolvable_distinct_from_missing_sentinel(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled("cost_ledger_recording") returning None
+        (config dir unresolvable) is distinguished from a resolved dir that
+        simply lacks the sentinel file (test_record_refuses_without_sentinel
+        above) -- forces the condition via _config's own config_dir binding,
+        the one _config.config_enabled actually reads (see cost_ledger_enabled
+        fixture's docstring for why patching _mod's binding has no effect
+        on it)."""
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod._config, "config_dir", _raise_value_error)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled raising KeyError with an empty schema()
+        means config-keys.psv itself was unreadable -- the message must
+        name that cause, not an unknown-key bug."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_record_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """The same KeyError with a non-empty schema() means config-keys.psv
+        parsed fine -- a real unknown-key bug at the call site, not the
+        stow-relink/git-pull infrastructure cause. The message must name the
+        actual key and must not misattribute it to config-keys.psv being
+        unreadable."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "cost_ledger_recording" in err
+        assert "could not read config-keys.psv" not in err
+
     def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
@@ -12409,6 +12521,26 @@ class TestSpendOverThreshold:
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert int(cols["Sessions"]) == 1
+
+    def test_nudge_log_diagnostic_footer_swallows_unresolvable_config_dir(
+        self, fake_projects, capsys, monkeypatch
+    ):
+        """An unresolvable config dir (e.g. $HOME unset) inside the trailing
+        _print_nudge_log_diagnostic() footer must not crash an
+        already-successful report -- the primary table has already printed."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
+        assert "Diagnostic" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -17632,12 +17764,12 @@ _DENIAL_HOOK_NAME_SHAPE_RE = re.compile(r"[\w .-]+")
 # Call shapes that carry a deny-message literal: emit_deny, its
 # emit_deny_folding_fresh_lock_context wrapper
 # (require-worktree-for-git-writes.sh), and _lib_parse_tool_input_or_deny's
-# own argument. _lib_staged_length_gate's second (message) argument is
-# reached via its distinct two-argument call shape, since its first argument
-# is a single-quoted grep -E pattern rather than a deny literal.
+# own argument. _lib_staged_length_gate's third (message) argument is
+# reached via its distinct three-argument call shape — "$REPO_ROOT", then a
+# single-quoted grep -E pattern, then the deny literal.
 _DENY_LITERAL_CALL_START_RE = re.compile(
     r"(?<![\w])(?:emit_deny|emit_deny_folding_fresh_lock_context|_lib_parse_tool_input_or_deny)\s+\""
-    r"|_lib_staged_length_gate\s+'[^']*'\s+\""
+    r"|_lib_staged_length_gate\s+\"\$REPO_ROOT\"\s+'[^']*'\s+\""
 )
 
 
@@ -20147,6 +20279,24 @@ class TestRearmBacktestReport:
         out = capsys.readouterr().out
         assert "1 excluded" in out
 
+    def test_unresolvable_config_dir_exits_cleanly(self, fake_projects, capsys, monkeypatch):
+        """An unresolvable config dir (e.g. $HOME unset) at the
+        .handoff-nudge.log read exits 1 with a diagnostic, rather than an
+        uncaught ValueError traceback -- mirrors _cost_ledger_path's own
+        callers' stderr+exit convention."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        assert exc_info.value.code == 1
+        assert "HOME is unset or empty" in capsys.readouterr().err
+
     def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
         """A session on a 200k-context-window model crosses its own real fire
         point (80,000) well under _HANDOFF_NUDGE_ABS_CAP (150,000) -- a
@@ -21710,6 +21860,118 @@ class TestPrCostReportOrchestration:
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert len(calls) == 1
+
+
+class TestPrCostRecordingConfigDirUnresolvable:
+    """_config.config_enabled("pr_cost_recording", ...) returning None --
+    distinct from a resolved account simply lacking .pr-cost-enabled. Not
+    reachable through account_config_dir itself (root.parent is always a
+    concrete Path, per this call site's own comment), so these force the
+    condition directly through _config.config_enabled rather than through
+    any real config-dir input."""
+
+    def test_single_account_exits_1_with_its_own_diagnostic(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording":
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
+
+    def test_all_accounts_skips_the_affected_account_and_continues_the_sweep(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """acct_a's own config_enabled call is forced to None; acct_b's own
+        call is untouched and opted in normally -- the sweep must count
+        acct_a via skipped_other and still record acct_b's row, rather than
+        aborting the whole run on the first account's unresolvable dir."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_b / ".pr-cost-enabled").touch()  # acct_a deliberately forced to None below
+        proj_b = roots[1] / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording" and config_dir_override == acct_a:
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        rows_b = _mod._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_b) == 1
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        captured = capsys.readouterr()
+        assert "account-1's config directory could not be resolved -- skipped" in captured.err
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+
+
+class TestPrCostRecordingKeyError:
+    """_config.config_enabled("pr_cost_recording", ...) raising KeyError is
+    ambiguous on its own -- config-keys.psv unreadable and a genuine
+    unknown-key bug both raise the identical KeyError. These force each
+    schema() outcome directly to pin the message picks the right cause."""
+
+    def test_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "pr_cost_recording" in err
+        assert "could not read config-keys.psv" not in err
 
 
 class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:

@@ -390,6 +390,125 @@ def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
     assert result is None
 
 
+def test_unreadable_config_keys_psv_does_not_fire(armed_home, dirty_repo, tmp_path):
+    """A fully-unreadable config-keys.psv still makes this hook silent end
+    to end -- but via autonomous_shipping's own sentinel-presence check
+    (step 3), not commit_stall_block's own exit-3 arm (step 2), which this
+    end-to-end path can never observe. See config-schema-audit.md's
+    commit_stall_block section for why, and
+    test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed
+    below for the isolated regression test of that exit-3 arm itself.
+    Mirrors test_lib.py's _lib_sh_with_unreadable_schema technique and
+    test_restore_authorization_boundary_on_compact.py's own exit-3 test:
+    symlink the hook plus _lib.sh/_config.sh into a directory with no
+    config-keys.psv sibling, so _config_schema_field sees an absent
+    (unreadable) schema file."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
+    (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    # Distinct prompt_ids: STATE_DIR dedup is keyed on session_id+prompt_id
+    # and shares the same armed_home across both calls below, so reusing one
+    # prompt_id would make the second call's silence ambiguous between
+    # "schema unreadable" and "already-seen prompt_id."
+    result = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    isolated_result = run_hook_stop(
+        isolated_hooks_dir / ADVANCE_HOOK.name,
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None, "sanity check: the unmodified hook must fire under these conditions"
+    assert isolated_result is None
+
+
+def test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed(
+    isolated_home, dirty_repo, tmp_path
+):
+    """Direct regression test for the case "$?" statement itself (advance-
+    past-commit-stall.sh:66-70), isolated from autonomous_shipping's own
+    gate -- see config-schema-audit.md's commit_stall_block section for why
+    an end-to-end reproduction can never observe this key's own exit-3
+    direction inside the real hook, and
+    test_unreadable_config_keys_psv_does_not_fire above for that end-to-end
+    path.
+
+    Drives the real hook script itself, not a hand-copied case statement --
+    a reintroduced bug in the hook's own case arm (e.g. folding exit 3 into
+    the same branch as exit 1) must fail this test. config-keys.psv is
+    absent (commit_stall_block's own _config_enabled call returns exit 3),
+    and _lib_autonomous_shipping_sentinel_present is stubbed, after the real
+    _lib.sh is sourced, to unconditionally return 0 -- bypassing that
+    function's own independent exit-3 masking against the same absent
+    schema (see test_unreadable_config_keys_psv_does_not_fire's docstring),
+    so the hook's own commit_stall_block case arm is what actually gates
+    whether the hook proceeds to fire."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
+    (isolated_hooks_dir / "_lib.sh.real").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    # config-keys.psv deliberately absent, matching the isolation technique
+    # used throughout this file and test_config_lib.py.
+    (isolated_hooks_dir / "_lib.sh").write_text(
+        "#!/bin/bash\n"
+        '. "$(dirname "${BASH_SOURCE[0]}")/_lib.sh.real"\n'
+        "_lib_autonomous_shipping_sentinel_present() { return 0; }\n"
+    )
+    result = run_hook_stop(
+        isolated_hooks_dir / ADVANCE_HOOK.name,
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert result is not None, (
+        "exit 3 (config-keys.psv unreadable) must leave commit_stall_block "
+        "armed, not fold into exit 1's disabled branch"
+    )
+
+
+def test_commit_stall_block_case_statement_treats_exit_4_as_stays_armed(
+    isolated_home, dirty_repo, tmp_path
+):
+    """Direct regression test for the case "$?" statement itself
+    (advance-past-commit-stall.sh:63-66), isolated the same way the exit-3
+    test above is: config-keys.psv is readable and non-empty but missing
+    commit_stall_block's own row (the interrupted stow-relink/git-pull
+    shape, distinct from the wholly-unreadable file above), and
+    _lib_autonomous_shipping_sentinel_present is stubbed to unconditionally
+    return 0 so the hook's own commit_stall_block case arm is what actually
+    gates whether the hook proceeds to fire."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
+    (isolated_hooks_dir / "_lib.sh.real").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    real_schema = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+    pruned_schema = [line for line in real_schema if not line.startswith("commit_stall_block|")]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+    (isolated_hooks_dir / "_lib.sh").write_text(
+        "#!/bin/bash\n"
+        '. "$(dirname "${BASH_SOURCE[0]}")/_lib.sh.real"\n'
+        "_lib_autonomous_shipping_sentinel_present() { return 0; }\n"
+    )
+    result = run_hook_stop(
+        isolated_hooks_dir / ADVANCE_HOOK.name,
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert result is not None, (
+        "exit 4 (config-keys.psv readable but missing commit_stall_block's "
+        "own row) must leave commit_stall_block armed, not fold into exit "
+        "1's disabled branch"
+    )
+
+
 def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
     armed_home, dirty_repo, tmp_path
 ):
@@ -513,6 +632,26 @@ def test_home_claude_dir_absent_silent(tmp_path, dirty_repo, monkeypatch):
         ),
         cwd=dirty_repo,
         home=bare_home,
+    )
+    assert result is None
+
+
+def test_relative_config_dir_fails_open(isolated_home, dirty_repo):
+    """config-schema-audit.md's commit_stall_block fail-direction claim: a
+    resolution failure (relative CLAUDE_CONFIG_DIR, unresolvable per
+    _lib_config_dir) must not block a Stop turn, matching the other four
+    enforcement-critical keys' equivalent tests (e.g.
+    test_restore_authorization_boundary_on_compact.py's
+    test_unresolvable_config_dir_exits_0_with_no_output). Hits the hook's
+    own `CONFIG_DIR=$(_lib_config_dir) || exit 0` short-circuit before
+    commit_stall_block's own schema row is ever read."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=isolated_home,
+        extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
     )
     assert result is None
 

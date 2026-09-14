@@ -93,3 +93,26 @@ class TestAutonomousShippingActive:
 
         assert result.returncode != 0
         assert result.stderr.strip() != ""
+
+    def test_home_legacy_marker_overrides_disagreeing_config_dir_row(
+        self, tmp_path: Path
+    ) -> None:
+        """autonomous_shipping's config-dir-or-home union, exercised through
+        this script rather than _config_value directly: an explicit
+        `autonomous_shipping = false` row in the resolved CLAUDE_CONFIG_DIR's
+        own claude-config.toml must not defeat $HOME/.claude's legacy
+        marker -- mirrors test_config_lib.py's own
+        TestUnionSemantics.test_explicit_false_in_config_dir_does_not_defeat_true_under_home_legacy,
+        which pins the same invariant generically against _config_value."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("autonomous_shipping = false\n")
+
+        result = _run_script(repo, config_dir, home=home)
+
+        assert result.returncode == 0

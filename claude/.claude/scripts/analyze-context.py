@@ -31,9 +31,32 @@ from transcript_analysis.corpus import read_session_file
 # Display/fallback only -- main()'s actual scan roots read scope.PROJECTS_DIR,
 # not this module-level constant; patch scope.PROJECTS_DIR (not this file's
 # PROJECTS_DIR) to redirect a test.
-CLAUDE_DIR = config_dir()
-PROJECTS_DIR = CLAUDE_DIR / "projects"
-SESSION_META_DIR = CLAUDE_DIR / "usage-data" / "session-meta"
+_claude_dir_cache: Path | None = None
+_CLAUDE_DIR_ATTRS = frozenset({"CLAUDE_DIR", "PROJECTS_DIR", "SESSION_META_DIR"})
+
+
+def __getattr__(name: str) -> Path:
+    """PEP 562 lazy module attribute: resolves config_dir() on first access
+    of CLAUDE_DIR/PROJECTS_DIR/SESSION_META_DIR, not at import time, so a
+    bare `import` never pays for a $HOME-unset resolution failure these
+    display-only constants don't otherwise need. Matches
+    mark-terminal.py's/post-crash-sessions.py's print-and-exit convention on
+    that failure.
+    """
+    global _claude_dir_cache
+    if name not in _CLAUDE_DIR_ATTRS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _claude_dir_cache is None:
+        try:
+            _claude_dir_cache = config_dir()
+        except ValueError as exc:
+            print(f"analyze-context: {exc}", file=sys.stderr)
+            sys.exit(2)
+    if name == "CLAUDE_DIR":
+        return _claude_dir_cache
+    if name == "PROJECTS_DIR":
+        return _claude_dir_cache / "projects"
+    return _claude_dir_cache / "usage-data" / "session-meta"
 
 
 def cwd_to_project_key(cwd: Path) -> str:

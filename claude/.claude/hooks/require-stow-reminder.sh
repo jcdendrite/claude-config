@@ -25,12 +25,15 @@
 # Scope:
 # - Fires only when origin URL contains `claude-config` (parallel to
 #   deny-private-project-refs.sh's scoping).
-# - Detects new top-level entries by diffing `main...HEAD` for added
-#   files under `claude/.claude/<X>/...` or `claude/.claude/<X>`, then
-#   checking whether `<X>` exists on `main`. New file directly at the
-#   top level (e.g. `claude/.claude/foo.md`) and new directory (e.g.
-#   `claude/.claude/agents/`) are both flagged — both need a fresh
-#   stow run to materialize their symlink in `~/.claude/`.
+# - Detects any file added under `claude/.claude/` between `main` and
+#   `HEAD` (`git diff --diff-filter=A`), regardless of whether its
+#   immediate parent directory already existed on `main`. Stow links
+#   each file individually, so a new file nested inside an
+#   already-stowed directory (e.g. a new `claude/.claude/hooks/<file>`
+#   when `hooks/` itself predates this branch) needs the identical
+#   re-stow a brand-new top-level entry (`claude/.claude/foo.md`,
+#   `claude/.claude/agents/`) does — there is no "already-stowed parent
+#   covers it" case to filter out.
 # - GH-465: also fires when `install.sh` itself differs between `main`
 #   and `HEAD` (any change, not only new content), independent of whether
 #   any new top-level entry exists.
@@ -83,7 +86,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -135,35 +138,23 @@ if [ -z "$ADDED_PATHS" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
   exit 0
 fi
 
-# Extract immediate-child names under claude/.claude/ and keep only the
-# ones that don't exist on `main`. An added path can be either:
-#   claude/.claude/<X>           (new top-level file)
-#   claude/.claude/<X>/...       (new file inside a directory; <X> is
-#                                 either a brand-new directory OR an
-#                                 existing one — we filter to brand-new
-#                                 below).
-NEW_TOPLEVEL_ENTRIES=""
-SEEN_CHILDREN=""
+# Strip the claude/.claude/ prefix from every added path. `--diff-filter=A`
+# already guarantees each one is new relative to `main` — no further
+# existence check against `main` is needed or wanted (see header: a new
+# file inside an already-existing directory still needs the reminder).
+NEW_ENTRIES=""
 while IFS= read -r added_path; do
   [ -z "$added_path" ] && continue
   rest="${added_path#claude/.claude/}"
   # If stripping the prefix produced no change, the path didn't have it.
   [ "$rest" = "$added_path" ] && continue
-  child="${rest%%/*}"
-  [ -z "$child" ] && continue
-  # Dedup: only check each child once.
-  case " $SEEN_CHILDREN " in *" $child "*) continue ;; esac
-  SEEN_CHILDREN="$SEEN_CHILDREN $child"
-  # Does `<child>` exist on main? `git cat-file -e` succeeds for both
-  # files and directories at that ref.
-  if ! (cd "$REPO_ROOT" && git cat-file -e "main:claude/.claude/$child" 2>/dev/null); then
-    NEW_TOPLEVEL_ENTRIES="$NEW_TOPLEVEL_ENTRIES $child"
-  fi
+  [ -z "$rest" ] && continue
+  NEW_ENTRIES="$NEW_ENTRIES $rest"
 done <<< "$ADDED_PATHS"
 
 # Trim leading space.
-NEW_TOPLEVEL_ENTRIES="${NEW_TOPLEVEL_ENTRIES# }"
-if [ -z "$NEW_TOPLEVEL_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
+NEW_ENTRIES="${NEW_ENTRIES# }"
+if [ -z "$NEW_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
   exit 0
 fi
 
@@ -228,18 +219,18 @@ fi
 # Format the entry list compactly for the deny message.
 # shellcheck disable=SC2016 # the `$` in the sed script is a sed end-of-line
 # anchor (s/$/.../), not a shell variable — nothing here needs shell expansion.
-ENTRIES_HUMAN=$(printf '%s' "$NEW_TOPLEVEL_ENTRIES" | tr ' ' '\n' | sed 's/^/`claude\/.claude\//; s/$/`/' | tr '\n' ' ' | sed 's/ $//')
+ENTRIES_HUMAN=$(printf '%s' "$NEW_ENTRIES" | tr ' ' '\n' | sed 's/^/`claude\/.claude\//; s/$/`/' | tr '\n' ' ' | sed 's/ $//')
 
 # GH-465: state which trigger(s) fired so the deny message names the actual
-# reason rather than always describing the new-top-level-entry case.
-if [ -n "$NEW_TOPLEVEL_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 1 ]; then
-  REASON_DETAIL="adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN) and changes install.sh"
-elif [ -n "$NEW_TOPLEVEL_ENTRIES" ]; then
-  REASON_DETAIL="adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN)"
+# reason rather than always describing the new-file case.
+if [ -n "$NEW_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 1 ]; then
+  REASON_DETAIL="adds new files under claude/.claude/ ($ENTRIES_HUMAN) and changes install.sh"
+elif [ -n "$NEW_ENTRIES" ]; then
+  REASON_DETAIL="adds new files under claude/.claude/ ($ENTRIES_HUMAN)"
 else
   REASON_DETAIL="changes install.sh"
 fi
 
-emit_deny "this PR $REASON_DETAIL. Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
+emit_deny "this PR $REASON_DETAIL. Stow links each file individually, and a new file — whether it's a brand-new top-level entry or added inside a directory that already exists in ~/.claude/ — only appears there after re-running install.sh; git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
 
 exit 0

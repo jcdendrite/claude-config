@@ -80,10 +80,10 @@ SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r '.source // empty' 2>/dev/null)
 
 # --- machine-global kill switch ------------------------------------------
 
-# An unresolvable config dir leaves no kill-switch location to check, so
-# this hook fails open (today's auto-titler behavior) rather than guess.
-CONFIG_DIR=$(_lib_config_dir) || exit 0
-[ -f "$CONFIG_DIR/.session-title-disabled" ] && exit 0
+# An unresolvable config dir gives the same exit-0 outcome as the kill
+# switch being present (today's auto-titler runs unchanged). Delegates to
+# _config_enabled's session_title_from_branch schema row (presence-disables).
+_config_enabled session_title_from_branch || exit 0
 
 # --- authoritative cwd -----------------------------------------------------
 # Run git against the payload's .cwd, not process cwd: a linked-worktree
