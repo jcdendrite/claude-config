@@ -87,7 +87,8 @@ Per-session granularity is unavailable under multi-root scope. Use the aggregate
 **(g) Characterize the post-freeze rounds.** Required before any thrash verdict in Step 4, and skipped only when Step (e) found no post-freeze rounds. The gate-denial scan below is the exception: it needs no freeze date and runs even when Step (d2) or Step (e) already returned Inconclusive. The counts from Steps (b)–(f) establish only that rounds ran after the freeze, not what they did. Invoke `transcript-narrative` for the branch and establish three things:
 
 - Whether successive rounds of the same skill raised new findings each time or re-surfaced ones already raised.
-- Whether repeated `ready-for-review` rounds re-ran an identical denial with the command shape unadapted, and whether each denial was a genuine invocation attempt rather than an incidental mention of the gated command (a grep pattern, a quoted example) that the hook denies by design.
+- Whether repeated `ready-for-review` rounds re-ran an identical denial with the command shape unadapted.
+- Whether each `ready-for-review` denial was a genuine invocation attempt rather than an incidental mention of the gated command (a grep pattern, a quoted example) that the hook denies by design.
 - Whether the rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review.
 
 Where the narrative cannot settle which of these applies, the verdict is **Inconclusive**.
@@ -103,7 +104,7 @@ Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never a
 - **Stuck loop** — post-freeze rounds of this type keep opening and re-surface findings already raised, rather than new ones each round.
 - **Plan-grinding** — post-freeze `plan-review` rounds iterating a plan whose feature is still unimplemented, with post-freeze commits touching only artifact paths.
 - **Gate-denial churn** — post-freeze `ready-for-review` rounds re-running an identical denial across sessions with the command shape unadapted, each a genuine invocation attempt rather than an incidental mention. Distinct from stuck loop: nothing is being re-reviewed.
-- **Legitimate follow-on work** — post-freeze rounds review genuinely new work — a plan for the next feature, a freshly opened commit series — rather than re-litigating the frozen code, confirmed by the narrative read.
+- **Legitimate follow-on work** — post-freeze rounds review genuinely new work, not the frozen code, confirmed by the narrative read.
 - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range (no early freeze), whatever the outside-review-window share reads.
 - **Inconclusive** — Tier 3, a single squashed commit (Step 3d), a branch still active (Step 3d2), or a vacuous partition (Step 3e).
 
