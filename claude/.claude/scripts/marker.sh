@@ -644,6 +644,7 @@ case "$SUBCOMMAND" in
         # Each marker kind hashes what its own step consumes. `verification`
         # hashes the tree (what step 2 executes); `cumulative-review` hashes
         # the diff (what step 3 reads).
+        #
         # Compute before redirecting -- same shape as every other write arm
         # above: `>` truncates the marker before the pipeline runs, so a
         # failed hash would destroy a valid marker and silently force a
@@ -979,6 +980,16 @@ case "$SUBCOMMAND" in
         # SESSION_ID needed since this never writes.
         # A hash that can't be computed must read as no-match, not match --
         # same fail-closed direction as `check code-review` above.
+        #
+        # `write verification` refuses to write over uncommitted changes, so
+        # a hash match here only means something when the tree is clean too.
+        # Unlike `write`, a dirty tree is not an error here -- `check` is
+        # read-only, so it just reads as a cache miss.
+        UNCOMMITTED_STATUS=$(git -C "$REPO_ROOT" status --porcelain) || { printf 'no-match\n'; exit 1; }
+        if [ -n "$UNCOMMITTED_STATUS" ]; then
+          printf 'no-match\n'
+          exit 1
+        fi
         MARKER_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # A hash match older than VERIFICATION_CHECK_MAX_AGE_SECONDS reads as
