@@ -13,17 +13,15 @@ section, a reverted pilot does not supersede it.
 G2 — the round-2-to-round-3 escalation rate, i.e. the share of a branch
 population that still reaches a third code-review round — is the pilot's
 decisive outcome measure, pre-registered in
-[round2-consult-trigger-pilot.md](round2-consult-trigger-pilot.md). It
-failed the adopt bar on both required checks, each by a wide margin,
-pooled across the two machines that ran the pilot. The pre-registration
-required two independently-computed checks to agree — **gate-truth**
-(branches the gate actually denied) and **proxy-on-proxy** (computed
-identically to the 50% baseline below) — both defined in full in the
-pre-registration linked above. Both had to clear the pre-registered
+[round2-consult-trigger-pilot.md](round2-consult-trigger-pilot.md), which
+defines **gate-truth** and **proxy-on-proxy**, the two independently-computed
+checks required to agree. Both had to clear the pre-registered
 adopt-candidate bar — an escalation rate at or below 25% — for cap=1 to
 become an adoption candidate; either check failing the bar means revert.
-Pooled from each machine's own `review-trace --this-repo --deny-only` /
-`--skill code-review` output, computed 2026-09-15:
+G2 failed the adopt bar on both required checks, each by a wide margin,
+pooled across the two machines that ran the pilot. Pooled from each
+machine's own `review-trace --this-repo --deny-only` / `--skill
+code-review` output, computed 2026-09-15:
 
 - **Gate-truth, primary:** 13/18 = 72.2%
 - **Gate-truth, adverse sensitivity** (a stricter reading that counts every
@@ -35,13 +33,14 @@ All three exceed the ≤25% adopt bar by roughly 3x, and all three exceed
 the 50% historical baseline besides — branches in the pilot reached round
 3 more often than branches did before the pilot ran, not less. Two are
 individually significant in the wrong direction under the
-pre-registration's own one-sided exact binomial test: proxy-on-proxy
-(P(X≥26 | n=35, p=0.5)=0.0030 — about 3 times in 1,000 by chance if the
-true rate were 50%) and gate-truth adverse (P(X≥14 | n=19, p=0.5)=0.0318 —
-about 3 times in 100). Gate-truth primary is directionally consistent
-(P(X≥13 | n=18, p=0.5)=0.0481 — about 5 times in 100), just past the
-conventional 5%-chance significance threshold. Both legs were required to
-clear the adopt bar for adoption; both failed decisively.
+pre-registration's own one-sided exact binomial test:
+
+- Proxy-on-proxy: P(X≥26 | n=35, p=0.5)=0.0030 — about 3 times in 1,000 by
+  chance if the true rate were 50%.
+- Gate-truth adverse: P(X≥14 | n=19, p=0.5)=0.0318 — about 3 times in 100.
+- Gate-truth primary is directionally consistent but not itself
+  individually significant: P(X≥13 | n=18, p=0.5)=0.0481 — about 5 times
+  in 100, just past the conventional 5%-chance significance threshold.
 
 A separate, unrelated defect was found and fixed in the pilot's own
 config-key resolver during this evaluation:

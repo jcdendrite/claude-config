@@ -116,23 +116,20 @@ outcome measure computable with certainty rather than reconstruction.
 
 ### Phase A — read the config key
 
-**Outcome: superseded by an independently-merged fix.** A second session
-found the same gap and merged an equivalent, simpler fix as PR 1016 to
-`main` before this plan's own PR did. This branch rebased onto PR 1016's
-`_lib.sh`, `config-schema-audit.md`, and test-file changes rather than
-re-landing its own, dropping Mechanism A1 and A2 below to historical
-reasoning only. (PR 1016 delegates `_lib_reviewer_round_state_cap()` to
-`_config_enabled round_consult_round2_pilot` via a bare `if` condition
-rather than Mechanism A1's `||`-guarded capture — bash already exempts an
-`if`-condition command from `set -e`, so the guard this plan argued for was
-unneeded complexity, not a correctness gap in the simpler form.) Mechanism
-A3's two consumer-header comment fixes (`require-architect-consult.sh`,
-`log-reviewer-round.sh`) were not part of PR 1016 and still shipped as
-planned. This branch also shipped one unrelated fix: `config-schema-audit.md`'s
-`round_consult_gate` section (a different config key sharing the same audit
-doc) still described a pre-`_config_enabled` shape. PR 1016 didn't touch
-that section, so this branch corrected it to match
-`_lib_round_consult_gate_disabled`'s current implementation.
+**Outcome: superseded by an independently-merged fix.**
+
+- PR 1016 shipped an equivalent, simpler fix first; this branch rebased
+  onto it and dropped Mechanisms A1 and A2 below to historical reasoning
+  only.
+- PR 1016's bare `if` needs no `||` guard because bash already exempts an
+  `if`-condition command from `set -e`.
+- Mechanism A3's two consumer-header comment fixes
+  (`require-architect-consult.sh`, `log-reviewer-round.sh`) were not part
+  of PR 1016 and still shipped as planned.
+- This branch separately corrected `config-schema-audit.md`'s
+  `round_consult_gate` section (a different config key sharing the same
+  audit doc, still describing a pre-`_config_enabled` shape), which PR
+  1016 didn't touch.
 
 **Mechanism A1 — replace the body with `_config_enabled`, guarded by `||`.**
 
@@ -489,18 +486,7 @@ Phase A outcome note above) — only the two consumer-header bullets below
 still describe what this branch itself shipped.
 
 - `claude/.claude/hooks/_lib.sh` — dropped; see the Phase A outcome note
-  above. Originally planned to replace
-  `_lib_reviewer_round_state_cap()`'s body (lines 3082-3090) with Mechanism
-  A1's five lines. Rewrite the header comment (lines 3071-3081) so the
-  resolution line names the key, the fail-direction line covers every
-  nonzero exit, and the always-echoes-an-integer contract line is kept
-  verbatim. Add one line stating why the call is `||`-guarded. Do not
-  restate the TOML→legacy→default chain — `_config_location_value`'s own
-  header is its canonical home. Leave `_LIB_REVIEWER_ROUND_STATE_CAP` and
-  its adjacent comment (lines 3058-3069) untouched. **Reuse:**
-  `_config_enabled` is already in scope — `_lib.sh`:21-23 sources
-  `_config.sh` at load, and `_lib_round_consult_gate_disabled` at :3203 is
-  the in-file precedent for calling it.
+  above.
 - `claude/.claude/hooks/require-architect-consult.sh` — line 6, replace
   "1 under the round-2 pilot sentinel" with "1 when the
   `round_consult_round2_pilot` config key is enabled." Header only; no
@@ -509,54 +495,9 @@ still describe what this branch itself shipped.
   substitution in "The cap is 2 by default, 1 under the round-2 pilot
   sentinel."
 - `claude/.claude/hooks/tests/config-schema-audit.md` — dropped; see the
-  Phase A outcome note above (PR 1016 shipped this file's correction
-  independently). Originally planned: the `round_consult_round2_pilot`
-  section, lines 343-364. Its Call-site bullet
-  currently states the file-only probe as the design and asserts "The schema
-  row exists only for `install.sh`'s schema-driven reporter, not for this
-  function's own enforcement" — now false, and the sentence to delete.
-  Rewrite the Call-site bullet to name `_config_enabled round_consult_round2_pilot`;
-  rewrite the Fail-direction bullet to cover exits 2, 3, and 4 identically,
-  stating why collapsing them is correct here and not in
-  `_lib_round_consult_gate_disabled`; correct "A user hand-toggles it via
-  `touch`" to name editing `claude-config.toml`, with the legacy file as a
-  readable fallback. Preserve the "Not part of pre-migration
-  `SENTINEL_INVENTORY`" sentence — it is a historical record.
+  Phase A outcome note above.
 - `claude/.claude/hooks/tests/test_lib_reviewer_round_state.py` — dropped;
-  see the Phase A outcome note above (PR 1016 shipped its own, smaller
-  regression-test set for the same fix). Originally planned: extend
-  `TestLibReviewerRoundStateCap` (lines 243-269). Keep all three existing
-  cases; the pilot-sentinel one at :255 now exercises the legacy-fallback
-  arm and its docstring should say so. Add six cases:
-  1. `claude-config.toml` with `round_consult_round2_pilot = true`, no
-     legacy file → `1`.
-  2. `claude-config.toml` with `round_consult_round2_pilot = false`, legacy
-     file present → `2` (the precedence pin: a TOML row is authoritative
-     over the legacy file).
-  3. `claude-config.toml` present and populated but carrying no
-     `round_consult_round2_pilot` row, legacy file present → `1` (the
-     fallback survives a populated TOML — this is the exact shape the
-     migration produced).
-  4. `claude-config.toml` `= true` plus legacy file present → `1`
-     (agreement; no double-count, no error).
-  5. `config-keys.psv` unreadable (`_config_enabled` exit 3) → `2` on
-     stdout, exit 0.
-  6. `config-keys.psv` readable and non-empty but with
-     `round_consult_round2_pilot`'s row removed (exit 4) → `2` on stdout,
-     exit 0.
-
-  **Reuse:** `_state_cap()` at :63-79 already isolates `CLAUDE_CONFIG_DIR`
-  and is the harness for cases 1-4 unchanged. Cases 5-6 need an isolated
-  hooks dir; use `helpers.symlink_hooks_lib_chain` (already the single
-  source of truth for the three-symlink `_lib.sh`/`_config.sh`/`config-keys.psv`
-  chain, `helpers.py`:1349-1364) rather than hand-rolling symlinks, and note
-  that writing the pruned `config-keys.psv` *before* calling it is
-  load-bearing — the helper is `_symlink_if_absent`-based and will leave a
-  real file in place. `test_lib.py`:4056-4083
-  (`test_not_disabled_when_config_keys_psv_readable_but_missing_round_consult_gate_row`)
-  is the worked precedent for the row-pruning recipe; filter on
-  `startswith("round_consult_round2_pilot|")`, which cannot collide with the
-  `round_consult_gate|` prefix.
+  see the Phase A outcome note above.
 
 No change to `docs/hooks.md` (row 7), `config-keys.psv` (the schema row is
 already correct), `docs/config-file.md`, or
