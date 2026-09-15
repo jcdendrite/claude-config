@@ -3078,7 +3078,8 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # _lib_reviewer_round_state_cap
 # Prints the round-state cap shared by require-architect-consult.sh
 # (read side) and log-reviewer-round.sh (write side).
-# Returns 1 if <config-dir>/.round-consult-round2-pilot exists, else
+# Returns 1 when round_consult_round2_pilot resolves enabled per its
+# config-keys.psv schema row (presence-enables legacy polarity), else
 # $_LIB_REVIEWER_ROUND_STATE_CAP.
 # Contract: always echoes a valid integer to stdout, including on an
 # unresolvable config dir -- both call sites consume this via `$(...)` into
@@ -3087,9 +3088,8 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # shape below. Zero-arity, same machine-global scope as the kill switch
 # below.
 _lib_reviewer_round_state_cap() {
-  local config_dir
-  if config_dir=$(_lib_config_dir) \
-    && [ -n "$(_lib_capped find "$config_dir/.round-consult-round2-pilot" -maxdepth 0 2>/dev/null)" ]; then
+  # Uncapped by design, like every other config-key lookup -- see _config.sh's header for why _config_enabled can't use _lib_capped.
+  if _config_enabled round_consult_round2_pilot; then
     printf '1\n'
   else
     printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"

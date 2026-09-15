@@ -344,17 +344,14 @@ Column legend:
 
 - Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap` (delegated to by
   `require-architect-consult.sh` and `log-reviewer-round.sh`, both reading
-  the cap it returns). `config_dir=$(_lib_config_dir) && [ -f
-  "$config_dir/.round-consult-round2-pilot" ]` — a single presence check, no
-  `_config_enabled`/`_config_value` call at all. The schema row exists only
-  for `install.sh`'s schema-driven reporter, not for this function's own
-  enforcement.
+  the cap it returns). A single `_config_enabled round_consult_round2_pilot`
+  call with no raw probe.
 - Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
   alone.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path fallback probe
-  exists; a `_lib_config_dir` failure short-circuits the `&&` and the
-  function falls through to `printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"`
-  (the default cap of 2).
+  exists; `_config_enabled`'s exit 2 (unresolvable config dir) falls to the
+  default-cap arm, same as every other nonzero exit code. That arm prints
+  `printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"` (the default cap of 2).
 - Legacy-import-locations: **config-dir**. Never machine-promptable. Not
   part of pre-migration `SENTINEL_INVENTORY` — this key postdates the
   sentinel-file migration. A user hand-toggles it via `touch`.
