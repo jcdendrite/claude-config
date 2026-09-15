@@ -587,11 +587,11 @@ genuine convergence difficulty and denial-retry churn coexist on the same
 branch. Reading further branches in the tail, rather than pooled statistics
 alone, is the next step if this is revisited.
 
-## From `pr-cost-forensics.md` — "Per-PR cost forensics: dissecting a $100-class pull request"
+## From `pr-cost-forensics.md` — "Per-PR cost forensics: dissecting a disproportionately expensive pull request"
 
 Full empirical record: [`case-studies/review-loop-cost-forensics.md`](case-studies/review-loop-cost-forensics.md).
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Cache-TTL selection (5-minute vs. 1-hour), re-examined against one specific $100-class private-project branch | Rejected — unreachable, not merely unconfigured | The account under study has never once recorded a non-zero one-hour cache-write token, so the tier is unreachable regardless of any config change. Idle-gap rebuilds are 16.1% of this branch's own spend (roughly 13.6% in the 5-minute-to-1-hour-addressable sub-slice), against 40.2% attributable to the subagent thread's own review-loop dispatch volume — the branch-specific figure sharpens, but does not overturn, this register's standing "Cache-TTL selection" verdict above. |
-| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks, re-examined on the same branch | **Inverted the corpus-wide finding** | None of the branch's idle-gap rebuilds (a low-tens count) had a concurrent session active — the opposite of the corpus-wide 92.9%-concurrent finding in the "Context cost root cause" section above. This branch's idle gaps are genuine operator breaks, not session-switching; recorded as a named exception to the corpus-wide pattern, not a refutation of it. |
+| Cache-TTL selection (5-minute vs. 1-hour), re-examined against one disproportionately expensive private-project branch | Rejected — unreachable, not merely unconfigured | The account this branch ran on has never once recorded a non-zero one-hour cache-write token, so the tier is unreachable regardless of any config change. Idle-gap rebuilds are a real but secondary contributor to this branch's own spend, behind the subagent thread's own review-loop dispatch volume — the branch-specific finding sharpens, but does not overturn, this register's standing "Cache-TTL selection" verdict above. |
+| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks, re-examined on the same branch | **Inverted the corpus-wide finding** | None of the branch's idle-gap rebuilds had a concurrent session active — the opposite of the corpus-wide concurrent-session-driven finding in the "Context cost root cause" section above. This branch's idle gaps are genuine operator breaks, not session-switching; recorded as a named exception to the corpus-wide pattern, not a refutation of it. |

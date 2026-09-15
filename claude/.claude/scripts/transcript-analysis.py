@@ -1023,10 +1023,9 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
-# cmd_review_trace's five event["kind"] values, in the order documented in
-# its own docstring — a completeness reference for tests, not consulted by
-# _review_trace_session_events or cmd_review_trace themselves, which still
-# dispatch on the literal per event.
+# cmd_review_trace's five event["kind"] values, in the docstring's order.
+# A completeness reference for tests only; _review_trace_session_events and
+# cmd_review_trace still dispatch on the literal per event.
 _REVIEW_TRACE_EVENT_KINDS: tuple[str, ...] = (
     "skill", "denial", "friction", "reviewer-spawn", "architect-consult",
 )
@@ -1291,7 +1290,7 @@ _DENIAL_HOOK_NAME_PATTERNS: tuple[re.Pattern, ...] = (
 )
 
 
-def _denial_hook_label(hook_name: str, message: str) -> str:
+def _denial_hook_label(hook_name: str, message: str, *, raw_when_unenumerated: bool = False) -> str:
     """Return the originating hook/gate name for one denial event.
 
     Legacy-shape denials carry the name directly (hook_name, from the
@@ -1301,11 +1300,21 @@ def _denial_hook_label(hook_name: str, message: str) -> str:
     Either source is trusted only if the candidate is a member of
     _DENIAL_HOOK_LABELS — an unenumerated hookName (legacy transcripts predate
     this bound entirely) or an unenumerated extracted candidate both fall to
-    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim.
+    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim, unless
+    raw_when_unenumerated is set. That flag widens only the legacy hookName
+    path. A non-empty but unenumerated hookName then echoes raw instead of
+    collapsing to _DENY_SUMMARY_UNMATCHED_HOOK. review-trace's single-root
+    timeline uses it because that caller has no disclosure concern and wants
+    an unrecognized hook surfaced, not hidden. A message-extracted candidate
+    always stays classify-only: hook_name being
+    empty is what routes to message extraction in the first place, so there
+    is no raw field left to echo.
     """
     candidate = (hook_name or "").strip()
     if candidate:
-        return candidate if candidate in _DENIAL_HOOK_LABELS else _DENY_SUMMARY_UNMATCHED_HOOK
+        if candidate in _DENIAL_HOOK_LABELS:
+            return candidate
+        return candidate if raw_when_unenumerated else _DENY_SUMMARY_UNMATCHED_HOOK
     for pattern in _DENIAL_HOOK_NAME_PATTERNS:
         m = pattern.search(message)
         if m is None:
@@ -2014,6 +2023,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     - A sidechain event's line_no is a merged-stream offset, not a real
       file line (see _review_trace_session_events's docstring), so it
       prints as `line   n/a` instead of a numeral.
+    - A denial event's hook= label goes through _denial_hook_label. Under
+      single-root scope, a legacy denial's own hookName echoes raw when it
+      doesn't match _DENIAL_HOOK_LABELS, so a maintainer adding a new hook
+      still sees its real name instead of an opaque "unmatched" bucket. See
+      "Under more than one root scope" below for the multi-root behavior.
 
     --deny-summary delegates its entire accumulation to
     _compute_deny_summary_data instead of running its own pass over
@@ -2038,9 +2052,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       since this repo's own hook denials routinely embed absolute
       filesystem paths that would disclose the same project directory name.
     - hook= is classified through the same _denial_hook_label classifier
-      --deny-summary uses, instead of a legacy denial's raw hookName. This
-      applies regardless of scope — it is a correctness fix, not a
-      redaction.
+      --deny-summary uses, instead of a legacy denial's raw hookName. Unlike
+      the single-root case above, this always classifies here — an
+      unenumerated hookName still falls to _DENY_SUMMARY_UNMATCHED_HOOK,
+      since echoing it raw under multi-root would be the same project
+      disclosure the rest of this section closes.
     - A reviewer-spawn event's subagent_type follows the same closed-
       vocabulary policy as model= above. See _redact_subagent_type for the
       membership test and why --this-repo isn't part of it.
@@ -2073,15 +2089,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     def _session_label(jsonl: Path) -> str:
         """Text for one session's own "### <path>" header.
 
-        The real path under single-root scope. An opaque
+        The real path under single-root scope; an opaque
         account-<K>/session-<N> label under multi-root, since the real path
-        embeds the real project directory name. This label prints
-        unconditionally whenever more than one root is in scope — see
-        _redact_branch for why there is no --this-repo disclosure carve-out
-        here. This closure only redacts the session header. See
-        _redact_branch, below, for this same guard's branch-name redaction,
-        and the denial/friction print sites for this same guard's msg
-        suppression.
+        embeds the project directory name. (Branch and msg redaction live at
+        their own print sites — see _redact_branch and the denial/friction
+        handlers.)
         """
         if not multi_root:
             return str(jsonl)
@@ -2093,17 +2105,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         """Redact a branch name under multi-root scope, mirroring subagent-mix's
         own branch redaction (_mix_branch_label).
 
-        No `--this-repo` disclosure carve-out. `--this-repo` is a scoping
-        flag (which project dirs to scan), not a disclosure assertion, so a
-        foreign account's branch stays foreign under multi-root even when
-        `--this-repo` is set.
-
-        Also, review-trace's carry-forward deliberately attributes a
-        sidechain event the main-thread branch, over a merged main+sidechain
-        stream, which would need subagents' own main_thread_branches
-        attestation machinery to disclose safely. That would be real
-        machinery for marginal gain, so this closure never discloses
-        regardless of --this-repo.
+        No `--this-repo` carve-out: `--this-repo` only scopes which dirs are
+        scanned, and a carry-forward-attributed branch is itself an
+        approximation that would need `subagents`' own attestation machinery
+        to disclose safely.
         """
         if not multi_root:
             return _sanitize_table_cell(branch)
@@ -2216,7 +2221,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             if kind == "skill":
                 print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
-                hook = _denial_hook_label(evt['hook_name'], evt['message'])
+                hook = _denial_hook_label(evt['hook_name'], evt['message'], raw_when_unenumerated=not multi_root)
                 uid = evt['tool_use_id']
                 msg = evt['message']
                 cause = _denial_cause_kind(msg)

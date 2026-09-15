@@ -1631,6 +1631,37 @@ class TestSubagentMixDollars:
         assert cols["Runs"] == "2"
         assert cols["Actual$"] == "$9.00"
 
+    def test_actual_dollars_sum_across_mixed_model_dispatches_does_not_exceed_hand_computed_ceiling(
+        self, fake_projects, capsys,
+    ):
+        """Per-dispatch dollars must sum, not double-count, across
+        dispatches on different models sharing one agent_type -- a gap no
+        existing test covers."""
+        session_id = "sess-mixed-model-dispatch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_priced_sidechain_asst("claude-opus-4-8", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Runs"] == "2"
+        # claude-sonnet-4-6 ($3.00/MTok) + claude-opus-4-8 ($5.00/MTok), each
+        # dispatch priced independently at its own model's rate before
+        # summing into the row -- not one rate applied to the combined total.
+        assert cols["Actual$"] == "$8.00"
+
     def test_unpriced_turn_surfaced_not_silently_zero(self, fake_projects, capsys):
         """A turn whose model ID isn't in _MODEL_BASE_INPUT_RATES must not
         silently read as a genuinely zero-cost dispatch -- matches cost's own
@@ -1664,7 +1695,10 @@ class TestSubagentMixPerDispatch:
         distinct $3.00/$6.00 rows, never summed into one $9.00 row the way
         the default aggregated table would (see
         test_actual_dollars_sum_across_multiple_dispatches_of_same_agent_type
-        in TestSubagentMixDollars)."""
+        in TestSubagentMixDollars). Also pins the Requested/Observed cells.
+        Both are computed by the same pre-existing aggregation
+        _dispatch_usage_summary feeds — --per-dispatch only appends those
+        values per row, it does not introduce new computation for them."""
         session_id = "sess-per-dispatch"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[
@@ -1688,6 +1722,15 @@ class TestSubagentMixPerDispatch:
         )
         assert sorted(dollar_values) == ["$3.00", "$6.00"]
         assert "$9.00" not in out
+        # Neither dispatch passed requested_model; both ran claude-sonnet-4-6.
+        requested_values = _column_values_for_matching_rows(
+            out, header_contains="Actual$", label="Requested", row_prefix="staff-sdet"
+        )
+        observed_values = _column_values_for_matching_rows(
+            out, header_contains="Actual$", label="Observed", row_prefix="staff-sdet"
+        )
+        assert requested_values == ["(none)", "(none)"]
+        assert observed_values == ["sonnet", "sonnet"]
 
     def test_per_dispatch_dollars_reflect_dedup_not_raw_per_block_sum(self, fake_projects, capsys):
         """--per-dispatch's Actual$ must price a same-requestId two-block run
@@ -1747,6 +1790,35 @@ class TestSubagentMixPerDispatch:
         cols = _table_cols(out, header_contains="Actual$", row_contains="agent-1", max_labels=5)
         assert cols["Status"] == "dangling"
         assert cols["Actual$"] == "$0.00"
+
+    def test_non_string_meta_model_does_not_crash_per_dispatch_run(self, fake_projects, capsys):
+        """A second, index-surviving dispatch keeps dispatch_rows non-empty
+        so the --per-dispatch render path actually executes -- without it
+        the malformed entry alone would leave dispatch_rows empty and this
+        test would never touch that path."""
+        session_id = "sess-badmodel-per-dispatch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "agentType": "staff-sdet", "description": "d", "toolUseId": "a1",
+            "model": ["opus"], "spawnDepth": 1,
+        }
+        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))  # must not raise TypeError
+        out = capsys.readouterr().out
+        assert "(1 meta.json files failed to parse, excluded)" in out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"
 
     def test_per_dispatch_with_reprice_as_renders_counterfactual_and_delta(self, fake_projects, capsys):
         """--per-dispatch combined with --reprice-as renders the same
@@ -1889,13 +1961,82 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         per_dispatch = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
         assert dollars_1 + dollars_2 == pytest.approx(2 * per_dispatch)
 
+    def test_dollars_by_class_reflects_merged_cache_usage_not_summed_per_block(self, tmp_path):
+        """A two-block run's cache_read_input_tokens and
+        cache_creation_input_tokens are identical across both blocks, per
+        _merge_assistant_run's own documented invariant, so pricing must
+        take them once from the merged turn's usage, not sum them once per
+        block. A per-block-pricing regression would double both cache-class
+        dollar figures below -- a defect the existing input/output-only
+        fixtures above cannot surface, since they hardcode both cache
+        fields to 0."""
+        rec1 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache",
+            content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 3,
+            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
+        }
+        rec2 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache",
+            content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [rec1, rec2])
+        _, _, dollars_by_class, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok.
+        # A per-block-pricing regression would double both, since each block
+        # carries the same nonzero cache counts.
+        assert dollars_by_class["cache_read"] == pytest.approx(0.06)
+        assert dollars_by_class["cache_write_5m"] == pytest.approx(1.50)
+
+    def test_dollars_by_class_covers_cache_write_1h_via_nested_cache_creation_block(self, tmp_path):
+        """_cache_write_split reads cache_write_1h only from the nested
+        cache_creation.ephemeral_1h_input_tokens field, which the sibling
+        test above never sets."""
+        rec1 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache-1h",
+            content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 3,
+            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 250_000, "ephemeral_5m_input_tokens": 150_000},
+        }
+        rec2 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache-1h",
+            content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 250_000, "ephemeral_5m_input_tokens": 150_000},
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [rec1, rec2])
+        _, _, dollars_by_class, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok,
+        # cache_write_1h $6.00/MTok. A per-block-pricing regression would
+        # double all three, since each block carries the same nonzero counts.
+        assert dollars_by_class["cache_read"] == pytest.approx(0.06)
+        assert dollars_by_class["cache_write_5m"] == pytest.approx(0.5625)
+        assert dollars_by_class["cache_write_1h"] == pytest.approx(1.50)
+
     def test_non_contiguous_run_with_interleaved_tool_result_still_merges(self, tmp_path):
         """A same-requestId run whose two assistant records straddle an
-        interleaved tool_result -- the harness executing one multi-tool_use
-        response's tool calls one at a time -- must still collapse into one
-        priced turn, not two, when every usage field (including
-        output_tokens) agrees across both records, the byte-identical shape
-        a genuinely-once-billed non-contiguous run carries."""
+        interleaved tool_result must still collapse into one priced turn, not
+        two, when every usage field (including output_tokens) agrees across
+        both records. (The harness executes one multi-tool_use response's
+        tool calls one at a time, which produces this interleaving.)"""
         rec1 = _asst(
             "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-nc",
             content=[_bash_use("t1", "echo hi")],
@@ -1922,12 +2063,29 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         # it to $6.0015.
         assert actual_dollars == pytest.approx(3.00075)
 
+    def test_corrupt_line_between_same_request_id_records_still_merges(self, tmp_path):
+        """A corrupt JSONL line sitting between a same-requestId run's two
+        records must be filtered out before dedup grouping runs, not after.
+        Otherwise a corrupt line could split a contiguous run and
+        misattribute the dedup grouping around it. Same shape as
+        test_non_contiguous_run_with_interleaved_tool_result_still_merges,
+        substituting the interleaved record for a malformed line."""
+        rec1, rec2 = self._two_block_run("claude-sonnet-4-6", request_id="req-corrupt")
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        jsonl_path.write_text(f"{json.dumps(rec1)}\nTHIS IS NOT JSON\n{json.dumps(rec2)}\n")
+        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        # A merge prices this once (1,000,000 input + 50 output = $3.00075);
+        # the corrupt line contributes no dollars, and a failure to merge
+        # around it would double the total to $6.0015.
+        assert actual_dollars == pytest.approx(3.00075)
+
     def test_unpriced_turn_count_is_once_per_deduped_turn_not_per_raw_record(self, tmp_path):
-        """A two-content-block, one-requestId run on an unpriced model must
-        surface as 1 unpriced turn, not 2 -- the unpriced_turns/
-        unpriced_tokens diagnostic shifted from once-per-raw-record to
-        once-per-deduped-turn along with the pricing fix, and must count
-        (and total tokens for) the merged turn's own final usage only."""
+        """A two-content-block, one-requestId run on an unpriced model
+        surfaces as 1 unpriced turn, not 2. The diagnostic counts (and
+        totals tokens for) the merged turn's final usage only, shifted from
+        once-per-raw-record along with the pricing fix."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-unreleased-model"))
         _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = _mod._dispatch_usage_summary(
@@ -1941,11 +2099,11 @@ class TestDispatchUsageSummaryDedupBeforePricing:
     def test_run_excluded_when_first_block_timestamp_outside_window_even_if_last_block_inside(self, tmp_path):
         """A same-requestId run whose first record's timestamp sits before
         since_ts while its last record's timestamp sits inside [since_ts,
-        until_ts) is excluded from actual_dollars entirely, since inclusion
-        is decided by the merged turn's first-block timestamp
-        (_merge_assistant_run takes run[0]'s timestamp), not per-block --
-        a run straddling the window's lower edge this way must not leak its
-        in-window last block's usage into actual_dollars."""
+        until_ts) is excluded from actual_dollars entirely. Inclusion is
+        decided by the merged turn's first-block timestamp, per
+        _merge_assistant_run's run[0] convention. A run straddling the
+        window's lower edge this way must not leak its in-window last
+        block's usage into actual_dollars."""
         rec1 = _asst(
             "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle",
             ts="2026-06-30T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
@@ -1975,12 +2133,12 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         """Mirror of the lower-edge test above: a same-requestId run whose
         first record's timestamp sits inside [since_ts, until_ts) while its
         last record's timestamp sits at or after until_ts is counted as
-        fully in-window spend, not excluded or partially priced -- inclusion
-        is decided by the merged turn's first-block timestamp
-        (_merge_assistant_run takes run[0]'s timestamp), so a run straddling
-        the window's upper edge this way has its full billed (last-block)
-        usage counted in actual_dollars. This documents the over-inclusion
-        this convention produces at the upper edge."""
+        fully in-window spend, not excluded or partially priced. Inclusion is
+        decided by the merged turn's first-block timestamp, per
+        _merge_assistant_run's run[0] convention, so a run straddling the
+        window's upper edge this way has its full billed (last-block) usage
+        counted in actual_dollars -- the over-inclusion this convention
+        produces at the upper edge."""
         rec1 = _asst(
             "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle-upper",
             ts="2026-07-01T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
@@ -5464,9 +5622,9 @@ def _review_trace_all_kinds_records() -> tuple[list[dict], dict[str, str]]:
     carrying its own distinct sentinel value.
 
     Shared by the multi-root redaction test (every sentinel must vanish)
-    and its single-root counterpart (every sentinel but the unenumerated
-    hookName must survive raw) -- one fixture instead of two kept in sync
-    by hand.
+    and its single-root counterpart (every sentinel, including the
+    unenumerated hookName, must survive raw) -- one fixture instead of two
+    kept in sync by hand.
     """
     sentinels = {
         "branch": "secret-project-branch-x7f2",
@@ -5721,11 +5879,10 @@ class TestReviewTraceMultiRoot:
         - Raw branch names still print.
         - Denial/friction msg=... text still prints.
         - A raw (non-repo-tracked) subagent_type still prints.
-        The unenumerated legacy hookName is the one exception. The `hook=`
-        field itself renders `hook=unmatched` even under single-root,
-        since `_denial_hook_label`'s allowlist fallback applies regardless
-        of scope. The sentinel still appears in the raw `msg=...` text,
-        though, since that text is untouched by the classifier."""
+        - An unenumerated legacy hookName echoes raw too, rather than
+          collapsing to `hook=unmatched` -- single-root has no disclosure
+          concern for it, unlike the multi-root case (see
+          test_default_timeline_redacts_every_leak_surface_under_multi_root)."""
         records, sentinels = _review_trace_all_kinds_records()
         _write_jsonl(fake_projects / "single-root-all-kinds-session.jsonl", records)
         _mod.cmd_review_trace(_review_trace_args())
@@ -5735,7 +5892,18 @@ class TestReviewTraceMultiRoot:
         assert sentinels["friction_path"] in out
         assert sentinels["foreign_reviewer_type"] in out
         assert "msg=" in out
-        assert f"hook={sentinels['unenumerated_hook_name']}" not in out
+        assert f"hook={sentinels['unenumerated_hook_name']}" in out
+        assert "hook=unmatched" not in out
+
+    def test_single_root_message_extraction_ignores_raw_when_unenumerated(self, fake_projects, capsys):
+        """A message-extracted candidate (empty hook_name) always classifies
+        to hook=unmatched, even with raw_when_unenumerated=True, since that
+        flag only widens the legacy-hookName path."""
+        _write_jsonl(fake_projects / "unmatched-message-session.jsonl", [
+            _hook_deny_current("Skill invocation denied.", ts="2026-05-20T10:00:00.000Z"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
         assert "hook=unmatched" in out
 
 
