@@ -177,8 +177,8 @@ what was proposed and the timestamp of the yes. A bare claim that
 approval occurred, with nothing to check it against, is not a
 citation. A recalled yes from another transcript or artifact does
 not count; only a live answer in the current session does. This
-matches the standard "New figures against the grandfathered set"
-below sets. The command is cited so a reader can re-run the
+matches the standard set by "New figures against the grandfathered
+set" below. The command is cited so a reader can re-run the
 measurement. Unlike the single-account case above, authorization
 guarantees nothing about scope by itself; it is the whole control.
 That is why it is granted per figure and left as a citable trace.
