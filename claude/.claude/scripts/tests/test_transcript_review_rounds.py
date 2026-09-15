@@ -1280,7 +1280,8 @@ def _asymmetric_two_branch_pooled_totals() -> list[review_rounds._PooledBranchTo
 class TestBootstrapShareIntervals:
     """Pure-math tests for --pooled's aggregation and bootstrap helpers: 2-5
     synthetic per_branch tuples, no _write_jsonl, no fixture corpus, no CLI.
-    See TestCmdReviewRoundCostPooled below for the CLI-level layer.
+    TestCmdReviewRoundCostPooled below covers wiring, refusal enforcement,
+    redaction, and banner suppression instead -- not re-proving the math.
     """
 
     def test_pooled_branch_aggregates_sums_every_accumulated_field(self):
@@ -1350,6 +1351,21 @@ class TestBootstrapShareIntervals:
         sample = [float(i) for i in range(9)]
         lo, hi = review_rounds._resample_percentile(sample)
         assert (lo, hi) == (0.0, 8.0)
+
+    def test_resample_percentile_at_the_half_index_rounding_boundary(self):
+        """B=61 lands the high-index computation exactly on the .5 tie
+        (0.975*60=58.5), a case that genuinely discriminates Python's
+        round-half-to-even from round-half-up: 58 is even and 59 is odd, so
+        round-half-to-even picks 58, while round-half-up would pick 59.
+        B=9 above never reaches a tie at all. lo's own computation at this
+        B (round(0.025*60)) isn't an exact tie -- floating-point error in
+        `tail = (1 - _CI_LEVEL) / 2` pushes it just past 1.5 -- so only hi
+        is asserted here. Production B varies per stat since a
+        zero-denominator resample is dropped before indexing, so this
+        boundary is reachable in practice."""
+        sample = [float(i) for i in range(61)]
+        lo, hi = review_rounds._resample_percentile(sample)
+        assert hi == 58.0
 
     def test_bootstrap_share_intervals_deterministic_and_matches_hand_computed_point(self):
         """Same seed/fixture, two in-process calls agree exactly
@@ -1881,7 +1897,8 @@ class TestCmdReviewRoundCostPooled:
     ):
         """Only a branch key present in the in-scope rounds enters the pool,
         mirroring the per-root footer; a branch with priced non-round spend
-        but zero rounds must not enter via branch_totals alone.
+        but zero rounds must not enter via branch_totals alone. No other
+        test in this class exercises this shape.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         proj_a = roots[0] / "-home-user-repo-a"
@@ -1911,7 +1928,9 @@ class TestCmdReviewRoundCostPooled:
         """The single-root refusal fires last in _pooled_scope_refusal's
         check order, so it's most exposed to a reordering regression;
         confirms no header/pointer/banner text reaches stdout ahead of the
-        exit(2).
+        exit(2). Every other refusal test in this class besides this one
+        and its unreadable-declared-root sibling below checks the exit and
+        the message alone, not the printed side effect.
         """
         with pytest.raises(SystemExit) as exc:
             _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
