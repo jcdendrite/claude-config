@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import subprocess
 import sys
+import threading
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -1884,11 +1887,16 @@ class TestMainComposition:
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
 
-    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch):
+    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch, tmp_path):
         """A domain-selected-but-empty target set (e.g. a .claude/plans/
         change) must short-circuit before run_pytest, not fall through to
-        a bare `pytest` invocation that recursively collects the whole repo."""
+        a bare `pytest` invocation that recursively collects the whole
+        repo. Also asserts the selection still gets logged exactly once on
+        this early-return path, not just on the run_pytest-reaching paths
+        TestRecordSelectionReasonCoverage already covers."""
         fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
 
         def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
@@ -1902,6 +1910,9 @@ class TestMainComposition:
         exit_code = _mod.main([])
 
         assert exit_code == 0
+        log_lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(log_lines) == 1
+        assert json.loads(log_lines[0])["reason"] == "domain-selected"
 
     def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
         self, monkeypatch,
@@ -2119,3 +2130,236 @@ class TestMainWorkerSizingStderr:
         _mod.main(["-k", "foo"])
 
         assert recorded["env"] == computed_env
+
+
+class TestRecordSelection:
+    """record_selection's own gating, field shape, and best-effort failure
+    handling -- called directly with a hand-built SelectionResult rather
+    than through main(), so each case isolates one behavior. Every test
+    here points CLAUDE_CONFIG_DIR at tmp_path rather than touching the real
+    config dir."""
+
+    def test_nothing_written_when_key_resolves_false(self, monkeypatch, tmp_path):
+        """Default resolution (no claude-config.toml at all) is the
+        schema's off-by-default value -- no file must be created."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])
+
+        assert not (tmp_path / _mod.SELECTION_LOG_FILENAME).exists()
+
+    def test_appends_one_line_with_all_five_documented_fields_when_enabled(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(
+            _mod.FULL_SUITE_TARGETS, True, "unmatched-path", ("some/path.py",),
+        )
+
+        _mod.record_selection(selection, list(_mod.FULL_SUITE_TARGETS))
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["reason"] == "unmatched-path"
+        assert record["is_full_suite"] is True
+        assert record["triggering_paths"] == ["some/path.py"]
+        assert record["target_count"] == len(_mod.FULL_SUITE_TARGETS)
+        # Parses as real ISO 8601, not merely non-empty -- matches
+        # .permission-prompt-log.jsonl's own logged_at field name and format.
+        datetime.fromisoformat(record["logged_at"].replace("Z", "+00:00"))
+
+    def test_triggering_paths_truncated_flag_set_when_list_exceeds_cap(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        paths = tuple(f"unmatched-{i}.txt" for i in range(25))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "unmatched-path", paths)
+
+        _mod.record_selection(selection, [])
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["triggering_paths"] == list(paths[:20])
+        assert record["triggering_paths_truncated"] is True
+
+    def test_triggering_paths_truncated_flag_absent_when_list_is_at_cap(
+        self, monkeypatch, tmp_path,
+    ):
+        """Exactly 20 entries is the boundary, not the overflow case --
+        the flag must not appear at all."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        paths = tuple(f"unmatched-{i}.txt" for i in range(20))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "unmatched-path", paths)
+
+        _mod.record_selection(selection, [])
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["triggering_paths"] == list(paths)
+        assert "triggering_paths_truncated" not in record
+
+    def test_oserror_on_append_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """config_dir is monkeypatched only on select-tests.py's own
+        reference. config_enabled is a separate binding of the same
+        underlying function, so it still resolves normally against the
+        real tmp_path -- isolating the OSError to the log-append step
+        rather than the config-enabled read."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        not_a_directory = tmp_path / "not-a-directory"
+        not_a_directory.write_text("")
+        monkeypatch.setattr(_mod, "config_dir", lambda: not_a_directory)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    def test_valueerror_on_config_dir_call_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """config_enabled's own internal config_dir() call succeeds normally
+        here -- tracking is enabled via the real tmp_path -- so its
+        ValueError short-circuit never fires. Only select-tests.py's own
+        second config_dir() call is monkeypatched to raise, exercising the
+        except (OSError, ValueError) clause's ValueError arm rather than
+        the already-covered OSError arm above."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+        def _raise_value_error() -> Path:
+            raise ValueError("stub config-dir resolution failure")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    @pytest.mark.parametrize(
+        ("target_paths", "is_full_suite", "reason", "triggering_paths"),
+        [
+            pytest.param(_mod.FULL_SUITE_TARGETS, True, "empty-diff", (), id="empty-diff"),
+            pytest.param(
+                _mod.FULL_SUITE_TARGETS, True, "global-trigger", ("pyproject.toml",), id="global-trigger",
+            ),
+            pytest.param(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", (".gitignore",), id="unmatched-path",
+            ),
+            pytest.param(
+                (_mod.SCRIPTS_TESTS_DIR,), False, "domain-selected", (), id="domain-selected",
+            ),
+        ],
+    )
+    def test_reason_field_copies_selectionresult_reason_verbatim(
+        self, monkeypatch, tmp_path, target_paths, is_full_suite, reason, triggering_paths,
+    ):
+        """TestSelectPytestTargets already covers which changed-path shapes
+        produce which reason. This test instead pins that record_selection
+        copies each reason through verbatim, at record_selection's own unit
+        layer rather than through main()."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(target_paths, is_full_suite, reason, triggering_paths)
+
+        _mod.record_selection(selection, list(target_paths))
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["reason"] == reason
+
+    def test_concurrent_calls_append_valid_non_interleaved_json_lines(self, monkeypatch, tmp_path):
+        """N threads calling record_selection against one shared log file
+        must each land as a distinct, fully-parseable JSON line -- the
+        property _TRIGGERING_PATHS_LOG_CAP's own comment cites."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        n = 20
+
+        def _record(i: int) -> None:
+            selection = _mod.SelectionResult(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", (f"concurrent-{i}.py",),
+            )
+            _mod.record_selection(selection, [])
+
+        threads = [threading.Thread(target=_record, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == n
+        seen_paths = set()
+        for line in lines:
+            record = json.loads(line)  # raises if a raced write corrupted the line
+            (path,) = record["triggering_paths"]
+            seen_paths.add(path)
+        assert seen_paths == {f"concurrent-{i}.py" for i in range(n)}
+
+    def test_called_before_run_pytest(self, monkeypatch):
+        """An interrupted or failing pytest run must still have its
+        selection recorded -- pinned via call-order tracking on a fake
+        record_selection and a fake run_pytest, independent of the config
+        gate itself."""
+        fake_repo_root = Path("/fake/repo/root")
+        call_order = []
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths",
+            lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
+        )
+        monkeypatch.setattr(
+            _mod, "record_selection",
+            lambda selection, resolved_targets: call_order.append("record_selection"),
+        )
+
+        def fake_run_pytest(pytest_argv, *, cwd, env):
+            call_order.append("run_pytest")
+            return 0
+
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        _mod.main([])
+
+        assert call_order == ["record_selection", "run_pytest"]
+
+
+class TestRecordSelectionReasonCoverage:
+    """git-unavailable is the one reason main()'s except GitDiffUnavailable
+    branch constructs directly, not select_pytest_targets itself. It is the
+    outcome easiest to leave untested by accident. The other four reasons --
+    empty-diff, global-trigger, unmatched-path, domain-selected -- are
+    unit-tested directly against record_selection in TestRecordSelection,
+    since select_pytest_targets already covers which changed-path shapes
+    produce them (see TestSelectPytestTargets)."""
+
+    def _enable_tracking(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+    def test_git_unavailable_reason_is_recorded(self, monkeypatch, tmp_path):
+        self._enable_tracking(monkeypatch, tmp_path)
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_compute_changed_paths(repo_root):
+            raise _mod.GitDiffUnavailable("stub failure")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+        _mod.main([])
+
+        log_lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(log_lines) == 1
+        assert json.loads(log_lines[0])["reason"] == "git-unavailable"

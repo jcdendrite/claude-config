@@ -6,12 +6,17 @@ primary-source citations.
 
 Usage: select-tests.py [pytest args...]
 """
+import json
 import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
+
+from _config import config_enabled
+from _config_dir import config_dir
 
 # Hang-detection backstop, not a measured worst case.
 # Sized between post-crash-sessions.py's 5.0s and 25.0s timeouts.
@@ -745,6 +750,45 @@ def run_pytest(
     return result.returncode
 
 
+# --- Fallback-reason instrumentation -------------------------------------
+
+SELECTION_LOG_FILENAME = ".test-selection-log.jsonl"
+
+# Bounds one JSON line to well under one write() syscall's atomic-write size
+# limit. An unbounded triggering_paths list could otherwise make two
+# concurrent appends interleave instead of landing as separate atomic writes.
+_TRIGGERING_PATHS_LOG_CAP = 20
+
+
+def record_selection(selection: SelectionResult, resolved_targets: list[str]) -> None:
+    """Appends one JSON line describing this invocation's selection outcome
+    to <config-dir>/.test-selection-log.jsonl, gated by the off-by-default
+    test_selection_tracking config key.
+
+    Best-effort: swallows a log-append OSError or a config_dir() resolution
+    ValueError with one stderr warning, since a full disk or an unresolvable
+    config dir must not turn into a failed test run.
+    """
+    try:
+        if not config_enabled("test_selection_tracking"):
+            return
+        triggering_paths = list(selection.triggering_paths)
+        record = {
+            "logged_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason": selection.reason,
+            "is_full_suite": selection.is_full_suite,
+            "triggering_paths": triggering_paths[:_TRIGGERING_PATHS_LOG_CAP],
+            "target_count": len(resolved_targets),
+        }
+        if len(triggering_paths) > _TRIGGERING_PATHS_LOG_CAP:
+            record["triggering_paths_truncated"] = True
+        log_path = config_dir() / SELECTION_LOG_FILENAME
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except (OSError, ValueError) as exc:
+        print(f"select-tests: could not record test selection to the log ({exc})", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     passthrough_args = sys.argv[1:] if argv is None else argv
     repo_root = resolve_repo_root(cwd=Path.cwd())
@@ -758,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
         selection = select_pytest_targets(changed_paths)
 
     resolved_targets = resolve_target_paths(selection.target_paths, repo_root=repo_root)
+    record_selection(selection, resolved_targets)
 
     if selection.is_full_suite:
         if selection.triggering_paths:

@@ -72,6 +72,7 @@ over any paraphrase here.
 | `round_consult_gate` | bool | `true` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
 | `round_consult_round2_pilot` | bool | `false` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
 | `authorization_boundary_restore` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
+| `test_selection_tracking` | bool | `false` | config-dir | no | [README § Tests](../README.md#tests) |
 
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
 `commit_stall_block`, and `authorization_boundary_restore` are the five
@@ -138,7 +139,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 15 keys:
+   the 16 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
      names — the resolved config dir alone, or (for the six keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
@@ -170,8 +171,10 @@ It runs two phases, always in this order:
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
      a default row only for a key with no legacy fallback mechanism at
-     all — none exist among today's 15 keys, so scaffold currently writes
-     nothing. A key with a legacy-polarity
+     all. None exist among today's 16 keys besides `test_selection_tracking`,
+     whose `legacy-filename` and `legacy-polarity` are both empty. Scaffold
+     therefore currently writes only that one key's default row. A key with
+     a legacy-polarity
      (`presence-enables`/`presence-disables`/`content-matches`) stays
      absent from the state file unless this run's import path already
      gave it an explicit row, so its legacy file remains a live override

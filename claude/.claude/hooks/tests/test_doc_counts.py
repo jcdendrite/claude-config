@@ -526,7 +526,7 @@ _REGISTERED_FACTS: list[DocCountFact] = [
             ),
             Occurrence(
                 rel_path="docs/config-file.md",
-                pattern=r"none exist among today's (\d+) keys",
+                pattern=r"[Nn]one exist among today's (\d+) keys",
                 description="docs/config-file.md: none exist among today's N keys",
             ),
         ],

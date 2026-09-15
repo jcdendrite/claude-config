@@ -164,10 +164,18 @@ class TestMigrationMatrixStateFileAbsent:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
 
         state = _read_state(config_dir)
-        if not legacy_present:
-            # Every key here carries a legacy-polarity value, so scaffold
-            # leaves it absent from the state file rather than backfilling
-            # its default -- that default is still what it resolves to.
+        if not row.legacy_polarity:
+            # test_selection_tracking has no legacy predecessor at all
+            # (empty legacy-filename/legacy-polarity), so legacy_present is
+            # moot -- there is no legacy file for _write_legacy_file to
+            # meaningfully create -- and scaffold backfills the schema
+            # default unconditionally, unlike every other key below.
+            assert state.get(key) == row.default
+        elif not legacy_present:
+            # Every other key here carries a legacy-polarity value, so
+            # scaffold leaves it absent from the state file rather than
+            # backfilling its default -- that default is still what it
+            # resolves to.
             assert key not in state
             # Documents the net resolved value; the line above already
             # pins scaffold's own exclusion logic.
@@ -207,7 +215,13 @@ class TestMigrationMatrixStateFilePresentKeyRowAbsent:
 
         state = _read_state(config_dir)
         assert state.get(other_key) == _SCHEMA[other_key].default, "an unrelated pre-existing row must survive"
-        if not legacy_present:
+        if not row.legacy_polarity:
+            # Same reasoning as TestMigrationMatrixStateFileAbsent:
+            # test_selection_tracking has no legacy predecessor at all, so
+            # legacy_present is moot and scaffold backfills its default
+            # unconditionally, even alongside a sibling row.
+            assert state.get(key) == row.default
+        elif not legacy_present:
             # Same reasoning as TestMigrationMatrixStateFileAbsent: this
             # key's own legacy-polarity value keeps it absent from the
             # state file, even though a sibling row is now present.
