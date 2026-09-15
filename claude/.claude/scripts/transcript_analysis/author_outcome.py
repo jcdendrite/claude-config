@@ -21,6 +21,7 @@ signal. Only the disposition/authoring-agent values move to the ledger.
 from __future__ import annotations
 
 import argparse
+import functools
 import itertools
 import json
 import os
@@ -71,10 +72,10 @@ _DATA_QUALITY_KEYS = (
 # Code config-dir root -- mirrors review-ledger.sh's own $LEDGER_DIR.
 _REVIEW_LEDGER_DIRNAME = "review-narrative-ledger"
 
-# Mirrors review-ledger.sh's _sweep_stale_ledger_files `-mtime +30` threshold. Kept
-# as a duplicated literal per CLAUDE.md's single-source-of-truth exception for small
-# values, pending a shared config source.
-_LEDGER_SWEEP_WINDOW_SECONDS = 30 * 24 * 60 * 60
+# Floor for _cleanup_period_days: see _lib.sh's own _LEDGER_SWEEP_FLOOR_DAYS
+# for the retention rationale (GH-973). Both sides independently read the
+# same settings.json `cleanupPeriodDays` key and floor it identically.
+_LEDGER_SWEEP_FLOOR_DAYS = 30
 
 
 def _is_clean_marker_write(command: str) -> bool:
@@ -147,6 +148,57 @@ def _config_dir_root_for_session(jsonl: Path) -> Path:
     which root produced this path.
     """
     return jsonl.parent.parent.parent
+
+
+@functools.cache
+def _cleanup_period_days(config_dir_root: Path) -> int:
+    """Claude Code's own `cleanupPeriodDays` setting from
+    <config_dir_root>/settings.json, floored at _LEDGER_SWEEP_FLOOR_DAYS.
+    Mirrors review-ledger.sh's own _ledger_sweep_window_days.
+
+    Single settings.json read -- deliberately skips Claude Code's full
+    settings-precedence resolution (project-local overrides, enterprise-
+    managed settings, CLI flag overrides), which this retention-floor
+    purpose doesn't need.
+
+    Defaults to the floor when:
+    - the file is missing or unreadable
+    - its content isn't valid JSON
+    - cleanupPeriodDays is absent
+    - its value isn't a whole number
+
+    bool is excluded even though it's an int subclass in Python, since a
+    JSON true/false is not a day count. A whole-number JSON float (e.g.
+    90.0) is also excluded -- json.loads parses it as float, never int --
+    rejected rather than truncated, matching review-ledger.sh's own
+    bash-side rejection of the same shape.
+
+    Cached per config_dir_root: every session under one root shares the
+    same settings.json, so an uncached call would re-parse it once per
+    session instead of once per root. Unbounded is safe because the key
+    space is config-dir roots (`scope.declared_transcript_roots`), not
+    sessions.
+    """
+    try:
+        raw = json.loads((config_dir_root / "settings.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return _LEDGER_SWEEP_FLOOR_DAYS
+    value = raw.get("cleanupPeriodDays") if isinstance(raw, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return _LEDGER_SWEEP_FLOOR_DAYS
+    return max(value, _LEDGER_SWEEP_FLOOR_DAYS)
+
+
+def _ledger_sweep_window_seconds(jsonl: Path) -> int:
+    """review-ledger.sh's own sweep window, in seconds, for the config-dir
+    root this transcript's session lives under -- see _cleanup_period_days.
+
+    Resolved per-session (via _config_dir_root_for_session) rather than
+    from this process's own $CLAUDE_CONFIG_DIR: a corpus scan can span
+    declared_transcript_roots' several config-dir roots at once, each with
+    its own settings.json and potentially different cleanupPeriodDays.
+    """
+    return _cleanup_period_days(_config_dir_root_for_session(jsonl)) * 86400
 
 
 def _ledger_path_for_session(jsonl: Path) -> Path | None:
@@ -282,10 +334,11 @@ def _ledger_possibly_swept(
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
     file at all, and its own newest record is older than
-    review-ledger.sh's 30-day sweep window. False otherwise, including
-    when no record in the session has a parseable timestamp to compare.
-    See docs/transcript-analysis.md's "Ledger-possibly-swept check"
-    section for the rationale.
+    review-ledger.sh's resolved sweep window (see
+    _ledger_sweep_window_seconds). False otherwise, including when no
+    record in the session has a parseable timestamp to compare. See
+    docs/transcript-analysis.md's "Ledger-possibly-swept check" section
+    for the rationale.
 
     LEDGER_PATH lets a caller that already resolved this session's ledger
     path (compute_author_outcomes' loop) pass it straight through instead
@@ -304,7 +357,7 @@ def _ledger_possibly_swept(
     if not timestamps:
         return False
     now = time.time() if now is None else now
-    return max(timestamps) < now - _LEDGER_SWEEP_WINDOW_SECONDS
+    return max(timestamps) < now - _ledger_sweep_window_seconds(jsonl)
 
 
 def _classify_round(

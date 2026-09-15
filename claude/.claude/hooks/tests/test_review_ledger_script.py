@@ -1144,3 +1144,39 @@ class TestReviewLedgerMtimeSweep:
         assert ledger.read_text() == original_content, (
             "content must be unchanged by the dedup no-op"
         )
+
+
+class TestReviewLedgerSweepWindowFromSettings:
+    """Covers GH-973: the sweep window derives from Claude Code's own
+    cleanupPeriodDays setting, floored at 30 days, via clear-stale's
+    --dry-run report. This is a thin integration test proving the
+    resolved number is plumbed into `find -mtime +N` -- see
+    TestLedgerSweepWindowDays in test_lib.py for the arithmetic itself
+    (absent settings file, custom value, below-floor value, malformed
+    input)."""
+
+    def _plant(self, ledger_dir: Path, name: str, age_days: float) -> Path:
+        path = ledger_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"finding":"x"}\n')
+        age = time.time() - age_days * 24 * 60 * 60
+        os.utime(path, (age, age))
+        return path
+
+    def test_custom_cleanup_period_days_widens_the_window(self, isolated_home, git_repo):
+        (isolated_home / ".claude" / "settings.json").write_text(
+            json.dumps({"cleanupPeriodDays": 60})
+        )
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        # 31 days old would already be stale under the default 30-day
+        # window; a custom 60-day window must keep it fresh.
+        still_fresh = self._plant(ledger_dir, ("3" * 64 + ".still-fresh.jsonl"), 31)
+        stale = self._plant(ledger_dir, ("4" * 64 + ".stale.jsonl"), 62)
+
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert still_fresh.name not in result.stdout, (
+            f"cleanupPeriodDays=60 must not evict a 31-day-old file: {result.stdout}"
+        )
+        assert stale.name in result.stdout

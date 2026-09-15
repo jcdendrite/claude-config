@@ -41,8 +41,9 @@ Subcommands:
   show       Print this session's ledger contents, or an absence message.
   clear-stale [--dry-run]
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
-             than 30 days, across every repo-hash. --dry-run reports
-             without removing.
+             than the resolved sweep window (Claude Code's cleanupPeriodDays
+             setting, floored at 30 days), across every repo-hash.
+             --dry-run reports without removing.
 EOF
 }
 
@@ -101,16 +102,20 @@ ledger line under this script's round-scoped dedup key. Abort without writing.
 EOF
 }
 
-# _sweep_stale_ledger_files LEDGER_DIR DRY_RUN REPORT
+# _sweep_stale_ledger_files LEDGER_DIR SETTINGS_FILE DRY_RUN REPORT
 # Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
-# *.lock file under LEDGER_DIR older than 30 days by mtime, across every
-# repo-hash — mirrors nudge-handoff-near-context-cap.sh's directory-wide
-# `find ... -mtime +30 -delete` sweep of .handoff-nudge-fired.d. REPORT=1
-# prints per-file and summary lines (clear-stale). REPORT=0 is silent (the
-# best-effort sweep append performs on every invocation).
+# *.lock file under LEDGER_DIR older than _ledger_sweep_window_days'
+# resolved window by mtime, across every repo-hash. Shaped like
+# nudge-handoff-near-context-cap.sh's directory-wide `find ... -mtime +30
+# -delete` sweep of .handoff-nudge-fired.d, except this window is derived
+# rather than a fixed 30. REPORT=1 prints per-file and summary lines
+# (clear-stale). REPORT=0 is silent (the best-effort sweep append performs
+# on every invocation).
 _sweep_stale_ledger_files() {
-  local ledger_dir="$1" dry_run="$2" report="$3"
+  local ledger_dir="$1" settings_file="$2" dry_run="$3" report="$4"
   [ -d "$ledger_dir" ] || return 0
+  local window_days
+  window_days=$(_ledger_sweep_window_days "$settings_file")
   local evicted=0 entry
   while IFS= read -r -d '' entry; do
     evicted=$((evicted + 1))
@@ -120,7 +125,7 @@ _sweep_stale_ledger_files() {
       rm -f "$entry" 2>/dev/null
       [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
     fi
-  done < <(find "$ledger_dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime +30 -print0 2>/dev/null)
+  done < <(find "$ledger_dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime "+$window_days" -print0 2>/dev/null)
   if [ "$report" -eq 1 ]; then
     if [ "$dry_run" -eq 1 ]; then
       printf 'clear-stale: would evict %d file(s)\n' "$evicted"
@@ -311,15 +316,16 @@ case "$SUBCOMMAND" in
 
     # Dedup key excludes schema_version and event_time so two rounds raising
     # an identical finding both land as separate rows.
-    # Each append makes two independently-capped _lib_jq calls: one to build
-    # LINE, one for this dedup check.
+    # Each append makes three independently-capped _lib_jq calls: one to
+    # build LINE, one for this dedup check, and one more inside the
+    # retention sweep below (_ledger_sweep_window_days' settings.json read).
     # An environment with neither timeout nor gtimeout on PATH therefore has
-    # two uncapped-hang points per append, not one.
+    # three uncapped-hang points per append, not one.
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
       '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}'
 
     # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
-    _sweep_stale_ledger_files "$LEDGER_DIR" 0 0
+    _sweep_stale_ledger_files "$LEDGER_DIR" "$CONFIG_DIR/settings.json" 0 0
     ;;
   show)
     if [ $# -gt 0 ]; then
@@ -346,7 +352,7 @@ case "$SUBCOMMAND" in
       usage
       exit 2
     fi
-    _sweep_stale_ledger_files "$LEDGER_DIR" "$DRY_RUN" 1
+    _sweep_stale_ledger_files "$LEDGER_DIR" "$CONFIG_DIR/settings.json" "$DRY_RUN" 1
     ;;
   *)
     printf "review-ledger.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2

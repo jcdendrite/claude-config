@@ -1140,11 +1140,13 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 **Accepted regression: a kill-switch round with a real finding is indistinguishable from UNATTRIBUTED.** A round that both had the ledger kill switch on and raised a genuine `ADDRESS` finding leaves no ledger row (kill switch) and no marker write (the review wasn't clean), so it reads identically to a round nothing happened in at all. This is accepted as narrow -- the kill switch is a manual, rare operator toggle.
 
-**Accepted risk: a schema-v2 rollout mid-session can misclassify a round as PASS.** A round whose `review-ledger.sh append` calls straddle the mid-session schema-v2 rollout can misclassify as PASS if pre-flip `ADDRESS` rows lack a `round` key while post-flip `DEFER` rows have one. This is a one-time artifact, bounded by the ledger's 30-day sweep.
+**Accepted risk: a schema-v2 rollout mid-session can misclassify a round as PASS.** A round whose `review-ledger.sh append` calls straddle the mid-session schema-v2 rollout can misclassify as PASS if pre-flip `ADDRESS` rows lack a `round` key while post-flip `DEFER` rows have one. This is a one-time artifact, bounded by the ledger's sweep window (Claude Code's `cleanupPeriodDays` setting, floored at 30 days).
+
+**Accepted risk: a project-level `cleanupPeriodDays` override is not honored.** `_ledger_sweep_window_days`/`_cleanup_period_days` each read only `$CONFIG_DIR/settings.json` (the global/user-level file), deliberately skipping Claude Code's full settings-precedence resolution. A project-level override that Claude Code's real precedence would honor -- one raising the value above the global default -- is invisible to both, so a session under that project sweeps (or is treated as swept) against the global default instead of its own project's wider window.
 
 **Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A second, distinct trigger for the same underlying round-tracking fragility: a mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check above is built to catch. Unlike the schema-flip case above, this one is not merely accepted -- it is bounded by the round-number-mismatch exclusion above, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
 
-**Accepted risk: a ledger file's sweep-eligible mtime and its transcript's own mtime drift apart, biasing which sessions get swept first.** A ledger file's mtime only advances on `append`; a transcript's mtime advances for the life of the session. A session that reviews early then keeps working past 30 days gets its ledger swept while its transcript survives, misreading as kill-switch-clean rather than swept FAILURE. Bounded by the `_ledger_possibly_swept` exclusion below.
+**Accepted risk: a ledger file's sweep-eligible mtime and its transcript's own mtime drift apart, biasing which sessions get swept first.** A ledger file's mtime only advances on `append`; a transcript's mtime advances for the life of the session. A session that reviews early then keeps working past the sweep window gets its ledger swept while its transcript survives, misreading as kill-switch-clean rather than swept FAILURE. Bounded by the `_ledger_possibly_swept` exclusion below.
 
 **Accepted risk: a session spanning multiple worktrees of the same repo can drop one worktree's ledger rows.** A session spanning two worktrees of the same repo can produce two ledger files matching the same session-id glob; `_ledger_path_for_session` reads only the sorted-first one, silently dropping the other's rows. This is bounded by the round-number-mismatch check below, which excludes that session's dispatches from the headline aggregate entirely.
 
@@ -1164,7 +1166,7 @@ A session whose ledger is entirely legacy rows (no row carries a `round` key) or
 
 - It opened >=1 `code-review` round.
 - It has zero ledger rows and no matching ledger file at all.
-- Its own newest record's timestamp is older than `review-ledger.sh`'s 30-day sweep window.
+- Its own newest record's timestamp is older than `review-ledger.sh`'s sweep window (Claude Code's `cleanupPeriodDays` setting, floored at 30 days -- GH-973).
 
 This can't tell a genuinely swept ledger apart from a session the kill switch simply ran clean for its entire (now-cold) lifetime, since both leave the identical zero-rows-no-file signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on any record is not evaluated by this check.
 

@@ -3388,6 +3388,51 @@ _lib_append_json_line_locked() {
   printf '%s\n' "$line" >> "$file"
 }
 
+# Floor for _ledger_sweep_window_days below: the ledger must never sweep
+# more aggressively than the transcript retention it depends on (GH-973).
+# author_outcome.py's own _LEDGER_SWEEP_FLOOR_DAYS mirrors this value and
+# floors identically from the same settings.json key, with no shared
+# process call between the two languages.
+_LEDGER_SWEEP_FLOOR_DAYS=30
+
+# _ledger_sweep_window_days SETTINGS_FILE
+# Prints the ledger's sweep window in days: Claude Code's own
+# cleanupPeriodDays setting read from SETTINGS_FILE, floored at
+# _LEDGER_SWEEP_FLOOR_DAYS above.
+# Single SETTINGS_FILE read -- deliberately skips Claude Code's full
+# settings-precedence resolution (project-local overrides, enterprise-
+# managed settings, CLI flag overrides), which this retention-floor
+# purpose doesn't need.
+# Falls back to _LEDGER_SWEEP_FLOOR_DAYS when:
+# - SETTINGS_FILE is missing or unreadable
+# - cleanupPeriodDays is absent
+# - its value isn't a bare non-negative integer, or has more digits than
+#   the case pattern below accepts
+# jq's `select(type == "number")` passes a fractional value like 45.5 (or
+# a whole-number float like 90.0, which jq prints as "90.0", not "90")
+# through unchanged; the digit-only case pattern below then rejects it as
+# non-integer rather than truncating it. This is deliberate and matches
+# author_outcome.py's own _cleanup_period_days.
+_ledger_sweep_window_days() {
+  local settings_file="$1"
+  local cleanup_period_days
+  cleanup_period_days=$(_lib_jq -r '(.cleanupPeriodDays // empty) | select(type == "number")' "$settings_file" 2>/dev/null)
+  case "$cleanup_period_days" in
+    ''|*[!0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+    # 9+ digits (>=100 million days): far beyond any realistic retention
+    # window, but an all-digit value this large can exceed bash's signed-
+    # integer range and make the `-lt` comparison below error instead of
+    # comparing -- floor here rather than depend on that comparison's
+    # behavior on an out-of-range operand.
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+  esac
+  if [ "$cleanup_period_days" -lt "$_LEDGER_SWEEP_FLOOR_DAYS" ]; then
+    printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
+  else
+    printf '%s' "$cleanup_period_days"
+  fi
+}
+
 # _lib_resume_context_tmpdir_root
 # The one home for resume-context.sh's temp-dir-root formula
 # (${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}), shared by the move itself and

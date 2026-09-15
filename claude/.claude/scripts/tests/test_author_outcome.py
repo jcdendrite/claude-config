@@ -1,10 +1,11 @@
 """Tests for transcript_analysis/author_outcome.py (author-outcome)."""
 import importlib.util
 import itertools
+import json
 import os
-import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -370,12 +371,13 @@ class TestLedgerPossiblySwept:
         ) is False
 
     def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self, tmp_path):
-        """max(timestamps) == now - _LEDGER_SWEEP_WINDOW_SECONDS sits on
-        the strict `<` inequality's excluded side, one second short of
-        swept."""
+        """max(timestamps) == now - _ledger_sweep_window_seconds(jsonl)
+        sits on the strict `<` inequality's excluded side, one second short
+        of swept. No settings.json exists at this session's config-dir
+        root, so the resolved window is the default 30-day floor."""
         jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
-        now = record_ts + ao._LEDGER_SWEEP_WINDOW_SECONDS
+        now = record_ts + ao._ledger_sweep_window_seconds(jsonl)
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is False
 
@@ -384,7 +386,7 @@ class TestLedgerPossiblySwept:
         the swept side of the same strict `<` inequality."""
         jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
-        now = record_ts + ao._LEDGER_SWEEP_WINDOW_SECONDS + 1
+        now = record_ts + ao._ledger_sweep_window_seconds(jsonl) + 1
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is True
 
@@ -398,23 +400,128 @@ class TestLedgerPossiblySwept:
         assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records) is True
 
 
+class TestCleanupPeriodDays:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """functools.cache is process-global; cleared before and after
+        every test in this class so a config_dir_root Path from one test
+        can never leak a stale cached result into another test, mirroring
+        TestRepoTrackedAgentTypeNames' identical precedent in
+        test_transcript_analysis.py."""
+        ao._cleanup_period_days.cache_clear()
+        yield
+        ao._cleanup_period_days.cache_clear()
+
+    def test_defaults_to_thirty_when_settings_json_absent(self, tmp_path):
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_custom_cleanup_period_days_is_honored(self, tmp_path):
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
+        assert ao._cleanup_period_days(tmp_path) == 60
+
+    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path):
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 5}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path):
+        (tmp_path / "settings.json").write_text("{not valid json")
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path):
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": "60"}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_boolean_cleanup_period_days_defaults_to_thirty(self, tmp_path):
+        """bool is an int subclass in Python -- a JSON true/false must not
+        be accepted as a day count."""
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": True}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_cache_resolves_two_distinct_config_dir_roots_independently(self, tmp_path):
+        """The one invariant the cache exists to serve: two roots resolved
+        in the same process must not collide on -- or overwrite -- each
+        other's cached value."""
+        root_a = tmp_path / "root-a"
+        root_b = tmp_path / "root-b"
+        root_a.mkdir()
+        root_b.mkdir()
+        (root_a / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
+        (root_b / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 90}))
+
+        assert ao._cleanup_period_days(root_a) == 60
+        assert ao._cleanup_period_days(root_b) == 90
+
+
 class TestLedgerSweepWindowMatchesShellScript:
-    def test_mtime_threshold_matches_the_python_sweep_window_constant(self):
-        """Source-scans review-ledger.sh's own -mtime +N literal instead of
-        executing it, since there's no other way to pin a cross-file,
-        cross-language numeric literal without running the shell script.
-        Accepted per test-conventions §9's "wiring-presence" carve-out."""
-        text = _REVIEW_LEDGER_SH.read_text()
-        function_match = re.search(
-            r"^_sweep_stale_ledger_files\(\) \{\n(.*?)\n\}\n", text, re.DOTALL | re.MULTILINE,
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """functools.cache is process-global, keyed on config_dir (a
+        Path); pytest's tmp_path directory name is truncated+numbered
+        from the test's own node id, so this test's two parametrize
+        cases can land on the identical tmp_path string and otherwise
+        hit each other's cached result. See TestCleanupPeriodDays'
+        identical fixture above."""
+        ao._cleanup_period_days.cache_clear()
+        yield
+        ao._cleanup_period_days.cache_clear()
+
+    @pytest.mark.parametrize(
+        "cleanup_period_days",
+        [
+            pytest.param(45, id="above-floor"),
+            pytest.param(5, id="below-floor-both-sides-floor-to-30"),
+        ],
+    )
+    def test_bash_and_python_resolve_the_same_window_from_the_same_settings_json(
+        self, tmp_path, cleanup_period_days,
+    ):
+        """review-ledger.sh's _ledger_sweep_window_days and this module's
+        _cleanup_period_days each read cleanupPeriodDays from the same
+        settings.json independently -- this pins them to the identical
+        resolved day count rather than a shared literal, at both a value
+        above the floor and one below it, so the two languages' floor
+        constants can't silently drift apart on the below-floor branch.
+        Exercises bash's side through the public clear-stale surface
+        (there is no unit-test seam into an unexported shell function:
+        sourcing review-ledger.sh runs its own top-level `exit`
+        unconditionally)."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        (config_dir / "settings.json").write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+
+        python_days = ao._cleanup_period_days(config_dir)
+        assert python_days == max(cleanup_period_days, 30)
+
+        ledger_dir = config_dir / "review-narrative-ledger"
+        ledger_dir.mkdir()
+        fresh = ledger_dir / ("a" * 64 + ".fresh-session.jsonl")
+        stale = ledger_dir / ("b" * 64 + ".stale-session.jsonl")
+        fresh.write_text('{"finding":"fresh"}\n')
+        stale.write_text('{"finding":"stale"}\n')
+        # +/- a full day of margin around the resolved boundary avoids
+        # relying on find(1)'s own day-truncation rounding at the exact edge.
+        fresh_age = time.time() - (python_days - 1) * 86400
+        stale_age = time.time() - (python_days + 2) * 86400
+        os.utime(fresh, (fresh_age, fresh_age))
+        os.utime(stale, (stale_age, stale_age))
+
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            ["bash", str(_REVIEW_LEDGER_SH), "clear-stale", "--dry-run"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
         )
-        assert function_match is not None, "_sweep_stale_ledger_files definition not found"
-        # Scoped to the function's own find invocation, not the illustrative
-        # "-mtime +30" comment above it describing a different script by analogy.
-        mtime_match = re.search(r"find.*-mtime \+(\d+).*-print0", function_match.group(1))
-        assert mtime_match is not None, "review-ledger.sh's find -mtime +N sweep threshold not found"
-        mtime_days = int(mtime_match.group(1))
-        assert mtime_days * 86400 == ao._LEDGER_SWEEP_WINDOW_SECONDS
+
+        assert result.returncode == 0, result.stderr
+        assert fresh.name not in result.stdout, (
+            f"a {python_days - 1}-day-old file must survive a {python_days}-day "
+            f"window: {result.stdout}"
+        )
+        assert stale.name in result.stdout, (
+            f"a {python_days + 2}-day-old file must be evicted by a "
+            f"{python_days}-day window: {result.stdout}"
+        )
 
 
 class TestClassifyRound:

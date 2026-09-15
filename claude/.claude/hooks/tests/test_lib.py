@@ -6473,3 +6473,75 @@ class TestLibAcquireAppendLockCalledTwice:
             "the first call's lock must be left orphaned once the second "
             "call's EXIT trap replaces the first's"
         )
+
+
+def _run_ledger_sweep_window_days(settings_file: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; _ledger_sweep_window_days "$1"', "_", str(settings_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLedgerSweepWindowDays:
+    """GH-973: _ledger_sweep_window_days derives the ledger's sweep window
+    from Claude Code's own cleanupPeriodDays setting, floored at
+    _LEDGER_SWEEP_FLOOR_DAYS. review-ledger.sh's own
+    TestReviewLedgerSweepWindowFromSettings (test_review_ledger_script.py)
+    covers this value's wiring into clear-stale's `find -mtime +N`; the
+    arithmetic itself is pinned here instead."""
+
+    def test_defaults_to_thirty_when_settings_file_absent(self, tmp_path: Path) -> None:
+        result = _run_ledger_sweep_window_days(tmp_path / "nonexistent-settings.json")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_custom_cleanup_period_days_is_honored(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 60}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "60"
+
+    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{not valid json")
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": "60"}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_negative_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": -5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
+        self, tmp_path: Path
+    ) -> None:
+        """A 9+-digit all-digit value can exceed bash's signed-integer
+        range, making the `-lt` floor comparison itself error and fall
+        through unfloored instead of returning _LEDGER_SWEEP_FLOOR_DAYS --
+        this pins the digit-count guard added to reject it before that
+        comparison runs."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
