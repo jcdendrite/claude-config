@@ -195,13 +195,12 @@ class TestCheckClaudeMdLength:
         )
 
     def test_sed_absent_from_path_denies(self, isolated_home, tmp_path):
-        """Status-2 propagation: the matcher could not determine whether
-        this command invokes git commit, and this gate's own documented
-        fail-closed posture means an undetermined match denies rather than
-        silently falling through to allow. Asserts the distinguishing
-        reason text, not just the verdict, so this test cannot be
-        satisfied by an ordinary over-limit deny reaching "deny" for the
-        wrong reason."""
+        """Status-2 propagation on the predicate this hook calls,
+        _lib_command_concludes_commit: an undetermined match must deny
+        rather than silently falling through to allow. Asserts the
+        distinguishing reason text, not just the verdict, so this test
+        cannot be satisfied by an ordinary over-limit deny reaching "deny"
+        for the wrong reason."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -216,6 +215,47 @@ class TestCheckClaudeMdLength:
         )
         assert reason is not None
         assert "could not determine" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m foo",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_length_check(
+        self, isolated_home, tmp_path, command
+    ):
+        """Every commit-concluding shape reaches the length check, including
+        `git rebase --continue` -- this gate's recourse is mechanical
+        (shorten the file), so unlike require-code-review.sh it stays armed
+        on the one shape the rebase carve-out excludes from the marker
+        gates."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input(command), cwd=repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+        ],
+    )
+    def test_non_concluding_forms_do_not_reach_the_length_check(
+        self, isolated_home, tmp_path, command
+    ):
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert run_hook(CHECK_CLAUDE_MD_LENGTH_HOOK, bash_input(command), cwd=repo) == "allow"
 
     def test_new_claude_md_over_limit_denies(self, isolated_home, tmp_path):
         """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""
