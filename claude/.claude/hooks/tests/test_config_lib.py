@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1549,6 +1550,107 @@ class TestMemoization:
             f"normally: stdout={result.stdout!r}"
         )
 
+    def test_claude_config_dir_reassignment_mid_process_invalidates_the_memo(self, isolated_home):
+        """Proves the _CONFIG_MEMO_ENV_DIR fingerprint invalidation: a
+        CLAUDE_CONFIG_DIR reassignment between two bare _config_value calls
+        for the same key must not replay the first dir's memoized value."""
+        dir_a = isolated_home / "config-dir-a"
+        dir_a.mkdir()
+        dir_b = isolated_home / "config-dir-b"
+        dir_b.mkdir()
+        _write_state_file(isolated_home, "handoff_nudge = false\n", config_dir=dir_a)
+        _write_state_file(isolated_home, "handoff_nudge = true\n", config_dir=dir_b)
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{dir_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export CLAUDE_CONFIG_DIR="{dir_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect dir_b's own state, not "
+            f"dir_a's memoized value: stdout={result.stdout!r}"
+        )
+
+    def test_home_reassignment_mid_process_invalidates_the_memo(self, isolated_home, tmp_path):
+        """Mirrors the CLAUDE_CONFIG_DIR test above for the $HOME fallback
+        path: a HOME reassignment between two bare _config_value calls for
+        the same key must not replay the first home's memoized value."""
+        home_a = tmp_path / "home-a"
+        home_b = tmp_path / "home-b"
+        _write_state_file(home_a, "handoff_nudge = false\n")
+        _write_state_file(home_b, "handoff_nudge = true\n")
+        result = _run(
+            f'export HOME="{home_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export HOME="{home_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect home_b's own state, not "
+            f"home_a's memoized value: stdout={result.stdout!r}"
+        )
+
+    def test_claude_config_dir_unset_mid_process_falls_back_to_home_and_invalidates_the_memo(
+        self, isolated_home, tmp_path
+    ):
+        """Covers the one reassignment shape the two tests above don't:
+        CLAUDE_CONFIG_DIR set then unset mid-process, falling back to $HOME.
+        Must not replay the first call's CLAUDE_CONFIG_DIR-anchored memoized
+        value."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        _write_state_file(tmp_path, "handoff_nudge = false\n", config_dir=config_dir)
+        _write_state_file(isolated_home, "handoff_nudge = true\n")
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{config_dir}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            "unset CLAUDE_CONFIG_DIR; "
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect $HOME's own state, not the "
+            f"memoized CLAUDE_CONFIG_DIR-anchored value: stdout={result.stdout!r}"
+        )
+
+    def test_memo_fingerprint_independent_comparison_defeats_pipe_delimiter_aliasing(self, isolated_home):
+        """Pins the property _config_memo_lookup's own header comment names as
+        the reason CLAUDE_CONFIG_DIR/HOME are compared independently rather
+        than concatenated: a literal '|' in one value must not let two
+        distinct (dir, home) pairs alias to the same fingerprint. dir_a/home_a
+        and dir_b/home_b concatenate to the identical "X|Y|Z" string despite
+        dir_a != dir_b and home_a != home_b -- a naive concatenated
+        fingerprint would treat the second call as a cache hit and replay
+        dir_a's stale value instead of dir_b's real one."""
+        dir_a = isolated_home / "X|Y"
+        dir_a.mkdir()
+        dir_b = isolated_home / "X"
+        dir_b.mkdir()
+        # home_a/home_b are plain strings, not paths under isolated_home --
+        # handoff_nudge is a resolution=config-dir key, so $HOME is never
+        # read for its value resolution, only for the memo fingerprint.
+        # Nesting them under isolated_home too would prepend an identical
+        # "isolated_home/" prefix to both dir and home before the pipe,
+        # which breaks the collision this test needs to construct.
+        home_a = "Z"
+        home_b = "Y|Z"
+        _write_state_file(isolated_home, "handoff_nudge = false\n", config_dir=dir_a)
+        _write_state_file(isolated_home, "handoff_nudge = true\n", config_dir=dir_b)
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{dir_a}"; export HOME="{home_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export CLAUDE_CONFIG_DIR="{dir_b}"; export HOME="{home_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "a naive concatenated fingerprint would alias these two distinct "
+            "pairs and replay dir_a's memoized value; the independent "
+            f"comparison must treat this as a miss: stdout={result.stdout!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # The union-active branch (_config_value's config-dir-or-home path with
@@ -1693,6 +1795,37 @@ class TestMemoizationUnionBranch:
             "enforcement call site's own contract, not just _config_value's "
             "printed string -- must agree at both the fail-safe point and "
             f"after the state change: stdout={result.stdout!r}"
+        )
+
+    def test_union_branch_fail_safe_when_only_primary_location_fails(
+        self, isolated_home, monkeypatch
+    ):
+        """Other union-branch failure tests fail both locations uniformly and
+        can't distinguish `||` from an accidentally-flipped `&&`. This stubs
+        only the primary location's failure (keyed on
+        `_config_location_value`'s own `$2` dir argument, delegating to the
+        real implementation for the home branch) and asserts the fail-safe
+        value wins over home's real value."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "autonomous_shipping = true\n")
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            f'_config_location_value() {{ [ "$2" = "{config_dir}" ] && return 1; '
+            '_config_location_value_real "$@"; }; '
+            "_config_value autonomous_shipping; "
+            "printf '|'; "
+            "_config_enabled autonomous_shipping; "
+            "printf 'enabled=%d' \"$?\""
+        )
+        assert result.stdout == "false|enabled=1", (
+            "a primary-location-only failure must still take the union's "
+            "fail-safe path ('false', autonomous_shipping's own schema "
+            "default) rather than falling through to home's real 'true': "
+            f"stdout={result.stdout!r}"
         )
 
 
@@ -1955,45 +2088,18 @@ class TestSchemaFieldBogusFieldOrdering:
 #
 # This oracle can't be _config_schema_field, since it delegates to
 # _config_schema_row, so both would report the same wrong value on a
-# column-swap bug. Independently parsing the same grammar in a different
-# language is what makes this comparison catch that shape of bug.
+# column-swap bug.
+# _config.py's already-tested schema() is reused here rather than
+# hand-rolling a second PSV parser, per this repo's single-source-of-truth
+# rule for parsing logic.
+# TestConfigKeysPsvGrammarInvariants below covers a different gap both
+# parsers share: row-shape/field-count leniency on a malformed row.
 # ---------------------------------------------------------------------------
 
-_SCHEMA_ROW_COLUMNS = [
-    "key",
-    "type",
-    "default",
-    "resolution",
-    "legacy_probe",
-    "legacy_import",
-    "legacy_filename",
-    "legacy_polarity",
-    "human_name",
-    "docs_anchor",
-    "prompt_description",
-]
+sys.path.insert(0, str(SCRIPTS_DIR))
+from _config import schema  # noqa: E402
 
-
-def _parse_schema_rows() -> list[dict[str, str]]:
-    """Independently parses config-keys.psv's documented grammar (see that
-    file's own header comment for the authoritative column order), first-
-    match-wins per key -- mirrors _config_schema_row's own first-match/
-    scan-to-EOF semantics without calling any bash function."""
-    rows = []
-    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split("|")
-        assert len(fields) == len(_SCHEMA_ROW_COLUMNS), (
-            f"expected {len(_SCHEMA_ROW_COLUMNS)} columns, got {len(fields)}: {line!r}"
-        )
-        rows.append(dict(zip(_SCHEMA_ROW_COLUMNS, fields, strict=True)))
-    return rows
-
-
-_SCHEMA_ROWS_BY_KEY: dict[str, dict[str, str]] = {}
-for _row in _parse_schema_rows():
-    _SCHEMA_ROWS_BY_KEY.setdefault(_row["key"], _row)
+_SCHEMA_ROWS_BY_KEY = schema()
 
 _SCHEMA_ROW_GLOBALS = [
     "_CONFIG_ROW_TYPE",
@@ -2008,9 +2114,21 @@ _SCHEMA_ROW_GLOBALS = [
     "_CONFIG_ROW_PROMPT_DESCRIPTION",
 ]
 
-# Same order as _SCHEMA_ROW_COLUMNS minus "key", so index i of a bash-side
-# result lines up with _SCHEMA_ROW_GLOBALS[i] and this list's [i].
-_SCHEMA_ROW_PY_FIELDS = _SCHEMA_ROW_COLUMNS[1:]
+# Same order as _SCHEMA_ROW_GLOBALS, mapped to SchemaRow's own field names.
+# legacy_probe_on_resolution_failure_raw is the raw column string (not the
+# coerced bool), matching _CONFIG_ROW_LEGACY_PROBE's own raw string value.
+_SCHEMA_ROW_PY_FIELDS = [
+    "type",
+    "default",
+    "resolution",
+    "legacy_probe_on_resolution_failure_raw",
+    "legacy_import_locations",
+    "legacy_filename",
+    "legacy_polarity",
+    "human_name",
+    "docs_anchor",
+    "prompt_description",
+]
 
 
 class TestSchemaRowMatchesIndependentPsvParse:
@@ -2027,7 +2145,7 @@ class TestSchemaRowMatchesIndependentPsvParse:
         assert len(lines) == 11, f"expected 11 lines, got {len(lines)}: {lines!r}"
         row_values, known_keys = lines[:10], lines[10]
         expected_row = _SCHEMA_ROWS_BY_KEY[key]
-        expected_values = [expected_row[field] for field in _SCHEMA_ROW_PY_FIELDS]
+        expected_values = [getattr(expected_row, field) for field in _SCHEMA_ROW_PY_FIELDS]
         assert row_values == expected_values, (
             f"_config_schema_row's own globals for {key!r} must match an "
             f"independent Python parse of its config-keys.psv row: "
@@ -2037,6 +2155,67 @@ class TestSchemaRowMatchesIndependentPsvParse:
         assert known_keys == expected_known_keys, (
             f"_CONFIG_ROW_KNOWN_KEYS must list every schema key: "
             f"got={known_keys!r} expected={expected_known_keys!r}"
+        )
+
+
+class TestConfigKeysPsvGrammarInvariants:
+    """Reads config-keys.psv directly, through neither _config_schema_row
+    (bash) nor _config.py's schema() -- both apply the same padding/
+    truncation leniency to a malformed row, so a row-shape bug is invisible
+    to TestSchemaRowMatchesIndependentPsvParse's comparison above."""
+
+    def test_every_row_has_exactly_eleven_fields(self):
+        offending_lines = [
+            (lineno, line)
+            for lineno, line in enumerate(_CONFIG_KEYS_PSV.read_text().splitlines(), start=1)
+            if line.strip() and not line.strip().startswith("#") and line.count("|") != 10
+        ]
+        assert offending_lines == [], (
+            "a config-keys.psv row does not have exactly 11 pipe-separated "
+            f"fields: {offending_lines!r}"
+        )
+
+    def test_grammar_comment_column_order_matches_schema_row_globals(self):
+        """Three-way check: the PSV file's own grammar comment, this
+        hand-typed `expected_fields`, and `_SCHEMA_ROW_PY_FIELDS`'s order
+        must all agree. `expected_fields` is hand-typed, not derived from
+        `_SCHEMA_ROW_PY_FIELDS`, so a lockstep reorder of both real lists
+        doesn't pass silently."""
+        grammar_line = next(
+            line for line in _CONFIG_KEYS_PSV.read_text().splitlines() if line.startswith("#   key|")
+        )
+        fields = grammar_line.lstrip("#").strip().split("|")[1:]  # drop the leading `key` field
+        expected_fields = [
+            "type",
+            "default",
+            "resolution",
+            "legacy-probe-on-resolution-failure",
+            "legacy-import-locations",
+            "legacy-filename",
+            "legacy-polarity",
+            "human-name",
+            "docs-anchor",
+            "prompt-description",
+        ]
+        assert fields == expected_fields, (
+            f"config-keys.psv's own grammar comment line's column order "
+            f"({fields!r}) no longer matches this test's independently "
+            f"hand-typed expected order ({expected_fields!r})"
+        )
+        # Normalizes _SCHEMA_ROW_PY_FIELDS's order to the grammar comment's
+        # hyphenated spelling (dropping the one "_raw" suffix) and checks it
+        # against expected_fields too.
+        # This is the leg that ties _SCHEMA_ROW_PY_FIELDS/_SCHEMA_ROW_GLOBALS
+        # to the independent oracle -- without it, a lockstep reorder of both
+        # real lists would go undetected.
+        normalized_py_fields = [
+            field.removesuffix("_raw").replace("_", "-") for field in _SCHEMA_ROW_PY_FIELDS
+        ]
+        assert normalized_py_fields == expected_fields, (
+            f"_SCHEMA_ROW_PY_FIELDS's own order ({_SCHEMA_ROW_PY_FIELDS!r}, "
+            f"normalized to {normalized_py_fields!r}) no longer matches "
+            f"expected_fields ({expected_fields!r}) -- update whichever "
+            f"one drifted so all three stay in agreement"
         )
 
 
@@ -2054,9 +2233,9 @@ class TestSingleLocationBranchNeverExercisesLegacyProbeArm:
         failure=true flags the gap in the single-location branch's own test
         coverage instead of silently inheriting it."""
         offending_rows = [
-            row["key"]
+            row.key
             for row in _SCHEMA_ROWS_BY_KEY.values()
-            if row["resolution"] == "config-dir" and row["legacy_probe"] == "true"
+            if row.resolution == "config-dir" and row.legacy_probe_on_resolution_failure_raw == "true"
         ]
         assert offending_rows == [], (
             "a resolution=config-dir row now has legacy-probe-on-resolution-"
@@ -2114,9 +2293,9 @@ class TestConfigDirOrHomeRowsAreAllBoolTyped:
         a future non-bool config-dir-or-home row flags here instead of
         silently miscomputing the union."""
         offending_rows = [
-            row["key"]
+            row.key
             for row in _SCHEMA_ROWS_BY_KEY.values()
-            if row["resolution"] == "config-dir-or-home" and row["type"] != "bool"
+            if row.resolution == "config-dir-or-home" and row.type != "bool"
         ]
         assert offending_rows == [], (
             "a resolution=config-dir-or-home row is not bool-typed -- "
@@ -2127,11 +2306,21 @@ class TestConfigDirOrHomeRowsAreAllBoolTyped:
 
 
 # ---------------------------------------------------------------------------
-# No function in this file may declare a `local`/`declare` sharing one of
-# _config_schema_row's or _CONFIG_MEMO_CACHE's global names, since bash's
-# dynamic (not lexical) scoping would silently intercept the plain global
-# assignment into that shadow. Static, not behavioral -- enforces the
-# invariant by construction.
+# No function anywhere in this file's scanned scope may declare a
+# `local`/`declare` sharing one of these global names, since bash's dynamic
+# (not lexical) scoping would silently intercept the plain global assignment
+# into that shadow. The scan splits into two, since the two groups don't
+# share the same risk shape:
+#
+# _CONFIG_ROW_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* are read immediately
+# after being written within _config.sh's own functions, so scanning
+# _config.sh alone is sufficient for that group.
+#
+# _CONFIG_MEMO_* persists across separate top-level calls in any caller, so
+# every hook/script sourcing this file needs scanning too, since a shadow
+# there can desync it from a legitimate _config_set-triggered reset.
+#
+# Both scans are fail-fast checks, not a completeness guarantee.
 # ---------------------------------------------------------------------------
 
 
@@ -2164,64 +2353,95 @@ def _join_backslash_continuations(text: str) -> list[tuple[int, str]]:
 # (e.g. `[ -n "$x" ] && local _CONFIG_ROW_TYPE=1`), an idiom already used
 # elsewhere in this file. `declare` is function-scoped by default too.
 _LOCAL_OR_DECLARE_RE = re.compile(r"\b(?:local|declare)\b")
-# A real declaration target is a bare `_CONFIG_ROW_*`/`_CONFIG_MEMO_*`/
-# `_CONFIG_RESOLVED_*`/`_CONFIG_LOOKUP_*` token, optionally followed by
+# A real declaration target is a bare token, optionally followed by
 # `=value`. A value-position usage is always written `$_CONFIG_ROW_*`/
-# `${_CONFIG_ROW_*}` in this file. Excluding a token immediately preceded
-# by `$` or `${` distinguishes the two.
-_SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_(?:ROW|MEMO|RESOLVED|LOOKUP)_[A-Z_]+")
+# `${_CONFIG_ROW_*}` in this file. Excluding a token immediately preceded by
+# `$` or `${` distinguishes the two. Split into two regexes matching the two
+# scans' own prefix groups (see the class-level comment above): ROW/
+# RESOLVED/LOOKUP for the narrow, _config.sh-only scan, MEMO for the wide,
+# repo-scan.
+_ROW_SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_(?:ROW|RESOLVED|LOOKUP)_[A-Z_]+")
+_MEMO_SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_MEMO_[A-Z_]+")
 
 
 class TestGlobalReturnShadowingInvariant:
-    def test_no_local_declares_a_config_row_or_memo_cache_global(self):
-        # _config_lookup calls _config_resolve bare from both _config_value
-        # and _config_enabled. _config_resolve in turn calls _config_schema_row
-        # bare. These globals therefore persist into every bare
-        # caller's shell, not just _config.sh's own functions. Scan _lib.sh,
-        # install.sh (_config.sh's header names it as a direct sourcer), and
-        # every hook/script file -- glob, not an enumerated list, since a
-        # list must be kept in sync by hand as new sourcers are added and a
-        # glob doesn't. Neither glob recurses into tests/; those directories
-        # hold no .sh files anyway.
-        scanned_files = sorted({
-            _CONFIG_SH,
-            _LIB_SH,
-            _INSTALL_SH,
-            *HOOKS_DIR.glob("*.sh"),
-            *SCRIPTS_DIR.glob("*.sh"),
-        })
+    def test_no_local_declares_a_config_row_resolved_or_lookup_global(self):
+        # Scoped to _config.sh alone -- a `local`/`declare` shadow declared
+        # by a caller elsewhere (_lib.sh, install.sh, a hook, a script)
+        # doesn't break the global-return contract for this same-call-chain
+        # group; only a shadow inside _config.sh's own writer functions does
+        # (see the class-level comment above).
+        scanned_files = [_CONFIG_SH]
         violations = [
             (path.name, lineno, logical_line)
             for path in scanned_files
             for lineno, logical_line in _join_backslash_continuations(path.read_text())
-            if _LOCAL_OR_DECLARE_RE.search(logical_line) and _SHADOWING_TOKEN_RE.search(logical_line)
+            if _LOCAL_OR_DECLARE_RE.search(logical_line) and _ROW_SHADOWING_TOKEN_RE.search(logical_line)
         ]
         assert not violations, (
             "a `local`/`declare` declaration shadows a _CONFIG_ROW_*/"
-            f"_CONFIG_MEMO_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* global, "
-            f"which bash's dynamic scoping would silently redirect that "
-            f"global's assignment into: {violations!r}"
+            f"_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* global, which bash's "
+            f"dynamic scoping would silently redirect that global's "
+            f"assignment into: {violations!r}"
+        )
+
+    def test_no_local_declares_a_memo_global_anywhere_it_could_run(self):
+        # Wide scan -- _CONFIG_MEMO_CACHE/_CONFIG_MEMO_ENV_DIR/
+        # _CONFIG_MEMO_ENV_HOME persist across separate top-level calls, so a
+        # caller-declared shadow anywhere in this process's own call
+        # surface (not only inside _config.sh) can desync the real global
+        # from a legitimate reset (see the class-level comment above).
+        scanned_files = sorted(
+            {_CONFIG_SH, _LIB_SH, _INSTALL_SH, *HOOKS_DIR.glob("**/*.sh"), *SCRIPTS_DIR.glob("**/*.sh")}
+        )
+        violations = [
+            (path.name, lineno, logical_line)
+            for path in scanned_files
+            for lineno, logical_line in _join_backslash_continuations(path.read_text())
+            if _LOCAL_OR_DECLARE_RE.search(logical_line) and _MEMO_SHADOWING_TOKEN_RE.search(logical_line)
+        ]
+        assert not violations, (
+            "a `local`/`declare` declaration shadows a _CONFIG_MEMO_* "
+            f"global, which bash's dynamic scoping would silently redirect "
+            f"that global's assignment into, desyncing it from a real "
+            f"_config_set-triggered reset: {violations!r}"
         )
 
     @pytest.mark.parametrize(
-        "shadowing_line",
+        "shadowing_line,token_re",
         [
-            '[ -n "$x" ] && local _CONFIG_ROW_TYPE="shadow"',
-            'if true; then local _CONFIG_MEMO_CACHE=1; fi',
-            "for k in a b; do local _CONFIG_ROW_TYPE=\"$k\"; done",
+            ('[ -n "$x" ] && local _CONFIG_ROW_TYPE="shadow"', _ROW_SHADOWING_TOKEN_RE),
+            ("for k in a b; do local _CONFIG_ROW_TYPE=\"$k\"; done", _ROW_SHADOWING_TOKEN_RE),
+            ('if true; then local _CONFIG_MEMO_CACHE=1; fi', _MEMO_SHADOWING_TOKEN_RE),
+            ('if true; then local _CONFIG_MEMO_ENV_DIR=1; fi', _MEMO_SHADOWING_TOKEN_RE),
         ],
     )
-    def test_regex_catches_compound_statement_shadowing(self, shadowing_line):
+    def test_regex_catches_compound_statement_shadowing(self, shadowing_line, token_re):
         """A shadowing `local` need not be the first token on its line --
         e.g. a compound one-liner like `[ cond ] && local x=1`, an idiom
-        already used elsewhere in this file."""
+        already used elsewhere in this file. Covers both split regexes, so
+        each is proven to still fire on its own prefix group."""
         assert _LOCAL_OR_DECLARE_RE.search(shadowing_line)
-        assert _SHADOWING_TOKEN_RE.search(shadowing_line)
+        assert token_re.search(shadowing_line)
 
     def test_regex_catches_backslash_continued_shadowing(self):
         text = 'local \\\n  _CONFIG_ROW_TYPE="shadow"\n'
         joined = _join_backslash_continuations(text)
         assert any(
-            _LOCAL_OR_DECLARE_RE.search(logical_line) and _SHADOWING_TOKEN_RE.search(logical_line)
+            _LOCAL_OR_DECLARE_RE.search(logical_line) and _ROW_SHADOWING_TOKEN_RE.search(logical_line)
             for _, logical_line in joined
         )
+
+    def test_row_regex_does_not_match_memo_prefixed_names(self):
+        """The narrow-scan regex must not widen onto _CONFIG_MEMO_* names --
+        those are covered by the separate wide scan instead."""
+        assert not _ROW_SHADOWING_TOKEN_RE.search("local _CONFIG_MEMO_CACHE=1")
+        assert not _ROW_SHADOWING_TOKEN_RE.search("local _CONFIG_MEMO_ENV_DIR=1")
+
+    def test_memo_regex_does_not_match_row_resolved_or_lookup_prefixed_names(self):
+        """The wide-scan regex must not narrow onto
+        _CONFIG_ROW_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* names -- those are
+        covered by the separate narrow scan instead."""
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_ROW_TYPE=1")
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_RESOLVED_VALUE=1")
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_LOOKUP_VALUE=1")

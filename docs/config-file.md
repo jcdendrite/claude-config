@@ -291,15 +291,13 @@ against this shape and should be treated as an upper bound for that path:
 - A bare `. _lib.sh` with no config call: ~15ms.
 - Adding one `_config_enabled` call for a `config-dir` key: ~23ms.
 - `advance-past-commit-stall.sh`'s real shape (`commit_stall_block`, then
-  `autonomous_shipping` twice -- once via
-  `_lib_autonomous_shipping_sentinel_present`'s own pre-`REPO_ROOT` fast
-  path, again via `_lib_autonomous_shipping_active`) with no state file yet
-  written, or once a state file exists: ~33-35ms either way, with no
-  reliable ordering between the two shapes. Every `_config_location_value`
-  call threads the precomputed schema locals through, capping the gap
-  between the two shapes at one further schema pass per location. That gap
-  is small enough to sit within this machine's own run-to-run measurement
-  noise across repeated 40-iteration batches.
+  `autonomous_shipping` twice) costs ~33-35ms regardless of whether a state
+  file exists yet. Threading the precomputed schema locals through every
+  `_config_location_value` call caps the gap between the two shapes at one
+  further schema pass per location, which sits within this machine's own
+  measurement noise. This figure does not account for the `CLAUDE_CONFIG_DIR`/`HOME`
+  fingerprint check on the memo hot path; that check is judged immaterial
+  (two builtin string comparisons, no fork/IO) and wasn't re-measured.
 
 The second `autonomous_shipping` lookup above is a memo hit, not a second
 resolution.

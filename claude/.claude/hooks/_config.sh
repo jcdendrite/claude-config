@@ -41,6 +41,17 @@ _CONFIG_STATE_FILENAME="claude-config.toml"
 # transient resolution failure is re-checked on every call.
 _CONFIG_MEMO_CACHE=" "
 
+# _CONFIG_MEMO_ENV_DIR/_CONFIG_MEMO_ENV_HOME are the CLAUDE_CONFIG_DIR/HOME
+# pair the memo was populated under, compared independently (not
+# concatenated, to avoid a `|`-in-value alias).
+# Raw strings, not _lib_config_dir's normalized form -- a trailing-slash-only
+# reassignment costs a harmless extra reset, never a stale hit.
+# _CONFIG_MEMO_ENV_SET distinguishes "never stored" from "stored as empty".
+# No local-shadow of these three names, same rule as the memo cache global above.
+_CONFIG_MEMO_ENV_DIR=""
+_CONFIG_MEMO_ENV_HOME=""
+_CONFIG_MEMO_ENV_SET=""
+
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set,
 # else $HOME/.claude. $CLAUDE_CONFIG_DIR must be absolute -- a relative
 # value resolves differently per invocation cwd, which is the exact
@@ -653,6 +664,16 @@ _config_location_value() {
 # extraction of the value half.
 _config_memo_lookup() {
   local key="$1"
+  # Fingerprint check runs before the cache query: a CLAUDE_CONFIG_DIR/HOME
+  # change since the memo was populated resets the cache first, so the case
+  # below naturally misses. CLAUDE_CONFIG_DIR and HOME are compared
+  # independently, not via one concatenated string -- see the globals'
+  # own comment above for why.
+  if [ -n "$_CONFIG_MEMO_ENV_SET" ] \
+     && { [ "${CLAUDE_CONFIG_DIR:-}" != "$_CONFIG_MEMO_ENV_DIR" ] \
+          || [ "${HOME:-}" != "$_CONFIG_MEMO_ENV_HOME" ]; }; then
+    _config_memo_reset
+  fi
   case "$_CONFIG_MEMO_CACHE" in
     *" $key="*)
       local rest="${_CONFIG_MEMO_CACHE#*" $key="}"
@@ -670,13 +691,22 @@ _config_memo_lookup() {
 _config_memo_store() {
   local key="$1" value="$2"
   _CONFIG_MEMO_CACHE="${_CONFIG_MEMO_CACHE}$key=$value "
+  # Records the environment this store happened under, for the fingerprint check in _config_memo_lookup.
+  _CONFIG_MEMO_ENV_DIR="${CLAUDE_CONFIG_DIR:-}"
+  _CONFIG_MEMO_ENV_HOME="${HOME:-}"
+  _CONFIG_MEMO_ENV_SET=1
 }
 
 # _config_memo_reset
-# Clears _CONFIG_MEMO_CACHE (global) back to empty. Called by _config_set
-# and _config_scaffold.
+# Clears _CONFIG_MEMO_CACHE, _CONFIG_MEMO_ENV_DIR, _CONFIG_MEMO_ENV_HOME, and
+# _CONFIG_MEMO_ENV_SET (all global) back to empty.
+# Called by _config_set and _config_scaffold, and also by
+# _config_memo_lookup itself on a CLAUDE_CONFIG_DIR/HOME fingerprint mismatch.
 _config_memo_reset() {
   _CONFIG_MEMO_CACHE=" "
+  _CONFIG_MEMO_ENV_DIR=""
+  _CONFIG_MEMO_ENV_HOME=""
+  _CONFIG_MEMO_ENV_SET=""
 }
 
 # _config_resolve_fail_safe LEGACY_PROBE DEFAULT
@@ -895,8 +925,13 @@ _config_resolve() {
 #   via an earlier bare call.
 # A $(...)-captured call's own store never escapes its subshell -- only a
 # bare call's store is visible to a later lookup in the same shell.
-# A same-process change to a legacy sentinel file or a direct
-# claude-config.toml write bypasses the memo and is not seen.
+# Two same-process staleness vectors bypass the memo and are not seen:
+# - A legacy sentinel file appearing or disappearing.
+# - A direct claude-config.toml write that skips _config_set/_config_scaffold.
+# A CLAUDE_CONFIG_DIR/HOME reassignment is not a staleness vector:
+# _config_memo_lookup resets the cache when the current environment no
+# longer matches _CONFIG_MEMO_ENV_DIR/_CONFIG_MEMO_ENV_HOME, so a
+# mid-process reassignment is a memo miss, not a stale hit.
 _config_lookup() {
   local key="$1" config_dir_override="${2:-}"
   if [ -z "$config_dir_override" ] && _config_memo_lookup "$key"; then
