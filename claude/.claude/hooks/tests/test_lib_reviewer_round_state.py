@@ -253,12 +253,39 @@ class TestLibReviewerRoundStateCap:
         assert result.stdout.strip() == "2"
 
     def test_cap_is_one_with_pilot_sentinel_present(self, tmp_path):
+        """Legacy fallback arm: no claude-config.toml row, so _config_value
+        falls back to the raw legacy-file presence probe."""
         config_dir = tmp_path / "config-dir"
         config_dir.mkdir()
         (config_dir / ".round-consult-round2-pilot").touch()
         result = _state_cap(str(config_dir))
         assert result.returncode == 0
         assert result.stdout.strip() == "1"
+
+    def test_cap_is_one_with_toml_key_true_and_no_legacy_file(self, tmp_path):
+        """TOML arm: round_consult_round2_pilot = true resolves the cap
+        without any legacy sentinel file present."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text(
+            "round_consult_round2_pilot = true\n"
+        )
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "1"
+
+    def test_default_cap_when_toml_key_false_overrides_legacy_file(self, tmp_path):
+        """TOML-wins-over-legacy precedence: an explicit false in
+        claude-config.toml overrides a stale legacy sentinel file."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / ".round-consult-round2-pilot").touch()
+        (config_dir / "claude-config.toml").write_text(
+            "round_consult_round2_pilot = false\n"
+        )
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
 
     def test_default_cap_on_unresolvable_config_dir(self):
         """A relative CLAUDE_CONFIG_DIR fails _lib_config_dir's own
