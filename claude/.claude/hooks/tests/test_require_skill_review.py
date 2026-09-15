@@ -1390,50 +1390,31 @@ class TestRequireSkillReview:
             f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
-    @pytest.mark.timing
-    def test_plugin_lib_sh_capped_for_matches_stowed_lib_sh(self, tmp_path):
-        """_lib_capped_for must behave identically between the plugin's
-        duplicated copy and the stowed original for every probe-then-fallback
-        branch: timeout(1) present, gtimeout(1)-only present, neither present
-        (uncapped fallback), and the unset-seconds-argument guard.
+    # Mirrors test_lib.py's four test_lib_capped_for_* functions, split the
+    # same way: each case gets its own skip guard, since pytest.skip()
+    # aborts the whole function and would otherwise let a PATH missing
+    # timeout(1) also skip the neither-present uncapped-fallback case below.
 
-        Every other duplicated helper in this file (_lib_config_dir,
-        _marker_lib_repo_hash, _lib_marker_value_present,
-        _lib_parse_tool_input_or_deny, _lib_jq) has a parity test above;
-        _lib_capped_for did not. Mirrors test_lib.py's four
-        test_lib_capped_for_* cases for the stowed original, which are the
-        source of truth for what "identical behavior" means here.
-        """
+    @pytest.mark.timing
+    def test_plugin_lib_sh_capped_for_enforces_cap_when_timeout_present_matches_stowed_lib_sh(self, tmp_path):
+        """timeout(1) present: both _lib_capped_for copies cap a hung command at exit 124."""
         import shutil
 
         harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
-
-        def _run_both(args: list[str], env: dict) -> tuple[subprocess.CompletedProcess, subprocess.CompletedProcess]:
-            plugin_result = subprocess.run(
-                ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", *args],
-                capture_output=True, text=True, check=False, env=env,
-            )
-            stowed_result = subprocess.run(
-                ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", *args],
-                capture_output=True, text=True, check=False, env=env,
-            )
-            return plugin_result, stowed_result
-
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
         timeout_path = shutil.which("timeout")
         dirname_path = shutil.which("dirname")
         if not bash_path or not sleep_path or not dirname_path:
             pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
 
-        # Case 1: timeout(1) present -- both copies cap a hung command at exit 124.
         # dirname must be on PATH too: the stowed _lib.sh sources _config.sh via
         # `$(dirname "${BASH_SOURCE[0]}")`, so a PATH stripped down to just
         # timeout/bash/sleep fails that source step before _lib_capped_for is
         # even defined, surfacing as a spurious "command not found" (127) here
         # rather than the fallback behavior this case actually targets.
-        if not timeout_path:
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         timeout_bin_dir = tmp_path / "bin-with-timeout"
         timeout_bin_dir.mkdir()
         (timeout_bin_dir / "timeout").symlink_to(timeout_path)
@@ -1441,14 +1422,40 @@ class TestRequireSkillReview:
         (timeout_bin_dir / "sleep").symlink_to(sleep_path)
         (timeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(timeout_bin_dir), "HOME": str(timeout_bin_dir)}
-        plugin_result, stowed_result = _run_both(["1", "sleep", "5"], env)
+
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
         assert plugin_result.returncode == stowed_result.returncode == 124, (
             "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
             "the stowed claude/.claude/hooks/_lib.sh copy when timeout(1) is present — "
             f"plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
         )
 
-        # Case 2: timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming).
+    @pytest.mark.timing
+    def test_plugin_lib_sh_capped_for_enforces_cap_via_gtimeout_when_timeout_absent_matches_stowed_lib_sh(
+        self, tmp_path
+    ):
+        """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): both copies still cap at exit 124."""
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        timeout_path = shutil.which("timeout")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available to alias as gtimeout — BSD/macOS without coreutils")
+
+        # Alias the real timeout binary under the gtimeout name and omit timeout
+        # from PATH entirely, simulating a Homebrew-coreutils-only machine.
         gtimeout_bin_dir = tmp_path / "bin-with-gtimeout"
         gtimeout_bin_dir.mkdir()
         (gtimeout_bin_dir / "gtimeout").symlink_to(timeout_path)
@@ -1456,24 +1463,56 @@ class TestRequireSkillReview:
         (gtimeout_bin_dir / "sleep").symlink_to(sleep_path)
         (gtimeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(gtimeout_bin_dir), "HOME": str(gtimeout_bin_dir)}
-        plugin_result, stowed_result = _run_both(["1", "sleep", "5"], env)
+
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
         assert plugin_result.returncode == stowed_result.returncode == 124, (
             "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
             "the stowed claude/.claude/hooks/_lib.sh copy when only gtimeout(1) is "
             f"present — plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
         )
 
-        # Case 3: neither timeout(1) nor gtimeout(1) present -- uncapped fallback
-        # still runs CMD to completion instead of "command not found" (127).
+    def test_plugin_lib_sh_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present_matches_stowed_lib_sh(
+        self, tmp_path
+    ):
+        """Neither timeout(1) nor gtimeout(1) on PATH: both copies run the command uncapped, not "command not found".
+
+        This is the actual subject of the plugin's _lib_capped_for hardening:
+        stock macOS without Homebrew coreutils has neither binary, and must
+        not skip alongside the timeout(1)-requiring cases above.
+        """
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+
         no_timeout_bin_dir = tmp_path / "bin-without-timeout"
         no_timeout_bin_dir.mkdir()
         (no_timeout_bin_dir / "bash").symlink_to(bash_path)
         (no_timeout_bin_dir / "sleep").symlink_to(sleep_path)
         (no_timeout_bin_dir / "dirname").symlink_to(dirname_path)
         env = {"PATH": str(no_timeout_bin_dir), "HOME": str(no_timeout_bin_dir)}
+
         # seconds (0.2) is well under the sleep duration (0.6) -- a real cap would
         # kill this early, so both copies exiting 0 proves both ran uncapped.
-        plugin_result, stowed_result = _run_both(["0.2", "sleep", "0.6"], env)
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "0.2", "sleep", "0.6"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "0.2", "sleep", "0.6"],
+            capture_output=True, text=True, check=False, env=env,
+        )
         assert plugin_result.returncode == stowed_result.returncode == 0, (
             "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
             "the stowed claude/.claude/hooks/_lib.sh copy when neither timeout(1) nor "
@@ -1481,8 +1520,8 @@ class TestRequireSkillReview:
             f"stowed: {stowed_result.returncode!r}"
         )
 
-        # Case 4: unset SECONDS hard-aborts the sourcing script via ${1:?msg}
-        # rather than falling through to run the command uncapped.
+    def test_plugin_lib_sh_capped_for_aborts_on_unset_seconds_argument_matches_stowed_lib_sh(self):
+        """Unset SECONDS hard-aborts both copies via ${1:?msg} rather than falling through to run the command uncapped."""
         guard_harness = '. "{lib}"; _lib_capped_for "$UNSET_VAR" echo should-not-run; echo SHOULD_NOT_REACH'
         plugin_result = subprocess.run(
             ["bash", "-c", guard_harness.format(lib=_PLUGIN_LIB)],

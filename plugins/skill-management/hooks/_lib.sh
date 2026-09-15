@@ -58,20 +58,13 @@ _lib_jq() {
 }
 
 # _lib_capped_for SECONDS CMD [ARGS...]
-# Same probe-then-fallback shape as _lib_jq above, generalized to any
-# command: probe timeout(1), then gtimeout(1) (Homebrew coreutils'
-# g-prefixed name), and run CMD uncapped only when neither is on PATH.
-# Without this fallback, a bare `timeout 10s cmd` on stock macOS (neither
-# binary present) fails with "command not found" (exit 127) instead of
-# running cmd at all. A caller that reads any nonzero exit as a real
-# failure would then deny permanently on that class of machine.
-# Deliberate trade on that same machine class: the uncapped fallback swaps a
-# fast, loud exit-127 failure for a rare, silent unbounded-hang risk if CMD
-# itself stalls. Same trade as claude/.claude/hooks/_lib.sh's _lib_capped_for.
-# Duplicated from claude/.claude/hooks/_lib.sh's function of the same name
+# Probes timeout(1) then gtimeout(1); runs CMD uncapped (not denied) when
+# neither exists, so callers must check the exit status themselves.
+# Uncapped fallback trades a loud exit-127 failure for a silent hang risk
+# if CMD stalls -- same trade as claude/.claude/hooks/_lib.sh's
+# _lib_capped_for. Duplicated from that file's function of the same name
 # (see this file's header for why plugin hooks duplicate rather than
-# source). Callers MUST check the exit status themselves -- this wrapper
-# does not fail closed on its own.
+# source).
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift

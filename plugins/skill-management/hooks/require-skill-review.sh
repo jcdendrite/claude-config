@@ -170,13 +170,9 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    # The validator is pure local file I/O with no network or daemon
-    # dependency. It completes in well under a second for a handful of
-    # staged files. 10s leaves headroom for a slow or contended disk.
-    # This call and the corpus-budget scan below both run in one script
-    # invocation. Worst-case added commit latency in the slow-but-not-hung
-    # case therefore approaches ~20s, not ~10s. Weigh any future change to
-    # either bound against that combined total.
+    # 10s caps validator latency; this call and the corpus scan below both run
+    # per commit, so worst-case combined latency is ~20s — weigh future bound
+    # changes against that total.
     VALIDATOR_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
