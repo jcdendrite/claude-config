@@ -40,13 +40,16 @@ from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
     TRAVERSAL_SESSION_ID,
+    assert_cap_engaged,
     build_path_without,
     extract_skill_command,
     install_marker_script,
     plant_traversal_canary,
     run_hook_until_marker_exists,
     run_skill_command,
+    scaled_shim_sleep,
     skill_input,
+    write_scaled_timeout_shim,
 )
 
 HANDOFF_SKILL = SKILLS_DIR / "handoff" / "SKILL.md"
@@ -645,7 +648,10 @@ class TestNudgeHandoffNearContextCap:
         fine under _lib_capped's 5s default, but must be killed under the 2s
         cap read_latest_usage's `_lib_capped_for 2 tail ...` call actually
         uses -- distinguishing the two rather than passing either way, the
-        way a shim slower than any plausible cap would."""
+        way a shim slower than any plausible cap would. The shim only slows
+        the `-n 200` invocation (read_latest_usage's own bootstrap scan).
+        `_lib_advance_offset_past_complete_lines`'s unrelated `tail -c 1`
+        newline check elsewhere in the same fire path is unaffected."""
         real_tail = shutil.which("tail")
         if not real_tail:
             pytest.skip("tail not found in PATH")
@@ -658,21 +664,28 @@ class TestNudgeHandoffNearContextCap:
         )
         fake_bin = tmp_path / "fakebin-slow-tail"
         fake_bin.mkdir()
+        write_scaled_timeout_shim(fake_bin)
         slow_tail = fake_bin / "tail"
-        slow_tail.write_text(f"#!/bin/bash\nsleep 3.5\nexec {real_tail} \"$@\"\n")
+        slow_tail.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-n" ]; then\n'
+            f'  sleep {scaled_shim_sleep(3.5)}\n'
+            'fi\n'
+            f'exec {real_tail} "$@"\n'
+        )
         slow_tail.chmod(0o755)
 
-        start = time.perf_counter()
-        result = _run_hook(
-            _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
-        )
-        elapsed = time.perf_counter() - start
+        # tail and jq share the same 2s cap on this pipe; command="tail"
+        # isolates the tail kill from jq's.
+        with assert_cap_engaged(fake_bin, production_cap=2, killed_calls=1, command="tail"):
+            result = _run_hook(
+                _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+            )
 
         assert result.returncode == 0
         assert result.stdout.strip() == "", (
-            f"hook fired despite the slow tail call being expected to time out at the "
-            f"2s cap (took {elapsed:.1f}s) -- the cap may have collapsed to the 5s "
-            "_lib_capped default"
+            "hook fired despite the slow tail call being expected to time out at the "
+            "2s cap -- the cap may have collapsed to the 5s _lib_capped default"
         )
 
     @pytest.mark.timing
@@ -697,27 +710,26 @@ class TestNudgeHandoffNearContextCap:
         )
         fake_bin = tmp_path / "fakebin-slow-jq"
         fake_bin.mkdir()
+        write_scaled_timeout_shim(fake_bin)
         slow_jq = fake_bin / "jq"
         slow_jq.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            "  *hookSpecificOutput*) sleep 3.5 ;;\n"
+            f'  *hookSpecificOutput*) sleep {scaled_shim_sleep(3.5)} ;;\n'
             "esac\n"
             f'exec {real_jq} "$@"\n'
         )
         slow_jq.chmod(0o755)
 
-        start = time.perf_counter()
-        result = _run_hook(
-            _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
-        )
-        elapsed = time.perf_counter() - start
+        with assert_cap_engaged(fake_bin, production_cap=2):
+            result = _run_hook(
+                _base_payload(transcript), tmp_path, extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+            )
 
         assert result.returncode == 0
         assert result.stdout.strip() == "", (
-            f"hook fired despite the slow fire-path jq call being expected to time out "
-            f"at the 2s cap (took {elapsed:.1f}s) -- the cap may have collapsed to the "
-            "5s _lib_capped default"
+            "hook fired despite the slow fire-path jq call being expected to time out "
+            "at the 2s cap -- the cap may have collapsed to the 5s _lib_capped default"
         )
         assert not _marker_path(tmp_path).exists()
 
@@ -752,11 +764,12 @@ class TestNudgeHandoffNearContextCap:
 
         fake_bin = tmp_path / f"fakebin-slow-jq-{case}"
         fake_bin.mkdir()
+        write_scaled_timeout_shim(fake_bin)
         slow_jq = fake_bin / "jq"
         slow_jq.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            f'  *"{slow_on}"*) sleep 3.5 ;;\n'
+            f'  *"{slow_on}"*) sleep {scaled_shim_sleep(3.5)} ;;\n'
             "esac\n"
             f'exec {real_jq} "$@"\n'
         )
@@ -773,14 +786,13 @@ class TestNudgeHandoffNearContextCap:
 
         if case.startswith("bootstrap"):
             _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
-            start = time.perf_counter()
-            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-            elapsed = time.perf_counter() - start
+            with assert_cap_engaged(fake_bin, production_cap=2):
+                result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
             assert result.returncode == 0
             assert result.stdout.strip() == "", (
-                f"hook fired despite the slow bootstrap-path jq call being expected to "
-                f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
-                "collapsed to the 5s _lib_capped default"
+                "hook fired despite the slow bootstrap-path jq call being expected to "
+                "time out at the 2s cap -- the cap may have collapsed to the 5s "
+                "_lib_capped default"
             )
             assert not _marker_path(tmp_path).exists()
             return
@@ -800,14 +812,13 @@ class TestNudgeHandoffNearContextCap:
         rearmed_estimate = ABOVE_LARGE + DEFAULT_REARM_SPACING + 1
         _append_to_transcript(transcript, [_record_totalling(rearmed_estimate)])
 
-        start = time.perf_counter()
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        elapsed = time.perf_counter() - start
+        with assert_cap_engaged(fake_bin, production_cap=2):
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert result.returncode == 0
         assert result.stdout.strip() == "", (
-            f"hook fired despite the slow incremental-scan jq call being expected to "
-            f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
-            "collapsed to the 5s _lib_capped default"
+            "hook fired despite the slow incremental-scan jq call being expected to "
+            "time out at the 2s cap -- the cap may have collapsed to the 5s "
+            "_lib_capped default"
         )
         assert _marker_path(tmp_path).read_text() == f"{ABOVE_LARGE}\n"
 

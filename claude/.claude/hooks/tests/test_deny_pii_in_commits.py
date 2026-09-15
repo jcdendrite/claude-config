@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -22,6 +23,7 @@ import textwrap
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     read_input,
@@ -29,7 +31,7 @@ from helpers import (
     run_hook_reason,
 )
 
-from .conftest import assert_cap_engaged
+from .conftest import _write_conditional_sleep_shim
 
 DENY_PII_IN_COMMITS_HOOK = HOOKS_DIR / "deny-pii-in-commits.sh"
 
@@ -224,7 +226,7 @@ class TestDenyPiiInCommits:
         ) == "deny"
 
     @pytest.mark.timing
-    def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
+    def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
         """Required regression test for a High-severity finding: `git diff
         --cached`'s _lib_capped exit status previously went unchecked, so a
         timeout silently left STAGED_DIFF empty/truncated and the always-on
@@ -234,42 +236,42 @@ class TestDenyPiiInCommits:
         and passes every other subcommand through to the real binary."""
         env = git_timeout_shim('[ "$1" = "diff" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
 
     @pytest.mark.timing
-    def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
+    def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
         """Required regression test: `git rev-parse --is-inside-work-tree`'s
         _lib_capped exit status must also fail closed on timeout (exit 124)
         rather than exiting 0 and skipping every scan tier, including the
         always-on credential-value one."""
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
 
     @pytest.mark.timing
-    def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
+    def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
         """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
         status must fail closed on timeout, distinct from the legitimate
         no-HEAD-yet (unborn branch) skip. `git commit -a` triggers
         HEAD_SCAN_NEEDED so this call site is reached."""
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
 
     @pytest.mark.timing
-    def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
+    def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
         """Required regression test: `git diff HEAD`'s _lib_capped exit
         status must fail closed on timeout, mirroring the STAGED_DIFF fix
         for the HEAD-relative diff specifically."""
         env = git_timeout_shim('[ "$1" = "diff" ] && [ "$2" = "HEAD" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
 
@@ -506,7 +508,7 @@ class TestDenyPiiInCommits:
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F /dev/zero"), cwd=git_repo) == "deny"
 
     @pytest.mark.timing
-    def test_F_file_cat_timeout_denied(self, isolated_home, git_repo, pii_patterns, cat_timeout_shim):
+    def test_F_file_cat_timeout_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
         """Required regression test: the `-F` message-source file's
         `_lib_capped cat` call previously swallowed a timeout's exit 124
         with `|| true`, silently scanning empty/partial content instead of
@@ -517,8 +519,19 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", "x\nclean\n")
         msg_file = git_repo / "msg.txt"
         msg_file.write_text(f"commit summary\n\nseen SSN {SSN}\n")
-        env = cat_timeout_shim(f'[ "$1" = "{msg_file}" ]')
-        with assert_cap_engaged():
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(msg_file))} ]')
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
             decision = run_hook(
                 DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo, extra_env=env
             )

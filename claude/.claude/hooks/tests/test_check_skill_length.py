@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_rebase,
@@ -20,8 +21,6 @@ from helpers import (
     run_hook,
     run_hook_reason,
 )
-
-from .conftest import assert_cap_engaged
 
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
 SKILL_PATH = "claude-skills/skills/my-skill/SKILL.md"
@@ -602,7 +601,7 @@ class TestCheckSkillLength:
 
     @pytest.mark.timing
     def test_staged_diff_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git diff --cached --name-only`'s _lib_capped wrap (added to
         _lib_staged_length_gate alongside the shared driver) must actually
@@ -614,7 +613,7 @@ class TestCheckSkillLength:
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$3" = "diff" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -625,7 +624,7 @@ class TestCheckSkillLength:
 
     @pytest.mark.timing
     def test_repo_detection_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git rev-parse --is-inside-work-tree`'s _lib_capped wrap (added to
         _lib_staged_length_gate alongside the shared driver) must actually
@@ -642,7 +641,7 @@ class TestCheckSkillLength:
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--is-inside-work-tree" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -658,7 +657,7 @@ class TestCheckSkillLength:
 
     @pytest.mark.timing
     def test_new_content_show_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git show ":$f"`'s pre-existing _lib_capped wrap (the new-revision
         read feeding the line-count check) must actually engage its 5s cap
@@ -668,7 +667,7 @@ class TestCheckSkillLength:
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = ":{SKILL_PATH}" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -679,7 +678,7 @@ class TestCheckSkillLength:
 
     @pytest.mark.timing
     def test_old_content_show_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git show "HEAD:$f"`'s pre-existing _lib_capped wrap (the
         old-revision read feeding the line-count check) must actually engage
@@ -693,7 +692,7 @@ class TestCheckSkillLength:
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -724,7 +723,7 @@ class TestCheckSkillLength:
         (repo / SKILL_PATH).write_text(make_skill_content(250))
         subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
         env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             reason = run_hook_reason(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),

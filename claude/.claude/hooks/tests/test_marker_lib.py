@@ -5,11 +5,16 @@ import hashlib
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without
+from helpers import (
+    HOOKS_DIR,
+    assert_cap_engaged,
+    build_path_without,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
+)
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -266,34 +271,32 @@ class TestLibRepoRoot:
         _lib_capped so callers (marker.sh's _resolve_repo_root,
         pr-diff-against-base.sh --record) fail fast instead of hanging for
         however long the harness's own outer Bash-tool timeout allows."""
-        timeout_path = shutil.which("timeout")
-        if not timeout_path:
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
         fake_bin = tmp_path / "fake-bin"
         fake_bin.mkdir()
+        write_scaled_timeout_shim(fake_bin)
         fake_git = fake_bin / "git"
         fake_git.write_text(
             "#!/bin/sh\n"
-            # 30s, well past _lib_capped's 5s cap -- avoids a race against
+            # Well past _lib_capped's 5s cap -- avoids a race against
             # the cap firing at the same instant a shorter sleep would end.
-            'if [ "$1" = "rev-parse" ]; then sleep 30; fi\n'
+            f'if [ "$1" = "rev-parse" ]; then sleep {scaled_shim_sleep(30)}; fi\n'
         )
         fake_git.chmod(0o755)
 
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        result = subprocess.run(
-            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(fake_bin, production_cap=5):
+            result = subprocess.run(
+                ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
 
         assert result.returncode != 0
-        assert elapsed < 8, f"_lib_repo_root took {elapsed:.1f}s — the git call is not capped"
 
 
 class TestLibActivePlanFiles:
@@ -611,18 +614,19 @@ class TestLibAdvanceOffsetPastCompleteLines:
         _lib_capped_for(2) -- a stalled tail must not hang the scan, and per
         the function's own documented limitation must degrade to OFFSET
         unchanged rather than partial progress."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         transcript.write_text("line one\nline two\npartial-no-newline")
         real_tail = shutil.which("tail")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "tail"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-c" ] && [[ "$2" == +* ]]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_tail} "$@"\n'
         )
@@ -630,23 +634,14 @@ class TestLibAdvanceOffsetPastCompleteLines:
 
         offset = 0
         size = transcript.stat().st_size
-        start = time.monotonic()
-        result = _advance_offset(
-            transcript, offset, size,
-            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS):
+            result = _advance_offset(
+                transcript, offset, size,
+                env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 0
         assert result.stdout.strip() == str(offset), "a timed-out slow-path scan must return OFFSET unchanged"
-        # No upper bound: 5/8 trials clocked 4.0-4.8s with no extra system
-        # load, an empirically observed baseline rather than a guessed
-        # margin -- the invariant that matters is not hanging for the ~10s
-        # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS - 0.5, (
-            f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s for this single call"
-        )
 
     def test_tail_absent_from_path_freezes_offset_at_current_size(self, tmp_path):
         """The function's own doc comment in _lib.sh documents this exact

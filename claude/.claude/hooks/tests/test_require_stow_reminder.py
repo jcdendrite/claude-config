@@ -2,19 +2,23 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     run_hook,
     run_hook_reason,
 )
 
-from .conftest import assert_cap_engaged
+from .conftest import _write_conditional_sleep_shim
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 
@@ -233,7 +237,7 @@ class TestRequireStowReminder:
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
     @pytest.mark.timing
-    def test_body_file_cat_timeout_skips_source_not_denied(self, stow_repo, tmp_path, cat_timeout_shim):
+    def test_body_file_cat_timeout_skips_source_not_denied(self, stow_repo, tmp_path):
         """Required regression test: the body-source file's `_lib_capped
         cat` call previously swallowed a timeout's exit 124 with
         `|| true`. This hook's existing disposition for an unreadable
@@ -250,8 +254,19 @@ class TestRequireStowReminder:
         body = tmp_path / "body.md"
         body.write_text("no marker in this file\n")
         cmd = f"gh pr create --title T --body 'post-merge: run ./install.sh' --body-file {body}"
-        env = cat_timeout_shim(f'[ "$1" = "{body}" ]')
-        with assert_cap_engaged():
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body))} ]')
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
             decision = run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
         assert decision == "allow"
 

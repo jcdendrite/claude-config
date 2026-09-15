@@ -7,18 +7,22 @@ on pseudo-file paths and unreadable body-source files.
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     run_hook,
     run_hook_reason,
 )
 
-from .conftest import assert_cap_engaged
+from .conftest import _write_conditional_sleep_shim
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
 
@@ -72,7 +76,7 @@ class TestDenyEscapedBackticksInPrBody:
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
 
     @pytest.mark.timing
-    def test_body_file_cat_timeout_is_denied_fail_closed(self, tmp_path, cat_timeout_shim):
+    def test_body_file_cat_timeout_is_denied_fail_closed(self, tmp_path):
         """Required regression test: the body-source file's `_lib_capped
         cat` call previously swallowed a timeout's exit 124 with
         `|| true`, silently scanning empty/partial content instead of
@@ -82,8 +86,19 @@ class TestDenyEscapedBackticksInPrBody:
         body_file = tmp_path / "body.md"
         body_file.write_text("clean body, no escapes\n")
         cmd = f"gh pr create --body-file {body_file}"
-        env = cat_timeout_shim(f'[ "$1" = "{body_file}" ]')
-        with assert_cap_engaged():
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body_file))} ]')
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
             decision = run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env)
         assert decision == "deny"
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -12,11 +11,14 @@ from helpers import (
     HOOKS_DIR,
     agent_input,
     architect_consult_latch_path,
+    assert_cap_engaged,
     bash_input,
     reviewer_round_state_value,
     run_hook,
     run_hook_reason,
+    scaled_shim_sleep,
     write_reviewer_round_state,
+    write_scaled_timeout_shim,
 )
 
 REQUIRE_ARCHITECT_CONSULT_HOOK = HOOKS_DIR / "require-architect-consult.sh"
@@ -174,8 +176,8 @@ class TestRequireArchitectConsult:
         call-counter stub would also catch any later, unrelated jq call
         this hook happens to make (e.g. a deny path's own reason-encoding
         call), which would add an unrelated timeout cycle to elapsed time."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")
@@ -183,29 +185,25 @@ class TestRequireArchitectConsult:
         _stage_change(repo, "first\nround-one\nround-three\n")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            '  *subagent_type*) sleep 10 ;;\n'
+            f'  *subagent_type*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
             "esac\n"
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_ARCHITECT_CONSULT_HOOK,
-            agent_input(session_id="s-hung-jq", subagent_type=REVIEWER_PERSONA),
-            cwd=repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_ARCHITECT_CONSULT_HOOK,
+                agent_input(session_id="s-hung-jq", subagent_type=REVIEWER_PERSONA),
+                cwd=repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "allow"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_jq timeout to fire on the second (subagent_type) "
-            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
     def test_live_plan_review_active_marker_allows(self, isolated_home, tmp_path):
         """A live /plan-review fan-out must not consume a round-counting
