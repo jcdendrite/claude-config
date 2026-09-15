@@ -4064,6 +4064,28 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
 
 
+def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
+    """Full row-line text of the Change-type row SCOPE_EXEMPT_ROW's shorthand
+    resolves to.
+
+    Shared row-lookup for `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
+    and `test_comment_discipline_row_points_to_its_deferral`, both of which
+    need the row's full text (not just its left-column shorthand from
+    `_change_type_table_left_columns`) to check for a literal string
+    reference.
+    """
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    for line in _change_type_table_rows(skill_md_path):
+        # line.split("|")[1] truncates at an embedded pipe in the left cell,
+        # same caveat as _change_type_table_left_columns's identical parse.
+        if line.split("|")[1].strip() == exempt_shorthand:
+            return line
+    raise AssertionError(
+        f"{skill_md_path}: no Change-type row's left column matches "
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
+    )
+
+
 class TestChangeTypeTableLeftColumns:
     """Direct coverage for _change_type_table_left_columns's `line.split("|")`
     parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
@@ -4081,6 +4103,29 @@ class TestChangeTypeTableLeftColumns:
             "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
         )
         assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
+
+
+class TestScopeExemptChangeTypeRowText:
+    """Direct coverage for _scope_exempt_change_type_row_text's no-match raise
+    branch, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
+    """
+
+    def test_no_matching_row_raises(self, tmp_path: Path) -> None:
+        """SCOPE_EXEMPT_ROW's shorthand ("Some other row") matches no
+        Change-type row's left column ("A different row entirely") —
+        AssertionError names both the path and the shorthand.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "<!-- SCOPE_EXEMPT_ROW start -->Some other row<!-- SCOPE_EXEMPT_ROW end -->\n"
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| A different row entirely | `some-reviewer` |\n"
+        )
+        with pytest.raises(AssertionError) as excinfo:
+            _scope_exempt_change_type_row_text(path)
+        assert str(path) in str(excinfo.value)
+        assert "Some other row" in str(excinfo.value)
 
 
 def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
@@ -4255,19 +4300,7 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
-    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-
-    row_text = None
-    for line in _change_type_table_rows(skill_md_path):
-        # line.split("|")[1] truncates at an embedded pipe in the left cell,
-        # same caveat as _change_type_table_left_columns's identical parse.
-        if line.split("|")[1].strip() == exempt_shorthand:
-            row_text = line
-            break
-    assert row_text is not None, (
-        f"{skill_md_path}: no Change-type row's left column matches "
-        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
-    )
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
 
     note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
     next_heading = "**Invalid skip rationales.**"
@@ -4316,18 +4349,8 @@ def test_comment_discipline_row_points_to_its_deferral() -> None:
     reader who consults the table without also reading Step 0.6 itself.
     """
     skill_md_path = _skill_file("code-review")
-    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-
-    row_text = None
-    for line in _change_type_table_rows(skill_md_path):
-        if line.split("|")[1].strip() == exempt_shorthand:
-            row_text = line
-            break
-    assert row_text is not None, (
-        f"{skill_md_path}: no Change-type row's left column matches "
-        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
-    )
-    assert "Step 0.6 defers this row" in row_text, (
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
+    assert "Step 0.6 defers this row out of staged-diff commit-gate rounds." in row_text, (
         f"{skill_md_path}: the comment/prose row no longer points to its own "
         "deferral out of staged-diff commit-gate rounds"
     )
