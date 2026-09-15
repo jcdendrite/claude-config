@@ -57,8 +57,10 @@ _lib_capped() {
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
 # Emits a stderr note every time the uncapped fallback fires, so a caller
-# or log can tell the cap silently didn't apply rather than reading a clean
-# exit as capped.
+# that doesn't redirect stderr can tell the cap silently didn't apply rather
+# than reading a clean exit as capped. Many current hook callers under
+# claude/.claude/hooks/*.sh redirect stderr to /dev/null, so this note is
+# unobservable from those.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift

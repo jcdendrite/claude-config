@@ -566,6 +566,23 @@ class TestReviewLedgerRoundScopedDedup:
         dispositions = {json.loads(line)["disposition"] for line in lines}
         assert dispositions == {"ADDRESS", "DEFER"}
 
+    def test_authoring_agent_alone_discriminates_within_the_same_round(self, isolated_home, git_repo):
+        """Same guard as test_disposition_alone_discriminates_within_the_same_round,
+        for authoring_agent, the field author_outcome.py's join depends on.
+        Existing dedup tests vary only disposition, so a filter narrowing
+        that drops authoring_agent would pass them all while silently
+        merging appends from different agents."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1", authoring_agent="code-writer"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1", authoring_agent="inline"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            f"an authoring_agent-only difference within the same round must not dedup, got: {lines}"
+        )
+        agents = {json.loads(line)["authoring_agent"] for line in lines}
+        assert agents == {"code-writer", "inline"}
+
 
 def _split_shell_args(statement: str) -> list[str]:
     """Splits STATEMENT (a single logical shell line, backslash-continuations
