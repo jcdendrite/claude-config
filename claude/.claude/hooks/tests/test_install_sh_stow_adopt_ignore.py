@@ -235,11 +235,11 @@ class TestStowAdoptIgnorePattern:
         )
 
     def test_stray_settings_json_is_removed_before_stow_runs(self, tmp_path: Path) -> None:
-        """M8: a stray real claude/.claude/settings.json -- the row-14
-        write-through shape, where a session that opened the pre-rename
-        dangling settings.json symlink recreated its old checkout-relative
-        target -- must be removed before stow runs, mechanizing the manual
-        cleanup README.md's migration note otherwise asks consumers to do by
+        """A stray real claude/.claude/settings.json -- the write-through
+        shape, where a session that opened the pre-rename dangling
+        settings.json symlink recreated its old checkout-relative target --
+        must be removed before stow runs, mechanizing the manual cleanup
+        README.md's migration note otherwise asks consumers to do by
         hand."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
@@ -310,7 +310,7 @@ def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) 
 
 
 class TestIgnoreArgsSeedRenderOutputNames:
-    """M8: settings.json and settings.overlay.json are render-settings.sh's
+    """settings.json and settings.overlay.json are render-settings.sh's
     own generated output, not tracked package content -- seeded into
     stow_ignore_args the same way plans/handoffs/briefs already are, so a
     not-yet-migrated stray copy is left alone rather than aborting stow."""

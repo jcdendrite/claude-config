@@ -49,8 +49,8 @@ def _extract_span(start_marker: str, end_marker: str) -> str:
     between them. Unlike _extract_block, which returns only the content
     *between* one marker pair, this spans across several fixture blocks plus
     whatever bare statements sit between them (e.g. the ensure_settings_render
-    call site, which M2 deliberately leaves unwrapped by any fixture marker
-    -- see TestRcInvocationPrecedesRenderCall below), preserving their
+    call site, deliberately left unwrapped by any fixture marker -- see
+    TestRcInvocationPrecedesRenderCall below), preserving their
     original relative order rather than concatenating separately-extracted
     strings that would drop it."""
     install_text = _INSTALL_SH.read_text()
@@ -272,12 +272,12 @@ class TestAbortsOnRenderFailure:
 
 
 class TestRcInvocationPrecedesRenderCall:
-    """M2's acceptance criterion: the renamed rc-invocation function's call
-    site sits immediately before render-settings-invoke -- adjacency, not
-    merely "somewhere above" -- so a failed first render still gets the
-    repairing rc block installed. The relevant INSTALL_TEST_FIXTURE markers
-    wrap only the function *definitions*; the call site itself is found by
-    text search, not by reusing a definition fixture's own marker."""
+    """The rc-invocation function's call site must sit immediately before
+    render-settings-invoke -- adjacency, not merely "somewhere above" -- so
+    a failed first render still gets the repairing rc block installed. The
+    relevant INSTALL_TEST_FIXTURE markers wrap only the function
+    *definitions*; the call site itself is found by text search, not by
+    reusing a definition fixture's own marker."""
 
     def test_call_site_sits_immediately_before_the_render_invoke_marker(self) -> None:
         install_text = _INSTALL_SH.read_text()
@@ -304,9 +304,9 @@ class TestRcInvocationPrecedesRenderCall:
         render-settings-invoke blocks concatenated in their original file
         order -- including the bare ensure_settings_render call site between
         them -- against a base file that forces the render to fail. The rc
-        block must still be installed despite the subsequent abort, which is
-        the whole point of M2's reordering: a fresh install whose first
-        render fails must not also lose its own repair mechanism."""
+        block must still be installed despite the subsequent abort: a fresh
+        install whose first render fails must not also lose its own repair
+        mechanism."""
         home = tmp_path / "home"
         home.mkdir()
         repo_dir = tmp_path / "repo"

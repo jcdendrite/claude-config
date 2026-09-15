@@ -192,8 +192,8 @@ class TestUnknownOrMissingToolToken:
 
 
 class TestSettingsJsonRegression:
-    """Phase 1's whole point is that both keys are true in settings.base.json,
-    the tracked source every stow consumer's settings.json is rendered from."""
+    """Both keys must be true in settings.base.json, the tracked source
+    every stow consumer's settings.json is rendered from."""
 
     def test_both_disable_keys_are_true_in_the_tracked_base_settings_json(self) -> None:
         settings = json.loads(_SETTINGS_BASE_JSON.read_text())

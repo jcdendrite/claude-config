@@ -41,7 +41,7 @@ def _extract_local_bin_block() -> str:
     """Return the rc-block-helpers block (_ensure_rc_block and its two
     siblings) followed by ensure_local_bin_on_path's own definition.
 
-    Post-M2, ensure_local_bin_on_path's own INSTALL_TEST_FIXTURE block no
+    ensure_local_bin_on_path's own INSTALL_TEST_FIXTURE block no
     longer defines _ensure_rc_block -- that moved into a separate
     rc-block-helpers block shared with ensure_settings_render, so extracting
     local-bin-path alone would fail with "command not found" for

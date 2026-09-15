@@ -492,11 +492,12 @@ stow_untracked_package_entries() {
     # before it unlinks the symlink can't fall through to this function's
     # callers, which un-adopt via a bare `mv` with no such backup.
     # settings.json and settings.overlay.json are render-settings.sh's own
-    # generated output, not stow --adopt leftovers -- reported here they
-    # would be un-adopted by this function's callers via a bare `mv`,
-    # permanently resurrecting the write-through bug this migration exists
-    # to close. install.sh seeds their own --ignore args directly (the same
-    # split plans/handoffs/briefs already use) since they need no backup
+    # generated output, not stow --adopt leftovers.
+    # Reported here, they would be un-adopted by this function's callers via
+    # a bare `mv`, permanently resurrecting the write-through bug this
+    # migration exists to close.
+    # install.sh seeds their own --ignore args directly instead (the same
+    # split plans/handoffs/briefs already use), since they need no backup
     # migration of their own.
     case "$name" in
       plans | handoffs | briefs | settings.json | settings.overlay.json) continue ;;

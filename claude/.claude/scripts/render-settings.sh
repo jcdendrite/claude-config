@@ -98,7 +98,11 @@ if [[ -e "$overlay_file" ]]; then
   # settings.overlay.json is the sanctioned home for per-account autoMode
   # trust declarations (docs/auto-mode.md); tighten its mode so other local
   # accounts can't read it even if directory-level hardening hasn't run yet.
-  # BSD chmod does not accept -- as an end-of-options marker.
+  # The leading-dash-to-./ normalization above already guarantees
+  # $overlay_file never starts with a literal "-", so chmod can't misparse
+  # it as a flag on any platform. GNU chmod's default argument permutation,
+  # unlike BSD/macOS's non-permuting scanner, is the platform difference a
+  # "-"-prefixed path would otherwise expose.
   chmod 600 "$overlay_file" 2>/dev/null || echo "render-settings.sh: warning: could not chmod 600 $overlay_file" >&2
 
   if ! jq -e 'type == "object"' -- "$overlay_file" >/dev/null 2>&1; then

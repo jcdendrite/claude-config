@@ -21,6 +21,12 @@ set -uo pipefail
 # The keys holding one machine's own state, which must never ship as the
 # config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
 # via path traversal, not a literal top-level match — see guarded_value below.
+# The two env.* entries below are exact paths kept for
+# --print-guarded-keys's dotted-subset cross-check against
+# render-settings.sh's RULE4_DOTTED_PATHS_JSON. They also let a type-mismatch
+# deny name the changed leaf (e.g. "env env.CLAUDE_CODE_EFFORT_LEVEL")
+# instead of the blunter "env" alone. See the CHANGED_KEYS jq body below for
+# how `env` itself is guarded as a namespace, not just these two paths.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 GUARDED_KEYS_JSON='[
@@ -132,6 +138,18 @@ fi
 # - Content that does not parse degrades to {}, so keys the other side does
 #   have still register as changed. Only a jq that cannot run at all yields no
 #   names, and that path warns below rather than passing silently.
+# - jq's `//` in $staged_env_raw/$main_env_raw treats a literal `false` env
+#   value the same as absent/null, collapsing it to `null` before the
+#   $staged_env_objlike/$main_env_objlike type-check ever sees "boolean".
+#   A real differing value on the other side still denies via the
+#   key-diffing branch below. Only the degenerate false-vs-absent pairing
+#   (both sides meaning "no env") collapses to no change, which is correct.
+# - `env` is guarded as a whole namespace, not just the two dotted paths in
+#   GUARDED_KEYS_JSON. Any added, removed, or changed key under .env denies,
+#   mirroring render-settings.sh's own namespace (not enumerated-list)
+#   treatment of overlay env keys. A credential-shaped key (e.g.
+#   env.ANTHROPIC_AUTH_TOKEN) is caught by this even though it has no
+#   dedicated GUARDED_KEYS_JSON entry.
 # shellcheck disable=SC2016 # single-quoted on purpose: $guarded/$staged/$main are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_jq wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 if ! CHANGED_KEYS=$(_lib_jq -rn \
   --argjson guarded "$GUARDED_KEYS_JSON" \
@@ -151,7 +169,25 @@ if ! CHANGED_KEYS=$(_lib_jq -rn \
    | [ $guarded[]
        | . as $key
        | select(guarded_value($staged_settings; $key)
-                != guarded_value($main_settings; $key)) ]
+                != guarded_value($main_settings; $key)) ] as $exact_matches
+   | (if ($staged_settings | type) == "object" then ($staged_settings.env // null) else null end) as $staged_env_raw
+   | (if ($main_settings | type) == "object" then ($main_settings.env // null) else null end) as $main_env_raw
+   | (($staged_env_raw | type) as $t | $t == "object" or $t == "null") as $staged_env_objlike
+   | (($main_env_raw | type) as $t | $t == "object" or $t == "null") as $main_env_objlike
+   | (if $staged_env_raw == $main_env_raw then []
+      elif $staged_env_objlike and $main_env_objlike then
+        (($staged_env_raw // {}) as $staged_env
+         | ($main_env_raw // {}) as $main_env
+         | (($staged_env | keys) + ($main_env | keys) | unique) as $env_keys
+         | [ $env_keys[]
+             | . as $k
+             | [$staged_env | has($k), $staged_env[$k]] as $s
+             | [$main_env | has($k), $main_env[$k]] as $m
+             | select($s != $m)
+             | ("env." + $k) ])
+      else ["env"]
+      end) as $env_matches
+   | ($exact_matches + $env_matches | unique)
    | join(" ")' 2>/dev/null); then
   # Allow, matching this gate's fail-open posture, but say so — a silent
   # allow here is indistinguishable from a clean one, and leaves the engineer

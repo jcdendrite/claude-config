@@ -290,11 +290,12 @@ fi
 # Claude Code session that opens the pre-rename $HOME/.claude/settings.json
 # symlink after it dangles (git pull renamed the tracked file to
 # settings.base.json, but this checkout hasn't re-installed yet) recreates
-# its old checkout-relative target with O_CREAT. Removed here, mechanizing
-# the manual cleanup README.md's migration note otherwise asks consumers to
-# do by hand -- settings.base.json is the only tracked file post-rename, so
-# nothing besides this stray-write path could have put a real file back at
-# the old settings.json path.
+# its old checkout-relative target with O_CREAT.
+# Removed here to mechanize the manual cleanup README.md's migration note
+# otherwise asks consumers to do by hand.
+# settings.base.json is the only tracked file post-rename, so nothing
+# besides this stray-write path could have put a real file back at the old
+# settings.json path.
 if [ -e "$REPO_DIR/claude/.claude/settings.json" ] && [ ! -L "$REPO_DIR/claude/.claude/settings.json" ]; then
   rm -f -- "$REPO_DIR/claude/.claude/settings.json"
   echo "[install] removed a stray $REPO_DIR/claude/.claude/settings.json left behind by a pre-migration write-through -- settings.base.json is the tracked file now" >&2

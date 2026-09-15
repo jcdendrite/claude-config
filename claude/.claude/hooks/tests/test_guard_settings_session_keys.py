@@ -1224,9 +1224,217 @@ class TestGuardSettingsSessionKeys:
             == "deny"
         )
 
-    def test_unrelated_nested_env_key_change_allows_existing_env_object(self, settings_repo):
-        """Must not over-guard the whole `env` block — only the two named
-        leaves. Shape: `env` already exists on main."""
+    def test_env_staged_as_non_object_against_absent_main_env_denies(self, settings_repo):
+        """A corrupted (non-object) staged `env` must still deny even when
+        main has no `env` key, since normalizing both to {} before diffing
+        would hide the corruption."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": "ANTHROPIC_AUTH_TOKEN=sk-ant-live-XXX"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'corrupt env as string'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_env_staged_as_array_against_absent_main_env_denies(self, settings_repo):
+        """Array-type mirror of test_env_staged_as_non_object_against_absent_main_env_denies:
+        the existing array-type coverage
+        (test_env_absent_in_staged_against_non_object_main_env_denies) only
+        pairs a non-object main env against an absent staged one -- this
+        pairs the other direction with a different non-object type than the
+        existing string-type test."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": ["ANTHROPIC_AUTH_TOKEN=sk-ant-live-XXX"]}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'corrupt env as array'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_env_staged_as_false_against_real_main_value_denies(self, settings_repo):
+        """A real credential-shaped env value on main still denies when
+        staged corrupts env to `false`, regardless of the false-side's own
+        collapse to null -- the differing value on main's side is what
+        drives the denial here, not the collapse itself."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-example"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with real env value"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": false}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'corrupt env as false'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_env_staged_as_false_against_absent_main_env_allows(self, settings_repo):
+        """jq's `//` collapses a literal `false` env value to `null`, the
+        same bucket as absent/null, before the objlike type-check runs.
+        Staged `env: false` against a main with no `env` key at all (the
+        settings_repo fixture's own baseline) means both sides collapse to
+        "no env" -- pins that this degenerate pairing allows rather than
+        denies."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": false}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'stage env as false'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_env_absent_against_main_env_false_allows(self, settings_repo):
+        """Mirror of the above with sides swapped: main's `env` is `false`
+        and staged drops the key entirely -- both sides still collapse to
+        "no env" via the same `//` fallback, so this must allow too."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": false}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with env false"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'drop env key'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_env_absent_in_staged_against_non_object_main_env_denies(self, settings_repo):
+        """Mirror of the above with sides swapped: main's `env` is corrupted
+        as a non-object and staged drops the key entirely -- must still
+        deny, not collapse both sides to {}."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": ["ANTHROPIC_AUTH_TOKEN=sk-ant-live-XXX"]}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with non-object env"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'drop corrupted env key'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_env_key_removed_relative_to_main_denies(self, settings_repo):
+        """A non-enumerated env key present on main and dropped from staged
+        must deny -- the "removed" leg of the namespace-wide contract,
+        previously untested."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with env var"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "env": {}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'remove env var'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_existing_non_enumerated_env_key_value_changed_denies(self, settings_repo):
+        """A non-enumerated env key present on both sides with a changed
+        value must deny -- the "changed" leg of the namespace-wide contract,
+        previously untested."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with env var"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "changed-value"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'change env var value'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_new_nested_env_key_denies_against_existing_env_object(self, settings_repo):
+        """`env` is guarded as a whole namespace, so a key with no dedicated
+        GUARDED_KEYS_JSON entry (e.g. a credential-shaped one a future
+        overlay could write) still denies. Shape: `env` already exists on
+        main."""
         repo, settings_file = settings_repo
         stage_settings(
             repo, settings_file,
@@ -1241,38 +1449,68 @@ class TestGuardSettingsSessionKeys:
             repo,
             settings_file,
             '{"model": "sonnet", "effortLevel": "normal",'
-            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+            ' "env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-example"}}\n',
         )
         assert (
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated env var'"),
+                bash_input("git commit -m 'add credential-shaped env var'"),
                 cwd=repo,
             )
-            == "allow"
+            == "deny"
         )
 
-    def test_unrelated_nested_env_key_change_allows_fresh_env_object(self, settings_repo):
+    def test_new_nested_env_key_denies_against_fresh_env_object(self, settings_repo):
         """Companion to the above: `env` does not exist on main at all, and
-        the staged commit creates it solely for an unrelated var."""
+        the staged commit creates it solely for a credential-shaped var."""
         repo, settings_file = settings_repo
         stage_settings(
             repo,
             settings_file,
             '{"model": "sonnet", "effortLevel": "normal",'
-            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+            ' "env": {"ANTHROPIC_AUTH_TOKEN": "sk-ant-example"}}\n',
         )
         assert (
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated env var'"),
+                bash_input("git commit -m 'add credential-shaped env var'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_unchanged_env_object_allows(self, settings_repo):
+        """Allow-path companion to the two denies above: the namespace-wide
+        env guard must not spuriously deny when the staged env object is
+        byte-for-byte the same as main's."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}}\n',
+        )
+        subprocess.run(
+            ["git", "commit", "-am", "baseline with env var"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "env": {"SOME_OTHER_VAR": "value"}, "unrelatedTestKey": "value"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'unrelated change alongside unchanged env'"),
                 cwd=repo,
             )
             == "allow"
         )
 
     def test_model_settings_change_denies_commit(self, settings_repo):
-        """modelSettings, written by /effort, must block -- backfilled key (M3/M4)."""
+        """modelSettings, written by /effort, must block -- backfilled key."""
         repo, settings_file = settings_repo
         stage_settings(
             repo,
@@ -1290,7 +1528,7 @@ class TestGuardSettingsSessionKeys:
         )
 
     def test_fast_mode_change_denies_commit(self, settings_repo):
-        """fastMode, written by /fast, must block -- backfilled key (M3/M4)."""
+        """fastMode, written by /fast, must block -- backfilled key."""
         repo, settings_file = settings_repo
         stage_settings(
             repo,
@@ -1307,7 +1545,7 @@ class TestGuardSettingsSessionKeys:
         )
 
     def test_disable_bypass_permissions_mode_change_denies_commit(self, settings_repo):
-        """disableBypassPermissionsMode, Claude-Code-written, must block -- backfilled key (M3/M4)."""
+        """disableBypassPermissionsMode, Claude-Code-written, must block -- backfilled key."""
         repo, settings_file = settings_repo
         stage_settings(
             repo,
@@ -1326,7 +1564,7 @@ class TestGuardSettingsSessionKeys:
 
 
 class TestPrintGuardedKeysMode:
-    """--print-guarded-keys (M3): a direct-invocation escape hatch giving
+    """--print-guarded-keys: a direct-invocation escape hatch giving
     tests and render-settings.sh's own rule-4 drift check a real artifact to
     compare against instead of source-scanning GUARDED_KEYS_JSON."""
 
@@ -1346,7 +1584,7 @@ class TestPrintGuardedKeysMode:
 
 class TestBaseKeyPlacementDisjointness:
     """Regression guards for settings.base.json's own top-level key set,
-    pinning the placement decisions M3/M4/Phase 0 made -- see
+    pinning that guarded keys and base-owned keys stay disjoint -- see
     test_render_settings.py's TestBaseOverlayDisjointness for the sibling
     check against the overlay's allowed key set."""
 
@@ -1369,7 +1607,7 @@ class TestBaseKeyPlacementDisjointness:
 
     def test_agent_push_notif_enabled_absent_from_base(self):
         """agentPushNotifEnabled falls through to general carry-forward
-        (M3 rule 3), the same as theme/tui -- it is not a base key or an
-        overlay-allowed key (Phase 0 decision)."""
+        (rule 3), the same as theme/tui -- it is not a base key or an
+        overlay-allowed key."""
         base_keys = set(json.loads(SETTINGS_BASE_JSON.read_text()).keys())
         assert "agentPushNotifEnabled" not in base_keys

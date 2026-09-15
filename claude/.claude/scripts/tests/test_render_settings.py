@@ -3,8 +3,8 @@
 Each test builds its own scratch $CLAUDE_CONFIG_DIR under tmp_path and
 invokes the real script via subprocess. Most tests need no shim, since the
 script's main external dependency is jq; TestChmodPortability's CI-portable
-regression case is the one exception, prepending a fake chmod that
-reproduces BSD chmod's `--` rejection to PATH.
+regression case is the one exception, prepending a fake chmod that fails on
+a dash-prefixed argument to PATH.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "render-settings.sh"
 _SETTINGS_BASE_JSON = Path(__file__).resolve().parents[2] / "settings.base.json"
 _GUARD_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "guard-settings-session-keys.sh"
 
-# The overlay's closed top-level allowlist (M5), excluding the conditionally
+# The overlay's closed top-level allowlist, excluding the conditionally
 # admissible `permissions` -- see TestBaseOverlayDisjointness, which mirrors
 # TestBaseKeyPlacementDisjointness in test_guard_settings_session_keys.py.
 OVERLAY_ALLOWED_TOP_LEVEL_KEYS = {"autoMode", "env", "skillListingBudgetFraction"}
@@ -422,6 +422,59 @@ class TestOverlayAllowlist:
         assert rendered["skillListingBudgetFraction"] == 0.2
 
 
+class TestUnvalidatedOverlayValueShapes:
+    """autoMode and skillListingBudgetFraction get no type/shape validation,
+    unlike env and permissions above -- a deliberate scope decision, not an
+    oversight. These pin today's accept-unconditionally behavior so a future
+    tightening is a deliberate test change, not a silent behavior shift."""
+
+    def test_non_numeric_skill_listing_budget_fraction_is_accepted_unconditionally(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"skillListingBudgetFraction": "not-a-number"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["skillListingBudgetFraction"] == "not-a-number"
+
+    def test_out_of_range_skill_listing_budget_fraction_is_accepted_unconditionally(
+        self, tmp_path: Path
+    ) -> None:
+        """docs/skills.md documents skillListingBudgetFraction as a fraction
+        of the context window (default 0.01). This test's 2.5 value is
+        outside the implied [0,1] range and still passes through today."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"skillListingBudgetFraction": 2.5})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["skillListingBudgetFraction"] == 2.5
+
+    def test_non_object_auto_mode_is_accepted_unconditionally(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": "not-an-object"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["autoMode"] == "not-an-object"
+
+
 class TestDefaultModeNestedException:
     """permissions.defaultMode is a narrow, value-guarded nested
     exception outside the top-level allowlist."""
@@ -441,7 +494,7 @@ class TestDefaultModeNestedException:
         assert rendered["permissions"]["deny"] == ["a"]
 
     def test_base_set_default_mode_is_overridden_by_overlay_accepted_value(self, tmp_path: Path) -> None:
-        """Confirms M11's nested override applies on top of rule 1's
+        """Confirms the nested override applies on top of rule 1's
         wholesale permissions merge even when base already sets the path."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -607,7 +660,9 @@ class TestOverlayChmodHardening:
 
 
 class TestChmodPortability:
-    """BSD chmod does not accept -- as an end-of-options marker."""
+    """Verifies the leading-dash-to-./-prefix normalization keeps a
+    dash-prefixed overlay filename from ever reaching chmod as a raw
+    argument, regardless of which chmod variant runs it."""
 
     def test_dash_leading_overlay_argument_is_not_parsed_as_a_flag(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -622,10 +677,9 @@ class TestChmodPortability:
         assert rendered["autoMode"] == {"environment": ["$defaults"]}
 
     def test_bsd_style_chmod_shim_reports_no_warning_and_leaves_mode_600(self, tmp_path: Path) -> None:
-        """CI runs Linux, where GNU chmod accepts -- unconditionally and this
-        regression would still pass with the bug present. This shim
-        reproduces BSD chmod's -- rejection so the fix is enforceable on
-        every push, not just a one-time manual macOS run."""
+        """CI runs Linux, where the real chmod accepts a dash-prefixed
+        argument unconditionally, so this regression needs a fake chmod that
+        fails on one to make the normalization enforceable on every push."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -760,7 +814,7 @@ class TestThemeTuiPreservation:
     """theme/tui are written directly into the live settings.json by
     Claude Code's /theme and /tui commands, not by base or overlay, so a
     render must carry forward the target's pre-existing values instead of
-    discarding them. Now an instance of M3's general rule-3 fallback, not a
+    discarding them. An instance of rule 3's general fallback, not a
     hardcoded two-key special case."""
 
     def test_prior_target_theme_and_tui_survive_the_render(self, tmp_path: Path) -> None:
@@ -915,7 +969,7 @@ class TestSymlinkWriteThroughRefusal:
         symlink into some other file when the render runs, the render must
         replace the symlink itself -- never write through it. The canary
         file's own "canary" key is an unclaimed top-level key, so it
-        carries forward under M3 rule 3 like any other prior-render key --
+        carries forward under rule 3 like any other prior-render key --
         that's the widened mechanism working as designed, not a leak."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -975,8 +1029,7 @@ class TestShallowCarryForward:
         assert rendered["permissions"] == {"deny": ["a"]}
 
     def test_overlay_allowed_key_absent_from_overlay_stays_absent(self, tmp_path: Path) -> None:
-        """Rule 2, the regression test for the bug plan-architect found:
-        deleting autoMode from the overlay (M6's own prescribed way to
+        """Rule 2: deleting autoMode from the overlay (the prescribed way to
         disable it) must actually take effect on the next render, not
         resurrect the prior render's value."""
         config_dir = tmp_path / "cfg"
@@ -996,7 +1049,7 @@ class TestShallowCarryForward:
 
     def test_unclaimed_top_level_key_carries_forward(self, tmp_path: Path) -> None:
         """Rule 3, the general fallback: model, once absent from both base
-        and overlay (M4), needs no key-specific case -- it carries forward
+        and overlay, needs no key-specific case -- it carries forward
         exactly like any other unclaimed top-level key."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -1059,9 +1112,9 @@ class TestShallowCarryForward:
         }
 
     def test_overlay_set_rule4_path_wins_over_prior_files_value(self, tmp_path: Path) -> None:
-        """Rule 4's conditional, the regression test for the round-3
-        BLOCKER: an unconditional rule 4 would let the stale prior-file
-        value silently overwrite the overlay's own current setting."""
+        """Rule 4's conditional: an unconditional rule 4 would let the stale
+        prior-file value silently overwrite the overlay's own current
+        setting."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
@@ -1145,8 +1198,8 @@ class TestEnabledKeyDeletion:
 
 
 class TestStderrDisclosure:
-    """The canonical stderr-disclosure deliverable specified in Phase 1's
-    render-settings.sh bullet: change-triggered, name-only, never-value."""
+    """The stderr-disclosure contract: change-triggered, name-only,
+    never-value."""
 
     def test_no_change_produces_no_disclosure_line(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
