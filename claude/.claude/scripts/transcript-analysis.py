@@ -7476,6 +7476,9 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
         # errors="replace" (not read_text()'s strict decode), so non-UTF-8
         # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
         # rather than raising UnicodeDecodeError uncaught.
+        # Assumes path is a regular file or a symlink to one; a FIFO would
+        # block indefinitely here, accepted since triggering it needs a
+        # planted special file in a config dir the attacker already writes to.
         raw = path.read_bytes()
     except OSError:
         raw = None
