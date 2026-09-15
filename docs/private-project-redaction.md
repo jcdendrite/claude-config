@@ -282,6 +282,11 @@ own accumulating totals — the owner has weighed that once (see
 
 ### Remediation
 
+This section covers two distinct categories, kept in separate lists
+below: content that predates this bar, and a new figure the owner
+reviews and approves in session going forward. Conflating the two would
+misstate the second category as a pre-existing exemption it isn't.
+
 Content published before this bar took effect stays as published. The
 grandfathered set, computed over a machine-wide, multi-account corpus,
 predates this section's current single-account bar:

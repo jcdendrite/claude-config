@@ -141,10 +141,6 @@ python3 <branch-worktree>/claude/.claude/scripts/transcript-analysis.py rearm-ba
 
 ```
 REARM BACKTEST SOURCES (this repo (41 project dirs); N roots)
-  account-1 nudge log: 253,672 bytes
-  account-2 nudge log: 4,635 bytes
-  account-3 nudge log: 356 bytes
-  account-4 nudge log: 51,695 bytes
 
 ## Re-arm spacing backtest (last 14d, generated 2026-09-14)
 
@@ -180,7 +176,7 @@ Block-reach rate (forced + blocked-no-handoff / fired): 6.9% (17/245)
 Join validity (handoff lines matching an in-scope fired session): 219
 Re-arms tolerated at voluntary compliance: median ignored=1 across 198 voluntary session(s) (4 voluntary session(s) missing ignored=)
 ```
-The root count in the header above is redacted (shown as `N`) per `docs/private-project-redaction.md`'s account/root-cardinality bar; every other figure in this block is pasted verbatim.
+The root count in the header above is redacted (shown as `N`) per `docs/private-project-redaction.md`'s account-cardinality bar. The per-account nudge-log byte sizes the raw command output also printed are omitted for the same reason — they would disclose the same account count by enumeration. Every other figure in this block is pooled with no per-account breakdown and is pasted verbatim: the owner reviewed and approved publishing this run's pooled figures at this granularity in session on 2026-09-14, per `docs/private-project-redaction.md`'s "The owner can authorize one figure, case by case" section.
 `[verified: rearm-backtest --this-repo --since 14d --spacings 40000,80000,120000,160000, Linux machine, run 2026-09-14]`
 
 **Gate evaluation:**
@@ -199,7 +195,7 @@ The root count in the header above is redacted (shown as `N`) per `docs/private-
 - **Gate D — admissible.**
   - Fired sessions: 245 (≥10 floor).
   - Join validity: 219 (nonzero — the join key is confirmed working, not a systematic mismatch).
-  - Largest per-root log: account-1 at 253,672 bytes (under the 2 MB truncation cap).
+  - Largest per-root log: under the 2 MB truncation cap.
 - **Gate E — decline a phrasing change.**
   - Pooled conversion: 89.4% (≥0.60 floor).
   - Pooled block-reach: 6.9% (≤0.20 ceiling).
