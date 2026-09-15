@@ -455,8 +455,10 @@ Ask it before Phase B runs.
     § "Also redact structural fingerprints and provenance";
     `docs/private-project-redaction.md`:91-165]
 20. Whether a read taken now is *the* pre-registered G2 or an interim look
-    is the engineer's call and is not settled here. [unverified — open
-    decision; see Approach]
+    is the engineer's call. **Resolved: (A).** The read already taken is
+    the pre-registered G2, closing the pilot at its truncated n. No
+    accrual restart follows. Nothing further blocks review-loop changes on
+    this machine's account. [engineer-verified]
 
 ## Critical files
 
