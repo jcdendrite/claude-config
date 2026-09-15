@@ -361,6 +361,30 @@ class TestExitCodeContract:
         assert enabled_result.returncode == 4
         assert enabled_result.stdout == ""
 
+    def test_state_file_backed_key_with_corrupted_default_still_returns_exit_4(
+        self, tmp_path, monkeypatch
+    ):
+        """_config_resolve validates default eagerly, right after the schema
+        row is read -- before any state-file lookup -- matching
+        _config.py's config_value(), which raises ConfigSchemaRowTruncatedError
+        the same way regardless of whether the key's own resolution would
+        ever consume default (claude/.claude/scripts/_config.py:376-386).
+        handoff_nudge has a real, valid claude-config.toml entry here and
+        would resolve fine on its own -- default is never on its resolution
+        path -- but a truncated schema row is still a truncated schema row.
+        Pins that this exit-4 case reaches state-file-backed keys too, not
+        only the no-state-file fallback case
+        test_empty_default_column_returns_exit_4_not_a_silent_grant covers."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        _write_state_file(home, "handoff_nudge = true\n")
+        isolated_hooks_dir = _isolated_hooks_dir_with_empty_default_column(tmp_path, "handoff_nudge")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value handoff_nudge")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "handoff_nudge" in value_result.stderr
+
 
 # ---------------------------------------------------------------------------
 # CONFIG_DIR_OVERRIDE positional argument to _config_value/_config_enabled.
