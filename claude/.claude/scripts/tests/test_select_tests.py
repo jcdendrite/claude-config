@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -1254,10 +1255,11 @@ class TestRunPytest:
         class _FakeCompletedProcess:
             returncode = 7
 
-        def fake_run(cmd, *, cwd, check):
+        def fake_run(cmd, *, cwd, check, env):
             recorded["cmd"] = cmd
             recorded["cwd"] = cwd
             recorded["check"] = check
+            recorded["env"] = env
             return _FakeCompletedProcess()
 
         monkeypatch.setattr(sys, "executable", str(tmp_path / "python3"))
@@ -1267,6 +1269,23 @@ class TestRunPytest:
         assert recorded["cmd"] == ["pytest", "claude/.claude/hooks/tests"]
         assert recorded["cwd"] == tmp_path
         assert recorded["check"] is False
+        assert recorded["env"] is None
+
+    def test_forwards_the_env_kwarg_to_run(self, tmp_path, monkeypatch):
+        """The env dict pytest_subprocess_env builds must reach the actual
+        pytest subprocess, not just get computed and discarded."""
+        recorded = {}
+
+        def fake_run(cmd, *, cwd, check, env):
+            recorded["env"] = env
+            return _FakeCompletedProcess()
+
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python3"))
+        fake_env = {"PATH": "/usr/bin", _mod.XDIST_WORKER_ENV_VAR: "4"}
+
+        _mod.run_pytest([], cwd=tmp_path, run=fake_run, env=fake_env)
+
+        assert recorded["env"] == fake_env
 
     def test_resolves_pytest_from_the_sys_executable_sibling_when_present(self, tmp_path, monkeypatch):
         venv_bin = tmp_path / "venv_bin"
@@ -1282,13 +1301,132 @@ class TestRunPytest:
         class _FakeCompletedProcess:
             returncode = 0
 
-        def fake_run(cmd, *, cwd, check):
+        def fake_run(cmd, *, cwd, check, env):
             recorded["cmd"] = cmd
             return _FakeCompletedProcess()
 
         _mod.run_pytest([], cwd=tmp_path, run=fake_run)
 
         assert recorded["cmd"][0] == str(fake_pytest)
+
+
+class TestCpuBudget:
+    def test_psutil_is_not_importable(self):
+        """xdist detects psutil via `try: import psutil` (xdist/plugin.py:26-53),
+        not a manifest scan, so this test checks importability directly rather
+        than grepping requirements-dev.txt.
+
+        Deliberate environment-coupled tripwire, not flakiness: it asserts a
+        negative fact about the installed package set, and is meant to fail if
+        a dev/CI dependency ever starts pulling in psutil transitively."""
+        assert importlib.util.find_spec("psutil") is None, (
+            "psutil is importable in this environment -- _cpu_budget() mirrors "
+            "xdist's non-psutil `-n auto` provider chain (sched_getaffinity / "
+            "cpu_count), so its computed budget now diverges from what "
+            "`-n auto` would actually pick"
+        )
+
+    def test_returns_a_positive_int(self):
+        assert _mod._cpu_budget() >= 1
+
+    def test_falls_back_to_cpu_count_when_sched_getaffinity_is_unavailable(self, monkeypatch):
+        """Forces the ImportError branch (e.g. macOS, where sched_getaffinity
+        doesn't exist) by deleting os.sched_getaffinity itself."""
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 4)
+
+        assert _mod._cpu_budget() == 4
+
+    def test_zero_affinity_result_floors_at_one(self, monkeypatch):
+        """Forces the `n if n else 1` guard by returning an empty affinity set."""
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set())
+
+        assert _mod._cpu_budget() == 1
+
+
+class TestComputeWorkerCount:
+    @pytest.mark.parametrize(
+        ("cpu_budget", "load_one_minute", "expected"),
+        [
+            pytest.param(16, 0.4, 16, id="idle-machine-returns-cpu-budget-unchanged"),
+            pytest.param(1, 0.0, 1, id="cpu-budget-one-returns-one-not-the-floor"),
+            pytest.param(2, 0.0, 2, id="floor-and-cap-arms-coincide-at-cpu-budget-two"),
+            pytest.param(8, 6.5, 2, id="moderate-contention-lands-at-the-floor"),
+            pytest.param(8, 6.9, 2, id="proportional-term-alone-would-land-under-two"),
+            pytest.param(8, 20.0, 2, id="extreme-overload-floors-at-two"),
+        ],
+    )
+    def test_formula_table(self, cpu_budget, load_one_minute, expected):
+        assert _mod.compute_worker_count(
+            cpu_budget=cpu_budget, load_one_minute=load_one_minute,
+        ) == expected
+
+    def test_never_exceeds_cpu_budget(self):
+        """Never more workers than -n auto would have picked is an invariant,
+        not an emergent property of the table above -- checked directly
+        across a spread of budgets and loads."""
+        for cpu_budget in range(1, 17):
+            for load_one_minute in (-5.0, 0.0, cpu_budget / 2, cpu_budget * 2):
+                workers = _mod.compute_worker_count(
+                    cpu_budget=cpu_budget, load_one_minute=load_one_minute,
+                )
+                assert workers <= cpu_budget
+
+    def test_round_half_to_even_boundary_is_pinned(self):
+        """Pins round()'s tie-breaking rule at a .5 boundary so a later
+        change to _MIN_LOAD_AWARE_WORKERS or the formula shape can't
+        silently invert it."""
+        assert round(1.5) == 2
+        assert _mod.compute_worker_count(cpu_budget=8, load_one_minute=6.5) == 2
+
+
+class TestPytestSubprocessEnv:
+    def test_computes_worker_count_from_load_average_when_unset(self, monkeypatch):
+        """_cpu_budget is stubbed so the expected value is a hand-derived
+        literal, independent of the real machine's CPU count.
+        TestComputeWorkerCount already covers the formula; this test covers
+        only the wiring -- base_env preserved, the right key set from the
+        right call."""
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        base_env = {"PATH": "/usr/bin"}
+
+        env = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (2.0, 1.0, 0.5))
+
+        # cpu_budget=8, load=2.0 -> round(8-2.0)=6, min(8,6)=6, floor min(2,8)=2, max(2,6)=6
+        assert env[_mod.XDIST_WORKER_ENV_VAR] == "6"
+        assert env["PATH"] == "/usr/bin"
+
+    def test_preset_non_empty_value_passes_through_untouched(self):
+        base_env = {_mod.XDIST_WORKER_ENV_VAR: "3", "PATH": "/usr/bin"}
+
+        def fail_getloadavg():
+            raise AssertionError("getloadavg must not be called when the var is already set")
+
+        env = _mod.pytest_subprocess_env(base_env, getloadavg=fail_getloadavg)
+
+        assert env == base_env
+        assert env is not base_env
+
+    def test_empty_string_value_does_not_count_as_set(self):
+        """xdist treats an empty-string PYTEST_XDIST_AUTO_NUM_WORKERS as
+        unset, so an empty-string base_env value must still compute a fresh
+        one."""
+        base_env = {_mod.XDIST_WORKER_ENV_VAR: "", "PATH": "/usr/bin"}
+
+        env = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (1.0, 0.0, 0.0))
+
+        assert env[_mod.XDIST_WORKER_ENV_VAR] != ""
+
+    def test_oserror_from_getloadavg_leaves_the_var_unset(self):
+        base_env = {"PATH": "/usr/bin"}
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        env = _mod.pytest_subprocess_env(base_env, getloadavg=raising_getloadavg)
+
+        assert _mod.XDIST_WORKER_ENV_VAR not in env
+        assert env == base_env
 
 
 # Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
@@ -1700,7 +1838,7 @@ class TestMainComposition:
 
         recorded = {}
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             recorded["cwd"] = cwd
             return 0
@@ -1727,7 +1865,7 @@ class TestMainComposition:
             recorded["repo_root_passed_to_compute"] = repo_root
             return ["claude/.claude/scripts/mark-terminal.py"]
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             recorded["cwd"] = cwd
             return 0
@@ -1752,7 +1890,7 @@ class TestMainComposition:
         a bare `pytest` invocation that recursively collects the whole repo."""
         fake_repo_root = Path("/fake/repo/root")
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
@@ -1774,7 +1912,7 @@ class TestMainComposition:
         non-empty."""
         fake_repo_root = Path("/fake/repo/root")
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
@@ -1799,7 +1937,7 @@ class TestMainComposition:
             _mod, "compute_changed_paths", lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
         )
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             return 0
 
@@ -1823,7 +1961,7 @@ class TestMainComposition:
         monkeypatch.setattr(
             _mod, "compute_changed_paths", lambda repo_root: [".gitignore", "LICENSE"],
         )
-        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
 
         _mod.main([])
 
@@ -1835,7 +1973,7 @@ class TestMainComposition:
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: ["pyproject.toml"])
-        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
 
         _mod.main([])
 
@@ -1882,7 +2020,7 @@ class TestMainComposition:
         target that must really expand."""
         recorded = {}
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             return 0
 
@@ -1897,3 +2035,87 @@ class TestMainComposition:
         assert _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH not in recorded["pytest_argv"]
         stderr = capsys.readouterr().err
         assert f"select-tests: running {', '.join(recorded['pytest_argv'])}" in stderr
+
+
+class TestMainWorkerSizingStderr:
+    """main()'s three worker-sizing stderr branches (already-set / computed /
+    unreadable), each pinned against the other two so a copy-paste bug that
+    prints one branch's message from another branch's code path fails a test
+    rather than passing silently. pytest_subprocess_env is monkeypatched
+    wholesale per select-tests.py's own getloadavg keyword-default-binding
+    pitfall (a monkeypatched os.getloadavg would not reach
+    pytest_subprocess_env's default-bound reference)."""
+
+    def _stub_common(self, monkeypatch):
+        fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+    def test_computed_worker_count_names_the_count_and_load_average(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            _mod, "pytest_subprocess_env",
+            lambda base_env: {**base_env, _mod.XDIST_WORKER_ENV_VAR: "5"},
+        )
+        # Only main()'s own informational-only re-read is exercised here --
+        # pytest_subprocess_env's internal read is bypassed by the stub above.
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.5, 2.0, 1.5))
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=5 (1-minute load average 2.5)" in stderr
+        assert "already set to" not in stderr
+        assert "could not read" not in stderr
+
+    def test_already_set_value_defers_and_names_it(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "3")
+        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: dict(base_env))
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS already set to 3; leaving it alone" in stderr
+        assert "1-minute load average" not in stderr
+        assert "could not read" not in stderr
+
+    def test_load_average_unavailable_degrades_and_says_so(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: dict(base_env))
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert (
+            "select-tests: could not read the 1-minute load average; "
+            "leaving PYTEST_XDIST_AUTO_NUM_WORKERS unset"
+        ) in stderr
+        assert "already set to" not in stderr
+        assert "PYTEST_XDIST_AUTO_NUM_WORKERS=" not in stderr
+
+    def test_computed_env_reaches_run_pytest_unchanged(self, monkeypatch, capsys):
+        """Pins that main() forwards pytest_subprocess_env's own return value
+        into run_pytest's env kwarg, not a copy-paste of the unmodified
+        os.environ -- the stderr message alone can't catch that regression
+        since it's built from the same computed dict it's checking here."""
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        computed_env = {"PATH": "/usr/bin", _mod.XDIST_WORKER_ENV_VAR: "5"}
+        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: computed_env)
+        recorded = {}
+
+        def fake_run_pytest(pytest_argv, *, cwd, env):
+            recorded["env"] = env
+            return 0
+
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        _mod.main(["-k", "foo"])
+
+        assert recorded["env"] == computed_env

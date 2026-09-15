@@ -6,6 +6,7 @@ primary-source citations.
 
 Usage: select-tests.py [pytest args...]
 """
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
@@ -608,6 +609,12 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
 
 # --- pytest invocation ----------------------------------------------------
 
+XDIST_WORKER_ENV_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+# Below two workers, xdist's own per-worker spawn/IPC overhead outweighs
+# any parallelism gained -- a one-line change if field data contradicts it.
+_MIN_LOAD_AWARE_WORKERS = 2
+
 
 def _expand_target(target: str, *, repo_root: Path) -> list[str]:
     """A plain directory/file target passes through unchanged.
@@ -693,9 +700,48 @@ def _resolve_pytest_executable() -> str:
     return str(sibling) if sibling.exists() else "pytest"
 
 
-def run_pytest(pytest_argv: list[str], *, cwd: Path, run=subprocess.run) -> int:
+def _cpu_budget() -> int:
+    # Mirrors pytest-xdist's own `-n auto` count on the non-psutil path, so
+    # an idle machine still gets exactly `-n auto`'s own worker count.
+    try:
+        from os import sched_getaffinity
+    except ImportError:
+        n = os.cpu_count()
+    else:
+        n = len(sched_getaffinity(0))
+    return n if n else 1
+
+
+def compute_worker_count(*, cpu_budget: int, load_one_minute: float) -> int:
+    return max(
+        min(_MIN_LOAD_AWARE_WORKERS, cpu_budget),
+        min(cpu_budget, round(cpu_budget - load_one_minute)),
+    )
+
+
+def pytest_subprocess_env(base_env: dict[str, str], *, getloadavg=os.getloadavg) -> dict[str, str]:
+    """Injects XDIST_WORKER_ENV_VAR into base_env, sized from the current
+    1-minute load average.
+
+    Leaves base_env unchanged when:
+    - the caller already set it to a non-empty value
+    - the load average can't be read
+    """
+    if base_env.get(XDIST_WORKER_ENV_VAR):
+        return dict(base_env)
+    try:
+        load_one_minute = getloadavg()[0]
+    except OSError:
+        return dict(base_env)
+    workers = compute_worker_count(cpu_budget=_cpu_budget(), load_one_minute=load_one_minute)
+    return {**base_env, XDIST_WORKER_ENV_VAR: str(workers)}
+
+
+def run_pytest(
+    pytest_argv: list[str], *, cwd: Path, run=subprocess.run, env: dict[str, str] | None = None,
+) -> int:
     executable = _resolve_pytest_executable()
-    result = run([executable, *pytest_argv], cwd=cwd, check=False)
+    result = run([executable, *pytest_argv], cwd=cwd, check=False, env=env)
     return result.returncode
 
 
@@ -725,11 +771,37 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
 
+    base_env = dict(os.environ)
+    env = pytest_subprocess_env(base_env)
+    if base_env.get(XDIST_WORKER_ENV_VAR):
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR} already set to "
+            f"{base_env[XDIST_WORKER_ENV_VAR]}; leaving it alone",
+            file=sys.stderr,
+        )
+    elif XDIST_WORKER_ENV_VAR in env:
+        # The worker count pytest actually uses already lives in env.
+        # This is a second, purely informational read for the printed message.
+        try:
+            load_display = f" (1-minute load average {os.getloadavg()[0]})"
+        except OSError:
+            load_display = ""
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR}={env[XDIST_WORKER_ENV_VAR]}{load_display}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"select-tests: could not read the 1-minute load average; "
+            f"leaving {XDIST_WORKER_ENV_VAR} unset",
+            file=sys.stderr,
+        )
+
     # build_pytest_argv resolves resolved_targets again internally; safe
     # because resolve_target_paths is idempotent on its own output, pinned
     # by test_idempotent_on_its_own_output.
     pytest_argv = build_pytest_argv(resolved_targets, passthrough_args, repo_root=repo_root)
-    return run_pytest(pytest_argv, cwd=repo_root)
+    return run_pytest(pytest_argv, cwd=repo_root, env=env)
 
 
 if __name__ == "__main__":

@@ -522,10 +522,13 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. To cap it:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average and never exceeds what `-n auto` would have picked, so a run that starts on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest claude/.claude/ claude-skills/` command has no such sizing; cap it manually:
 
-- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/ claude-skills/` and `select-tests.py`.
-- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
+  - Checks ahead of xdist's own core-count detection.
+  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
+- Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
