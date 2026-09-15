@@ -1029,14 +1029,14 @@ class TestMarkerScriptStagedDiffStateClassification:
         self, isolated_home, git_repo, tmp_path
     ):
         """Same as the code-review case above, retargeted at the
-        skill-review arm's pathspec-scoped (9-arg, 4 pathspecs) hash call."""
+        skill-review arm's pathspec-scoped (10-arg, 5 pathspecs) hash call."""
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 9 ]; then\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 10 ]; then\n'
             '  exit 1\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
@@ -1104,7 +1104,7 @@ class TestMarkerScriptStagedDiffStateClassification:
         self, isolated_home, git_repo, tmp_path, gh_timeout_shim
     ):
         """Same as the code-review case above, but matches the
-        skill-review line's 4-pathspec (9-arg) hash call shape
+        skill-review line's 5-pathspec (10-arg) hash call shape
         specifically, so it doesn't also fail the code-review line's own
         hash call.
 
@@ -1118,7 +1118,7 @@ class TestMarkerScriptStagedDiffStateClassification:
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 9 ]; then\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 10 ]; then\n'
             '  exit 1\n'
             'fi\n'
             f'exec {real_git} "$@"\n'

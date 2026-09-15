@@ -1170,14 +1170,16 @@ def write_plan_review_marker(
     marker meant to validate mid-merge/rebase/cherry-pick/revert.
 
     Note the tradeoff, and do not mistake this for the technique
-    `write_marker`/`write_skill_review_marker` use: those recompute the hash
-    independently in Python from a real `git diff`, so they can catch drift
-    in the shell-side recipe. This one calls the very function under test, so
-    a test that seeds a marker here and asserts the hook allows is checking
-    that the function agrees with itself across two invocations -- not that
-    its output is correct. Independent correctness is covered by the
-    relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
-    route through this helper."""
+    `write_marker` uses: its callers recompute the hash independently in
+    Python from a real `git diff` (see `staged_diff_hash`), so they can catch
+    drift in the shell-side recipe. This one calls the very function under
+    test, so a test that seeds a marker here and asserts the hook allows is
+    checking that the function agrees with itself across two invocations --
+    not that its output is correct. Independent correctness is covered by
+    the relational unit tests in `hooks/tests/test_marker_lib.py`, which do
+    not route through this helper. `write_skill_review_marker` takes the
+    same tradeoff, for the pathspec-list-drift reason its own docstring
+    states."""
     marker = plan_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     lib_sh = HOOKS_DIR / "_lib.sh"
@@ -1213,25 +1215,39 @@ def write_skill_review_marker(
     session_id: str = DEFAULT_TEST_SESSION_ID,
     config_dir: Path | None = None,
 ) -> None:
-    diff = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--cached",
-            "--",
-            "claude-skills/skills/**/SKILL.md",
-            "plugins/*/skills/**/SKILL.md",
-            "skills/**/SKILL.md",
-            "claude-skills/skills/plan-review/ROUTING.md",
-        ],
+    """Write a skill-review completion marker by shelling out to the real
+    `marker.sh write skill-review` recipe, rather than hand-maintaining a
+    second copy of the SKILL.md pathspec list here — marker.sh's own
+    SKILL_REVIEW_PATHSPECS is the single source of truth.
+
+    marker.sh resolves its session id from the caller's own process
+    ancestry, so this seeds a $HOME/.claude/sessions/<pid> entry for the
+    current test process first. Duplicates hooks/tests/conftest.py's
+    _seed_session rather than importing it — that conftest is a pytest
+    fixture file, not importable from this unpackaged test-support module.
+    """
+    pid = os.getpid()
+    config_dir_resolved = config_dir if config_dir is not None else home / ".claude"
+    sessions_dir = config_dir_resolved / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
         capture_output=True,
+        text=True,
         check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(pid)).write_text(f"{session_id}\n{start_time}\n")
+
+    extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)} if config_dir is not None else None
+    subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "skill-review"],
         cwd=repo,
-    ).stdout
-    diff_hash = hashlib.sha256(diff).hexdigest()
-    marker = skill_review_marker_path(home, repo, session_id, config_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(diff_hash + "\n")
+        env=_build_subprocess_env(home, extra_env),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def plan_review_active_marker_path(home: Path, session_id: str) -> Path:

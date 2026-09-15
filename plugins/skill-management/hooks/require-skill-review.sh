@@ -102,7 +102,7 @@ fi
 # Scoped pathspec sets, shared by every site below that enumerates SKILL.md
 # layouts. No bare `*SKILL.md` glob, which would sweep in vendored or fixture
 # files.
-SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md')
+SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md')
 ROUTING_PATHSPEC='claude-skills/skills/plan-review/ROUTING.md'
 MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
 
@@ -170,13 +170,31 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    VALIDATOR_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
+    # 10s caps validator latency; this call and the corpus scan below both run
+    # per commit, so worst-case combined latency is ~20s — weigh future bound
+    # changes against that total.
+    VALIDATOR_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
       # Strip the tmp-dir prefix so the user sees the original repo-relative
       # SKILL.md path in the deny reason rather than /tmp/tmp.XXXX/...
       VALIDATOR_STDERR=${VALIDATOR_STDERR//"$STAGED_BLOB_DIR/"/}
-      emit_deny "Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
+      # 124 (SIGTERM before stderr flush) and 127 get their own messages
+      # since VALIDATOR_STDERR is unreliable for both, rather than the
+      # generic wrapped-stderr deny used for real structural violations.
+      # _lib_capped_for's fallback means 127 can no longer actually occur
+      # here, so that branch is defensive-only.
+      case "$VALIDATOR_EXIT" in
+        124)
+          emit_deny "Commit blocked by skill-management structural validator: validator timed out after 10s."
+          ;;
+        127)
+          emit_deny "Commit blocked by skill-management structural validator: timeout command unavailable, or validator command not found."
+          ;;
+        *)
+          emit_deny "Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
+          ;;
+      esac
       exit 0
     fi
   fi
@@ -205,7 +223,10 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
     fi
   done
 
-  CORPUS_STDERR=$(timeout 10s "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
+  # No 124/127 exit-code branch here (contrast the structural validator call
+  # above): this scan is advisory only, so a swallowed timeout or missing
+  # binary is a missed warning, not a missed gate.
+  CORPUS_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
   if [ -n "$CORPUS_STDERR" ]; then
     printf 'skill-management: corpus budget warning: %s\n' "$CORPUS_STDERR" >&2
   fi

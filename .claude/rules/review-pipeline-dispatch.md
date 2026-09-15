@@ -1,6 +1,7 @@
 ---
 paths:
   - "claude-skills/skills/**/SKILL.md"
+  - ".claude/skills/**/SKILL.md"
   - "claude/.claude/agents/*.md"
   - "plugins/**/*"
   - ".claude/rules/**"
