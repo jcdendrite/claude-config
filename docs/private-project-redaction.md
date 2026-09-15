@@ -88,334 +88,180 @@ regardless of what occupies the pattern position. See
 `_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
 exemption's matching mechanics.
 
-## Publishing a pooled tooling measurement
+## Publishing a tooling measurement
 
 This is the tier-3 companion to the two mechanical tiers above. It is
-reviewer discipline, not a hook. A pooled figure's safety depends on how
-it was computed, not what string it contains, and a hook can't see that.
-The repo-root
+reviewer discipline, not a hook. A measurement's safety depends on
+which corpus produced it, not what string it contains, and a hook
+can't see that. The repo-root
 [`CLAUDE.md`](../CLAUDE.md) "Also redact structural fingerprints and
-provenance" rule states the carve-out these conditions gate.
+provenance" rule states the bar this section gates.
 
-### What it permits
+### This repository, one account
 
-A figure pooled across a corpus that mixes private and public sources
-is publishable when it carries no per-project, per-account,
-per-machine, or per-engagement dimension. Cite the command or script
-that produced it.
-That command or script must itself be an aggregation boundary. It may
-read the mixed corpus internally, but its output to the agent is the
-rounded pooled figure only — never per-session or per-project raw
-content.
+A measurement of this repo's own tooling in use is publishable when it
+is computed over this repository's own corpus on a single
+`CLAUDE_CONFIG_DIR` account. That corpus holds no private-engagement
+record, so a figure drawn from it carries no engagement's fingerprint
+to redact.
 
-### Scope — two closed lists
+Scope it with a command that *refuses* a wider corpus, and cite that
+command beside the figure. Avoiding a wider corpus by choosing flags
+carefully is not the same thing: the refusal is what a reader can
+re-run and check.
 
-Both have to be satisfied, and neither extends by analogy:
+- `transcript-analysis.py cost --this-repo --summary` is the worked
+  case. `--summary` requires `--this-repo`, refuses every other scope
+  flag, resolves to the active config dir alone, and exits 2 if more
+  than one root is ever in scope.
+- `pr-cost --record` refuses differently, to the same effect. It
+  unions every declared root, then exits 2 rather than write or report
+  a blended total when more than one resolves. `--all-accounts` opts
+  into a per-account loop, whose output publishes nothing — see the
+  next section.
+- A subcommand with no scope refusal of its own is not a publication
+  instrument. Route it through the next section instead.
 
-- *What may be counted:* this repo's own tooling in use — Claude Code
-  tool calls, sessions, and agent dispatches. Nothing else.
-- *How it may be reported:* A PR or branch count is freely publishable
-  on its own under "Own-history counts were never inside this class"
-  below. That exemption covers what a bare count is, not what may
-  serve as a rate or granularity unit for the Counts or Cost/Duration
-  bullet below.
-  - Counts may be reported as a total, a share, or a median. Report
-    each at any granularity — per tool call, per session, per
-    dispatch, or pooled. A count carries no external reference point
-    that converts it into an engagement-value estimate on its own.
-    Counts carry no account or machine pooling boundary: report a
-    Count total, share, or median at any pooling breadth, including
-    one spanning every account on a machine or several machines. This
-    governs how wide the pool may be, never how it may be broken
-    down. A Count split along the project, account, machine,
-    engagement, or calendar-time dimension stays barred by the
-    share-split bullet below. A Count published alongside a per-unit
-    Cost rate stays barred by "Composition is publication." A pooled
-    Count that crosses the boundary can still be subtracted against
-    another publication of one account's or one machine's own exact
-    Count of the same quantity — the same account-isolation risk
-    "Account and machine scope" below names for Cost. The Approval
-    gate's disclosure duty for a boundary-crossing Count exists to
-    catch this before it publishes.
-  - Cost is dollar or token spend on running the tooling. Duration is
-    wall-clock time spent running the tooling. Cost and Duration may
-    never be reported as a client-billed, engagement-revenue, or
-    billable-hours figure.
-    - Report each as a rate per tool call, session, or dispatch (e.g.,
-      median cost per session) — never as a raw pooled total.
-    - Duration may never be reported as a share: a share of pooled
-      wall-clock is one hop from billable hours per deliverable.
-    - A raw total is barred outright. It scales with pool volume, and
-      unlike a rate or a share, it converts to an engagement-value
-      estimate via public day-rate references.
-  - Both Cost's share-of-spend mode and Counts' share mode may split
-    along any dimension except project, account, machine, engagement,
-    or calendar time. Opus dollars as a percentage of total is
-    permitted; one account's or one machine's share of pooled tool
-    calls is not. A share split along an excluded dimension hands a
-    reader one side's value the moment it's paired with an
-    already-permitted exact figure for that side — see the worked
-    rejection under "Composition is publication" below.
-  - Cadence (how often releases happen) stays excluded even when
-    pooled. It describes the engagements' own schedule, not the
-    tooling's behavior.
+`pr-cost-section.sh` is a standing pre-cleared instance of this bar,
+not a per-publication judgment call. Gated by the opt-in
+`<config-dir>/pr-cost-disclosure` sentinel, off by default so a fork
+contributor publishes nothing until they enable it. It embeds two
+scope-fixed-by-construction blocks in every merged PR's body: a dollar
+total from `cost --this-repo --branches <branch> --summary`. The other
+is a review-round/subagent-spawn count from `cost-counts --this-repo
+--branches <branch>`, which always resolves to a single hardcoded root
+regardless of any flag. Neither call can be pointed at a wider corpus,
+so there is nothing for a reviewer to approve per PR — the review
+question is answered once, here, rather than re-litigated on every
+merge. A diff that widens either call's scope, or weakens a refusal a
+publication instrument depends on, is a P1 finding.
 
-These two lists govern the mixed-corpus figure "What it permits" opens
-with, and nothing else. A figure the CLAUDE.md exclusion above already
-rules out is out of scope for every condition below.
-`pr-cost-section.sh`'s output is the worked case: it calls
-`transcript-analysis.py cost --this-repo --branches <branch>
---summary`, and `--summary` exits non-zero unless the scope resolves to
-this repository and one account.
+Within that scope nothing further is withheld. A total, a rate, a
+median, a share, a pool size, a per-day series, a before/after split
+at any pivot — all publishable. This repository's own commit and PR
+history is already public, so neither a calendar axis nor a volume
+count over it discloses anything the repository does not already
+disclose, and the dollars are the owner's own spend on public work.
 
-### Three standing bars
+Doubt about whether a given repository or account genuinely carries no
+private-engagement record goes to the owner. Doubt is never a reason
+to publish anyway.
 
-These hold across everything ever published under this carve-out, not
-only within one figure read alone.
+### A wider corpus goes to the owner, never into a public artifact
 
-1. **No time series.** No statistic carries a calendar-time axis. This
-   reaches whole-period figures published across successive artifacts
-   that together form a time series, not only a single figure with a
-   calendar-time axis of its own. A series re-exposes the cadence the
-   Cadence bullet above excludes. The one exception is the split
-   below. A boundary-crossing pooled Count is a one-time disclosure
-   under this bar for the same reason: a second one published later
-   forms a barred two-point series. It cannot qualify as the split,
-   since the split requires single-account, single-machine scope.
-2. **One split, ever.** This carve-out defines exactly one narrow
-   exception to "No time series" above: the split. Across everything
-   ever published under this carve-out, at most one split may ever be
-   published. Once one lands, in this repository or any other
-   artifact, no further split is permitted, regardless of label or
-   statistic, same or different. This repository's history offers a
-   commit near any date a reader would want, so the split's limit
-   isn't arbitrary. A further instance needs a PR amending this
-   document, not a fresh proposal under it.
+Machine-wide, multi-account, and cross-machine questions are worth
+asking. They are not worth publishing. Measure them with the same
+tools at their wider scope — `cost` without `--summary` (add
+`--share-only` to keep raw absolutes out of the agent's context),
+`pr-cost --all-accounts`, or any subcommand at its default machine-wide
+scope. Report the figures to the owner in session or through another
+non-public channel.
 
-   Only a split published under this carve-out spends this allowance.
-   Content predating this carve-out does not, whatever shape it takes.
-   Where such content sits beside a new proposal, the composition bar
-   below governs instead.
-3. **Composition is publication.** This bar reaches any set of
-   published figures that together produce a barred result, whether
-   they land in one artifact or in separate publications months apart.
-   What governs is what the figures together yield, not how any one of
-   them is labelled. A permitted rate times a permitted pool-size
-   count is the raw pooled total the Cost/Duration bullet bars, for
-   instance.
-
-   *Worked rejection.* Account P's own transcript-analysis.py
-   tool-call count already cleared the Approval gate below and is
-   published — say, 4,000 tool calls. If a Counts share could
-   split along the account dimension, "Account P: 40% of pooled tool
-   calls" would combine with that exact count to solve the pooled
-   total (10,000) by division, then Account Q's own exact count
-   (6,000) by subtraction, without either published figure naming an
-   account's total directly. Barring a share split along the account
-   dimension (see "Scope — two closed lists" above, which bars the
-   same for machine) is what keeps this reconstruction from starting.
-
-### The one permitted split
-
-A whole-period figure may be reported once as a before value and an
-after value either side of a pivot. Every condition below must hold.
-
-- **Public pivot.** The pivot is a commit in this repository's own
-  public history, cited by SHA or merge date. Disqualified as a pivot,
-  regardless of corpus:
-  - a date read off the data;
-  - an owner-nominated date;
-  - a date tied to an engagement.
-- **Named first.** The pivot is named before any command is run
-  against the corpus or date range being split, not merely before the
-  split-producing command itself. A pivot named only after an
-  exploratory query already revealed the shape of the answer was not
-  independently named.
-- **Same statistic, already-permitted form.** Both sides report the
-  same statistic — a label match, not an algebraically derivable
-  equivalent. That statistic is reported in a form the lists above
-  already permit for it. A raw total is never a valid split form, for
-  any statistic, Counts included, even where the base list permits a
-  total outside a split. The split adds a second point in time, never
-  a new form.
-- **One account, one machine.** Both sides resolve to a single
-  `CLAUDE_CONFIG_DIR` account and machine. Neither of "Account and
-  machine scope" below's two exceptions — Cost's cross-account/
-  cross-machine share mode, or Counts' unscoped reporting — extends to
-  a split.
-- **Exhaustive partition.** Together, the two sides cover exactly the
-  period the whole-period figure covered.
-- **No per-side pool size.** Neither side's own pool size is
-  published. A count on one side of a pivot is pool volume dated
-  against calendar time — the cadence the "No time series" bar
-  withholds.
+Publish nothing computed from such a read: no total, no rate, no
+share, no count, no bounded range, in any artifact — commit message,
+PR body, issue, decision record, case study, or illustrative example.
+A public artifact may record that the read happened and what it
+decided: which lever was adopted or declined, and which way the
+reading pointed. It names no figure from it. The withholding sites in
+`docs/cost-levers-considered.md` and `docs/design-decisions/` are the
+worked shape.
 
 ### Own-history counts were never inside this class
 
-The test is content, not account or machine count.
+The test is the scope's content, not the account or machine count, and
+not the quantity's type. Two classes fall outside the bar above rather
+than being exceptions to it:
 
-- A count with no private-engagement records anywhere in its scope —
+- A count whose scope holds no private-engagement record anywhere —
   this repo's own history, or the owner's other personal, non-client
-  repositories — was never a mixed-corpus figure. Examples: branch,
-  PR, review-finding, hook-denial, and log-line counts.
-- This holds however many accounts or machines the scope unions, for
-  a count with no per-account or per-machine decomposition. Branch,
-  PR, review-finding, hook-denial, and log-line counts have none, so
-  unioning more roots discloses more of the same thing, not a new
-  one. It does not extend to a `transcript-analysis.py` Cost or
-  Duration measurement of tool calls, sessions, dispatches, dollars,
-  or duration. That measurement type carries exactly the per-account
-  or per-machine decomposition "Cost and Duration scope" above exists
-  to govern. It stays inside that machinery regardless of
-  `--this-repo` scoping. A `transcript-analysis.py` Count of the same
-  tool calls, sessions, or dispatches is different: it carries no
-  account or machine default to begin with, since Counts carry none —
-  see "Counts are not scoped by this boundary" above. It still answers
-  to the closed lists, the time-series bar, the composition bar, and
-  the Approval gate below, the same as every other figure this
-  carve-out governs.
-- Doubt about whether an account, machine, or repository genuinely
-  carries no private-engagement data goes to the owner, same as doubt
-  about pool diversity below. Doubt is never a reason to publish
-  anyway.
-- This exemption covers what a figure is, not whether it can combine
-  with any figure already published under this carve-out to complete
-  a reconstruction. An own-history figure that would narrow the
-  residual of any figure already published under this carve-out —
-  directly or through a published rate — needs the owner's word
-  first. This reaches any own-history figure regardless of its own
-  quantity type or scope shape:
-  - a same-quantity restatement;
-  - a `--this-repo` hook-denial or log-line count pooled across
-    several roots;
-  - a figure that only narrows the residual once combined with an
-    already-published rate.
-- Before publishing such a figure, the agent checks this repository's
-  own history, prior PR bodies, and other artifacts for an
-  already-published figure under this carve-out whose residual it
-  would narrow — the same search the Approval gate below already
-  requires for a split's own proposals. If one exists, the
-  agent tells the owner what the combination would newly disclose and
-  asks in the session. An uncited in-session answer satisfies this,
-  not the durable citation the Approval gate below requires, since the
-  own-history figure was never inside that gate. Absent an answer, the
-  agent holds the figure rather than publishing it.
+  repositories. Examples: branch, PR, review-finding, hook-denial, and
+  log-line counts. This holds however many accounts or machines the
+  scope unions, for a count with no per-account or per-machine
+  decomposition: unioning more roots discloses more of the same thing,
+  not a new one.
+- It does not extend to a `transcript-analysis.py` Cost, Duration, or
+  activity measurement — tool calls, sessions, dispatches, dollars, or
+  wall-clock — at a scope wider than the bar above. Those read
+  whatever private work the roots in scope contain, which is what the
+  bar keeps out of a published figure.
 
-### Account and machine scope
+This exemption covers what a figure is, not what it combines with —
+see "New figures against the grandfathered set" below for the
+composition check every new figure clears, own-history or not.
 
-**Cost and Duration scope.** Cost's and Duration's reporting modes
-default to a single `CLAUDE_CONFIG_DIR` account and a single machine —
-a total, a rate, and a median all stay there. Cost's dimensionless
-share-of-spend mode is the one exception and may span accounts or
-machines. Duration has no share mode, so Duration never crosses the
-boundary at all. A pooled Cost absolute that crosses the boundary can
-be subtracted against another publication of one account's or one
-machine's own absolute, exposing a private engagement's spend on a
-shared account or machine.
+### Account cardinality
 
-**Counts are not scoped by this boundary.** See the Counts bullet
-under "Scope — two closed lists" above.
-
-**Account cardinality and machine cardinality are different
-questions.** How many accounts or declared roots exist is never
+How many accounts or declared config-dir roots exist is never
 published as a digit or a bounded range, at any pooling breadth. An
 account can correspond to a single private engagement, so its
 cardinality is the per-account dimension the repo-root `CLAUDE.md`
-bars absolutely. How many machines exist may be stated as a digit. A
-machine is the operator's own hardware and partitions no engagement.
-This repository states its own machine count in ordinary prose. Doubt
-about whether an operator's own machine boundary correlates with an
-engagement boundary — as it could for a fork contributor running
-client-dedicated hardware — goes to that operator, the same as every
-other content-purity judgment call in this section. Doubt is never a
-reason to publish anyway.
+bars absolutely. `docs/transcript-analysis.md`'s sample outputs elide
+the root count for this reason.
 
-### Approval gate
+How many machines exist may be stated as a digit. A machine is the
+operator's own hardware and partitions no engagement. This repository
+states its own machine count in ordinary prose. Doubt about whether an
+operator's own machine boundary correlates with an engagement boundary
+— as it could for a fork contributor running client-dedicated hardware
+— goes to that operator, the same as every other content-purity
+judgment call in this section.
 
-An agent never publishes a figure under this carve-out on its own
-judgment. It proposes the figure, the exact command or script that
-produced it, and the artifact the figure would land in. The owner
-approves that figure for that artifact before it ships. Approval for
-one artifact does not cover a different one — a changed destination
-needs a fresh proposal. Cite the approval as a durable,
-independently-checkable record from the owner's own account — e.g., a
-link to the approving comment or message. The citation must tie to
-the exact figure and artifact it approves. An approval given in
-session qualifies only while the owner is an active party to that
-session. Cite it by session identifier plus turn index or timestamp,
-naming the proposal's turn and the approval's turn separately when
-they differ. Before the artifact ships, the owner confirms the
-approval that citation points at. That confirmation stands in for a
-durable record the citing agent has no write access to produce
-itself. The confirmation covers every citation this gate requires.
-That includes a split's approval, and the pivot-naming turn it
-discloses. A citation to anyone
-else's comment, however definitive it reads, does not satisfy this
-gate. A narrative claim that approval occurred is not a citation
-either. Absent that citation, don't publish.
+### New figures against the grandfathered set
 
-For a split under "The one permitted split" above, the proposal
-additionally discloses two things, both approval-only input:
+Figures published before this bar stay published (see "Remediation"
+below). A new figure — own-history or drawn from this repository, one
+account — can still newly disclose something private if it lets a
+reader subtract it from one of those down to its non-this-repo
+remainder. Before publishing, check the new figure against
+Remediation's named list. If it could narrow one of those figures'
+residual, tell the owner what the combination would newly disclose and
+ask in session; an uncited in-session answer settles it.
 
-- the transcript turn where the pivot was named: a session identifier
-  plus turn index or timestamp. This must be as locatable and
-  independently-checkable as the pivot's own citation;
-- each side's window bounds and pool size, so the owner can judge
-  whether either side is thin enough to isolate one engagement.
-
-For a pooled Count that spans more than one account or machine, the
-proposal additionally discloses two things, both approval-only input:
-
-- which accounts or machines contribute to the pool, so the owner can
-  judge whether it draws from a thin pool;
-- any already-published or routinely-automated single-account or
-  single-machine exact figure of the same quantity — `pr-cost-section.sh`'s
-  per-PR exact session counts, published automatically on every merged
-  PR once `pr-cost-disclosure` is enabled, at minimum — so the owner
-  can weigh whether the pooled figure and that exact figure together
-  isolate one account's or machine's own count by subtraction.
-
-None of this ever appears in the published figure, and none of it is
-ever quoted in any commit message, PR body, issue, or other
-public-repo artifact. All of it travels through a non-public channel,
-regardless of which channel carries the approval citation.
-
-Doubt about pool diversity goes to the owner as part of the proposal,
-not a reason to publish anyway. The proposal also names where the
-agent looked and what it found: any prior publication of the same or a
-composing statistic, whether or not it was published under this
-carve-out. Where one exists, the proposal states what the combination
-would newly disclose.
-
-*Worked disclosure.* A new split's before-side window overlaps a
-pre-existing publication's own dated activity checkpoints — say, the
-pre-existing publication states pooled activity volumes as of two
-dated checkpoints, and the new split's before-side window falls
-between them. Neither figure states a pool size on its own, but a
-reader combining the split's share with the pre-existing publication's
-dated checkpoints can narrow the window the split's own before-side
-activity falls in more tightly than either figure discloses alone.
-That narrowing — not merely the pre-existing publication's existence —
-is what the proposal must name.
-
-For a split, it additionally searches this repository's own history
-for a prior instance published under this carve-out, and names what
-it finds. That search is diligence, not enforcement. The owner is the
-one continuous witness, across this repository and any other
-publication artifact, to what has already shipped under it. Finding
-nothing is not approval to publish.
-
-Absent the durable citation this gate requires, the whole carve-out is
-closed by default, the same as the blocklist tier's "if in doubt,
-strip it."
+This check runs once per new figure, forward from here. It does not
+require re-auditing the grandfathered set against this repository's
+own accumulating totals — the owner has weighed that once (see
+"Remediation") and it is not re-litigated per publication.
 
 ### Remediation
 
+Content published before this bar took effect stays as published. The
+grandfathered set, computed over a machine-wide, multi-account corpus,
+predates this section's current single-account bar:
+
+- `docs/case-studies/handoff-threshold-impact.md`, entirely
+- `docs/case-studies/handoff-hard-block-position.md`, entirely
+- `docs/case-studies/cold-cache-attribution.md`, entirely
+- `docs/case-studies/check-runner.md`'s Retirement section, entirely —
+  its 649-session corpus window, byte-size distribution, dispatch
+  count, and percentage breakdown all derive from the same pooled
+  measurement
+- `docs/case-studies/worktree-enforcement.md`'s "The general
+  philosophy" section, for its 785-session/387-denial/243-session
+  `review-trace` corpus measurement
+- `docs/cost-levers-considered.md`'s machine-wide pooled review-round
+  share and machine-wide rows
+- `docs/case-studies.md`'s index blurbs
+- `docs/case-studies/effort-estimation-review-surface.md`,
+  `hashline-edit-format.md`, `targeted-read-discipline.md`,
+  `delegate-instrument-authoring.md`, `plan-mode-model-resolution.md`,
+  `opus-frontload-review-rounds.md`, `markdown-context-ingestion.md`,
+  and `review-vs-babysitting.md`
+
+The bar above governs what ships next, not what already shipped:
+rewriting a published figure is not a retraction once a public repo's
+history can be cloned, forked, or cached — it only adds a second
+version.
+
+Whether this repository's own now-accumulating single-account totals
+(`pr-cost-section.sh`'s per-PR figures) already compose against this
+grandfathered set closely enough to matter is the owner's call, made
+once here: no further action. The grandfathered figures predate this
+bar and their relevance decays as the corpus ages; this is not
+re-audited per PR.
+
 A wrongly-scoped figure discovered already published is the owner's
 call, not the agent's. Stop and report what was published and where —
-do not rewrite history yourself, even if told to. Both stay the
-owner's to run: a rewrite is not a retraction once a public repo's
-history can be cloned, forked, or cached.
+do not rewrite history yourself, even if told to.
 
 ## Why the blocklist can't be armed by default
 
