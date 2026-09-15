@@ -161,10 +161,11 @@ borderline case. It binds every artifact: a commit message, PR body,
 decision entry, or illustrative example included. A measurement of
 this repo's own tooling in use is publishable only
 when it is computed over this repository's own corpus on a single
-account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, and
-the two exemptions. Anything wider goes to the owner privately and is
-never published. If in
-doubt, don't.
+account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, the
+two exemptions, and the limits on the owner's case-by-case
+authorization for a wider figure. Anything wider goes to the owner
+privately and publishes only under that cited authorization
+exception. If in doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
