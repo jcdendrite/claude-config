@@ -733,6 +733,55 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+def test_lib_capped_for_uncapped_fallback_emits_stderr_note(tmp_path: Path) -> None:
+    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for's uncapped
+    fallback emits a diagnostic naming the gap, so a caller or log can tell
+    the cap silently didn't apply rather than reading a clean exit as capped."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    # `true` is a bash builtin, so it needs no PATH entry of its own.
+    result = _run_lib_call("_lib_capped_for 0.1 true", env=env)
+
+    assert result.returncode == 0, repr(result)
+    assert "_lib_capped_for" in result.stderr and "uncapped" in result.stderr, repr(result.stderr)
+
+
+def test_lib_capped_for_uncapped_fallback_note_fires_every_call(tmp_path: Path) -> None:
+    """The note above fires on every uncapped-fallback call, not just the
+    first -- each call independently ran without a cap, so each is worth
+    its own diagnostic."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = _run_lib_call(
+        "_lib_capped_for 0.1 true; _lib_capped_for 0.1 true; _lib_capped_for 0.1 true", env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    assert result.stderr.count("_lib_capped_for: neither timeout nor gtimeout") == 3, repr(result.stderr)
+
+
 # Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
 # the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
@@ -6417,3 +6466,140 @@ class TestStagedDiffHash:
         result = _staged_diff_hash(repo, "", env=env, timeout=30)
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+class TestLibAcquireAppendLockCalledTwice:
+    """_lib_acquire_append_lock's own docstring documents that calling it
+    twice in the same process orphans the first call's lock file, since the
+    second call's `trap ... EXIT` replaces rather than stacks on the
+    first's. review-ledger.sh and log-reviewer-round.sh each call it at
+    most once per process, so this exercises the primitive directly rather
+    than through either caller."""
+
+    def test_second_call_orphans_the_first_lock_file(self, tmp_path: Path) -> None:
+        first_lock = tmp_path / "first.lock"
+        second_lock = tmp_path / "second.lock"
+        result = subprocess.run(
+            ["bash", "-c",
+             f'. "{_LIB_SH}"; _lib_acquire_append_lock "$1"; _lib_acquire_append_lock "$2"',
+             "_", str(first_lock), str(second_lock)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not second_lock.exists(), "the second call's own lock must be released on exit"
+        assert first_lock.exists(), (
+            "the first call's lock must be left orphaned once the second "
+            "call's EXIT trap replaces the first's"
+        )
+
+
+def _run_ledger_sweep_window_days(settings_file: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; _ledger_sweep_window_days "$1"', "_", str(settings_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLedgerSweepWindowDays:
+    """GH-973: _ledger_sweep_window_days derives the ledger's sweep window
+    from Claude Code's own cleanupPeriodDays setting, floored at
+    _LEDGER_SWEEP_FLOOR_DAYS. review-ledger.sh's own
+    TestReviewLedgerSweepWindowFromSettings (test_review_ledger_script.py)
+    covers this value's wiring into clear-stale's `find -mtime +N`; the
+    arithmetic itself is pinned here instead."""
+
+    def test_defaults_to_thirty_when_settings_file_absent(self, tmp_path: Path) -> None:
+        result = _run_ledger_sweep_window_days(tmp_path / "nonexistent-settings.json")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_custom_cleanup_period_days_is_honored(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 60}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "60"
+
+    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{not valid json")
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": "60"}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_negative_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": -5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
+    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
+        self, tmp_path: Path, cleanup_period_days: float
+    ) -> None:
+        """jq's `select(type == "number")` passes a whole-number float like
+        90.0 through as the string "90.0", which the digit-only case
+        pattern rejects -- this pins that the result is the floor (30),
+        never the truncated integer (90)."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
+        self, tmp_path: Path
+    ) -> None:
+        """A 9+-digit all-digit value can exceed bash's signed-integer
+        range, making the `-lt` floor comparison itself error and fall
+        through unfloored instead of returning _LEDGER_SWEEP_FLOOR_DAYS --
+        this pins the digit-count guard added to reject it before that
+        comparison runs."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(
+        self, tmp_path: Path
+    ) -> None:
+        """99999999 (8 digits) sits one digit under the 9-digit guard's
+        threshold and is a real, above-floor value -- pins that the guard
+        doesn't fire early and truncate a legitimate large-but-in-range
+        cleanupPeriodDays."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "99999999"
+
+    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(
+        self, tmp_path: Path
+    ) -> None:
+        """100000000 (9 digits) is the guard's exact threshold -- pins that
+        the boundary itself floors, not just values far past it."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 100000000}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"

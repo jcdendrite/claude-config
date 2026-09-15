@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -11,11 +12,13 @@ from pathlib import Path
 import pytest
 from helpers import (
     CANARY_CONTENT,
+    CLAUDE_DIR,
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
     git_toplevel,
     plant_traversal_canary,
 )
+from transcript_analysis import author_outcome as ao
 
 from .conftest import _dead_pid, _seed_session
 
@@ -64,6 +67,9 @@ def _append_args(
     disposition: str = "ADDRESS",
     rationale: str = "fixed inline",
     source: str | None = None,
+    round: str | None = "1",
+    authoring_agent: str | None = None,
+    authoring_effort: str | None = None,
 ) -> list[str]:
     args = [
         "append",
@@ -77,6 +83,12 @@ def _append_args(
     ]
     if source is not None:
         args += ["--source", source]
+    if round is not None:
+        args += ["--round", round]
+    if authoring_agent is not None:
+        args += ["--authoring-agent", authoring_agent]
+    if authoring_effort is not None:
+        args += ["--authoring-effort", authoring_effort]
     return args
 
 
@@ -143,12 +155,19 @@ class TestReviewLedgerAppendHappyPath:
         lines = ledger.read_text().splitlines()
         assert len(lines) == 1
         record = json.loads(lines[0])
+        event_time = record.pop("event_time")
         assert record == {
+            "schema_version": 2,
+            "round": 1,
             "finding": "Missing error handling in foo()",
             "disposition": "ADDRESS",
             "rationale": "fixed inline",
             "source": "foo.py:12",
+            "authoring_agent": "",
+            "authoring_effort": "",
         }
+        # UTC, second-resolution, Z-suffixed -- e.g. 2026-08-01T10:00:00Z.
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time), event_time
 
     def test_append_defaults_source_to_n_a(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -180,6 +199,63 @@ class TestReviewLedgerAppendHappyPath:
         )
         dispositions = {json.loads(line)["disposition"] for line in lines}
         assert dispositions == {"DEFER", "ADDRESS"}
+
+    def test_repeat_identical_line_with_authoring_fields_is_deduped(self, isolated_home, git_repo):
+        """authoring_agent/authoring_effort are round-stable, so an identical
+        retry with the same values is still a no-op, not a duplicate --
+        confirms `authoring_agent`/`authoring_effort` don't turn dedup's
+        whole-line `grep -qFx` into a per-call-varying comparison."""
+        _seed_session(isolated_home, SID)
+        args = _append_args(authoring_agent="code-writer", authoring_effort="high")
+        _run(args, cwd=git_repo, home=isolated_home)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical repeat append must be a no-op, got: {lines}"
+
+    def test_absent_authoring_flags_still_succeeds(self, isolated_home, git_repo):
+        """An absent --authoring-agent/--authoring-effort must never abort
+        the append -- only an invalid value does."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == ""
+        assert record["authoring_effort"] == ""
+
+    def test_declared_authoring_fields_land_in_the_record(self, isolated_home, git_repo):
+        """A non-default --authoring-agent/--authoring-effort pair must
+        reach the persisted record verbatim, not get silently dropped by a
+        `jq --arg` wiring mistake."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="mixed", authoring_effort="xhigh"),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == "mixed"
+        assert record["authoring_effort"] == "xhigh"
+
+    def test_invalid_authoring_agent_rejected(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="general-purpose"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_invalid_authoring_effort_rejected(self, isolated_home, git_repo):
+        """`max` is deliberately excluded from the effort enum (CLAUDE.md's
+        "xhigh, not max") -- rejecting it is the signal that the routing
+        rule changed, not a value to silently record."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort="max"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
 
     def test_unknown_gate_argument_rejected(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -219,6 +295,530 @@ class TestReviewLedgerAppendHappyPath:
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+class TestReviewLedgerAuthoringAgentEnum:
+    """Proves one direction only: each of author_outcome.py's own
+    `_AUTHORING_AGENT_*` constants is accepted, and one arbitrary
+    out-of-set string is rejected. It does not prove the reverse -- that
+    review-ledger.sh's case-pattern enum accepts *only* those constants
+    plus empty -- so a 5th literal added to the script's case pattern
+    with no corresponding python constant would still pass every test
+    in this class.
+
+    Drives the actual CLI rather than scanning either file's source text: a
+    source-scanning version of this test broke on a behavior-preserving
+    shell case-pattern reorder even though the script's real behavior was
+    unchanged (test-conventions §9)."""
+
+    @pytest.mark.parametrize(
+        "authoring_agent",
+        [
+            ao._AUTHORING_AGENT_CODE_WRITER,
+            ao._AUTHORING_AGENT_INLINE,
+            ao._AUTHORING_AGENT_MIXED,
+            ao._AUTHORING_AGENT_UNKNOWN,
+        ],
+    )
+    def test_each_author_outcome_constant_is_accepted(self, isolated_home, git_repo, authoring_agent):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent=authoring_agent), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 0, (
+            f"review-ledger.sh must accept --authoring-agent {authoring_agent!r} "
+            f"(an author_outcome.py _AUTHORING_AGENT_* constant): {result.stderr}"
+        )
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == authoring_agent
+
+    def test_value_outside_author_outcome_constants_is_rejected(self, isolated_home, git_repo):
+        """A value not among author_outcome.py's own constants must be
+        rejected -- accepting it would let review-ledger.sh log an
+        authoring_agent author_outcome.py's classifier can never match."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="not-a-real-agent"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+class TestReviewLedgerAuthoringEffortEnum:
+    """Proves only that each case-pattern value is accepted and one bad
+    value is rejected -- it does not prove the case pattern accepts *only*
+    those four values (a 5th added literal would still pass). Drives the
+    CLI rather than scanning source text, per test-conventions §9."""
+
+    @pytest.mark.parametrize("authoring_effort", ["low", "medium", "high", "xhigh"])
+    def test_each_case_pattern_value_is_accepted(self, isolated_home, git_repo, authoring_effort):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort=authoring_effort), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 0, (
+            f"review-ledger.sh must accept --authoring-effort {authoring_effort!r}: "
+            f"{result.stderr}"
+        )
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_effort"] == authoring_effort
+
+    def test_value_outside_case_pattern_is_rejected(self, isolated_home, git_repo):
+        """A value not among the case pattern's four levels must be
+        rejected -- accepting it would let review-ledger.sh log an
+        authoring_effort no routing rule can ever match."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort="not-a-real-effort"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+class TestReviewLedgerRoundValidation:
+    def test_missing_round_rejected_with_exact_error_text(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round=None), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "review-ledger.sh: --round <N> is required and missing.\n" in result.stderr
+        assert "got '" not in result.stderr, "the missing-flag branch must not print a 'got' value"
+
+    def test_non_numeric_round_rejected_with_offending_value_shown(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="not-a-number"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got 'not-a-number'" in result.stderr
+
+    def test_zero_round_rejected(self, isolated_home, git_repo):
+        """0 is not a 1-based round number."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="0"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got '0'" in result.stderr
+
+    @pytest.mark.parametrize("round_value", ["00", "000"])
+    def test_zero_padded_round_rejected(self, isolated_home, git_repo, round_value):
+        """jq normalizes "00"/"000" to round:0 -- reject before that happens."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round=round_value), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert f"got '{round_value}'" in result.stderr
+
+    def test_negative_round_rejected(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="-1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got '-1'" in result.stderr
+
+    def test_valid_round_accepted_and_recorded(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="3"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["round"] == 3
+
+    def test_over_cap_round_rejected_with_no_partial_write(self, isolated_home, git_repo):
+        """--round has no digit-count ceiling other than this cap -- a
+        value beyond it must be rejected the same way an over-cap
+        --finding/--rationale/--source is."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="99999"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "--round exceeds 4 digits" in result.stderr
+
+    def test_at_cap_round_accepted(self, isolated_home, git_repo):
+        """The boundary itself (exactly 4 digits) must not be rejected --
+        only strictly-over-cap values are."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="9999"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+
+class TestReviewLedgerCleanDisposition:
+    def test_clean_disposition_accepted_without_finding_or_rationale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["disposition"] == "CLEAN"
+        assert record["finding"] == ""
+        assert record["rationale"] == ""
+
+    def test_clean_disposition_rejects_a_present_finding(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--finding", "x"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_clean_disposition_rejects_a_present_rationale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--rationale", "why"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_clean_disposition_rejects_a_present_source(self, isolated_home, git_repo):
+        """CLEAN carries no per-finding location, so --source must be
+        rejected the same way --finding/--rationale are."""
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--source", "foo.py:12"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_address_disposition_still_requires_finding_and_rationale(self, isolated_home, git_repo):
+        """CLEAN's relaxed requirements must not leak into ADDRESS|DEFER."""
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "ADDRESS", "--round", "1"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_invalid_disposition_message_lists_clean(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(disposition="MAYBE"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "must be ADDRESS, DEFER, or CLEAN" in result.stderr
+
+    def test_clean_disposition_with_authoring_fields_lands_all_four(self, isolated_home, git_repo):
+        """Production code (code-review/SKILL.md's Step 0.1 short-circuit)
+        always pairs --disposition CLEAN with
+        --authoring-agent/--authoring-effort. This confirms CLEAN's relaxed
+        finding/rationale requirements don't block those two fields from
+        landing in the record."""
+        _seed_session(isolated_home, SID)
+        args = [
+            "append",
+            "code-review",
+            "--disposition",
+            "CLEAN",
+            "--round",
+            "1",
+            "--authoring-agent",
+            "code-writer",
+            "--authoring-effort",
+            "high",
+        ]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["disposition"] == "CLEAN"
+        assert record["round"] == 1
+        assert record["authoring_agent"] == "code-writer"
+        assert record["authoring_effort"] == "high"
+
+
+class TestReviewLedgerRoundScopedDedup:
+    def test_identical_finding_in_two_different_rounds_both_land(self, isolated_home, git_repo):
+        """Two rounds raising a textually identical finding/disposition/
+        rationale must not collapse into one ledger line under the
+        round-scoped dedup key, since whole-line dedup alone would collapse
+        them once event_time stopped being the only varying field."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="2"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, f"identical finding in a different round must not dedup, got: {lines}"
+        rounds = {json.loads(line)["round"] for line in lines}
+        assert rounds == {1, 2}
+
+    def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical retry within the same round must dedup, got: {lines}"
+
+    def test_retried_identical_clean_call_within_same_round_still_dedups(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        _run(args, cwd=git_repo, home=isolated_home)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical CLEAN retry within the same round must dedup, got: {lines}"
+
+    def test_disposition_alone_discriminates_within_the_same_round(self, isolated_home, git_repo):
+        """The shipped dedup filter projects `disposition` among its fields,
+        so two appends differing only on that field -- same round, same
+        finding, same rationale -- must land as two lines, not collapse to
+        one. Guards against a future narrowing of the filter (e.g. down to
+        just `{round}`) that would silently dedup every append after the
+        first within a round."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1", disposition="ADDRESS"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1", disposition="DEFER"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            f"a disposition-only difference within the same round must not dedup, got: {lines}"
+        )
+        dispositions = {json.loads(line)["disposition"] for line in lines}
+        assert dispositions == {"ADDRESS", "DEFER"}
+
+    def test_authoring_agent_alone_discriminates_within_the_same_round(self, isolated_home, git_repo):
+        """Same guard as test_disposition_alone_discriminates_within_the_same_round,
+        for authoring_agent, the field author_outcome.py's join depends on.
+        Existing dedup tests vary only disposition, so a filter narrowing
+        that drops authoring_agent would pass them all while silently
+        merging appends from different agents."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1", authoring_agent="code-writer"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1", authoring_agent="inline"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            f"an authoring_agent-only difference within the same round must not dedup, got: {lines}"
+        )
+        agents = {json.loads(line)["authoring_agent"] for line in lines}
+        assert agents == {"code-writer", "inline"}
+
+
+def _split_shell_args(statement: str) -> list[str]:
+    """Splits STATEMENT (a single logical shell line, backslash-continuations
+    already joined) into whitespace-separated tokens, honoring single- and
+    double-quoted spans so a quoted argument containing whitespace stays one
+    token. Returns each token with its original quote characters intact.
+    This file's own call sites rely on that to recover the raw
+    single-quoted-literal shape of an argument."""
+    tokens: list[str] = []
+    current = ""
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(statement):
+        ch = statement[i]
+        if in_single:
+            current += ch
+            if ch == "'":
+                in_single = False
+        elif in_double:
+            current += ch
+            if ch == '"':
+                in_double = False
+            elif ch == "\\" and i + 1 < len(statement):
+                i += 1
+                current += statement[i]
+        elif ch == "'":
+            in_single = True
+            current += ch
+        elif ch == '"':
+            in_double = True
+            current += ch
+        elif ch.isspace():
+            if current:
+                tokens.append(current)
+                current = ""
+        else:
+            current += ch
+        i += 1
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+_LIB_APPEND_JSON_LINE_LOCKED_DEFINITION_RE = re.compile(
+    r"^(function\s+)?_lib_append_json_line_locked\s*\(\)"
+)
+
+
+def _iter_lib_append_json_line_locked_call_sites(root: Path = CLAUDE_DIR):
+    """Yields (path, dedup_filter_arg) for every _lib_append_json_line_locked
+    call site under ROOT (CLAUDE_DIR by default, overridable for a
+    synthetic-fixture test), so the DEDUP_KEY_JQ_FILTER static-literal
+    invariant this test class pins is checked across claude/.claude/ rather
+    than only against review-ledger.sh's own text."""
+    # Matched anywhere on a line rather than only at its start, so a call
+    # inside `if _lib_append_json_line_locked ...; then`, `x=$(_lib_append_json_line_locked
+    # ...)`, or after a `;` is still caught. This deliberately doesn't
+    # encode shell command-word grammar to detect those shapes.
+    # The trailing whitespace lookahead excludes a bare mention like
+    # `# _lib_append_json_line_locked, and ...` or `printf
+    # '_lib_append_json_line_locked: dedup check failed...'`, where the
+    # identifier is immediately followed by punctuation rather than an
+    # argument.
+    call_re = re.compile(r"(?<![A-Za-z0-9_])_lib_append_json_line_locked(?=\s)")
+    for sh_file in sorted(root.rglob("*.sh")):
+        source = sh_file.read_text()
+        for match in call_re.finditer(source):
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            line_end = source.find("\n", match.start())
+            line = source[line_start : line_end if line_end != -1 else len(source)]
+            # Excludes a #-prefixed usage-comment line (e.g. the
+            # `# _lib_append_json_line_locked FILE LOCK_FILE LINE ...`
+            # header comment in _lib.sh), which the lookahead above doesn't
+            # catch since it's followed by whitespace like a real call.
+            if line.lstrip().startswith("#"):
+                continue
+            # Excludes the function's own definition line
+            # (`_lib_append_json_line_locked() {` or `function
+            # _lib_append_json_line_locked() {`, with or without a space
+            # before the parens).
+            if _LIB_APPEND_JSON_LINE_LOCKED_DEFINITION_RE.match(line.lstrip()):
+                continue
+            rest = source[match.start() :]
+            lines = rest.splitlines(keepends=True)
+            statement_lines = [lines[0]]
+            idx = 0
+            while statement_lines[-1].rstrip("\n").rstrip().endswith("\\") and idx + 1 < len(lines):
+                idx += 1
+                statement_lines.append(lines[idx])
+            statement = re.sub(r"\\\s*\n", " ", "".join(statement_lines))
+            tokens = _split_shell_args(statement)
+            assert len(tokens) >= 5, (
+                f"{sh_file}: _lib_append_json_line_locked call has fewer than 4 arguments: {statement!r}"
+            )
+            yield sh_file, tokens[4]
+
+
+class TestReviewLedgerDedupFilterIsStaticLiteral:
+    """_lib_append_json_line_locked's own docstring (_lib.sh) requires its
+    DEDUP_KEY_JQ_FILTER argument to be a static, developer-authored jq
+    literal, never derived from session- or user-controlled data, since it
+    is spliced directly into the jq program text with no --arg/--argjson
+    escaping. The behavioral test below pins the security property that
+    invariant protects, by driving the CLI and confirming that
+    user-controlled --finding/--rationale/--source values are bound via
+    jq's --arg mechanism rather than spliced into any filter text. The
+    source-scan test is a secondary tripwire on the static-literal call
+    site itself, needed because a regression there away from a static
+    literal produces no stdout/exit-code difference for the behavioral
+    test to observe."""
+
+    def test_call_site_passes_a_single_quoted_literal_with_no_expansion(self):
+        source = REVIEW_LEDGER_SCRIPT.read_text()
+        match = re.search(
+            r"^\s*_lib_append_json_line_locked\b[^\n]*\n\s*(\S.*)$",
+            source,
+            re.MULTILINE,
+        )
+        assert match, "no _lib_append_json_line_locked call site found in review-ledger.sh"
+        filter_arg = match.group(1).strip()
+        assert filter_arg.startswith("'") and filter_arg.endswith("'"), (
+            f"dedup filter argument must be a single-quoted literal, got: {filter_arg!r}"
+        )
+        assert "$" not in filter_arg, (
+            f"dedup filter argument must contain no variable expansion, got: {filter_arg!r}"
+        )
+
+    def test_every_repo_call_site_passes_a_single_quoted_literal_with_no_expansion(self):
+        """Regression-guards the static-literal invariant across
+        claude/.claude/, not just for review-ledger.sh: a future caller of
+        this primitive under claude/.claude/ is bound by the same `_lib.sh`
+        contract with no other enforcement.
+        Source-scanning is accepted here per test-conventions §9's
+        wiring-presence carve-out; it's secondary to the behavioral coverage
+        below."""
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites())
+        assert call_sites, "no _lib_append_json_line_locked call sites found under claude/.claude/"
+        for sh_file, filter_arg in call_sites:
+            assert filter_arg.startswith("'") and filter_arg.endswith("'"), (
+                f"{sh_file}: dedup filter argument must be a single-quoted literal, got: {filter_arg!r}"
+            )
+            assert "$" not in filter_arg and "`" not in filter_arg, (
+                f"{sh_file}: dedup filter argument must contain no variable expansion "
+                f"or command substitution, got: {filter_arg!r}"
+            )
+
+    def test_jq_filter_special_chars_in_finding_round_trip_unmodified(self, isolated_home, git_repo):
+        """--finding/--rationale/--source are user-controlled and reach jq
+        only through _lib_jq's --arg binding, never spliced into filter
+        text. This drives the CLI with a value containing jq-filter syntax
+        (quote, backslash, pipe, dot) and asserts it lands in the ledger
+        row byte-for-byte. A naive string-splice would either break the
+        filter (non-zero exit) or let the value's dots/pipes reshape the
+        jq program instead of being treated as opaque string content."""
+        _seed_session(isolated_home, SID)
+        injected = 'has "quotes" \\ backslash | pipe .dot $var {brace}'
+        result = _run(
+            _append_args(finding=injected, rationale=injected, source=injected),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["finding"] == injected
+        assert record["rationale"] == injected
+        assert record["source"] == injected
+
+    def test_multibyte_utf8_finding_round_trips_and_dedups_unmodified(self, isolated_home, git_repo):
+        """Mirrors test_jq_filter_special_chars_in_finding_round_trip_unmodified
+        but for multi-byte UTF-8 content: an accented character, CJK, and an
+        emoji, each spanning more than one UTF-8 byte. This asserts the
+        --arg-bound value round-trips exactly and that the
+        round-scoped dedup key still collapses an identical retry when the
+        finding contains non-ASCII bytes."""
+        _seed_session(isolated_home, SID)
+        multibyte = "café 日本語 🎉"
+        result = _run(
+            _append_args(finding=multibyte, rationale=multibyte),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        retry = _run(
+            _append_args(finding=multibyte, rationale=multibyte),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert retry.returncode == 0, retry.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, (
+            f"identical retry of a non-ASCII finding within the same round must dedup, got: {lines}"
+        )
+        record = json.loads(lines[0])
+        assert record["finding"] == multibyte
+        assert record["rationale"] == multibyte
+
+
+class TestIterLibAppendJsonLineLockedCallSitesShapes:
+    """Unit-level coverage of the call-site iterator's own matching rules,
+    using a synthetic fixture under tmp_path rather than scanning
+    CLAUDE_DIR. The repo's only real call site (review-ledger.sh's own
+    plain statement-start call) doesn't exercise the mid-statement/
+    assignment/chained shapes below, so it can't validate them on its
+    own."""
+
+    def test_matches_if_test_assignment_and_mid_statement_call_shapes(self, tmp_path: Path) -> None:
+        """Covers three call shapes that don't start a line: an
+        `if`-condition call, a command-substitution assignment, and a call
+        chained after `;`."""
+        fixture = tmp_path / "synthetic.sh"
+        fixture.write_text(
+            "if _lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding' ; then\n"
+            "  :\n"
+            "fi\n"
+            "result=$(_lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding' )\n"
+            "true; _lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding'\n"
+        )
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
+        assert len(call_sites) == 3, call_sites
+        assert all(filter_arg == "'.finding'" for _sh_file, filter_arg in call_sites)
+
+    def test_definition_line_with_space_before_parens_is_excluded(self, tmp_path: Path) -> None:
+        """A definition written `_lib_append_json_line_locked () {` (valid
+        bash, a space before the parens) must not be reported as a call
+        site. This proves the definition-line exclusion actually fires: the
+        lookahead alone doesn't reject this line, since it's followed by
+        whitespace just like a real call."""
+        fixture = tmp_path / "synthetic.sh"
+        fixture.write_text(
+            "_lib_append_json_line_locked () {\n"
+            "  echo unused\n"
+            "}\n"
+        )
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
+        assert call_sites == []
 
 
 class TestReviewLedgerFieldCaps:
@@ -561,3 +1161,39 @@ class TestReviewLedgerMtimeSweep:
         assert ledger.read_text() == original_content, (
             "content must be unchanged by the dedup no-op"
         )
+
+
+class TestReviewLedgerSweepWindowFromSettings:
+    """Covers GH-973: the sweep window derives from Claude Code's own
+    cleanupPeriodDays setting, floored at 30 days, via clear-stale's
+    --dry-run report. This is a thin integration test proving the
+    resolved number is plumbed into `find -mtime +N` -- see
+    TestLedgerSweepWindowDays in test_lib.py for the arithmetic itself
+    (absent settings file, custom value, below-floor value, malformed
+    input)."""
+
+    def _plant(self, ledger_dir: Path, name: str, age_days: float) -> Path:
+        path = ledger_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"finding":"x"}\n')
+        age = time.time() - age_days * 24 * 60 * 60
+        os.utime(path, (age, age))
+        return path
+
+    def test_custom_cleanup_period_days_widens_the_window(self, isolated_home, git_repo):
+        (isolated_home / ".claude" / "settings.json").write_text(
+            json.dumps({"cleanupPeriodDays": 60})
+        )
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        # 31 days old would already be stale under the default 30-day
+        # window; a custom 60-day window must keep it fresh.
+        still_fresh = self._plant(ledger_dir, ("3" * 64 + ".still-fresh.jsonl"), 31)
+        stale = self._plant(ledger_dir, ("4" * 64 + ".stale.jsonl"), 62)
+
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert still_fresh.name not in result.stdout, (
+            f"cleanupPeriodDays=60 must not evict a 31-day-old file: {result.stdout}"
+        )
+        assert stale.name in result.stdout

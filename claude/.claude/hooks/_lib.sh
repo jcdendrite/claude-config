@@ -4,8 +4,11 @@
 # byte-identical output on both the read side (hooks) and the write side
 # (marker.sh). Source it; do not invoke it directly.
 # Hooks source this via `${0%/*}`, not `$(dirname "$0")`, to skip a subshell
-# fork and `dirname` exec per invocation. It also fails closed rather than
-# open on the one reachable divergent `$0` shape: a bare filename.
+# fork and `dirname` exec per invocation. For hook-class: gate consumers
+# (which define emit_deny before sourcing), this also fails closed rather
+# than open on the one reachable divergent `$0` shape: a bare filename.
+# Other hook classes intentionally stay fail-open on a missing _lib.sh
+# regardless of this substitution.
 
 # _config.sh defines _lib_config_dir (config-dir resolution) and the
 # _config_*/config-key primitives every hook needs — sourced here, via
@@ -53,6 +56,11 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+# Emits a stderr note every time the uncapped fallback fires, so a caller
+# that doesn't redirect stderr can tell the cap silently didn't apply rather
+# than reading a clean exit as capped. Many current hook callers under
+# claude/.claude/hooks/*.sh redirect stderr to /dev/null, so this note is
+# unobservable from those.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
@@ -61,6 +69,7 @@ _lib_capped_for() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$seconds" "$@"
   else
+    printf '_lib_capped_for: neither timeout nor gtimeout is on PATH -- running %s uncapped\n' "$1" >&2
     "$@"
   fi
 }
@@ -3215,45 +3224,49 @@ _lib_round_consult_gate_disabled() {
   esac
 }
 
-# Shared bounded-retry count for _lib_append_line_locked below, used by both
-# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
-# synchronously inside a hook or CLI script, so the worst-case added latency
-# is bounded retries * the sleep below.
+# Shared bounded-retry count for _lib_acquire_append_lock below, used by
+# both review-ledger.sh and log-reviewer-round.sh. Small and fixed: this
+# runs synchronously inside a hook or CLI script, so the worst-case added
+# latency is bounded retries * the sleep below.
 _LIB_APPEND_LOCK_RETRIES=5
 
-# _lib_append_line_locked FILE LOCK_FILE LINE
-# Sets a bare `trap ... EXIT` to release its lock, which per this repo's
+# _lib_acquire_append_lock LOCK_FILE
+# Shared lock-acquisition/dead-holder-eviction/retry logic behind
+# _lib_append_line_locked and _lib_append_json_line_locked below.
+# Acquires via the same noclobber idiom as _lib_worktree_collision_guard.
+# Evicts a dead lock holder via the same PID-liveness check as
+# _lib_active_bypass_marker_live.
+# Sets a bare `trap ... EXIT` to release the lock, which per this repo's
 # shell-script-conventions rule silently clobbers any other EXIT trap
-# already registered in the calling process -- a future caller sharing this
-# primitive must ensure no other EXIT trap is active in the same process.
-# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
-# identical check-then-append critical section against a different state
-# file. Acquires a same-directory noclobber lock
-# (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
-# establishes in this repo) around the check-then-append: no-ops if LINE
-# already exists verbatim in FILE, else appends it. The lock file's content
-# is the holder's PID. A lock whose PID is dead is evicted and retried
-# immediately, rather than waiting out every retry against a crashed
-# holder. This is the same PID-liveness eviction _lib_active_bypass_marker_live
-# uses for its own markers. It matters more here than at review-ledger.sh's
-# own call site, since a PostToolUse hook is more exposed to being killed
-# mid-lock by the harness's own hook timeout than a skill-invoked CLI
-# script. Falls through to an unlocked append after
-# _LIB_APPEND_LOCK_RETRIES failed acquisitions rather than blocking -- a
-# duplicate line from a lost race is a low-consequence outcome (an inflated
-# round count), not data loss. The lock is released via the EXIT trap noted
-# above, so it clears whether the append succeeds or fails.
-_lib_append_line_locked() {
-  local file="$1" line="$3"
+# already registered in the calling process -- a future caller sharing
+# either primitive must ensure no other EXIT trap is active in the same
+# process.
+# This primitive must be called at most once per process: a second call's
+# EXIT trap replaces rather than stacks on the first, orphaning the first
+# call's lock file until the process exits.
+# Always returns rather than blocking indefinitely: after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
+# the caller proceeds unlocked, trading a low-consequence duplicate line
+# for never blocking.
+# _lib_append_json_line_locked discards this return status via `|| true`,
+# so a lock-contention race is not currently logged by that caller.
+# A matching projection is still a genuine duplicate regardless of lock
+# state: losing the lock only risks a false negative (missing a concurrent
+# duplicate), never a false positive.
+# Dead-holder eviction matters more at log-reviewer-round.sh's call site
+# than at review-ledger.sh's, since a PostToolUse hook is more exposed to
+# being killed mid-lock by the harness's own hook timeout than a
+# skill-invoked CLI script is.
+_lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
   # `local` binding of the same name would be out of scope by then.
-  _LIB_APPEND_LOCK_PATH="$2"
+  _LIB_APPEND_LOCK_PATH="$1"
   local attempt=0 stored_pid
   while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
     if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
       trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
-      break
+      return 0
     fi
     stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
     if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
@@ -3267,6 +3280,23 @@ _lib_append_line_locked() {
     attempt=$((attempt + 1))
     sleep 0.05
   done
+  printf '_lib_acquire_append_lock: exhausted %d retries acquiring %s -- proceeding unlocked\n' \
+    "$_LIB_APPEND_LOCK_RETRIES" "$_LIB_APPEND_LOCK_PATH" >&2
+  return 1
+}
+
+# _lib_append_line_locked FILE LOCK_FILE LINE
+# Used by log-reviewer-round.sh for the check-then-append critical section
+# against its own state file with whole-line dedup: no-ops if LINE already
+# exists verbatim in FILE, else appends it. review-ledger.sh's own append
+# uses the JSON-projection sibling below instead, since its schema carries
+# a field (event_time) that varies on every call. See
+# _lib_acquire_append_lock above for the locking half of this primitive.
+_lib_append_line_locked() {
+  local file="$1" line="$3"
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
   if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
     # A dedup no-op must still count as activity on this file's own mtime,
     # or a long-running branch's later no-op append leaves a stale mtime
@@ -3275,6 +3305,134 @@ _lib_append_line_locked() {
     return 0
   fi
   printf '%s\n' "$line" >> "$file"
+}
+
+# _lib_append_json_line_locked FILE LOCK_FILE LINE DEDUP_KEY_JQ_FILTER
+# Sibling to _lib_append_line_locked, sharing its lock/retry logic via
+# _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER instead of a
+# whole-line match.
+# DEDUP_KEY_JQ_FILTER is caller-supplied (e.g. '{round, finding,
+# disposition}') and must never be hardcoded here.
+# DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
+# bypassing the --arg/--argjson data/code separation this file uses for
+# every other jq input. It MUST therefore be a static, developer-authored
+# jq literal, never derived from session- or user-controlled data. This is
+# enforced by this contract, the runtime shape check below, and
+# review-ledger.sh's own TestReviewLedgerDedupFilterIsStaticLiteral
+# regression test in test_review_ledger_script.py. A future caller of this
+# primitive must add its own equivalent test -- this docstring does not
+# inherit one for it.
+# A duplicate is a no-op but still touches FILE's mtime, per
+# _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
+# above.
+# Whole-line dedup doesn't work for this schema: event_time is captured
+# fresh on every append attempt, so two calls carrying identical business
+# fields would never match byte-for-byte. This is why the check below
+# projects through DEDUP_KEY_JQ_FILTER instead of taking
+# _lib_append_line_locked's whole-line match.
+_lib_append_json_line_locked() {
+  local file="$1" line="$3" dedup_filter="$4"
+  # Requires a brace-delimited, comma-separated identifier list -- rejects
+  # a bare builtin like `env`, and rejects `{}`/`{ }` since jq projects it
+  # to a constant, which would falsely dedup every future append.
+  # Not a full grammar check: a shape-legal but syntactically invalid
+  # literal (e.g. `{round,,disposition}`) still reaches jq and fails open
+  # via the dup_check_exit branch below.
+  # A single-field filter naming a field absent from every record (e.g. a
+  # typo) is shape-valid too and reproduces the same false-dedup failure --
+  # undetectable here, since telling it apart from a real field requires
+  # schema knowledge this guard doesn't have.
+  # Any shape-invalid filter fails open (unconditional append) rather than
+  # exiting, matching every other failure path in this function: missing
+  # jq, a shape-legal-but-invalid filter, or a lock-acquisition failure.
+  # `exit` would collide with _lib_emit_deny's own exit-2 harness
+  # convention the first time a PreToolUse/PostToolUse hook caller reuses
+  # this primitive.
+  local dedup_filter_shape_valid=1
+  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]] \
+      || [[ ! "$dedup_filter" =~ [A-Za-z0-9_] ]]; then
+    dedup_filter_shape_valid=0
+    printf '_lib_append_json_line_locked: DEDUP_KEY_JQ_FILTER %q is not a brace-delimited, comma-separated list of identifiers (a jq object-projection literal) -- proceeding with unconditional append\n' \
+      "$dedup_filter" >&2
+  fi
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
+  if [ "$dedup_filter_shape_valid" = 1 ] && [ -f "$file" ] && [ -s "$file" ]; then
+    local dup_check_program is_duplicate
+    # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is
+    # jq's own --argjson-bound variable, meant to expand inside the jq
+    # program this builds, not in this bash string.
+    # -R/inputs/fromjson? reads FILE one raw line at a time rather than
+    # --slurpfile parsing it as one JSON array, so one malformed line (a
+    # partial write from a crash) is skipped instead of failing the whole
+    # file's parse and silently disabling dedup for every future append.
+    dup_check_program=$(printf '($candidate | %s) as $key | any(inputs | fromjson?; (. | %s) == $key)' \
+      "$dedup_filter" "$dedup_filter")
+    local dup_check_exit
+    is_duplicate=$(_lib_jq -R -n --argjson candidate "$line" \
+      "$dup_check_program" -- "$file" 2>/dev/null)
+    dup_check_exit=$?
+    if [ "$is_duplicate" = "true" ]; then
+      touch -- "$file" 2>/dev/null
+      return 0
+    fi
+    # A non-zero exit, or output other than the two expected literals, means
+    # the dedup check itself failed rather than genuinely resolving "not a
+    # duplicate". Causes: a missing jq, the _lib_jq 5s timeout firing, or a
+    # malformed DEDUP_KEY_JQ_FILTER. This line is the stderr signal that
+    # distinguishes that failure case. The fallback itself (append anyway)
+    # is unchanged either way.
+    if [ "$dup_check_exit" -ne 0 ] || [ "$is_duplicate" != "false" ]; then
+      printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
+    fi
+  fi
+  printf '%s\n' "$line" >> "$file"
+}
+
+# Floor for _ledger_sweep_window_days below: the ledger must never sweep
+# more aggressively than the transcript retention it depends on (GH-973).
+# author_outcome.py's own _LEDGER_SWEEP_FLOOR_DAYS mirrors this value and
+# floors identically from the same settings.json key, with no shared
+# process call between the two languages.
+_LEDGER_SWEEP_FLOOR_DAYS=30
+
+# _ledger_sweep_window_days SETTINGS_FILE
+# Prints the ledger's sweep window in days: Claude Code's own
+# cleanupPeriodDays setting read from SETTINGS_FILE, floored at
+# _LEDGER_SWEEP_FLOOR_DAYS above.
+# Single SETTINGS_FILE read -- deliberately skips Claude Code's full
+# settings-precedence resolution (project-local overrides, enterprise-
+# managed settings, CLI flag overrides), which this retention-floor
+# purpose doesn't need.
+# Falls back to _LEDGER_SWEEP_FLOOR_DAYS when:
+# - SETTINGS_FILE is missing or unreadable
+# - cleanupPeriodDays is absent
+# - its value isn't a bare non-negative integer, or has more digits than
+#   the case pattern below accepts
+# jq's `select(type == "number")` passes a fractional value like 45.5 (or
+# a whole-number float like 90.0, which jq prints as "90.0", not "90")
+# through unchanged; the digit-only case pattern below then rejects it as
+# non-integer rather than truncating it. This is deliberate and matches
+# author_outcome.py's own _cleanup_period_days.
+_ledger_sweep_window_days() {
+  local settings_file="$1"
+  local cleanup_period_days
+  cleanup_period_days=$(_lib_jq -r '(.cleanupPeriodDays // empty) | select(type == "number")' "$settings_file" 2>/dev/null)
+  case "$cleanup_period_days" in
+    ''|*[!0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+    # 9+ digits (>=100 million days): far beyond any realistic retention
+    # window, but an all-digit value this large can exceed bash's signed-
+    # integer range and make the `-lt` comparison below error instead of
+    # comparing -- floor here rather than depend on that comparison's
+    # behavior on an out-of-range operand.
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+  esac
+  if [ "$cleanup_period_days" -lt "$_LEDGER_SWEEP_FLOOR_DAYS" ]; then
+    printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
+  else
+    printf '%s' "$cleanup_period_days"
+  fi
 }
 
 # _lib_resume_context_tmpdir_root

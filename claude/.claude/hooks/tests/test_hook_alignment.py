@@ -1201,7 +1201,8 @@ def test_second_dirname_site_not_swept(hook_name: str) -> None:
     (locating a sibling script or resolving git state, not _lib.sh) that
     must survive unchanged.
     """
-    hook = next(h for h in ALL_HOOKS if h.name == hook_name)
+    hook = next((h for h in ALL_HOOKS if h.name == hook_name), None)
+    assert hook is not None, f"{hook_name} not found in ALL_HOOKS (renamed or removed?)"
     expected_lines = _SECOND_DIRNAME_SITE_HOOKS[hook_name]
     lines = [ln.strip() for ln in hook.read_text().splitlines()]
     for expected_line in expected_lines:

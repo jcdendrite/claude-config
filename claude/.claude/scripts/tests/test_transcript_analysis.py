@@ -8327,6 +8327,9 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
     }
 
 
+# Regex-extracts from --ttl-verdict's markdown text since it has no
+# structured (--json) output mode; migrate to parsing that instead if one
+# is ever added.
 def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
     """Read --ttl-verdict's own per-bucket summary line ('main: consistent
     5m roots=N  consistent 1h roots=N  excluded (mixed-tier or no
