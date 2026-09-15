@@ -76,8 +76,9 @@ over any paraphrase here.
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
 `commit_stall_block`, and `authorization_boundary_restore` are the five
 **enforcement-critical** keys `config-keys.psv`'s own header names: any
-change to that file's `resolution`, `legacy-probe-on-resolution-failure`,
-or `legacy-import-locations` column for one of their rows requires a
+change to that file's `default`, `resolution`,
+`legacy-probe-on-resolution-failure`, or `legacy-import-locations` column
+for one of their rows requires a
 `claude-hook-review` pass, since each controls a mechanism that removes a
 human checkpoint (a review-process requirement, not a hook, since the
 schema file is git-tracked and every change already lands via a
@@ -258,23 +259,58 @@ as its own regular file — never a symlink to another account's copy.
 
 ## Performance
 
-Each `_config_value`/`_config_enabled` call resolves through several
-subshell-forking layers (`_config_schema_field`, `_config_location_value`,
-`_config_read_key_from_file`, a `while read` loop over a process
-substitution), roughly doubling for a `config-dir-or-home` union key
-(`worktree_required`, `autonomous_shipping`), which walks that chain twice.
-Measured directly (real `bash script.sh` subprocess invocations, 20
-iterations each, otherwise-idle machine): a bare `. _lib.sh` with no config
-call costs ~16ms; adding one `_config_enabled` call brings that to ~38ms;
-two calls in the same fire (`advance-past-commit-stall.sh`'s shape, which
-checks `commit_stall_block` then `autonomous_shipping`) cost ~61ms.
+Each `_config_value`/`_config_enabled` call for a not-yet-memoized key walks
+the state-file-then-legacy-then-default chain once per location -- twice,
+for a `config-dir-or-home` union key with a diverged `$HOME`
+(`worktree_required`, `autonomous_shipping`). Three cost components drive
+that walk:
+
+- **Schema passes.** One `_config_schema_row` pass over config-keys.psv up
+  front, plus one further pass per location that reaches its own
+  schema-default fallback (only when neither that location's state file nor
+  its legacy file resolved the key there). A union key's total therefore
+  ranges from one (both locations resolve without it) to three (neither
+  does). `_config_schema_row` always scans to end-of-file rather than
+  stopping at the first match, so its cost scales with config-keys.psv's
+  total row count, not with how early the target key's own row appears --
+  worth re-measuring the figures below if that file grows substantially.
+- **`tr` forks.** Reading a state file forks a `tr '[:upper:]' '[:lower:]'`
+  subprocess per line, guarded behind a `case "$value" in *[A-Z]*)` test so
+  it runs only for a hand-authored uppercase value -- a machine-written
+  (lowercase) state file forks no `tr` at all.
+- **Memoization.** A repeated lookup of the same key within one process is
+  memoized after its first resolution, at the cost of one string-glob scan
+  of an in-memory cache and no further filesystem I/O.
+
+Measured directly (real `bash script.sh` subprocess invocations, 40
+iterations each, otherwise-idle machine). `_config_enabled` resolves through
+a single bare call with no subshell fork of its own; the "config-dir key"
+and `advance-past-commit-stall.sh` figures below were not re-measured
+against this shape and should be treated as an upper bound for that path:
+
+- A bare `. _lib.sh` with no config call: ~15ms.
+- Adding one `_config_enabled` call for a `config-dir` key: ~23ms.
+- `advance-past-commit-stall.sh`'s real shape (`commit_stall_block`, then
+  `autonomous_shipping` twice) costs ~33-35ms regardless of whether a state
+  file exists yet. Threading the precomputed schema locals through every
+  `_config_location_value` call caps the gap between the two shapes at one
+  further schema pass per location, which sits within this machine's own
+  measurement noise. This figure does not account for the `CLAUDE_CONFIG_DIR`/`HOME`
+  fingerprint check on the memo hot path; that check is judged immaterial
+  (two builtin string comparisons, no fork/IO) and wasn't re-measured.
+
+The second `autonomous_shipping` lookup above is a memo hit, not a second
+resolution.
+
 Eleven hook files call into this resolution path today, several on the
 highest-frequency PreToolUse gates in the repo (every `Edit`/`Write`/
 `MultiEdit`, every git write) — see `_config.sh`'s own callers. This is
-judged tolerable against the repo's stated <100ms-per-fire hook budget for
-a single- or double-key check, but a hook checking three or more keys in
-one fire should measure its own total against that budget rather than
-assume it stays under it.
+judged tolerable against the repo's stated <100ms-per-fire hook budget.
+Because a repeated lookup of an already-resolved key is nearly free, the
+real cost driver in one fire is the number of distinct keys checked, not
+the total call count -- a hook checking three or more distinct keys should
+still measure its own total against that budget rather than assume it
+stays under it.
 
 ## A hand-edit-loss fragility for enforcement-critical keys
 
