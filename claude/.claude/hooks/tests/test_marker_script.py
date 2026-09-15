@@ -4091,11 +4091,12 @@ class TestMarkerScriptVerification:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
@@ -4106,7 +4107,7 @@ class TestMarkerScriptVerification:
             '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
         )
         env["PATH"] = f"{stub_dir}:{env['PATH']}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(stub_dir, production_cap=5):
             result = _run(
                 ["status"],
                 cwd=git_repo,
