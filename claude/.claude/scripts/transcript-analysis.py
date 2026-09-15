@@ -6391,6 +6391,13 @@ def _cache_rebuild_dominant_tier_share(w5m: float, w1h: float) -> float:
     return max(w5m, w1h) / (w5m + w1h)
 
 
+def _cache_rebuild_root_is_dominant(share: float) -> bool:
+    """Whether a root's dominant-tier share clears
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN -- the boolean the print
+    loop's own eligibility branch decides on."""
+    return share >= _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN
+
+
 def _cache_rebuild_root_verdict_input(
     *, net_primary: float, net_sensitivity: float, volume: float,
     positive_favors: str, negative_favors: str,
@@ -7181,11 +7188,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         f" {_TTL_ROW_NOT_APPLICABLE:>8} {_TTL_EXCLUDE_NO_DATA:>8} {_TTL_ROW_NA:>8}"
                     )
                     continue
-                # A mixed root (both tiers nonzero) still gets its own row
-                # below, naming the dominant tier's own accumulators. Those
-                # accumulators feed the verdict only when share clears
-                # _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN; below it the
-                # root is excluded(near-tie) instead.
+                # A mixed root still gets its own row, naming the dominant
+                # tier's own accumulators (eligibility rule: see
+                # _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN above).
                 is_mixed = root_w5m > 0 and root_w1h > 0
                 share = _cache_rebuild_dominant_tier_share(root_w5m, root_w1h)
                 if root_w5m >= root_w1h:
@@ -7227,7 +7232,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         f"{root_label:<12} {_CACHE_REBUILD_TIER_1H:>6} {root_w1h:>14,} {root_z:>14,}"
                         f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8}"
                     )
-                if share < _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN:
+                if not _cache_rebuild_root_is_dominant(share):
                     excluded_roots += 1
                     print(f"{row_prefix} {_TTL_EXCLUDE_NEAR_TIE:>8} {share:>8.3f}")
                 else:
