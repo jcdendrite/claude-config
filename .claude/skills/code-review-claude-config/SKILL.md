@@ -23,9 +23,9 @@ So is any of:
 - a figure citing no command, or citing one that cannot refuse a wider
   corpus, unless the artifact cites the owner's timestamped
   authorization for that exact figure
-- a figure with its own calendar-time axis drawn from a corpus wider
-  than this repository on one account — barred regardless of
-  authorization
+- a figure with its own calendar-time axis (per-week, per-month, or a
+  two-point before/after split) drawn from a corpus wider than this
+  repository on one account — barred regardless of authorization
 - a count of how many accounts or declared config-dir roots exist
 - a new figure that lets a reader subtract a previously-published
   pooled figure down to its non-this-repo remainder

@@ -38,8 +38,10 @@ heading this plan creates is explicitly out of scope here; it happens
 in a separate follow-up once this PR merges and PR #1009 rebases onto
 the new `main` tip.
 
-This ships as its own dedicated PR, not folded into PR #1009 — engineer-confirmed this session, matching the precedent PR #1011 set of
-policy-only PRs getting dedicated `/plan-it` → `/plan-review` treatment.
+This ships as its own dedicated PR, not folded into PR #1009 —
+engineer-confirmed this session. That matches the precedent PR #1011
+set: policy-only PRs get dedicated `/plan-it` → `/plan-review`
+treatment.
 
 ## Approach
 
@@ -80,19 +82,19 @@ The bar above holds by default: a wider read stays with the owner
 and publishes nothing. The owner can release it for one specific
 figure. Propose the figure, the exact command that produced it, and
 the artifact it would appear in. Publish only after an explicit,
-in-session yes, and cite that authorization beside the figure,
-naming what was proposed and the timestamp of the yes. A bare claim
-that approval occurred, with nothing to check it against, is not a
+in-session yes. Cite that authorization beside the figure, naming
+what was proposed and the timestamp of the yes. A bare claim that
+approval occurred, with nothing to check it against, is not a
 citation. A recalled yes from another transcript or artifact does
-not count — only a live answer in the current session does, the
-same standard "New figures against the grandfathered set" below
-sets. The command is cited so a reader can re-run the measurement.
-Unlike the single-account case above, authorization guarantees
-nothing about scope by itself; it is the whole control. That is why
-it is granted per figure and left as a citable trace. The mechanical
-backstop is this repository's own human-only merge gate: the owner
-reviews every PR before it merges and can catch a citation for a yes
-that was never given.
+not count; only a live answer in the current session does. This
+matches the standard "New figures against the grandfathered set"
+below sets. The command is cited so a reader can re-run the
+measurement. Unlike the single-account case above, authorization
+guarantees nothing about scope by itself; it is the whole control.
+That is why it is granted per figure and left as a citable trace.
+The mechanical backstop is this repository's own human-only merge
+gate: the owner reviews every PR before it merges and can catch a
+citation for a yes that was never given.
 
 An authorization covers the figure, the command, and the artifact it
 named. A second figure, the same figure in a second artifact, or a
@@ -100,24 +102,24 @@ re-run over a grown corpus is a fresh ask. Cite each authorized
 figure on its own — one citation spanning several figures does not
 establish that each was individually proposed and approved. Before
 citing an authorized figure, check whether it composes with an
-already-published rate or count — from the grandfathered set below,
-or from an earlier authorization under this section — to reconstruct
-a calendar-time series or narrow a boundary. If so, name that
-composition in the proposal. "New figures against the grandfathered
-set" below is the mechanical half of that check; it does not cover
-composition against a prior authorization on its own.
+already-published rate or count to reconstruct a calendar-time
+series or narrow a boundary. That comparison source can be the
+grandfathered set below or an earlier authorization under this
+section. If it composes, name that composition in the proposal.
+"New figures against the grandfathered set" below is the mechanical
+half of that check; it does not cover composition against a prior
+authorization on its own.
 
 An authorization releases the corpus-scope bar and nothing else. Four
 things stay barred alongside it:
 
 - A figure carrying a per-project, per-account, or per-engagement
-  dimension. The repo-root `CLAUDE.md` bars that absolutely. It is a
-  dimension question rather than a scope question, so this section
-  cannot relax it.
+  dimension — barred absolutely by the repo-root `CLAUDE.md`, since
+  this section only relaxes scope, not dimension.
 - A count of accounts or declared config-dir roots — see "Account
   cardinality" below.
-- `--share-only` output. It keeps a wider read's absolutes out of the
-  agent's context; it is not a publication instrument.
+- `--share-only` output — it keeps a wider read's absolutes out of
+  the agent's context, not a publication instrument.
 - A figure with its own calendar-time axis (per-week, per-month, or a
   two-point before/after split) drawn from a wider corpus — barred
   even as a single authorized figure, since no split mechanism
@@ -168,9 +170,9 @@ them either.
 - a figure citing no command, or citing one that cannot refuse a wider
   corpus, unless the artifact cites the owner's timestamped authorization for
   that exact figure
-- a figure with its own calendar-time axis drawn from a corpus wider
-  than this repository on one account — barred regardless of
-  authorization
+- a figure with its own calendar-time axis (per-week, per-month, or a
+  two-point before/after split) drawn from a corpus wider than this
+  repository on one account — barred regardless of authorization
 ```
 
 The dimension clause reads as exhaustive today, so a reviewer trusting the checklist would P1 a validly authorized figure — the same gap applies to the "cannot refuse a wider corpus" sibling bullet, since an authorized figure's command can never itself refuse a wider corpus by construction. Both escapes are diff-visible, which is what the checklist wants. Both `unless` clauses require a *timestamped* authorization, not a bare claim, matching the doc's own citation-content requirement. The new calendar-time-axis bullet is unconditional, mirroring `--share-only`'s and account-cardinality's own absolute bars, since the doc's exclusion list bars it regardless of authorization. The `--share-only`, account-cardinality, and auto-publishing-scope sub-bullets otherwise stay byte-identical — the new subsection's exclusion list is written so those three keep agreeing with the doc by construction rather than by luck.
@@ -204,6 +206,7 @@ The dimension clause reads as exhaustive today, so a reviewer trusting the check
 15. The deleted carve-out's "No time series" bar named two distinct risk shapes, and its own wording treats accumulation across successive authorized asks — not a single figure that is itself a calendar-time series — as the primary case ("a second one published later forms a barred two-point series"). The original three-item exclusion list carried forward neither explicitly; `docs/transcript-analysis.md:620` already independently asserts a calendar-anchored wider-corpus series is "barred outright." A first fix pass (calendar-time-axis exclusion item) closed only the single-command half; a second re-review pass found the accumulation half still open, since neither the "fresh ask" sentence nor the original composition-naming clause reached composition against a prior owner-authorized figure — the composition-naming clause now covers that too. `[verified: git show e4857828 -- docs/private-project-redaction.md; docs/transcript-analysis.md:620; found by ciso-reviewer review passes this session — a cumulative-diff pass, then a plan-re-review pass for the accumulation gap]`
 16. The deleted carve-out's "Approval gate" required a durable, independently-checkable citation and explicitly excluded a bare narrative claim, offering two session-ID-free anchor options: "session identifier plus turn index **or timestamp**." This repo's own `ready-for-review/SKILL.md` separately instructs never quoting a raw `session_id` into PR-reaching prose, ruling out the first option — but not the second. A first fix pass used a bare date, which a ciso-reviewer re-review flagged as too coarse for a repo with a high-frequency, multi-session-per-day usage pattern (a date alone doesn't identify which session carried the yes); a timestamp (date and time-of-day) is the closer match to the deleted gate's own durability bar and carries no `session_id` exposure. `[verified: git show e4857828 -- docs/private-project-redaction.md; claude-skills/skills/ready-for-review/SKILL.md's "Do not quote the raw session_id into prose" line; found by the same two ciso-reviewer passes as row 15]`
 17. The calendar-time-axis exclusion item's "time-bucketed breakdown" wording leaves an edge case ambiguous — whether a two-point before/after split counts — but the plan's own Out-of-scope section already states no permitted-split mechanism is being reinstated, so a two-point split has no sanctioned path regardless of how the bullet's wording is read; the clarification is stated inline to spare a reader from reconstructing that connection. `[verified: found by the second ciso-reviewer plan-re-review pass (row 15's second pass), Low severity, over-restrictive direction]`
+18. The `SKILL.md` mirror of the calendar-time-axis bullet initially dropped the doc's explicit `(per-week, per-month, or a two-point before/after split)` enumeration, leaving the checklist's own text ambiguous on the two-point-split shape even though the canonical doc bullet unconditionally covers it. `[verified: found by a final ciso-reviewer cumulative pass this session, Medium severity]`
 
 **Mechanisms:**
 

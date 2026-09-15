@@ -172,19 +172,19 @@ The bar above holds by default: a wider read stays with the owner
 and publishes nothing. The owner can release it for one specific
 figure. Propose the figure, the exact command that produced it, and
 the artifact it would appear in. Publish only after an explicit,
-in-session yes, and cite that authorization beside the figure,
-naming what was proposed and the timestamp of the yes. A bare claim
-that approval occurred, with nothing to check it against, is not a
+in-session yes. Cite that authorization beside the figure, naming
+what was proposed and the timestamp of the yes. A bare claim that
+approval occurred, with nothing to check it against, is not a
 citation. A recalled yes from another transcript or artifact does
-not count — only a live answer in the current session does, the
-same standard "New figures against the grandfathered set" below
-sets. The command is cited so a reader can re-run the measurement.
-Unlike the single-account case above, authorization guarantees
-nothing about scope by itself; it is the whole control. That is why
-it is granted per figure and left as a citable trace. The mechanical
-backstop is this repository's own human-only merge gate: the owner
-reviews every PR before it merges and can catch a citation for a yes
-that was never given.
+not count; only a live answer in the current session does. This
+matches the standard "New figures against the grandfathered set"
+below sets. The command is cited so a reader can re-run the
+measurement. Unlike the single-account case above, authorization
+guarantees nothing about scope by itself; it is the whole control.
+That is why it is granted per figure and left as a citable trace.
+The mechanical backstop is this repository's own human-only merge
+gate: the owner reviews every PR before it merges and can catch a
+citation for a yes that was never given.
 
 An authorization covers the figure, the command, and the artifact it
 named. A second figure, the same figure in a second artifact, or a
@@ -192,24 +192,24 @@ re-run over a grown corpus is a fresh ask. Cite each authorized
 figure on its own — one citation spanning several figures does not
 establish that each was individually proposed and approved. Before
 citing an authorized figure, check whether it composes with an
-already-published rate or count — from the grandfathered set below,
-or from an earlier authorization under this section — to reconstruct
-a calendar-time series or narrow a boundary. If so, name that
-composition in the proposal. "New figures against the grandfathered
-set" below is the mechanical half of that check; it does not cover
-composition against a prior authorization on its own.
+already-published rate or count to reconstruct a calendar-time
+series or narrow a boundary. That comparison source can be the
+grandfathered set below or an earlier authorization under this
+section. If it composes, name that composition in the proposal.
+"New figures against the grandfathered set" below is the mechanical
+half of that check; it does not cover composition against a prior
+authorization on its own.
 
 An authorization releases the corpus-scope bar and nothing else. Four
 things stay barred alongside it:
 
 - A figure carrying a per-project, per-account, or per-engagement
-  dimension. The repo-root `CLAUDE.md` bars that absolutely. It is a
-  dimension question rather than a scope question, so this section
-  cannot relax it.
+  dimension — barred absolutely by the repo-root `CLAUDE.md`, since
+  this section only relaxes scope, not dimension.
 - A count of accounts or declared config-dir roots — see "Account
   cardinality" below.
-- `--share-only` output. It keeps a wider read's absolutes out of the
-  agent's context; it is not a publication instrument.
+- `--share-only` output — it keeps a wider read's absolutes out of
+  the agent's context, not a publication instrument.
 - A figure with its own calendar-time axis (per-week, per-month, or a
   two-point before/after split) drawn from a wider corpus — barred
   even as a single authorized figure, since no split mechanism
