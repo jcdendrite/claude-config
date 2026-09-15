@@ -7476,11 +7476,6 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
         # errors="replace" (not read_text()'s strict decode), so non-UTF-8
         # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
         # rather than raising UnicodeDecodeError uncaught.
-        # Assumes path is a regular file or a symlink to one; a FIFO or
-        # other special file would block indefinitely here. Below current
-        # scale to defend against (would need a planted special file in a
-        # config dir the attacker already writes to) -- revisit if this
-        # file's threat model extends to a shared or multi-tenant config dir.
         raw = path.read_bytes()
     except OSError:
         raw = None
@@ -7502,15 +7497,7 @@ def _resolve_machine_identity(
     """Generates and persists a per-config-dir identity via
     secrets.token_hex(4) on first use, publishing it through mkstemp+os.link
     so a losing racer adopts the winner's value instead of a torn write
-    (see docs/pr-cost.md's "Machine identity"). `subcommand` labels this
-    function's own stderr diagnostics, the same role the parameter
-    _ledger_path_is_git_tracked already carries. `location_label` names the
-    identity file's location in a refusal message. It defaults to the
-    conventional ~/.claude path. A caller resolving a non-default
-    config dir (e.g. pr-cost's --all-accounts loop) passes its own
-    account label instead, so the message never claims a path that may be
-    wrong for that account. No mkdir: both callers' own opt-in sentinel
-    checks already require config_dir() to exist.
+    (see docs/pr-cost.md's "Machine identity").
     """
     path = _machine_identity_path(config_dir_override)
     if location_label is None:
@@ -8150,8 +8137,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     # Resolved only after the sentinel and git-tracked checks above, so a
     # run never creates a machine-id file inside a config dir whose owner
-    # never opted in to --record -- same ordering and rationale as
-    # pr-cost's equivalent call.
+    # never opted in to --record.
+    # See pr-cost's equivalent call for the same ordering.
     machine = _resolve_machine_identity("cost-ledger")
 
     note_violation = _cost_ledger_note_violation(note)
@@ -9473,11 +9460,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         # Resolved only after the opt-in gate and the git-tracked refusal
         # above, so a run never creates a machine-id file for an account
         # that never opted in to --record.
-        # The refusal message names the account as account-N, not a
-        # resolved path, for the same reason the opt-in/git-tracked
-        # refusals above do -- --all-accounts means account_config_dir
-        # isn't the default ~/.claude the un-labeled convention would
-        # otherwise imply.
+        # The refusal message names the account as account-N, not a resolved
+        # path, because --all-accounts means account_config_dir isn't the
+        # default ~/.claude the un-labeled convention would otherwise imply.
         machine_identity = _resolve_machine_identity(
             "pr-cost",
             config_dir_override=account_config_dir,
@@ -9485,16 +9470,13 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         )
 
         # Read under this account's own write lock, immediately before the
-        # warn call, matching _cost_ledger_report's read-under-lock symmetry --
+        # warn call, matching _cost_ledger_report's read-under-lock symmetry:
         # a read taken before any lock could warn from a state a concurrent
         # writer has already superseded.
-        # This narrows but doesn't close the race: the ledger write happens
-        # in a later, separate per-branch lock, so a concurrent writer
-        # landing between this lock's release and that lock's acquire still
-        # sees a stale advisory warning.
-        # Below current scale to fix -- revisit if this ledger gains genuine
-        # multi-writer concurrent-record usage at a scale where a stale
-        # advisory message becomes a real operator complaint.
+        # Known, accepted residual: the ledger write happens in a later,
+        # separate per-branch lock, so a concurrent writer landing between
+        # this lock's release and that lock's acquire still sees a stale
+        # advisory warning.
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = ledger_path.with_name(ledger_path.name + ".lock")
         with open(lock_path, "w") as lock_f:
@@ -9740,18 +9722,18 @@ def _redact_pr_cost_row_for_export(
     return exported
 
 
-def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, list[str]]:
+def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, list[str]]:
     """Read every resolved root's own pr-cost ledger. Returns
     (formatted_rows, declared, opted_in, skipped_no_sentinel,
-    legacy_header_accounts, corpus_identities), fully materialized, with no
-    filesystem writes of its own. See docs/pr-cost.md's "Redacted
-    cross-account export" section for account iteration order and
-    corpus_identities' construction.
+    legacy_header_accounts, legacy_machine_value_rows, corpus_identities),
+    fully materialized, with no filesystem writes of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for account
+    iteration order and corpus_identities' construction.
     """
     ordinals = _redaction_ordinals(roots)
     root_by_resolved = {root.resolve(): root for root in roots}
     declared = len(roots)
-    opted_in = skipped_no_sentinel = legacy_header_accounts = 0
+    opted_in = skipped_no_sentinel = legacy_header_accounts = legacy_machine_value_rows = 0
     formatted_rows: list[str] = []
     corpus_identities: list[str] = []
     host_map: dict[tuple[int, str], str] = {}
@@ -9809,6 +9791,10 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         # could disagree with the rows actually exported.
         corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
         for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
+            # Runs post-collapse, so a same-key multi-capture correction under
+            # one legacy machine value is counted once here, not once per raw capture.
+            if not _MACHINE_IDENTITY_RE.match(row["machine"]):
+                legacy_machine_value_rows += 1
             exported = _redact_pr_cost_row_for_export(
                 row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map
             )
@@ -9818,17 +9804,21 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
                 print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
                 sys.exit(1)
 
-    return formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts, corpus_identities
+    return (
+        formatted_rows, declared, opted_in, skipped_no_sentinel,
+        legacy_header_accounts, legacy_machine_value_rows, corpus_identities,
+    )
 
 
 def _pr_cost_export_provenance_line(
     *, exported_at: datetime, declared: int, opted_in: int, skipped_no_sentinel: int,
-    legacy_header_accounts: int, corpus_identities: Sequence[str], corpus_override: bool,
+    legacy_header_accounts: int, legacy_machine_value_rows: int, corpus_identities: Sequence[str],
+    corpus_override: bool,
 ) -> str:
     """Builds the provenance line. corpus= is a same-corpus indicator only,
     never a security boundary -- see docs/pr-cost.md's "Redacted
-    cross-account export" section for its construction and for what
-    corpus_override=1 means.
+    cross-account export" section for its construction, for what
+    corpus_override=1 means, and for what legacy_machine_value_rows flags.
     """
     digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
     exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -9836,6 +9826,7 @@ def _pr_cost_export_provenance_line(
         "# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this"
         f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
         f" skipped_no_sentinel={skipped_no_sentinel} legacy_header_accounts={legacy_header_accounts}"
+        f" legacy_machine_value_rows={legacy_machine_value_rows}"
         f" corpus={digest} corpus_override={int(corpus_override)}"
     )
 
@@ -9911,22 +9902,23 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
 
     (
-        formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts, corpus_identities,
+        formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts,
+        legacy_machine_value_rows, corpus_identities,
     ) = _pr_cost_export_rows(roots)
 
     provenance_line = _pr_cost_export_provenance_line(
         exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
         skipped_no_sentinel=skipped_no_sentinel, legacy_header_accounts=legacy_header_accounts,
-        corpus_identities=corpus_identities, corpus_override=declared_roots_file_is_overridden(),
+        legacy_machine_value_rows=legacy_machine_value_rows, corpus_identities=corpus_identities,
+        corpus_override=declared_roots_file_is_overridden(),
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
-    # Re-derived from the operator's own --out, not from resolved_out above:
-    # the final component here is left exactly as named (unlike
-    # resolved_out), so O_EXCL's own symlink refusal actually fires instead
-    # of silently following the link to wherever it points. The parent is
-    # still resolved, though, so a symlinked parent directory lands inside
-    # the same target the git-tree check above already validated.
+    # The final path component is left exactly as named, unlike resolved_out
+    # above, so O_EXCL's own symlink refusal actually fires instead of
+    # silently following the link to wherever it points.
+    # The parent is still resolved, so a symlinked parent directory lands
+    # inside the same target the git-tree check above already validated.
     open_path = Path(out).parent.resolve() / Path(out).name
     try:
         fd = os.open(str(open_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

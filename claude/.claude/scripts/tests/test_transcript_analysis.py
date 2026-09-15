@@ -28742,10 +28742,63 @@ class TestPrCostExportProvenanceLine:
         tokens = provenance.split(" ")[3:]
         parsed = dict(t.split("=", 1) for t in tokens)
         assert set(parsed) == {
-            "exported_at", "declared", "opted_in", "skipped_no_sentinel", "legacy_header_accounts", "corpus",
-            "corpus_override",
+            "exported_at", "declared", "opted_in", "skipped_no_sentinel", "legacy_header_accounts",
+            "legacy_machine_value_rows", "corpus", "corpus_override",
         }
         assert lines[1] == _mod._PR_COST_EXPORT_HEADER_LINE
+
+    def test_legacy_machine_value_row_is_counted_but_hex_identity_row_is_not(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """legacy_machine_value_rows counts only rows whose machine cell
+        doesn't match _MACHINE_IDENTITY_RE -- a pre-migration operator-chosen
+        label like "acme1" is counted, a tool-generated 8-hex-char identity
+        is not. Two distinct legacy rows must sum to =2, not merely flag
+        presence at =1 -- a buggy boolean-flag regression would still pass
+        a single-legacy-row assertion."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=1, machine="acme1"),
+            _sample_pr_cost_row(pr_number=2, machine="1a2b3c4d"),
+            _sample_pr_cost_row(pr_number=3, machine="laptop2"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        provenance = out_path.read_text().splitlines()[0]
+        assert "legacy_machine_value_rows=2" in provenance
+
+    def test_same_pr_recaptured_under_new_machine_identity_exports_both_rows(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """machine is part of _collapse_pr_cost_rows_to_current's grouping
+        key, so a pre-migration legacy-labeled capture and a later
+        --record --force --pr N recapture of the identical (host, repo,
+        pr_number) under a new hex machine identity do not collapse into
+        one row -- both survive as independent rows, and only the
+        legacy-shaped one is flagged."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=42, machine="acme1", captured_at="2026-01-01T00:00:00Z"),
+            _sample_pr_cost_row(pr_number=42, machine="1a2b3c4d", captured_at="2026-02-01T00:00:00Z"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        lines = out_path.read_text().splitlines()
+        assert "legacy_machine_value_rows=1" in lines[0]
+        rows = [dict(zip(_mod._PR_COST_EXPORT_COLUMNS, line.split("\t"), strict=True)) for line in lines[2:]]
+        assert len(rows) == 2
+        assert {row["machine"] for row in rows} == {"acme1", "1a2b3c4d"}
+        assert all(row["correction_count"] == "0" for row in rows)
 
     def test_corpus_override_true_from_claude_config_dir_alone_with_no_roots_file_override(
         self, tmp_path, fake_projects, monkeypatch,

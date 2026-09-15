@@ -266,7 +266,7 @@ def test_transcript_analysis_pr_cost_export_subprocess_writes_synthetic_two_acco
     Seeds two synthetic accounts via CLAUDE_CONFIG_DIR (the active profile)
     and TRANSCRIPT_CONFIG_DIRS_FILE (one declared root), matching the recipe
     docs/transcript-analysis.md documents for smoke-testing any
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR subcommand against synthetic data."""
+    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR subcommand against synthetic data."""
     acct_a = tmp_path / "acct-a"
     acct_b = tmp_path / "acct-b"
     _seed_pr_cost_export_account(acct_a)
