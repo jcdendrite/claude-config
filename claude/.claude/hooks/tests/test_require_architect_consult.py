@@ -176,8 +176,8 @@ class TestRequireArchitectConsult:
         call-counter stub would also catch any later, unrelated jq call
         this hook happens to make (e.g. a deny path's own reason-encoding
         call), which would add an unrelated timeout cycle to elapsed time."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")

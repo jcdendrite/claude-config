@@ -271,9 +271,8 @@ class TestLibRepoRoot:
         _lib_capped so callers (marker.sh's _resolve_repo_root,
         pr-diff-against-base.sh --record) fail fast instead of hanging for
         however long the harness's own outer Bash-tool timeout allows."""
-        timeout_path = shutil.which("timeout")
-        if not timeout_path:
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
         fake_bin = tmp_path / "fake-bin"
         fake_bin.mkdir()
@@ -615,8 +614,8 @@ class TestLibAdvanceOffsetPastCompleteLines:
         _lib_capped_for(2) -- a stalled tail must not hang the scan, and per
         the function's own documented limitation must degrade to OFFSET
         unchanged rather than partial progress."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         transcript.write_text("line one\nline two\npartial-no-newline")
         real_tail = shutil.which("tail")

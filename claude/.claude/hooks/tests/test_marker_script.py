@@ -2195,8 +2195,8 @@ class TestMarkerScriptPlanModeSibling:
         path string, not file/network I/O, so it carries no real timeout risk)
         and inflate this test's budget by that call's full sleep on top of the
         one actually under test."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -2375,8 +2375,8 @@ class TestMarkerScriptStatusCompletionMarkers:
         only sleeps for the exact bare `-C <repo> diff --cached` invocation
         (no pathspec) so the skill-review, plan-review, and ready-for-review
         git calls later in the same run are unaffected."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -3756,8 +3756,8 @@ class TestMarkerScriptCheck:
         never a false match. Mirrors `status`'s own
         test_code_review_value_computation_times_out_gracefully for the
         same underlying call."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -3789,8 +3789,8 @@ class TestMarkerScriptCheck:
         individually capped via `_lib_capped_for(5)` -- a stalled `stat` must
         not hang `check` indefinitely, and a killed call must fall through to
         no-match, never a false match on an unresolvable mtime."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_stat = shutil.which("stat")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -3823,8 +3823,8 @@ class TestMarkerScriptCheck:
         marker file (the cheap common-case hash check `check` runs first), so
         the stub only stalls from the second `-qFx` invocation onward --
         isolating `_code_review_marker_fresh_age`'s own call."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_grep = shutil.which("grep")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -3870,8 +3870,8 @@ class TestMarkerScriptCheck:
         staged diff is written first so the run also exercises the match
         branch through this single-call path, rather than passing vacuously
         the way an unconditional no-match would."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"

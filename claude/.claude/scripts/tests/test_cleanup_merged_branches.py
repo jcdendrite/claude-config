@@ -2254,8 +2254,8 @@ class TestFetchLoopCapInterruptsHungRemote:
 
     @pytest.mark.timing
     def test_hung_pr_ref_fetch_is_capped_and_falls_back_to_stale_name(self, tmp_path, fake_gh):
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_ancestor_merged_branch(local, remote, "feat/hung-fetch", 909)
 

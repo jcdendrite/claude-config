@@ -2306,8 +2306,8 @@ class TestRequirePlanReviewPlanMode:
         """_lib_capped caps the sha256sum call at 5s; a stalled read (e.g. a
         dead network mount under the plan-mode file's path) must deny within
         that budget, not hang the ExitPlanMode call indefinitely."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
@@ -2351,8 +2351,8 @@ class TestRequirePlanReviewPlanMode:
         on the deny path this test exercises (a third, unrelated call),
         adding a second 5s timeout cycle and roughly doubling elapsed time —
         not a defect in the fix, just a test artifact this design avoids."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")

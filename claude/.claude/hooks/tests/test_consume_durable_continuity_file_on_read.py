@@ -355,8 +355,8 @@ class TestConsumeDurableContinuityFileOnRead:
         Injects a 1s timeout against a stub resume-context.sh that sleeps
         10s and asserts the hook returns well before the full sleep elapses.
         """
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
         scripts_dir = isolated_home / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)

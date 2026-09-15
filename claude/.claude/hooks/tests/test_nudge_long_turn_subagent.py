@@ -493,8 +493,8 @@ class TestNudgeLongTurnSubagent:
         bounded window rather than trying once, so subprocess-spawn
         latency under machine load only changes how long this test takes
         to pass, not whether it does."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 5)])
 
@@ -722,8 +722,8 @@ class TestNudgeLongTurnSubagent:
         test_jq_count_stage_timeout_leaves_no_output_and_offset_unchanged
         below and test_diff_quiet_probe_times_out_to_no_match in
         test_marker_script.py."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(10)])
 
@@ -851,8 +851,8 @@ class TestNudgeLongTurnSubagent:
         fires (the count stage is never invoked before the sampled fire, so
         these are unaffected by the stub) and times only the single sampled
         fire that actually reaches `jq -s`."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(50)])
         _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE)
@@ -949,8 +949,8 @@ class TestNudgeLongTurnSubagent:
         that succeeds regardless of size. The flat repeated-character
         fixture pins the byte-bound mechanism only, not the per-byte parse
         cost of real, structurally complex transcript content."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         oversized_record = {
             "type": "assistant",

@@ -547,9 +547,9 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """
     import shutil
 
-    timeout_path = shutil.which("timeout")
+    timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
     if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
     bash_path = shutil.which("bash")
     if not bash_path:
