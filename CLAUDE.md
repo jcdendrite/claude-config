@@ -158,11 +158,12 @@ knowledge came from, not what shape it takes.
 Never publish a figure carrying a per-project, per-account, or
 per-engagement dimension — this is absolute, not a factor to weigh, no
 borderline case. It binds every artifact: a commit message, PR body,
-decision entry, or illustrative example included. One narrow carve-out
-covers pooled measurements of this repo's own tooling in use: tool
-calls, sessions, agent dispatches, and nothing else. That carve-out is
-conditional — `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" states the scope limits and the approval
-requirement. Work that section before publishing under it. If in
+decision entry, or illustrative example included. A measurement of
+this repo's own tooling in use is publishable only
+when it is computed over this repository's own corpus on a single
+account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, and
+the two exemptions. Anything wider goes to the owner privately and is
+never published. If in
 doubt, don't.
 
 Content derived only from this repo's own history, from public

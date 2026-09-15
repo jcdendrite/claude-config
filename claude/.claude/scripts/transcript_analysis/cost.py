@@ -387,10 +387,10 @@ def _print_share_only_tables(
     computed from the same accumulators and render._pct_of the full report's
     own dollar tables use.
 
-    No $, Tokens, or grand-total column anywhere -- barred by the
-    pooled-measurement carve-out (docs/private-project-redaction.md §
-    "Publishing a pooled tooling measurement"). This printer never takes a
-    dollar or token argument, by construction. The early return in
+    No $, Tokens, or grand-total column anywhere, by construction --
+    this printer never takes a dollar or token argument. See
+    docs/private-project-redaction.md § "Publishing a tooling measurement"
+    for why a pooled absolute of either kind is barred. The early return in
     _cost_report is what keeps this the only render path reached under
     --share-only. If a fifth table or differently-labeled column is ever
     added here, extend TestCostShareOnly's structural cell-shape assertion
@@ -577,9 +577,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             sys.exit(2)
         if bool(getattr(args, "by_project", False)):
             print(
-                "cost: --share-only refuses --by-project — the Cost share bullet permits a split"
-                ' along any dimension but project, account, or engagement (see'
-                ' docs/private-project-redaction.md § "Publishing a pooled tooling measurement")',
+                "cost: --share-only refuses --by-project — a per-project figure is barred"
+                " outright by the repo-root CLAUDE.md rule against a per-project, per-account,"
+                ' or per-engagement dimension (see docs/private-project-redaction.md'
+                ' § "Publishing a tooling measurement")',
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -960,9 +961,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     elif share_only:
         print(f"\nScope: pooled corpus, {title_since}.")
         print(
-            "Dimensionless shares only — see docs/private-project-redaction.md"
-            ' § "Publishing a pooled tooling measurement" for the approval gate before'
-            " publishing any figure derived from this output.\n"
+            "Dimensionless shares only — this output covers a corpus wider than one"
+            " repository on one account, so report any figure derived from it to the"
+            ' owner and publish none (see docs/private-project-redaction.md'
+            ' § "Publishing a tooling measurement").\n'
         )
     else:
         print(f"\n## Cost report ({title_since})\n")
