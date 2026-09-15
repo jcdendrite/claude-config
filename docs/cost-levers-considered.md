@@ -633,7 +633,7 @@ alone, is the next step if this is revisited.
 
 ## From `handoff-nudge-deep-tail-lever.md` — "Does the deeper tail under BLOCK_AT=470,000 need a REARM_SPACING re-test, and do two named-but-unpriced levers merit a build?" (2026-09-14)
 
-Full detail, evidence, and the pre-registered gates: [`.claude/plans/handoff-nudge-deep-tail-lever.md`](../.claude/plans/handoff-nudge-deep-tail-lever.md). The `rearm-backtest` log join is now root-aware, and a nudge→handoff conversion report was built on top of it before any gate ran. One Linux run (last 14 days, 274 sessions, 526 joined lag samples) resolved every gate; the replication rule's case 3 made a macOS run unnecessary once none of the gates recommended a change. A macOS peer session's pre-correction run (multiple roots, 118 project dirs) was discarded — its lag median was computed from the pre-fix single-root join.
+Full detail, evidence, and the pre-registered gates: [`.claude/plans/handoff-nudge-deep-tail-lever.md`](../.claude/plans/handoff-nudge-deep-tail-lever.md). The `rearm-backtest` log join is now root-aware, and a nudge→handoff conversion report was built on top of it before any gate ran. One Linux run (last 14 days, 274 sessions, 526 joined lag samples) resolved every gate; the replication rule's case 3 made a macOS run unnecessary once none of the gates recommended a change. A macOS peer session's pre-correction run (multiple roots, 118 project dirs) was discarded — its lag median was computed from the pre-fix single-root join. `REARM_SPACING` re-test, in narrative case-study form: [`case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md).
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
