@@ -11864,10 +11864,18 @@ def _handoff_signal_is_handoff_event(block: dict) -> bool:
     return False
 
 
+def _handoff_signal_is_eligible_main_thread_turn(rec: dict) -> bool:
+    """True iff `rec` is a main-thread assistant turn: type=="assistant",
+    not isSidechain. Shared by _handoff_signal_excerpt_eligible_text and
+    _handoff_signal_forward_context, whose turn-walking loops both need
+    the same main-thread-turn definition."""
+    return rec.get("type") == "assistant" and not bool(rec.get("isSidechain"))
+
+
 def _handoff_signal_excerpt_eligible_text(rec: dict) -> str:
     """Excerpt-eligible: main-thread assistant `text` blocks only, never
     tool_use/tool_result/user records or sidechain turns."""
-    if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+    if not _handoff_signal_is_eligible_main_thread_turn(rec):
         return ""
     content = (rec.get("message") or {}).get("content") or []
     if not isinstance(content, list):
@@ -11906,7 +11914,7 @@ def _handoff_signal_forward_context(deduped: Sequence[dict], after_record_index:
         return []
     contexts: list[dict] = []
     for rec in deduped[after_record_index + 1:]:
-        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+        if not _handoff_signal_is_eligible_main_thread_turn(rec):
             continue
         content = (rec.get("message") or {}).get("content") or []
         if not isinstance(content, list):

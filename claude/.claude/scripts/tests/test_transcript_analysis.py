@@ -24088,6 +24088,16 @@ class TestHandoffSignalExcerptEligibility:
             "Continuing because remaining steps are few."
         )
 
+    def test_excerpt_truncates_eligible_text_to_max_chars(self):
+        # Sequential digits, not a repeated character: a wrong-window slice
+        # (e.g. text[50:450]) is byte-distinguishable from the correct prefix.
+        long_text = "".join(str(i % 10) for i in range(_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS + 50))
+        turn = _priced("claude-sonnet-5", content=[{"type": "text", "text": long_text}], request_id="r1")
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
+            long_text[:_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
+        )
+
     def test_tool_use_block_content_never_leaks_into_the_base_excerpt(self):
         """Mirrors TestHandoffSignalForwardContext's own
         test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking:

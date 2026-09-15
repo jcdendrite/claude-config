@@ -26,7 +26,7 @@
 - **Named limitations:**
   - The 40-card sample is the highest-post-signal-spend slice of the corpus, chosen because that is where a wrong continue-decision actually costs something (the plan's own rationale) — it is not a random sample and does not estimate a population-wide base rate.
   - **Ignored** means no acknowledgment within the observed window: the excerpt turn plus up to 3 forward-context turns. It cannot rule out that a session engaged with the decision later, further along in the same transcript, than this window reaches. Even so, zero acknowledgment across every one of 22 cards — several of them spanning multiple substantive forward-context turns of continued, engaged work — is itself informative, not merely an artifact of a narrow window.
-  - This sample (seeded `20260911`, drawn 2026-09-13) is a different 40-card slice than an earlier internal draft of this page drew with the same seed on 2026-09-12: the corpus keeps growing, so a fixed seed pulls a different top-40-by-spend slice on different days. The two are not comparable point-in-time reads of the same sample.
+  - A fixed seed does not pin the sample across reruns on different days, since the corpus keeps growing and a fixed seed still draws a different top-40-by-spend slice as new sessions with higher spend enter the pool.
   - All 40 sampled signals predate the `ready-for-review` deferral fix landing, since it ships unmerged in this same branch. This page establishes a pre-fix baseline only.
 
 ## Numeric findings
@@ -61,7 +61,7 @@ The three signal kinds differ in the actual mechanism that surfaces the informat
 | active | 520 | 78.8% | 3.25 |
 | inactive | 970 | 91.5% | 1.82 |
 
-Sessions with at least one signal: 601. Operator-response-lag cross-check against `.handoff-nudge.log`'s own `nudged` lines: 1,040 joined (375 excluded — no matching session in scope), median lag 84,894 tokens past the fire point.
+Sessions with at least one signal: 601. Operator-response-lag cross-check against `.handoff-nudge.log`'s `nudged` lines joined 1,040 signals (375 excluded — no matching session in scope). Median lag: 84,894 tokens past the fire point.
 
 ### Cost share and the startup-burn benchmark
 

@@ -4541,6 +4541,27 @@ class TestReadyForReviewContextBudgetDefers:
             context=f"ready-for-review/SKILL.md: step-1 context-budget {branch!r} bullet no longer matches its pinned clause.",
         )
 
+    def test_context_budget_clauses_appear_in_pinned_order(self) -> None:
+        """Each clause is pinned independently via right-bounded search,
+        which does not pin their relative ordering within the step-1
+        section -- this test catches a reorder the per-clause test alone
+        would miss. Indices must be strictly increasing in
+        _PINNED_CONTEXT_BUDGET_CLAUSES's own dict-insertion order."""
+        raw_section = _heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING)
+        indices = []
+        for branch, clause in _PINNED_CONTEXT_BUDGET_CLAUSES.items():
+            pattern = r"\s+".join(re.escape(word) for word in clause.split())
+            match = re.search(pattern, raw_section)
+            assert match is not None, (
+                f"ready-for-review/SKILL.md: step-1 context-budget {branch!r} clause not found in "
+                f"the step-1 section at all.\n  pinned:  {clause!r}\n  section: {raw_section!r}"
+            )
+            indices.append(match.start())
+        assert all(earlier < later for earlier, later in zip(indices, indices[1:], strict=False)), (
+            "ready-for-review/SKILL.md: step-1 context-budget clauses no longer appear in "
+            f"_PINNED_CONTEXT_BUDGET_CLAUSES's own order (found at indices {indices})."
+        )
+
 
 _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 
