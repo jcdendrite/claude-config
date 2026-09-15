@@ -34,14 +34,11 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
+# Imported as a module, not by name: binding these test_*-named functions
+# directly at this module's scope would make pytest collect them a second
+# time under this file's own node-ID, alongside test_lib.py's.
+from . import test_lib
 from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, GHP_TOKEN, _stage
-from .test_lib import (
-    test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent,
-    test_lib_capped_for_enforces_cap_when_timeout_present,
-    test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present,
-    test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present,
-    test_timeout_absent_fallback_valid_payload_returns_ok,
-)
 
 
 def _install_recording_real_timeout(monkeypatch, tmp_path: Path) -> None:
@@ -188,11 +185,11 @@ class TestProtectedProbeOrderTestsAreUnscaled:
     its call graph, so this is a tripwire, not a guarantee."""
 
     _PROTECTED_FUNCTIONS = (
-        test_timeout_absent_fallback_valid_payload_returns_ok,
-        test_lib_capped_for_enforces_cap_when_timeout_present,
-        test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent,
-        test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present,
-        test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present,
+        test_lib.test_timeout_absent_fallback_valid_payload_returns_ok,
+        test_lib.test_lib_capped_for_enforces_cap_when_timeout_present,
+        test_lib.test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent,
+        test_lib.test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present,
+        test_lib.test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present,
     )
 
     @pytest.mark.parametrize("fn", _PROTECTED_FUNCTIONS, ids=lambda fn: fn.__name__)
@@ -285,6 +282,32 @@ class TestCapMarkersDetectNonFiringCap:
 
         with pytest.raises(AssertionError), assert_cap_engaged(tmp_path, production_cap=5, killed_calls=3):
             _run_twice()
+
+    def test_no_production_cap_sums_kills_across_every_duration(self, monkeypatch, tmp_path):
+        """The `elif production_cap is None` branch sums fired_delta across
+        every duration and command instead of one pinned duration -- every
+        other call site pins production_cap explicitly, so this summation
+        path has no coverage without this test. Two kills at different
+        durations (5 and 2) must both land in the sum -- a same-duration pair
+        couldn't distinguish summing-across-durations from merely counting
+        one duration twice: 2 kills pass under killed_calls=2 and raise under
+        the default killed_calls=1, proving the summation counts exactly
+        rather than merely detecting that something, somewhere, fired."""
+        _install_recording_real_timeout(monkeypatch, tmp_path)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        assert write_scaled_timeout_shim(bin_dir) is True
+        shim = str(bin_dir / "timeout")
+
+        def _fire_both_caps():
+            subprocess.run([shim, "5", "__KILL__"], check=False)
+            subprocess.run([shim, "2", "__KILL__"], check=False)
+
+        with pytest.raises(AssertionError), assert_cap_engaged(bin_dir):
+            _fire_both_caps()
+
+        with assert_cap_engaged(bin_dir, killed_calls=2):
+            _fire_both_caps()
 
     def test_command_attribution_distinguishes_which_stage_of_a_same_duration_pipe_was_killed(
         self, monkeypatch, tmp_path
