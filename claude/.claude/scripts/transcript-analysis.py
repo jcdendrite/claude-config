@@ -11777,10 +11777,9 @@ def _plan_boundary_report(args: argparse.Namespace, today: date, roots: Sequence
 # --- handoff-signal-response: mechanical audit of the handoff-nudge rationalization gap ---
 # .claude/plans/handoff-nudge-rationalization-gap.md owns the full design.
 
-# The three signal kinds this subcommand detects -- named constants instead
-# of inline strings so a signal's own "kind" is never a copy-pasted literal
-# at more than one call site (the OR-condition detector, the aggregate
-# table, and the curation-card formatter all read the same three names).
+# Named constants, not inline strings, so a signal's kind is never a
+# copy-pasted literal. Read at three call sites: the OR-condition detector,
+# the aggregate table, and the curation-card formatter.
 _HANDOFF_SIGNAL_CHECK = "check"
 _HANDOFF_SIGNAL_ADVISORY = "advisory"
 _HANDOFF_SIGNAL_HARD_BLOCK = "hard-block"
@@ -11803,6 +11802,11 @@ _HANDOFF_SIGNAL_WRITE_PATH_RE = re.compile(r"/handoffs/[^/]+-handoff\.md$")
 # short enough to keep the card scannable -- a display truncation, not a
 # protocol-grounded value.
 _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
+
+# Long enough to carry a full reasoning paragraph in a --context-turns
+# entry, short enough to keep --sample output bounded -- a display
+# truncation, not a protocol-grounded value.
+_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
 
 
 def _handoff_signal_shlex_segments(command: str) -> list[list[str]]:
@@ -11883,13 +11887,56 @@ def _handoff_signal_excerpt(deduped: Sequence[dict], after_record_index: int) ->
     return ""
 
 
+def _handoff_signal_forward_context(deduped: Sequence[dict], after_record_index: int, n_turns: int) -> list[dict]:
+    """Forward-context window for a --context-turns caller:
+    - up to `n_turns` main-thread turns strictly after `after_record_index` in `deduped`
+    - same main-thread-turn definition as _handoff_signal_response_session_rows' own
+      main_thread_turns: type=="assistant", not isSidechain
+    - each entry carries both text AND thinking content -- unlike
+      _handoff_signal_excerpt_eligible_text (text blocks only), reading both
+      content-block kinds lets a caller see reasoning an agent confined to an
+      extended-thinking block, invisible to the base excerpt
+    - one entry per turn visited, even when both fields are empty, keeping
+      turn_offset (1-based) stable
+    - stops early once `n_turns` turns have been visited or the transcript
+      runs out, whichever comes first
+    - never includes session_id/jsonl_path or any other identifying field
+    """
+    if n_turns <= 0:
+        return []
+    contexts: list[dict] = []
+    for rec in deduped[after_record_index + 1:]:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        content = (rec.get("message") or {}).get("content") or []
+        if not isinstance(content, list):
+            content = []
+        texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+        thinkings = [
+            b.get("thinking", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "thinking" and b.get("thinking")
+        ]
+        contexts.append({
+            "turn_offset": len(contexts) + 1,
+            "text": " ".join(texts)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+            "thinking": " ".join(thinkings)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+        })
+        if len(contexts) >= n_turns:
+            break
+    return contexts
+
+
 def _handoff_signal_response_session_rows(records: Sequence[dict]) -> tuple[list[dict], list[dict], list[int]]:
     """Detect every observed context-budget signal in one session's own
     transcript. Returns (rows, deduped, trace):
     - rows: one dict per signal (kind, record_index, position, context_at_turn,
       threshold, marker_active, handoff_followed, turns_after_signal,
-      dollars_after_signal) -- session_id is not included; the caller
-      attaches it (this function has no I/O, so it never resolves jsonl.stem).
+      dollars_after_signal, session_total_dollars, pct_spend_after_signal)
+      -- session_id is not included; the caller attaches it (this function
+      has no I/O, so it never resolves jsonl.stem).
+      -- exceeds_startup_burn_benchmark is not included either: it depends on
+      a corpus-wide benchmark the caller alone can compute
+      (_startup_burn_benchmark), not on anything local to one session.
     - deduped: this session's own _dedup_turns_by_request_id output, returned
       so a caller building curation-card excerpts can search forward from a
       row's own record_index without re-deduping the session a second time.
@@ -12028,6 +12075,10 @@ def _handoff_signal_response_session_rows(records: Sequence[dict]) -> tuple[list
             "handoff_followed": any(idx > sig["record_index"] for idx in handoff_record_indices),
             "turns_after_signal": total_turns - turn_index,
             "dollars_after_signal": suffix_dollars[turn_index],
+            "session_total_dollars": suffix_dollars[0],
+            "pct_spend_after_signal": (
+                suffix_dollars[turn_index] / suffix_dollars[0] if suffix_dollars[0] > 0 else None
+            ),
         })
 
     trace = [c + o for c, o, _d in main_thread_turns]
@@ -12044,13 +12095,16 @@ def _rank_signal_rows_by_spend(rows: list[dict], sample_n: int, seed: int | None
     return sorted(rows, key=lambda row: row["dollars_after_signal"], reverse=True)[:sample_n]
 
 
-def _handoff_signal_response_cards(sampled: list[dict], redact: bool) -> list[dict]:
+def _handoff_signal_response_cards(sampled: list[dict], redact: bool, context_turns: int = 0) -> list[dict]:
     """Attach a curation-card excerpt to each sampled row, re-reading only
     the sampled rows' own sessions (not the whole scanned corpus) -- see
     _handoff_signal_excerpt's own eligibility rule. `redact` controls
     whether each card's session id is replaced by a run-scoped opaque
     label (_assign_session_redact_label/_redact_session_id, the same
-    mechanism cost's own per-row redaction uses)."""
+    mechanism cost's own per-row redaction uses). `context_turns` > 0 adds
+    a "forward_context" key (_handoff_signal_forward_context) to each card;
+    0 (the default) omits the key entirely, so every existing call site's
+    card shape is unchanged."""
     session_redact_map: dict[str, str] = {}
     deduped_cache: dict[Path, list[dict]] = {}
     cards: list[dict] = []
@@ -12065,7 +12119,7 @@ def _handoff_signal_response_cards(sampled: list[dict], redact: bool) -> list[di
         if redact:
             _assign_session_redact_label(session_id, session_redact_map)
             session_id = _redact_session_id(session_id, session_redact_map)
-        cards.append({
+        card = {
             "session_id": session_id,
             "kind": row["kind"],
             "position": row["position"],
@@ -12075,12 +12129,73 @@ def _handoff_signal_response_cards(sampled: list[dict], redact: bool) -> list[di
             "handoff_followed": row["handoff_followed"],
             "turns_after_signal": row["turns_after_signal"],
             "dollars_after_signal": round(row["dollars_after_signal"], 2),
+            "session_total_dollars": round(row["session_total_dollars"], 2),
+            "pct_spend_after_signal": (
+                round(row["pct_spend_after_signal"], 4) if row["pct_spend_after_signal"] is not None else None
+            ),
+            "exceeds_startup_burn_benchmark": row["exceeds_startup_burn_benchmark"],
             "excerpt": excerpt,
-        })
+        }
+        if context_turns:
+            card["forward_context"] = _handoff_signal_forward_context(deduped, row["record_index"], context_turns)
+        cards.append(card)
     return cards
 
 
-def _format_handoff_signal_cards_as_markdown(cards: list[dict], *, sample_n: int, seed: int | None) -> str:
+def _startup_burn_benchmark(workstream: dict[str, dict]) -> tuple[float | None, int, int]:
+    """Session-count-weighted average of startup-burn dollars
+    (_compute_workstream_dollars' own startup_burn_dollars) across every
+    branch in scope -- not an unweighted per-branch average, which would let
+    a low-continuation branch skew the result.
+
+    Returns (benchmark_dollars, total_continuations, branch_count), where
+    branch_count is every branch with corpus activity in scope (len(workstream),
+    _compute_workstream_dollars' own population), not only branches with a
+    continuation session. Returns None for benchmark_dollars when no branch
+    has a non-first session to sum, to avoid a ZeroDivisionError.
+    """
+    total_burn = sum(agg["startup_burn_dollars"] for agg in workstream.values())
+    total_continuations = sum(max(agg["session_count"] - 1, 0) for agg in workstream.values())
+    benchmark = total_burn / total_continuations if total_continuations > 0 else None
+    return benchmark, total_continuations, len(workstream)
+
+
+def _format_startup_burn_benchmark(benchmark_dollars: float | None) -> str:
+    """Shared "$X.XX per continuation session" / unavailable phrasing for
+    the startup-burn benchmark -- used by both the aggregate report and the
+    curation-card markdown header, so the two surfaces never drift apart."""
+    if benchmark_dollars is None:
+        return "unavailable (no continuation sessions found in scope)"
+    return f"{_fmt_usd(benchmark_dollars)} per continuation session"
+
+
+def _format_forward_context_turns_markdown(forward_context: list[dict]) -> str:
+    """Render a card's own "forward_context" list (--context-turns only) as
+    a markdown subsection; a turn whose text and thinking are both empty is
+    skipped entirely to keep the card scannable. Caller only invokes this
+    when the key is present on the card -- an empty (but present) list
+    still renders a header, distinct from the key being absent."""
+    if not forward_context:
+        return "**Forward context:** (no eligible turns followed the signal)\n\n"
+    lines = [f"**Forward context (next {len(forward_context)} turn(s)):**\n"]
+    for turn in forward_context:
+        text = turn.get("text") or ""
+        thinking = turn.get("thinking") or ""
+        if not text and not thinking:
+            continue
+        pieces = []
+        if thinking:
+            pieces.append(f"thinking: {thinking}")
+        if text:
+            pieces.append(f"text: {text}")
+        lines.append(f"- turn +{turn['turn_offset']}: {' / '.join(pieces)}\n")
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _format_handoff_signal_cards_as_markdown(
+    cards: list[dict], *, sample_n: int, seed: int | None, benchmark_dollars: float | None,
+) -> str:
     """Return a full markdown document for human curation of
     handoff-signal-response --sample output, mirroring
     _format_samples_as_markdown's own curation-card shape."""
@@ -12091,6 +12206,8 @@ def _format_handoff_signal_cards_as_markdown(cards: list[dict], *, sample_n: int
         f"\n"
         f"Generated: {today}  ·  Filter: `--sample {sample_n}  --seed {seed_display}`\n"
         f"\n"
+        f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.\n"
+        f"\n"
         f"For each signal: read the excerpt (the agent's own next eligible text turn after the"
         f" signal, if any), then check ONE verdict box.\n"
     )
@@ -12099,6 +12216,16 @@ def _format_handoff_signal_cards_as_markdown(cards: list[dict], *, sample_n: int
     for i, card in enumerate(cards):
         excerpt = card["excerpt"] or "(no eligible assistant text turn followed the signal)"
         threshold_display = f"{card['threshold']:,}" if card["threshold"] is not None else "n/a"
+        pct_display = (
+            f"{card['pct_spend_after_signal'] * 100:.1f}%" if card["pct_spend_after_signal"] is not None else "n/a"
+        )
+        exceeds_display = (
+            "n/a" if card["exceeds_startup_burn_benchmark"] is None
+            else ("yes" if card["exceeds_startup_burn_benchmark"] else "no")
+        )
+        forward_context_block = (
+            _format_forward_context_turns_markdown(card["forward_context"]) if "forward_context" in card else ""
+        )
         section = (
             f"## {i + 1}/{total} — session `{card['session_id']}` — {card['kind']} signal at turn {card['position']}\n"
             f"\n"
@@ -12106,10 +12233,12 @@ def _format_handoff_signal_cards_as_markdown(cards: list[dict], *, sample_n: int
             f"- ready-for-review marker active: {card['marker_active']}\n"
             f"- handoff followed (same session): {card['handoff_followed']}\n"
             f"- turns after signal: {card['turns_after_signal']:,}  ·  $ after signal: {card['dollars_after_signal']:,.2f}\n"
+            f"- % of session spend after signal: {pct_display}  ·  exceeds startup-burn benchmark: {exceeds_display}\n"
             f"\n"
             f"**Excerpt:**\n"
             f"> {excerpt}\n"
             f"\n"
+            f"{forward_context_block}"
             f"Verdict: [ ] cost-grounded  [ ] step-count/\"nearly-done\" (no cost reasoning)  "
             f"[ ] handed off  [ ] unclassifiable\n"
         )
@@ -12117,12 +12246,20 @@ def _format_handoff_signal_cards_as_markdown(cards: list[dict], *, sample_n: int
     return header + "\n" + "\n".join(sections)
 
 
-def _handoff_signal_response_aggregate_report(rows: Sequence[dict], log_diagnostic: str | None) -> None:
+def _handoff_signal_response_aggregate_report(
+    rows: Sequence[dict], log_diagnostic: str | None,
+    benchmark_dollars: float | None,
+) -> None:
     """Print the census-mode aggregate report: signal counts, conversion
     rate, and post-signal spend distribution split by signal kind and by
-    marker-active context."""
+    marker-active context.
+
+    benchmark_dollars is the corpus-wide startup-burn benchmark
+    (_startup_burn_benchmark), pre-computed by the caller from a second,
+    independent scope pass -- this function never recomputes it from rows."""
     total = len(rows)
     print(f"\n## Handoff signal response ({total:,} signal(s) in scope)\n")
+    print(f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.")
     if not total:
         print("No signals found in scope.")
         return
@@ -12134,6 +12271,12 @@ def _handoff_signal_response_aggregate_report(rows: Sequence[dict], log_diagnost
         "Conversion rate (a same-session /handoff followed the signal):"
         f" {_pct_of(followed, total)} ({followed:,}/{total:,})"
     )
+    if benchmark_dollars is not None:
+        exceeding = sum(1 for r in rows if r["exceeds_startup_burn_benchmark"])
+        print(
+            "Signals whose post-signal spend exceeded the benchmark:"
+            f" {exceeding:,} ({_pct_of(exceeding, total)})"
+        )
     if log_diagnostic:
         print(f"\n{log_diagnostic}")
 
@@ -12142,7 +12285,7 @@ def _handoff_signal_response_aggregate_report(rows: Sequence[dict], log_diagnost
         groups: dict[str, list[dict]] = defaultdict(list)
         for r in rows:
             groups[key(r)].append(r)
-        header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15} {'Mean $ after':>13}"
+        header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
         print(header)
         print("-" * len(header))
         for label in sorted(groups):
@@ -12151,8 +12294,7 @@ def _handoff_signal_response_aggregate_report(rows: Sequence[dict], log_diagnost
             hf = sum(1 for r in group_rows if r["handoff_followed"])
             dollars = [r["dollars_after_signal"] for r in group_rows]
             median = statistics.median(dollars) if dollars else 0.0
-            mean = sum(dollars) / n if n else 0.0
-            print(f"{label:<14} {n:>8,} {_pct_of(hf, n):>9} {median:>15,.2f} {mean:>13,.2f}")
+            print(f"{label:<14} {n:>8,} {_pct_of(hf, n):>9} {median:>15,.2f}")
 
     _print_breakdown("By signal kind", lambda r: r["kind"])
     _print_breakdown(
@@ -12166,10 +12308,17 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
 
     Uses the shared `_resolve_scan_roots` scope machinery, not the
     cost-family per-subcommand `--config-dir` extras.
+
+    Resolves scope a second time to feed `_compute_workstream_dollars`,
+    since `session_iter` above is a single-pass generator already consumed
+    by the main loop. Every other two-pass subcommand in this file (e.g.
+    cost-ledger) accepts the same tradeoff.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
     roots = _resolve_scan_roots(args)
     multi_root = len(roots) > 1
+    sample_n: int = getattr(args, "sample", 0) or 0
+    context_turns: int = getattr(args, "context_turns", 0) or 0
 
     if not redact and multi_root:
         print(
@@ -12179,6 +12328,12 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+    if context_turns and not sample_n:
+        print("handoff-signal-response: --context-turns requires --sample", file=sys.stderr)
+        sys.exit(2)
+    if context_turns < 0:
+        print("handoff-signal-response: --context-turns must not be negative", file=sys.stderr)
+        sys.exit(2)
     if not redact:
         print(_DO_NOT_PUBLISH_BANNER)
         print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
@@ -12186,7 +12341,6 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
     session_iter, scope_label = _resolve_project_scope(args, "handoff-signal-response", roots=roots)
     _print_resolved_scope("handoff-signal-response", scope_label, roots)
 
-    sample_n: int = getattr(args, "sample", 0) or 0
     seed: int | None = getattr(args, "seed", None)
 
     all_rows: list[dict] = []
@@ -12200,6 +12354,16 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
         all_rows.extend(rows)
         if trace:
             session_traces[session_id] = trace
+
+    benchmark_session_iter, _benchmark_scope_label = _resolve_project_scope(
+        args, "handoff-signal-response", roots=roots
+    )
+    workstream = _compute_workstream_dollars(benchmark_session_iter)
+    benchmark_dollars, _, _ = _startup_burn_benchmark(workstream)
+    for row in all_rows:
+        row["exceeds_startup_burn_benchmark"] = (
+            row["dollars_after_signal"] > benchmark_dollars if benchmark_dollars is not None else None
+        )
 
     # Corroborating diagnostic only -- every row above already comes from
     # this session's own transcript, never from this log. Mirrors
@@ -12221,10 +12385,12 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
         # population. See _rank_signal_rows_by_spend's own docstring for the
         # tie-break contract.
         sampled = _rank_signal_rows_by_spend(all_rows, sample_n, seed)
-        cards = _handoff_signal_response_cards(sampled, redact)
+        cards = _handoff_signal_response_cards(sampled, redact, context_turns=context_turns)
         output_format: str = getattr(args, "output_format", "json") or "json"
         if output_format == "md":
-            print(_format_handoff_signal_cards_as_markdown(cards, sample_n=sample_n, seed=seed))
+            print(_format_handoff_signal_cards_as_markdown(
+                cards, sample_n=sample_n, seed=seed, benchmark_dollars=benchmark_dollars,
+            ))
         else:
             print(json.dumps(cards, indent=2))
         return
@@ -12232,7 +12398,9 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
     for row in all_rows:
         row.pop("jsonl_path", None)
         row.pop("record_index", None)
-    _handoff_signal_response_aggregate_report(all_rows, log_diagnostic)
+    _handoff_signal_response_aggregate_report(
+        all_rows, log_diagnostic, benchmark_dollars=benchmark_dollars,
+    )
 
 
 def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
@@ -13128,6 +13296,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_handoff_signal_response.add_argument(
         "--format", dest="output_format", choices=("json", "md"), default="json",
         help="--sample output format: json (default) or md (a human curation document).",
+    )
+    p_handoff_signal_response.add_argument(
+        "--context-turns", type=int, default=0, metavar="N",
+        help=(
+            "With --sample, also attach the next N main-thread turns of text AND thinking-block"
+            " content after each signal (forward_context) -- unlike the single-turn excerpt"
+            " (text blocks only), this surfaces reasoning an agent confined to an"
+            " extended-thinking block. Requires --sample."
+        ),
     )
     p_handoff_signal_response.set_defaults(func=cmd_handoff_signal_response)
 

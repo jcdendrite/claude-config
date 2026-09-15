@@ -23902,7 +23902,7 @@ class TestCmdPrCostEndToEndViaRealArgparse:
 def _handoff_signal_response_args(
     *, projects: str = "*", this_repo: bool = False, config_dir: str | None = None,
     no_redact: bool = False, sample: int = 0, seed: int | None = None,
-    output_format: str = "json",
+    output_format: str = "json", context_turns: int = 0,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -23912,6 +23912,7 @@ def _handoff_signal_response_args(
         "sample": sample,
         "seed": seed,
         "output_format": output_format,
+        "context_turns": context_turns,
     })()
 
 
@@ -24019,6 +24020,14 @@ class TestHandoffSignalDetectorHelpers:
         block = _bash_use("m1", "~/.claude/scripts/marker.sh activate handoff")
         assert _mod._handoff_signal_marker_transition(block) is None
 
+    def test_marker_activate_detected_inside_an_and_chained_segment(self):
+        block = _bash_use("m1", "cd /tmp && ~/.claude/scripts/marker.sh activate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "activate"
+
+    def test_marker_deactivate_detected_inside_a_semicolon_chained_segment(self):
+        block = _bash_use("m1", "cd /tmp ; ~/.claude/scripts/marker.sh deactivate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
+
     def test_skill_handoff_invocation_is_a_handoff_event(self):
         assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
 
@@ -24078,6 +24087,138 @@ class TestHandoffSignalExcerptEligibility:
         assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
             "Continuing because remaining steps are few."
         )
+
+    def test_tool_use_block_content_never_leaks_into_the_base_excerpt(self):
+        """Mirrors TestHandoffSignalForwardContext's own
+        test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking:
+        a tool_use block mixed into an otherwise-eligible assistant record's
+        content must never surface in the excerpt -- pinned as a
+        security-invariant regression, not just a coverage gap, since a
+        future refactor could otherwise leak tool-call content into a
+        published case-study excerpt."""
+        identifiable_command = "cat /scratch/api-keys.txt"
+        rec = _priced(
+            "claude-sonnet-5",
+            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
+        )
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == "wrapping up now"
+        assert identifiable_command not in _mod._handoff_signal_excerpt_eligible_text(rec)
+
+
+class TestHandoffSignalForwardContext:
+    """_handoff_signal_forward_context's own turn-walking, truncation, and
+    thinking-block contract. Unlike _handoff_signal_excerpt_eligible_text
+    (text blocks only), this reads both text and thinking content -- closing
+    the base excerpt's own blind spot for an agent's extended-thinking
+    reasoning."""
+
+    def test_returns_up_to_n_turns_in_order_with_correct_turn_offset(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn three"}], request_id="r3"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        assert [(c["turn_offset"], c["text"]) for c in contexts] == [(1, "turn one"), (2, "turn two")]
+
+    def test_returns_fewer_than_n_turns_when_the_transcript_runs_out(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "only turn"}], request_id="r1"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        assert len(contexts) == 1
+        assert contexts[0]["turn_offset"] == 1
+
+    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_base_excerpt(self):
+        """Regression test for the base excerpt's own thinking-block blind
+        spot: a turn with a thinking block and no text block is invisible to
+        _handoff_signal_excerpt_eligible_text, but must still appear here."""
+        turn = _priced("claude-sonnet-5", content=[_thinking_block()], request_id="r1")
+        assert _mod._handoff_signal_excerpt_eligible_text(turn) == ""
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
+
+    def test_truncates_text_and_thinking_independently_to_max_chars(self):
+        long_text = "t" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        long_thinking = "k" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        turn = _priced(
+            "claude-sonnet-5", request_id="r1",
+            content=[{"type": "text", "text": long_text}, {"type": "thinking", "thinking": long_thinking}],
+        )
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts[0]["text"] == long_text[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+        assert contexts[0]["thinking"] == long_thinking[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+
+    def test_sidechain_and_non_assistant_records_are_never_counted_as_turns(self):
+        sidechain = _priced("claude-sonnet-5", content=[{"type": "text", "text": "subagent text"}], request_id="r1")
+        sidechain["isSidechain"] = True
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _user_msg([_tool_result("t1", "irrelevant")]),
+            sidechain,
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "real turn"}], request_id="r2"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        assert len(contexts) == 1
+        assert contexts[0]["text"] == "real turn"
+
+    def test_no_session_id_or_path_field_ever_appears_in_an_entry(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn"}], request_id="r1"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert set(contexts[0]) == {"turn_offset", "text", "thinking"}
+
+    def test_n_turns_zero_or_negative_returns_empty_list(self):
+        """Docstring says "up to n_turns" entries -- n_turns<=0 must return
+        none at all, not one spurious entry from appending before checking
+        the length guard (the CLI-reachable --context-turns -1 boundary)."""
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
+        ]
+        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=0) == []
+        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=-1) == []
+
+    def test_interior_turn_with_only_tool_use_content_still_consumes_a_turn_slot(self):
+        """A turn with no text/thinking content (only a tool_use block) must
+        still count as a visited turn -- keeping turn_offset stable for every
+        turn that follows it -- not be silently skipped like a sidechain or
+        non-assistant record is."""
+        empty_turn = _priced("claude-sonnet-5", content=[_bash_use("t1", "git status")], request_id="r1")
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            empty_turn,
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        assert contexts[0] == {"turn_offset": 1, "text": "", "thinking": ""}
+        assert contexts[1]["turn_offset"] == 2
+        assert contexts[1]["text"] == "turn two"
+
+    def test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking(self):
+        """Mirrors TestHandoffSignalExcerptEligibility's own
+        test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible:
+        a tool_use block mixed into an otherwise-eligible assistant record's
+        content must never surface in either forward_context field -- pinned
+        as a security-invariant regression, not just a coverage gap, since a
+        future refactor could otherwise leak tool-call content into a
+        published case-study excerpt."""
+        identifiable_command = "cat /scratch/api-keys.txt"
+        turn = _priced(
+            "claude-sonnet-5", request_id="r1",
+            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
+        )
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts[0]["text"] == "wrapping up now"
+        assert identifiable_command not in contexts[0]["text"]
+        assert identifiable_command not in contexts[0]["thinking"]
 
 
 class TestHandoffSignalResponseSessionRows:
@@ -24226,6 +24367,100 @@ class TestHandoffSignalResponseSessionRows:
         assert rows[0]["turns_after_signal"] == 2
         assert rows[0]["dollars_after_signal"] == pytest.approx(expected_dollars)
 
+    def test_pct_spend_after_signal_is_relative_to_the_whole_session_not_the_tail(self):
+        """Two signals in one session, at different positions: each row's
+        own pct_spend_after_signal must divide by the WHOLE session's total
+        dollars (session_total_dollars), not by the spend remaining between
+        the two signals -- a bug here would make the second signal's
+        percentage look artificially high."""
+        rec1 = _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1")
+        rec2 = _priced("claude-sonnet-5", input=110_000, output=2_000, request_id="r2")
+        rec3 = _priced("claude-sonnet-5", input=120_000, output=3_000, request_id="r3")
+        records = [
+            rec1,
+            _handoff_advisory_attachment(),  # signal A fires after rec1
+            rec2,
+            _handoff_hard_block_attachment(),  # signal B fires after rec2
+            rec3,
+        ]
+
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 2
+        row_a, row_b = rows
+
+        d1 = sum(_mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])[0].values())
+        d2 = sum(_mod._price_turn("claude-sonnet-5", rec2["message"]["usage"])[0].values())
+        d3 = sum(_mod._price_turn("claude-sonnet-5", rec3["message"]["usage"])[0].values())
+        total = d1 + d2 + d3
+
+        assert row_a["session_total_dollars"] == pytest.approx(total)
+        assert row_a["dollars_after_signal"] == pytest.approx(d2 + d3)
+        assert row_a["pct_spend_after_signal"] == pytest.approx((d2 + d3) / total)
+
+        assert row_b["session_total_dollars"] == pytest.approx(total)
+        assert row_b["dollars_after_signal"] == pytest.approx(d3)
+        assert row_b["pct_spend_after_signal"] == pytest.approx(d3 / total)
+
+    def test_pct_spend_after_signal_is_none_when_session_total_dollars_is_zero(self):
+        """A session whose every priced turn is $0 (zero usage counts) must
+        report pct_spend_after_signal as None rather than raising
+        ZeroDivisionError."""
+        records = [
+            _check_call_turn(input=0, output=0, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["session_total_dollars"] == 0.0
+        assert rows[0]["pct_spend_after_signal"] is None
+
+    def test_signal_at_transcript_end_reports_zero_turns_and_dollars_after_not_none(self):
+        """The firing tool_result is the LAST record, with nothing after it --
+        distinct from the zero-cost-session case above (session_total_dollars
+        is nonzero here), this pins that "no turns follow" still resolves to
+        0.0/0.0, never None, when there IS spend to divide against."""
+        records = [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1"),
+            _check_call_turn(input=200_000, output=1_000, request_id="r2"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["turns_after_signal"] == 0
+        assert rows[0]["dollars_after_signal"] == 0.0
+        assert rows[0]["pct_spend_after_signal"] == 0.0
+
+    def test_malformed_json_in_check_tool_result_content_emits_no_signal(self):
+        """The --check tool_result's own content is not valid JSON -- the
+        (json.JSONDecodeError, ValueError) guard around that parse must
+        swallow it silently, emitting no signal, rather than raise."""
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", "not valid json{")]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_malformed_json_in_advisory_attachment_stdout_emits_no_signal(self):
+        """The advisory hook_success attachment's own stdout is not valid
+        JSON -- the (json.JSONDecodeError, ValueError) guard around that
+        parse must swallow it silently, emitting no signal, rather than raise."""
+        records = [
+            {
+                "type": "attachment",
+                "attachment": {
+                    "type": "hook_success",
+                    "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
+                    "hookEvent": "PostToolBatch",
+                    "stdout": "not valid json{",
+                    "stderr": "",
+                    "exitCode": 0,
+                },
+            },
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
 
 class TestCmdHandoffSignalResponseScopeAndRedaction:
     """cmd_handoff_signal_response's own CLI-boundary contract: the
@@ -24315,6 +24550,159 @@ class TestCmdHandoffSignalResponseSampleCards:
         out = capsys.readouterr().out
         cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
         assert cards[0]["excerpt"] == excerpt_text
+
+    def test_multiple_signals_from_the_same_session_get_the_same_redacted_label(self, fake_projects, capsys):
+        """Two signals from one real session must redact to the same
+        session-N label, not session-1/session-2 for the same underlying
+        session -- pins _assign_session_redact_label's per-session (not
+        per-row) keying."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn("chk1", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _check_call_turn("chk2", input=210_000, output=1_000, request_id="r2"),
+            _user_msg([_tool_result("chk2", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 2
+        assert cards[0]["session_id"] == cards[1]["session_id"] == "session-1"
+
+
+class TestCmdHandoffSignalResponseContextTurns:
+    """--context-turns wiring through the CLI: the --sample precondition,
+    the omitted-flag no-op contract, and the forward_context shape --
+    including the thinking-block regression the flag exists to close."""
+
+    def test_context_turns_without_sample_exits_2_naming_both_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=0, context_turns=2))
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--context-turns" in err
+        assert "--sample" in err
+
+    def test_negative_context_turns_exits_2_with_stderr_message(self, fake_projects, capsys):
+        """--sample is set here so this isolates the negative-value check
+        from the --context-turns-requires---sample check above."""
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=1, context_turns=-1))
+        assert exc_info.value.code == 2
+        assert "--context-turns must not be negative" in capsys.readouterr().err
+
+    def test_context_turns_omitted_forward_context_key_absent_from_every_card(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 1
+        assert "forward_context" not in cards[0]
+
+    def test_context_turns_surfaces_up_to_n_turns_with_turn_offset(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn one text"}]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r3",
+                    content=[{"type": "text", "text": "turn two text"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=2)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        forward_context = cards[0]["forward_context"]
+        assert [(t["turn_offset"], t["text"]) for t in forward_context] == [
+            (1, "turn one text"), (2, "turn two text"),
+        ]
+
+    def test_context_turns_returns_fewer_than_n_when_the_transcript_runs_out(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "only turn"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=5)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards[0]["forward_context"]) == 1
+
+    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_the_excerpt(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2", content=[_thinking_block()]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=1)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["excerpt"] == ""
+        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
+
+    @pytest.mark.parametrize("no_redact", [False, True])
+    def test_forward_context_never_contains_session_id_or_path_fields(self, fake_projects, capsys, no_redact):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn text"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(
+                sample=5, seed=1, output_format="json", context_turns=1, no_redact=no_redact,
+            )
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        for turn in cards[0]["forward_context"]:
+            assert set(turn) == {"turn_offset", "text", "thinking"}
+
+
+class TestCmdHandoffSignalResponseContextTurnsViaRealArgparse:
+    """Exercises --context-turns through the real argparse CLI
+    (build_parser()), not the _handoff_signal_response_args() test-helper
+    shortcut every other handoff-signal-response test uses -- cmd_handoff_signal_response
+    reads the flag via getattr(args, "context_turns", 0), a silent
+    fallback-to-0 read that a dest/flag-string wiring bug would pass
+    unnoticed by every helper-driven test above."""
+
+    def test_context_turns_flag_drives_cmd_handoff_signal_response_through_the_real_parser(
+        self, fake_projects, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn one text"}]),
+        ])
+        parser = _mod.build_parser()
+        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "2"])
+        assert args.context_turns == 2
+        assert args.func == _mod.cmd_handoff_signal_response
+
+        _mod.cmd_handoff_signal_response(args)
+
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "turn one text", "thinking": ""}]
+
+    def test_negative_context_turns_through_the_real_parser_exits_2(self, fake_projects, capsys):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "-1"])
+        assert args.context_turns == -1
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(args)
+        assert exc_info.value.code == 2
 
 
 class TestCmdHandoffSignalResponseSampleTruncation:
@@ -24461,7 +24849,9 @@ class TestHandoffSignalResponseAggregateReport:
             {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": False,
              "handoff_followed": True, "dollars_after_signal": 5.0},
         ]
-        _mod._handoff_signal_response_aggregate_report(rows, log_diagnostic=None)
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=None,
+        )
         out = capsys.readouterr().out
 
         assert "Sessions with at least one signal: 3" in out
@@ -24474,13 +24864,285 @@ class TestHandoffSignalResponseAggregateReport:
             raise AssertionError(f"breakdown row not found for {label!r}")
 
         # By signal kind: check={rows 0,2} advisory={row 1} hard-block={row 3}.
-        assert _breakdown_row("check") == ["2", "50.0%", "1.50", "1.50"]
-        assert _breakdown_row("advisory") == ["1", "0.0%", "3.00", "3.00"]
-        assert _breakdown_row("hard-block") == ["1", "100.0%", "5.00", "5.00"]
+        assert _breakdown_row("check") == ["2", "50.0%", "1.50"]
+        assert _breakdown_row("advisory") == ["1", "0.0%", "3.00"]
+        assert _breakdown_row("hard-block") == ["1", "100.0%", "5.00"]
 
         # By ready-for-review active-marker context: active={rows 1,2} inactive={rows 0,3}.
-        assert _breakdown_row("active") == ["2", "0.0%", "2.50", "2.50"]
-        assert _breakdown_row("inactive") == ["2", "100.0%", "3.00", "3.00"]
+        assert _breakdown_row("active") == ["2", "0.0%", "2.50"]
+        assert _breakdown_row("inactive") == ["2", "100.0%", "3.00"]
+
+    def test_benchmark_line_and_exceeded_summary_printed_when_available(self, capsys):
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": False, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
+        ]
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=2.00,
+        )
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
+        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
+
+    def test_benchmark_reported_unavailable_when_none(self, capsys):
+        _mod._handoff_signal_response_aggregate_report(
+            [], log_diagnostic=None, benchmark_dollars=None,
+        )
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
+
+    def test_breakdown_and_benchmark_output_never_pairs_a_count_with_a_summable_dollar_figure(self, capsys):
+        """Pins the composition-reconstruction invariant itself, not just
+        today's output string: no printed breakdown row may carry both a
+        Signals/count column and a mean or per-unit-rate dollar column for
+        the same group, and the startup-burn benchmark line must never
+        surface a session/branch count alongside its dollar figure --
+        pairing either would let a reader recombine the two halves into a
+        raw pooled dollar total (docs/private-project-redaction.md
+        "Composition is publication")."""
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 3.0, "exceeds_startup_burn_benchmark": True},
+            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": True,
+             "handoff_followed": True, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
+        ]
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=2.00,
+        )
+        out = capsys.readouterr().out
+
+        expected_header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
+        header_lines = [line for line in out.splitlines() if line.startswith("Group")]
+        assert header_lines, "no breakdown header printed"
+        for header_line in header_lines:
+            assert header_line == expected_header
+        assert "Mean" not in out
+
+        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
+        assert "per continuation session." in out
+        assert "non-first sessions" not in out
+        assert "branches with corpus activity" not in out
+
+
+class TestStartupBurnBenchmark:
+    """_startup_burn_benchmark's own weighted-average formula, exercised
+    directly against fabricated workstream dicts (_compute_workstream_dollars'
+    own per-branch shape) rather than through a full corpus scan --
+    complements TestCmdHandoffSignalResponseStartupBurnBenchmark's own
+    end-to-end wiring test below."""
+
+    def test_weighted_average_across_a_solo_branch_and_a_continuation_branch(self):
+        workstream = {
+            "solo": {"session_count": 1, "total_dollars": 2.41, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+            "cont": {"session_count": 2, "total_dollars": 1.61, "startup_burn_dollars": 1.41, "last_activity_ts": 0.0},
+        }
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
+        assert benchmark == pytest.approx(1.41)
+        assert total_continuations == 1
+        assert branch_count == 2
+
+    def test_benchmark_is_weighted_by_continuation_count_not_averaged_per_branch(self):
+        """Two branches with very different continuation counts: the
+        benchmark must be sum-of-burn / sum-of-continuations (weighted), not
+        the mean of each branch's own per-branch average -- an unweighted
+        average would let the low-volume branch skew the result as much as
+        the high-volume one."""
+        workstream = {
+            # 10 continuations at $10.00/continuation.
+            "high-volume": {
+                "session_count": 11, "total_dollars": 0.0, "startup_burn_dollars": 100.0, "last_activity_ts": 0.0,
+            },
+            # 1 continuation at $2.00/continuation.
+            "low-volume": {
+                "session_count": 2, "total_dollars": 0.0, "startup_burn_dollars": 2.0, "last_activity_ts": 0.0,
+            },
+        }
+        benchmark, total_continuations, _branch_count = _mod._startup_burn_benchmark(workstream)
+        # An unweighted mean of (10.00, 2.00) would be 6.00; the correct
+        # weighted figure is (100 + 2) / (10 + 1).
+        assert benchmark == pytest.approx(102.0 / 11)
+        assert total_continuations == 11
+
+    def test_benchmark_is_none_when_no_branch_has_a_continuation_session(self):
+        workstream = {
+            "solo-a": {"session_count": 1, "total_dollars": 1.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+            "solo-b": {"session_count": 1, "total_dollars": 2.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+        }
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
+        assert benchmark is None
+        assert total_continuations == 0
+        assert branch_count == 2
+
+    def test_empty_workstream_reports_unavailable_benchmark_and_zero_branches(self):
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark({})
+        assert benchmark is None
+        assert total_continuations == 0
+        assert branch_count == 0
+
+
+class TestCmdHandoffSignalResponseStartupBurnBenchmark:
+    """cmd_handoff_signal_response's own end-to-end startup-burn benchmark
+    wiring: a second, independent _resolve_project_scope pass feeds
+    _compute_workstream_dollars, and _startup_burn_benchmark's weighted-average
+    formula (.claude/plans/handoff-nudge-rationalization-gap.md) sets
+    exceeds_startup_burn_benchmark on every signal row."""
+
+    def test_benchmark_and_exceeds_flag_match_hand_computed_values(self, fake_projects, capsys):
+        # Branch "solo": exactly one session -- contributes zero to both the
+        # benchmark's numerator (startup_burn_dollars) and denominator
+        # (session_count - 1 == 0). Its own signal's post-signal spend
+        # ($2.00) ends up well above the benchmark computed below.
+        _write_jsonl(fake_projects / "solo.jsonl", [
+            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
+            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
+        ])
+
+        # Branch "cont": two sessions -- cont-1 (chronologically first)
+        # contributes nothing; cont-2 (non-first) contributes both of its own
+        # main-thread turns' dollars as startup burn (until_first_n_turns=5
+        # is never reached with only 2 turns). Its own signal's post-signal
+        # spend ($1.00) ends up below the benchmark.
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])  # $0.20, first session by time
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            _check_call_turn(
+                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
+            ),  # $0.41
+            _user_msg(
+                [_tool_result("chk2", _check_result_json(over_threshold=True))],
+                branch="cont", ts="2026-08-02T10:00:01.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        # Hand-computed benchmark: total_burn = cont-2's own two main-thread
+        # turns ($0.41 + $1.00 = $1.41); total_continuations = 1 (only
+        # branch "cont" has a non-first session); benchmark = $1.41 / 1.
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): $1.41 per continuation session." in out
+        # solo's $2.00 exceeds $1.41; cont's $1.00 does not -- 1 of 2 signals.
+        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
+
+    def test_exceeds_flag_set_per_card_above_and_below_the_benchmark(self, fake_projects, capsys):
+        """Same fixture as above, read through the --sample curation-card
+        path instead of the aggregate report, to pin exceeds_startup_burn_benchmark
+        on the per-row/per-card data itself."""
+        _write_jsonl(fake_projects / "solo.jsonl", [
+            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
+            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
+        ])
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            _check_call_turn(
+                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
+            ),
+            _user_msg(
+                [_tool_result("chk2", _check_result_json(over_threshold=True))],
+                branch="cont", ts="2026-08-02T10:00:01.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=2, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        by_session = {c["session_id"]: c for c in cards}
+        assert by_session["solo"]["exceeds_startup_burn_benchmark"] is True
+        assert by_session["cont-2"]["exceeds_startup_burn_benchmark"] is False
+
+    def test_exceeds_flag_is_false_on_an_exact_tie_with_the_benchmark(self, fake_projects, capsys):
+        """dollars_after_signal == benchmark_dollars exactly must resolve to
+        False -- pins the "> benchmark_dollars" (not ">=") comparison."""
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            # $0 pre-signal turn, then a $1.00 post-signal turn -- cont-2's
+            # own startup burn (both of its main-thread turns, since
+            # until_first_n_turns=5 is never reached) is therefore exactly
+            # $1.00, the same $1.00 dollars_after_signal below.
+            _priced(
+                "claude-sonnet-5", branch="cont", input=0, output=0, request_id="r1",
+                ts="2026-08-02T10:00:00.000Z",
+            ),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, request_id="r2",
+                ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert cards[0]["dollars_after_signal"] == pytest.approx(1.0)
+        assert cards[0]["exceeds_startup_burn_benchmark"] is False
+
+    def test_benchmark_unavailable_and_exceeds_flag_none_with_no_continuation_sessions(
+        self, fake_projects, capsys
+    ):
+        """A degenerate corpus with zero continuation sessions anywhere in
+        scope -- every branch has exactly one session -- reports the
+        benchmark as unavailable rather than raising, and every row's
+        exceeds_startup_burn_benchmark is None rather than a bool."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
+        assert "Signals whose post-signal spend exceeded the benchmark" not in out
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert len(cards) == 1
+        assert cards[0]["exceeds_startup_burn_benchmark"] is None
+
+
+class TestCmdHandoffSignalResponseOperatorLagDiagnostic:
+    """.handoff-nudge.log's operator-response-lag cross-check, wired
+    end-to-end through cmd_handoff_signal_response -- mirrors
+    TestRearmBacktestReport's own .handoff-nudge.log fixture/config_dir
+    pattern (fake_projects already monkeypatches config_dir() to tmp_path,
+    the log's own real location)."""
+
+    def test_log_diagnostic_reports_joined_count_and_median_lag(self, fake_projects, tmp_path, capsys):
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=sess est=150000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        out = capsys.readouterr().out
+        assert (
+            "Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 1 joined"
+            " (0 excluded -- no matching session in scope), median lag 51,000 tokens past the fire point" in out
+        )
 
 
 class TestFormatHandoffSignalCardsAsMarkdown:
@@ -24497,41 +25159,84 @@ class TestFormatHandoffSignalCardsAsMarkdown:
         "handoff_followed": True,
         "turns_after_signal": 3,
         "dollars_after_signal": 1.23,
+        "session_total_dollars": 4.00,
+        "pct_spend_after_signal": 0.3075,
+        "exceeds_startup_burn_benchmark": True,
         "excerpt": "Confirmed over threshold, running /handoff now.",
     }
 
     def test_header_names_signal_count_sample_n_and_seed(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=5, seed=7)
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=5, seed=7, benchmark_dollars=0.50,
+        )
         assert out.startswith("# handoff-signal-response curation — 1 signal(s)")
         assert "--sample 5" in out
         assert "--seed 7" in out
 
     def test_header_reports_unset_seed_as_none_placeholder(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=5, seed=None)
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=5, seed=None, benchmark_dollars=0.50,
+        )
         assert "--seed (none)" in out
+
+    def test_header_names_the_startup_burn_benchmark_dollar_figure(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50,
+        )
+        assert "Startup-burn benchmark (this scope): $0.50 per continuation session." in out
+
+    def test_header_reports_benchmark_unavailable_when_none(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=1, seed=1, benchmark_dollars=None,
+        )
+        assert "Startup-burn benchmark (this scope): unavailable" in out
 
     def test_one_section_header_per_card(self):
         cards = [dict(self._CARD, session_id=f"session-{i}") for i in range(3)]
-        out = _mod._format_handoff_signal_cards_as_markdown(cards, sample_n=3, seed=1)
+        out = _mod._format_handoff_signal_cards_as_markdown(cards, sample_n=3, seed=1, benchmark_dollars=0.50)
         section_headers = [line for line in out.splitlines() if line.startswith("## ")]
         assert len(section_headers) == 3
 
     def test_section_names_session_kind_and_position(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
         assert "session `session-1` — check signal at turn 10" in out
 
     def test_excerpt_is_interpolated_into_a_blockquote(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
         assert "> Confirmed over threshold, running /handoff now." in out
 
     def test_empty_excerpt_renders_the_no_eligible_text_placeholder(self):
         card = dict(self._CARD, excerpt="")
-        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1)
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
         assert "> (no eligible assistant text turn followed the signal)" in out
 
     def test_verdict_checklist_present_in_each_section(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
         assert "Verdict: [ ] cost-grounded" in out
+
+    def test_card_line_shows_pct_spend_and_exceeds_benchmark(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "% of session spend after signal: 30.8%  ·  exceeds startup-burn benchmark: yes" in out
+
+    def test_card_line_reports_pct_and_exceeds_as_not_applicable_when_none(self):
+        card = dict(self._CARD, pct_spend_after_signal=None, exceeds_startup_burn_benchmark=None)
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=None)
+        assert "% of session spend after signal: n/a  ·  exceeds startup-burn benchmark: n/a" in out
+
+    def test_forward_context_key_absent_renders_no_forward_context_block(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "Forward context" not in out
+
+    def test_forward_context_present_renders_a_labeled_turn_line(self):
+        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "wrapping up now", "thinking": ""}])
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "**Forward context (next 1 turn(s)):**" in out
+        assert "- turn +1: text: wrapping up now" in out
+
+    def test_forward_context_turn_with_both_fields_empty_is_skipped(self):
+        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "", "thinking": ""}])
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "turn +1" not in out
 
 
 class TestCmdHandoffSignalResponseMarkdownFormat:
@@ -24548,3 +25253,17 @@ class TestCmdHandoffSignalResponseMarkdownFormat:
         out = capsys.readouterr().out
         assert "# handoff-signal-response curation" in out
         assert "Verdict: [ ] cost-grounded" in out
+
+    def test_context_turns_renders_a_forward_context_subsection(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "wrapping up now"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="md", context_turns=1)
+        )
+        out = capsys.readouterr().out
+        assert "**Forward context (next 1 turn(s)):**" in out
+        assert "- turn +1: text: wrapping up now" in out

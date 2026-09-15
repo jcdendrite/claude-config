@@ -1242,6 +1242,11 @@ Field definitions:
 - `threshold` — `_hook_effective_fire_threshold` for that turn's own model.
 - `handoff_followed` — same-session only: a `/handoff` Skill invocation, or a Write/Edit to a `<config-dir>/handoffs/<slug>-handoff.md` path, occurring anywhere after the signal before the transcript ends.
   - Deliberately not a cross-session join: a signal's intended remedy invokes `/handoff` in the same session that saw the signal, so the fresh session that resumes afterward is a separate transcript this metric never needs to look at.
+- `session_total_dollars` — the whole session's own total main-thread priced dollars, not just the tail after the signal — the denominator `pct_spend_after_signal` divides by.
+- `pct_spend_after_signal` — `dollars_after_signal / session_total_dollars`. `null` (JSON) / `None` (aggregate) when `session_total_dollars` is zero, avoiding a divide-by-zero rather than reporting a misleading 0%.
+- `exceeds_startup_burn_benchmark` — whether this row's own `dollars_after_signal` exceeds the startup-burn benchmark described below. `null`/`None` when the benchmark itself is unavailable.
+
+**Startup-burn benchmark.** Once per invocation, this subcommand resolves the same scope a second time (an independent scan, since the main pass's own `session_iter` is a consumed single-pass generator) and feeds it to `_compute_workstream_dollars` — the same "startup burn" instrument `workstream-cost` reports: a branch's non-first sessions' own first `until_first_n_turns` (default 5) main-thread turns, summed. The benchmark is the sum of every branch's `startup_burn_dollars` divided by the sum of every branch's non-first-session count: a session-count-weighted average, not an unweighted per-branch average (which would let a low-continuation branch skew the result). It is unavailable (`None`) when no branch in scope has a non-first session to sum, realistic only for a tiny or degenerate corpus. Every row's `exceeds_startup_burn_benchmark` compares that row's own `dollars_after_signal` against this one corpus-wide figure.
 
 **Excerpt source-turn eligibility (curation cards only).** An excerpt is never sourced from a `tool_use` block, a `tool_result` block, or any user-type record, however unambiguous its content — only a main-thread assistant record's own `"text"` content blocks are excerpt-eligible. This closes the cross-turn leak vector: a pasted path, diff, stack trace, or credential that reached the agent via tool output or a user message can never become a published excerpt. It does not catch an assistant turn that paraphrases such content in its own words — a manual redaction read over the sampled set is still required before anything from `--sample`/`--no-redact` output ships anywhere public.
 
@@ -1252,6 +1257,7 @@ Field definitions:
 - `--sample N` — emit the top N signal rows by post-signal spend (`dollars_after_signal` descending) as curation cards instead of the aggregate census report
 - `--seed N` — seed for reproducible tie-breaking among equal-spend rows in `--sample` (default: unseeded — ties keep scan order)
 - `--format json|md` — `--sample` output format: `json` (default) or `md` (a human curation document with a verdict checklist, mirroring `audit-routing-samples`' own card shape)
+- `--context-turns N` — with `--sample`, attach a `forward_context` list to each card: the next N main-thread turns after the signal, each carrying its own `text` and `thinking` content (independently truncated). Requires `--sample` (exit 2 otherwise). Unlike the single-turn `excerpt` above (`"text"` blocks only), this also reads `"thinking"` blocks, closing the excerpt's own blind spot for reasoning an agent confined to an extended-thinking block. `forward_context` never carries a session id, a file path, or any other identifying field, so it is safe under the default multi-root redacted scope the same way `excerpt` is.
 
 **Sample output (synthetic, illustrative counts only).**
 ```
@@ -1259,25 +1265,27 @@ HANDOFF SIGNAL RESPONSE SOURCES (this repo (N project dirs); 1 root (~/.claude/t
 
 ## Handoff signal response (1,850 signal(s) in scope)
 
+Startup-burn benchmark (this scope): $1.85 per continuation session.
 Sessions with at least one signal: 640
 Conversion rate (a same-session /handoff followed the signal): 88.0% (1,628/1,850)
+Signals whose post-signal spend exceeded the benchmark: 705 (38.1%)
 
 Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 720 joined (245 excluded -- no matching session in scope), median lag 64,000 tokens past the fire point
 
 ### By signal kind
 
-Group           Signals  Handoff%  Median $ after  Mean $ after
----------------------------------------------------------------
-advisory          1,290     85.5%            4.10          6.80
-check               500     93.0%            0.85          1.60
-hard-block           60    100.0%            2.00          2.40
+Group           Signals  Handoff%  Median $ after
+-------------------------------------------------
+advisory          1,290     85.5%            4.10
+check               500     93.0%            0.85
+hard-block           60    100.0%            2.00
 
 ### By ready-for-review active-marker context
 
-Group           Signals  Handoff%  Median $ after  Mean $ after
----------------------------------------------------------------
-active              610     76.5%            3.60          5.90
-inactive          1,240     93.6%            2.05          4.40
+Group           Signals  Handoff%  Median $ after
+-------------------------------------------------
+active              610     76.5%            3.60
+inactive          1,240     93.6%            2.05
 ```
 
 **Sample output (`--sample 1 --format json`, redacted, synthetic, illustrative values only).**
@@ -1293,6 +1301,9 @@ inactive          1,240     93.6%            2.05          4.40
     "handoff_followed": true,
     "turns_after_signal": 10,
     "dollars_after_signal": 0.50,
+    "session_total_dollars": 3.20,
+    "pct_spend_after_signal": 0.1562,
+    "exceeds_startup_burn_benchmark": false,
     "excerpt": "Usage is now over the configured threshold; wrapping up before handing off."
   }
 ]
