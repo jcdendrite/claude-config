@@ -11379,6 +11379,10 @@ def _nudge_conversion_from_log(
     - "no_ignored_field": voluntary sessions whose preceding nudged line
       carries no ignored= field -- counted separately and never defaulted to
       0, which would bias the distribution toward "complied immediately"
+
+    A future nudge tier adding a third `action=` value must update this
+    function's own `action == "block"` check (below) alongside
+    _operator_response_lag_from_log's.
     """
     # A session id repeated across roots (stale symlink, merged log, PID
     # reuse) is not handled -- entries land in root-scan order.
@@ -11664,9 +11668,34 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     # _resolve_cost_roots, so no config_dir() call is needed here. Per-root
     # join avoids biasing lag/conversion toward one account while
     # session_traces spans every root.
-    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
     log_entries_by_root: dict[Path, list[dict]] = {}
-    for root in scan_roots:
+    if multi_root:
+        # A per-root byte count is a per-account figure
+        # (docs/private-project-redaction.md's Account-cardinality bar), so
+        # pool it into one aggregate line rather than one line per root.
+        total_bytes = 0
+        truncated_count = 0
+        unreadable_count = 0
+        for root in scan_roots:
+            log_path = root.parent / ".handoff-nudge.log"
+            log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
+            try:
+                log_size = log_path.stat().st_size if log_path.exists() else 0
+            except OSError:
+                unreadable_count += 1
+                continue
+            if log_size > _NUDGE_LOG_MAX_READ:
+                truncated_count += 1
+            total_bytes += log_size
+        note = ""
+        if truncated_count:
+            note += f" ({truncated_count} truncated -- oldest lines dropped)"
+        if unreadable_count:
+            note += f" ({unreadable_count} unreadable)"
+        print(f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}")
+    else:
+        redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+        root = scan_roots[0]
         log_path = root.parent / ".handoff-nudge.log"
         log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
         root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
@@ -11674,9 +11703,9 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             log_size = log_path.stat().st_size if log_path.exists() else 0
         except OSError:
             print(f"  {root_label} nudge log: unreadable")
-            continue
-        truncated_note = " [truncated -- oldest lines dropped]" if log_size > _NUDGE_LOG_MAX_READ else ""
-        print(f"  {root_label} nudge log: {log_size:,} bytes{truncated_note}")
+        else:
+            truncated_note = " [truncated -- oldest lines dropped]" if log_size > _NUDGE_LOG_MAX_READ else ""
+            print(f"  {root_label} nudge log: {log_size:,} bytes{truncated_note}")
     log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
