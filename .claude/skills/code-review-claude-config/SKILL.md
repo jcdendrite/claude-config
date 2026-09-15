@@ -15,11 +15,13 @@ So is any of:
 
 - a figure computed over a corpus wider than this repository on one
   account, unless that section's own-history-count exemption covers it
+  or the artifact cites the owner's authorization for that exact figure
 - `--share-only` output in any artifact, regardless of dimensionality —
   it exists only to keep a wider corpus's raw absolutes out of the
   agent's own context, never to publish from
 - a figure citing no command, or citing one that cannot refuse a wider
-  corpus
+  corpus, unless the artifact cites the owner's authorization for that
+  exact figure
 - a count of how many accounts or declared config-dir roots exist
 - a new figure that lets a reader subtract a previously-published
   pooled figure down to its non-this-repo remainder

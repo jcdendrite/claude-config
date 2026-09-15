@@ -166,11 +166,52 @@ reading pointed. It names no figure from it. The withholding sites in
 `docs/cost-levers-considered.md` and `docs/design-decisions/` are the
 worked shape.
 
+### The owner can authorize one figure, case by case
+
+The bar above holds by default: a wider read stays with the owner
+and publishes nothing. The owner can release it for one specific
+figure. Propose the figure, the exact command that produced it, and
+the artifact it would appear in. Publish only after an explicit,
+in-session yes, and cite that authorization beside the figure,
+naming what was proposed rather than only that something was
+approved. A recalled yes from another transcript or artifact does
+not count — only a live answer in the current session does, the
+same standard "New figures against the grandfathered set" below
+sets. The command is cited so a reader can re-run the measurement.
+Unlike the single-account case above, authorization guarantees
+nothing about scope by itself — it is the whole control, which is
+why it is granted per figure and left as a citable trace. The
+mechanical backstop is this repository's own human-only merge gate:
+the owner reviews every PR before it merges and can catch a citation
+for a yes that was never given.
+
+An authorization covers the figure, the command, and the artifact it
+named. A second figure, the same figure in a second artifact, or a
+re-run over a grown corpus is a fresh ask. Cite each authorized
+figure on its own — one citation spanning several figures does not
+establish that each was individually proposed and approved. Before
+citing an authorized figure alongside a rate or count already
+published elsewhere, name that composition in the proposal — "New
+figures against the grandfathered set" below is the check that
+applies.
+
+An authorization releases the corpus-scope bar and nothing else. Three
+things stay barred alongside it:
+
+- A figure carrying a per-project, per-account, or per-engagement
+  dimension. The repo-root `CLAUDE.md` bars that absolutely. It is a
+  dimension question rather than a scope question, so this section
+  cannot relax it.
+- A count of accounts or declared config-dir roots — see "Account
+  cardinality" below.
+- `--share-only` output. It keeps a wider read's absolutes out of the
+  agent's context; it is not a publication instrument.
+
 ### Own-history counts were never inside this class
 
 The test is the scope's content, not the account or machine count, and
-not the quantity's type. Two classes fall outside the bar above rather
-than being exceptions to it:
+not the quantity's type. Two classes fall outside the wider-corpus bar
+rather than being exceptions to it:
 
 - A count whose scope holds no private-engagement record anywhere —
   this repo's own history, or the owner's other personal, non-client
@@ -209,13 +250,14 @@ judgment call in this section.
 ### New figures against the grandfathered set
 
 Figures published before this bar stay published (see "Remediation"
-below). A new figure — own-history or drawn from this repository, one
-account — can still newly disclose something private if it lets a
-reader subtract it from one of those down to its non-this-repo
-remainder. Before publishing, check the new figure against
-Remediation's named list. If it could narrow one of those figures'
-residual, tell the owner what the combination would newly disclose and
-ask in session; an uncited in-session answer settles it.
+below). A new figure — own-history, drawn from this repository on one
+account, or an owner-authorized wider-corpus figure — can still newly
+disclose something private if it lets a reader subtract it from one of
+those down to its non-this-repo remainder. Before publishing, check
+the new figure against Remediation's named list. If it could narrow
+one of those figures' residual, tell the owner what the combination
+would newly disclose and ask in session; an uncited in-session answer
+settles it.
 
 This check runs once per new figure, forward from here. It does not
 require re-auditing the grandfathered set against this repository's
