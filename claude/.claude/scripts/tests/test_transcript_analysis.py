@@ -8330,11 +8330,11 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
 
 def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
     """Read --ttl-verdict's own per-bucket summary line ('main: consistent
-    5m roots=N  consistent 1h roots=N  excluded (mixed-tier or no
+    5m roots=N  consistent 1h roots=N  excluded (near-tie or no
     data) roots=N  verdict=...') for one bucket."""
     match = re.search(
         rf"^{re.escape(origin)}: consistent 5m roots=(\d+)  consistent 1h roots=(\d+)"
-        r"  excluded \(mixed-tier or no data\) roots=(\d+)  verdict=(.+)$",
+        r"  excluded \(near-tie or no data\) roots=(\d+)  verdict=(.+)$",
         out, re.MULTILINE,
     )
     assert match is not None, f"ttl-verdict summary line not found for origin {origin!r}"
@@ -8365,6 +8365,24 @@ def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dic
     rows = [ln for ln in section_lines if ln.split() and ln.split()[0] == root_label]
     assert len(rows) == 1, f"row not found for {root_label!r} in {origin!r} section: {rows!r}"
     return dict(zip(labels, rows[0].split(), strict=False))
+
+
+def _extract_ttl_verdict_tier_split_line(out: str, root_label: str) -> dict[str, str] | None:
+    """Parse one root's 'tier-split {label}: 5m-slice favors X, 1h-slice
+    favors Y (agree|disagree)' line, if present. Returns None when the
+    root has no tier-split line (not a mixed root)."""
+    match = re.search(
+        rf"^tier-split {re.escape(root_label)}: 5m-slice favors (\w+), "
+        rf"1h-slice favors (\w+) \((\w+)\)$",
+        out, re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return {
+        "favors_5m_slice": match.group(1),
+        "favors_1h_slice": match.group(2),
+        "agreement": match.group(3),
+    }
 
 
 def _ttl_verdict_5m_tier_adopt_records() -> list[dict]:
@@ -8402,6 +8420,39 @@ def _ttl_verdict_1h_tier_non_wash_disagreement_records() -> list[dict]:
             "claude-sonnet-5", cache_read=400_000,
             ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
         ),
+    ]
+
+
+def _ttl_verdict_near_tie_mixed_root_records(request_id_prefix: str = "a") -> list[dict]:
+    """Record list for a mixed root at share 0.870, below
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN (5m 500,000 @10:00, 5m
+    500,000 @10:06, 1h 150,000 @10:13). request_id_prefix keeps request
+    IDs unique when this shape is reused for a second bucket or origin
+    in the same test's output."""
+    return [
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:00:00.000Z", request_id=f"{request_id_prefix}1",
+        ),
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:06:00.000Z", request_id=f"{request_id_prefix}2",
+        ),
+        _priced(
+            "claude-sonnet-5", ephemeral_1h=150_000,
+            ts="2026-08-01T10:13:00.000Z", request_id=f"{request_id_prefix}3",
+        ),
+    ]
+
+
+def _ttl_verdict_dominant_1h_mixed_root_records() -> list[dict]:
+    """Record list for a mixed root at share 0.800, below the dominance
+    threshold and excluded/near-tie (5m 200,000 @10:00, 1h 800,000 @10:06,
+    read 150,000 @10:12)."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:00:00.000Z", request_id="dom-1"),
+        _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="dom-2"),
+        _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="dom-3"),
     ]
 
 
@@ -10396,6 +10447,51 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
         assert _mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
 
 
+class TestCacheRebuildDominantTierShare:
+    """Direct unit coverage for _cache_rebuild_dominant_tier_share, the
+    ratio --ttl-verdict's per-root eligibility test compares against
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN. Exercised independently of
+    the full-pipeline boundary tests below."""
+
+    def test_share_exactly_at_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(900_000, 100_000) == pytest.approx(0.9)
+
+    def test_share_just_above_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(901_000, 99_000) == pytest.approx(0.901)
+
+    def test_share_just_below_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(899_000, 101_000) == pytest.approx(0.899)
+
+    def test_share_is_symmetric_in_which_tier_is_dominant(self):
+        """max() makes the dominant tier's own identity irrelevant to the
+        ratio: swapping which argument is larger yields the same share."""
+        assert _mod._cache_rebuild_dominant_tier_share(
+            100_000, 900_000
+        ) == _mod._cache_rebuild_dominant_tier_share(900_000, 100_000)
+
+    def test_no_data_root_raises_instead_of_returning_an_undefined_ratio(self):
+        """Pins that the no-data case raises `ZeroDivisionError` rather than
+        returning a sentinel. The docstring's `w5m == w1h == 0` exclusion is
+        a caller obligation, not a guard inside the function."""
+        with pytest.raises(ZeroDivisionError):
+            _mod._cache_rebuild_dominant_tier_share(0, 0)
+
+
+class TestCacheRebuildRootIsDominant:
+    """Direct unit coverage for _cache_rebuild_root_is_dominant, the
+    boolean the print loop's own eligibility branch decides on. Exercised
+    independently of the full-pipeline boundary test below."""
+
+    def test_share_exactly_at_the_threshold_counts_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.900) is True
+
+    def test_share_just_above_the_threshold_counts_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.901) is True
+
+    def test_share_just_below_the_threshold_does_not_count_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.899) is False
+
+
 class TestCacheRebuildRootVerdictInput:
     """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
     per-root reduction the report's own per-bucket loop calls once per
@@ -10505,6 +10601,62 @@ class TestCacheRebuildRootVerdictInput:
             apply_tiebreaker=True, tiebreaker_favors_5m=False,
         )
         assert root_input == {"favors": "1h", "clears": False}
+
+
+class TestCacheRebuildTierSplitAgreement:
+    """Direct unit coverage for _cache_rebuild_tier_split_agreement -- the
+    two-slice cross-check's sign-resolution and agreement comparison the
+    report's own per-bucket loop calls once per mixed root. Exercised
+    independently of the full-pipeline tests below."""
+
+    def test_positive_net_5m_slice_resolves_to_favors_1h(self):
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(1.0, 0.0)
+        assert favors_5m_slice == "1h"
+
+    def test_negative_net_5m_slice_resolves_to_favors_5m(self):
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(-1.0, 0.0)
+        assert favors_5m_slice == "5m"
+
+    def test_exact_zero_net_5m_slice_resolves_to_favors_5m(self):
+        """Resolves via net_5m_slice > 0, not >= 0, so an exact wash takes
+        the favors-5m branch. This is the same sign convention
+        `_cache_rebuild_root_verdict_input` applies."""
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert favors_5m_slice == "5m"
+
+    def test_positive_net_1h_slice_resolves_to_favors_5m(self):
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 1.0)
+        assert favors_1h_slice == "5m"
+
+    def test_negative_net_1h_slice_resolves_to_favors_1h(self):
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, -1.0)
+        assert favors_1h_slice == "1h"
+
+    def test_exact_zero_net_1h_slice_resolves_to_favors_1h(self):
+        """Resolves via net_1h_slice > 0, not >= 0, so an exact wash takes
+        the favors-1h branch."""
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert favors_1h_slice == "1h"
+
+    def test_both_slices_favoring_5m_agree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(-1.0, 1.0)
+        assert agreement == "agree"
+
+    def test_both_slices_favoring_1h_agree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(1.0, -1.0)
+        assert agreement == "agree"
+
+    def test_slices_favoring_opposite_tiers_disagree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(1.0, 1.0)
+        assert agreement == "disagree"
+
+    def test_exact_zero_wash_on_both_slices_disagrees(self):
+        """The two slices' independent wash conventions resolve to opposite
+        tiers: favors-5m for the 5m slice, favors-1h for the 1h slice. A
+        double wash therefore reports disagree rather than a vacuous
+        agree."""
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert agreement == "disagree"
 
 
 class TestCacheRebuildTtlVerdictDecision:
@@ -10631,6 +10783,41 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert root_row["Favors"] == "5m"
         assert root_row["Clears"] == "True"
 
+    def test_dominance_gate_evaluates_each_origin_independently_for_the_same_root(
+        self, fake_projects, capsys
+    ):
+        """The main-origin and subagent-origin buckets share the same root
+        ordinal (account-1) but accumulate independently, so one origin's
+        traffic can clear the dominance threshold while the other's stays
+        near-tie for that same root ordinal.
+
+        - Main gets a clean 5m-tier root (share 1.000, clears).
+        - Subagent gets the near-tie mixed root shape (share 0.870, excluded(near-tie))."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
+        subagent_records = _ttl_verdict_near_tie_mixed_root_records(request_id_prefix="sa")
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_summary = _extract_ttl_verdict_summary(out, "main")
+        assert main_summary["consistent_5m"] == "1"
+        assert main_summary["excluded"] == "0"
+
+        subagent_summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert subagent_summary["consistent_5m"] == "0"
+        assert subagent_summary["excluded"] == "1"
+
+        main_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert main_row["Share"] == "1.000"
+        assert main_row["Clears"] == "True"
+
+        subagent_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert subagent_row["Share"] == "0.870"
+        assert subagent_row["Clears"] == "excluded(near-tie)"
+
     def test_per_root_w5m_cells_sum_to_the_pooled_per_origin_w5m_row(self, tmp_path, capsys):
         """Reconciliation guard (plan Verification section): the new
         per-(origin, root_ordinal) W5m accumulator must never drift from
@@ -10748,10 +10935,13 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
     def test_root_with_both_w5m_and_w1h_nonzero_contributes_no_verdict_for_that_bucket(
         self, fake_projects, capsys
     ):
-        """A root paying both tiers simultaneously in this window (mixed
-        evidence) is excluded from the bucket's verdict entirely, the same
-        as a root with no data -- the break-even algebra
-        assumes a single live tier per root per window."""
+        """A root paying both tiers simultaneously in this window has a
+        share of 0.500, below _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN,
+        so it is excluded(near-tie). The break-even algebra assumes a
+        single live tier per root per window, so a root with no data gets
+        the same treatment. The row still prints with its own exclusion
+        reason. The four summary fields below are unaffected by the row
+        now always printing -- showing the row never moves the gate."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
             _priced(
@@ -10768,11 +10958,43 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert summary["excluded"] == "1"
         assert summary["verdict"] == "no verdict"
 
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "excluded(near-tie)"
+
+    def test_tie_between_w5m_and_w1h_resolves_deterministically_to_5m_tier_for_display(
+        self, fake_projects, capsys
+    ):
+        """A root whose W5m and W1h accumulate to exactly the same nonzero
+        total is still excluded(near-tie) -- the tie only decides which
+        tier's own accumulators the display row names, via the per-root
+        loop's `if root_w5m >= root_w1h` comparison resolving equality to
+        the 5m branch. Pins today's tie resolution (`>=`, defaults to the
+        5m branch) as display-only -- it has no verdict consequence, since
+        the row is excluded either way."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=400_000, ts="2026-08-01T10:00:00.000Z", request_id="tie-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=400_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="tie-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Tier"] == "5m"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Share"] == "0.500"
+        assert root_row["Clears"] == "excluded(near-tie)"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
     def test_zero_consistent_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
         """A corpus with cache activity but no cache-write/read tokens
         crossing either direction's own accumulation gate (plain
         input/output tokens only) leaves neither direction with data --
-        'no verdict', never a vacuous 'adopt'."""
+        'no verdict', never a vacuous 'adopt'. The root's own row still
+        prints, labelled excluded(no-data), in both buckets."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
         ])
@@ -10784,6 +11006,9 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             assert summary["consistent_5m"] == "0"
             assert summary["consistent_1h"] == "0"
             assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
 
     def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
         """root_label's own redact branch prints "account-N"; the
@@ -10805,7 +11030,9 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         """--ttl-verdict against zero in-scope calls prints clean
         no-verdict output for both buckets rather than crashing (e.g. a
         division by zero in the margin check, already guarded by
-        _cache_rebuild_margin_clears' own non-positive-volume branch)."""
+        _cache_rebuild_margin_clears' own non-positive-volume branch). The
+        zero-data root still gets its own excluded(no-data) row rather than
+        vanishing from the table."""
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
@@ -10813,6 +11040,611 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         for origin in ("main", "subagent"):
             summary = _extract_ttl_verdict_summary(out, origin)
             assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
+            assert root_row["Net$"] == "n/a"
+            assert root_row["Share"] == "n/a"
+
+    def test_no_data_root_alongside_a_real_root_leaves_the_real_roots_verdict_untouched(
+        self, tmp_path, capsys
+    ):
+        """Two roots in the same bucket:
+        - account-1 has real 5m-tier data and reaches 'adopt' on its own.
+        - account-2 has no cache-tier data at all.
+
+        The no-data root's presence must not change account-1's own
+        verdict, and its own Net$/Share render as n/a rather than
+        $0.00/0.000."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["Clears"] == "excluded(no-data)"
+        assert root_2["Net$"] == "n/a"
+        assert root_2["Share"] == "n/a"
+
+    def test_no_data_root_and_a_near_tie_root_in_the_same_bucket_both_count_toward_excluded(
+        self, tmp_path, capsys
+    ):
+        """Two roots in the same bucket, excluded for different reasons:
+
+        - account-1 has no cache-tier data at all.
+        - account-2 is the mixed root shape at share 0.870 (below the
+          dominance threshold).
+
+        The no-data and near-tie branches each independently increment
+        excluded_roots; this pins that the bucket's printed total sums
+        both reasons rather than only the last branch reached."""
+        no_data_root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-no-data", "sess-no-data", [])
+        near_tie_root = _write_cost_root(
+            tmp_path, "acct-b", "-home-user-repo-near-tie", "sess-near-tie",
+            _ttl_verdict_near_tie_mixed_root_records(),
+        )
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[no_data_root, near_tie_root],
+        )
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["excluded"] == "2"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["Clears"] == "excluded(no-data)"
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["Share"] == "0.870"
+        assert root_2["Clears"] == "excluded(near-tie)"
+
+    def test_mixed_root_row_shows_the_dominant_tiers_own_accumulators_not_a_combined_figure(
+        self, tmp_path, capsys
+    ):
+        """A mixed root's displayed row must match a control root carrying
+        only the dominant tier's data -- isolating whether the minority
+        write leaks into the row."""
+        mixed_records = _ttl_verdict_dominant_1h_mixed_root_records()
+        pure_1h_records = [
+            # Leading no-cache-tokens call mirrors the mixed fixture's own
+            # session-start/idle-gap timing, so the 1h write and read
+            # classify identically in both.
+            _priced("claude-sonnet-5", input=10, output=5, ts="2026-08-01T10:00:00.000Z", request_id="pure-0"),
+            _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="pure-1"),
+            _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="pure-2"),
+        ]
+        mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
+        pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_1h_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        mixed_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        pure_out = capsys.readouterr().out
+
+        mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
+        pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
+        assert mixed_row["W5m/W1h"] == pure_row["W5m/W1h"] == "800,000"
+        assert mixed_row["X/Z"] == pure_row["X/Z"] == "150,000"
+        assert mixed_row["Net$"] == pure_row["Net$"]
+        assert mixed_row["Favors"] == pure_row["Favors"]
+        assert mixed_row["Clears"] == "excluded(near-tie)"
+        assert mixed_row["Share"] == "0.800"
+        assert pure_row["Clears"] == "True"
+        assert pure_row["Share"] == "1.000"
+
+
+class TestCacheRebuildTtlVerdictDominantTierShareThreshold:
+    """Boundary coverage for _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN
+    (0.900) -- the comparison is >=, so a root sitting exactly at the
+    threshold counts, never just above it."""
+
+    def _mixed_root_records(self, *, w1h: int, w5m: int) -> list[dict]:
+        """A 1h-dominant mixed root: a 1h write, then a 5m write 10s later --
+        inside the idle band's lower bound, so it never classifies as an
+        idle-gap rebuild. Share is decided purely by w1h/w5m."""
+        return [
+            _priced("claude-sonnet-5", ephemeral_1h=w1h, ts="2026-08-01T10:00:00.000Z", request_id="w1h"),
+            _priced("claude-sonnet-5", ephemeral_5m=w5m, ts="2026-08-01T10:00:10.000Z", request_id="w5m"),
+        ]
+
+    def test_share_exactly_at_threshold_counts_as_consistent(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", self._mixed_root_records(w1h=900_000, w5m=100_000))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.900"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+    def test_share_exactly_at_threshold_counts_as_consistent_for_subagent_origin(self, fake_projects, capsys):
+        subagent_records = self._mixed_root_records(w1h=900_000, w5m=100_000)
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert root_row["Share"] == "0.900"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+
+class TestCacheRebuildTtlVerdictDominanceReduction:
+    """Full-pipeline coverage that a dominance-resolved mixed root's own
+    dominant-tier accumulators, and only those, reach
+    _cache_rebuild_root_verdict_input and the bucket's consistent-root
+    counts -- the reduction mechanics .claude/plans/cache-ttl-verdict-gate-fix.md's
+    Approach section describes."""
+
+    def test_minority_5m_write_outside_the_idle_band_never_changes_the_1h_rows_own_verdict_inputs(
+        self, tmp_path, capsys
+    ):
+        """A pure-1h corpus (W1h=1,000,000, one idle-gap read Z=400,000)
+        is compared against the same corpus plus one small 5m write
+        placed 100 seconds after the read. That write sits under the idle
+        band's own 300-second lower bound, so it classifies as
+        unexplained, not idle, and never reaches the displayed 1h-tier
+        row's own accumulators. The 1h row's own W5m/W1h, X/Z, Net$,
+        Favors, and Clears must be byte-identical across both runs; only
+        Share (1.000 vs 0.971) and the presence of an informative
+        tier-split line differ."""
+        pure_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="p1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="p2"),
+        ]
+        mixed_records = [
+            *pure_records,
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="p3"),
+        ]
+        pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_records)
+        mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        pure_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        mixed_out = capsys.readouterr().out
+
+        pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
+        mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
+        assert pure_row["W5m/W1h"] == mixed_row["W5m/W1h"] == "1,000,000"
+        assert pure_row["X/Z"] == mixed_row["X/Z"] == "400,000"
+        assert pure_row["Net$"] == mixed_row["Net$"]
+        assert pure_row["Favors"] == mixed_row["Favors"]
+        assert pure_row["Clears"] == mixed_row["Clears"] == "True"
+        assert pure_row["Share"] == "1.000"
+        assert mixed_row["Share"] == "0.971"
+        assert _extract_ttl_verdict_tier_split_line(pure_out, "account-1") is None
+        assert _extract_ttl_verdict_tier_split_line(mixed_out, "account-1") is not None
+
+    def test_minority_5m_write_followed_by_an_idle_gap_read_inflates_z_strictly_against_dropping_to_5m(
+        self, tmp_path, capsys
+    ):
+        """Proves the 1h-branch's idle-read disjunct, not the write
+        disjunct, drives Z inflation. Distinct from the isolation test
+        above, which only covers a minority write."""
+        control_records = [
+            # Control: read never enters the 1h branch.
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="c1"),
+            # 4,000s after c1, past the 3,600s idle->1h boundary, so Z stays 0.
+            _priced("claude-sonnet-5", cache_read=1_500_000, ts="2026-08-01T11:06:40.000Z", request_id="c2"),
+        ]
+        inflated_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+            # 10s after m1, well inside the idle band's own lower bound.
+            _priced("claude-sonnet-5", ephemeral_5m=50_000, ts="2026-08-01T10:00:10.000Z", request_id="m2"),
+            # 3,200s after m2, inside the idle 5m-1h band.
+            # The read-token disjunct fires, so Z absorbs the full read even though no 1h write expired.
+            _priced("claude-sonnet-5", cache_read=1_500_000, ts="2026-08-01T10:53:30.000Z", request_id="m3"),
+        ]
+        control_root = _write_cost_root(
+            tmp_path, "acct-control", "-home-user-repo-control", "sess-control", control_records,
+        )
+        inflated_root = _write_cost_root(
+            tmp_path, "acct-inflated", "-home-user-repo-inflated", "sess-inflated", inflated_records,
+        )
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[control_root])
+        control_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[inflated_root])
+        inflated_out = capsys.readouterr().out
+
+        control_row = _extract_ttl_verdict_root_row(control_out, "main", "account-1")
+        inflated_row = _extract_ttl_verdict_root_row(inflated_out, "main", "account-1")
+        assert control_row["X/Z"] == "0"
+        assert inflated_row["X/Z"] == "1,500,000"
+        assert control_row["Favors"] == "5m"
+        # Read size (1,500,000) exceeds W1h (1,000,000), flipping the raw-token
+        # tiebreaker from favoring a drop to 5m to favoring 1h.
+        assert inflated_row["Favors"] == "1h"
+        assert control_row["Clears"] == "True"
+        assert inflated_row["Clears"] == "False"
+
+        # Control's Net$: the always-on base term alone, with no idle-read cost.
+        assert control_row["Net$"] == "$1.50"
+        # Inflated's Net$ adds the phantom read's expiry-cost term.
+        # That term is strictly switch-cost-positive, so it can only move Net$ down, never up.
+        assert inflated_row["Net$"] == "-$1.95"
+
+    def test_dominance_resolved_mixed_root_counts_once_never_twice(self, tmp_path, capsys):
+        """A dominance-resolved mixed root (share 0.971) increments
+        consistent-1h by exactly one. It must never increment consistent_5m,
+        and must never increment consistent_1h more than once."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="u2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="u3"),
+        ]
+        root = _write_cost_root(tmp_path, "acct", "-home-user-repo", "sess", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+    def test_dominance_resolved_mixed_root_counts_once_never_twice_for_subagent_origin(
+        self, fake_projects, capsys
+    ):
+        """Same dominance-resolved mixed root shape (share 0.971) as
+        test_dominance_resolved_mixed_root_counts_once_never_twice above,
+        on the subagent bucket instead of main."""
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="u2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="u3"),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+    def test_dominance_resolved_mixed_roots_own_favors_agrees_with_the_tier_splits_same_tier_slice(
+        self, tmp_path, capsys
+    ):
+        """A dominance-resolved mixed root's displayed Favors and its own
+        tier-split line's same-tier slice favors are computed from the
+        identical net_primary/net_5m_slice or net_1h_slice expression
+        (transcript-analysis.py's own "Keep both call sites in sync"
+        comment) -- this pins that the two stay equal, for both a
+        5m-dominant and a 1h-dominant root (share 0.971 each)."""
+        dominant_5m_root = _write_cost_root(tmp_path, "acct-dom5m", "-home-user-repo-dom5m", "sess-dom5m", [
+            _priced("claude-sonnet-5", ephemeral_5m=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="e1"),
+            _priced("claude-sonnet-5", ephemeral_1h=30_000, ts="2026-08-01T10:00:10.000Z", request_id="e2"),
+        ])
+        dominant_1h_root = _write_cost_root(tmp_path, "acct-dom1h", "-home-user-repo-dom1h", "sess-dom1h", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="f1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="f2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="f3"),
+        ])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_5m_root])
+        dominant_5m_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_1h_root])
+        dominant_1h_out = capsys.readouterr().out
+
+        dominant_5m_row = _extract_ttl_verdict_root_row(dominant_5m_out, "main", "account-1")
+        assert dominant_5m_row["Tier"] == "5m"
+        assert dominant_5m_row["Share"] == "0.971"
+        dominant_5m_tier_split = _extract_ttl_verdict_tier_split_line(dominant_5m_out, "account-1")
+        assert dominant_5m_tier_split is not None
+        assert dominant_5m_row["Favors"] == dominant_5m_tier_split["favors_5m_slice"]
+
+        dominant_1h_row = _extract_ttl_verdict_root_row(dominant_1h_out, "main", "account-1")
+        assert dominant_1h_row["Tier"] == "1h"
+        assert dominant_1h_row["Share"] == "0.971"
+        dominant_1h_tier_split = _extract_ttl_verdict_tier_split_line(dominant_1h_out, "account-1")
+        assert dominant_1h_tier_split is not None
+        assert dominant_1h_row["Favors"] == dominant_1h_tier_split["favors_1h_slice"]
+
+    def test_dominance_resolved_root_and_a_pure_root_favoring_opposite_directions_disagree(
+        self, tmp_path, capsys
+    ):
+        """Two roots in one bucket:
+        - pure 5m-tier root (favors 1h)
+        - dominance-resolved mixed 1h-tier root (share 0.971, favors 5m)
+
+        The bucket verdict must read 'roots disagree', proving the
+        dominance-resolved root entered the reduction rather than being
+        silently dropped."""
+        pure_5m_root = _write_cost_root(
+            tmp_path, "acct-pure5m", "-home-user-repo-pure5m", "sess-pure5m",
+            _ttl_verdict_5m_tier_adopt_records(),
+        )
+        dominant_1h_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="d1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="d2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="d3"),
+        ]
+        dominant_1h_root = _write_cost_root(
+            tmp_path, "acct-dom1h", "-home-user-repo-dom1h", "sess-dom1h", dominant_1h_records,
+        )
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[pure_5m_root, dominant_1h_root],
+        )
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "roots disagree"
+
+        # Ordinal assignment is path-sort-order-derived, not root-list-order,
+        # so the two rows are told apart by their own Share instead of a
+        # fixed account-N mapping.
+        rows = [
+            _extract_ttl_verdict_root_row(out, "main", "account-1"),
+            _extract_ttl_verdict_root_row(out, "main", "account-2"),
+        ]
+        pure_row = next(row for row in rows if row["Share"] == "1.000")
+        dominant_row = next(row for row in rows if row["Share"] == "0.971")
+        assert pure_row["Favors"] == "1h"
+        assert dominant_row["Favors"] == "5m"
+
+
+class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
+    """Full-pipeline coverage for the two-slice cross-check's own
+    'tier-split' note lines -- informative only, so every test here also
+    confirms the line never moves a count or the verdict."""
+
+    def test_near_tie_excluded_mixed_root_prints_its_own_disagreeing_tier_split_line(
+        self, fake_projects, capsys
+    ):
+        """A mixed root at share 0.870 sits below the dominance threshold,
+        so it is excluded(near-tie). Its two tiers' own accumulators
+        disagree:
+
+        - 5m-tier slice: idle rebuild ratio (X/W5m = 0.5, above the
+          ~0.3947 break-even) favors switching to 1h.
+        - 1h-tier slice: the minority 1h write carries no idle-read
+          evidence of its own, favors staying at -- i.e. dropping to --
+          5m.
+
+        The tier-split line must name exactly this disagreement.
+        _extract_ttl_verdict_root_row must still find exactly one row for
+        the root, and the summary counts must reflect only the near-tie
+        exclusion, unmoved by the cross-check."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_near_tie_mixed_root_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "0"
+        assert summary["excluded"] == "1"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.870"
+        assert root_row["Clears"] == "excluded(near-tie)"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+
+    def test_dominance_resolved_mixed_root_prints_its_own_disagreeing_tier_split_line(
+        self, fake_projects, capsys
+    ):
+        """Same disagreeing per-slice shape as the near-tie test above:
+
+        - 5m-tier slice favors switching to 1h.
+        - 1h-tier slice favors staying at 5m.
+
+        Here the minority 1h write is smaller (90,000, share 0.917),
+        clearing the dominance threshold, so the root counts toward the
+        verdict this time. The tier-split line must still print and
+        still name the same disagreement, unaffected by which side of the
+        threshold the root landed on."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="a2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=90_000,
+                ts="2026-08-01T10:13:00.000Z", request_id="a3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.917"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+
+    def test_two_simultaneously_mixed_roots_each_print_their_own_directions_not_the_others(
+        self, tmp_path, capsys
+    ):
+        """Two mixed roots in the same bucket disagree in different,
+        distinguishable directions:
+
+        - account-1: idle-heavy 5m block plus a minority 1h write
+          disagrees one way.
+        - account-2: 1h-dominant block plus a minority 5m write agrees
+          the other way.
+
+        Each root's own tier-split line must name only its own data.
+        With only these two roots, the test demonstrates that their
+        tier-split lines do not cross-contaminate each other.
+        `_extract_ttl_verdict_root_row` cannot catch that gap on its own,
+        since it skips these lines by design."""
+        root_a_records = _ttl_verdict_near_tie_mixed_root_records()
+        root_b_records = _ttl_verdict_dominant_1h_mixed_root_records()
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", root_a_records)
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", root_b_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        tier_split_1 = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        tier_split_2 = _extract_ttl_verdict_tier_split_line(out, "account-2")
+        assert tier_split_1 == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert tier_split_2 == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+    def test_root_row_extraction_stays_singular_across_mixed_no_data_and_pure_roots_in_one_corpus(
+        self, tmp_path, capsys
+    ):
+        """One corpus carries all three per-root shapes at once:
+        - account-1: dominance-resolved mixed root (share 0.917)
+        - account-2: no cache-tier data
+        - account-3: pure 5m-tier root, from _ttl_verdict_5m_tier_adopt_records
+
+        _extract_ttl_verdict_root_row must still return exactly one row per
+        root despite the tier-split line sitting between rows in the same
+        table."""
+        mixed_root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-mixed", "sess-mixed", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="a2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=90_000,
+                ts="2026-08-01T10:13:00.000Z", request_id="a3",
+            ),
+        ])
+        no_data_root = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-no-data", "sess-no-data", [])
+        pure_root = _write_cost_root(
+            tmp_path, "acct-c", "-home-user-repo-pure", "sess-pure", _ttl_verdict_5m_tier_adopt_records(),
+        )
+
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[mixed_root, no_data_root, pure_root],
+        )
+        out = capsys.readouterr().out
+
+        mixed_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        no_data_row = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        pure_row = _extract_ttl_verdict_root_row(out, "main", "account-3")
+
+        assert mixed_row["Share"] == "0.917"
+        assert mixed_row["Clears"] == "True"
+        assert no_data_row["Clears"] == "excluded(no-data)"
+        assert pure_row["Share"] == "1.000"
+        assert pure_row["Clears"] == "True"
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert _extract_ttl_verdict_tier_split_line(out, "account-2") is None
+        assert _extract_ttl_verdict_tier_split_line(out, "account-3") is None
+
+    def test_minority_slice_net_delta_of_exactly_zero_resolves_like_the_dominant_tiers_own_wash(
+        self, fake_projects, capsys
+    ):
+        """A minority 5m-tier write small enough (100 tokens) that its own
+        switch-delta rounds to exactly $0.00 pins the slice-favors wash
+        boundary. _cache_rebuild_root_verdict_input's own net > 0 test
+        resolves a net of exactly 0 to negative_favors, never the positive
+        direction. The two-slice cross-check's own hand-rolled sign test
+        must resolve the same way at that boundary."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            # 10s later, well inside the idle band's own lower bound, so
+            # unexplained rather than idle.
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split is not None
+        assert tier_split["favors_5m_slice"] == "5m"
+
+    def test_minority_1h_slice_net_delta_of_exactly_zero_resolves_like_the_dominant_tiers_own_wash(
+        self, fake_projects, capsys
+    ):
+        """Mirror of the test above for a 5m-dominant root: a minority
+        1h-tier write small enough (100 tokens) that its own switch-delta
+        rounds to exactly $0.00 pins the same wash boundary on the
+        tier == 5m branch's own net_1h_slice > 0 test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            # 10s later, well inside the idle band's own lower bound, so
+            # unexplained rather than idle.
+            _priced("claude-sonnet-5", ephemeral_1h=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split is not None
+        assert tier_split["favors_1h_slice"] == "1h"
+
+    def test_both_origins_mixed_with_different_directions_each_print_only_their_own_line(
+        self, fake_projects, capsys
+    ):
+        """The same root ordinal (account-1) is mixed in both the main and
+        subagent buckets at once, disagreeing in a different direction per
+        origin:
+
+        - main is the near-tie mixed root shape (share 0.870, excluded,
+          disagree).
+        - subagent is the dominance-resolved mixed root shape (share
+          0.971, clears, agree).
+
+        Every other test in this class matches its tier-split line as an
+        unscoped substring of the whole report; here that would pass even
+        if a line leaked into the wrong origin's own '### {origin}'
+        section, so each assertion below is scoped to that section."""
+        main_records = _ttl_verdict_near_tie_mixed_root_records()
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="d1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="d2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="d3"),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", main_records)
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_section = out[out.index("### main"):out.index("### subagent")]
+        subagent_section = out[out.index("### subagent"):]
+        main_tier_split = _extract_ttl_verdict_tier_split_line(main_section, "account-1")
+        subagent_tier_split = _extract_ttl_verdict_tier_split_line(subagent_section, "account-1")
+        assert main_tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert subagent_tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+        main_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        subagent_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert main_row["Clears"] == "excluded(near-tie)"
+        assert subagent_row["Clears"] == "True"
 
 
 class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
