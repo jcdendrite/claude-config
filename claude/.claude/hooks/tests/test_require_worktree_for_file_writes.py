@@ -332,6 +332,23 @@ class TestMachineLevelMarker:
         path = str(user_marker_home / ".claude" / "some-file.txt")
         assert run_hook(FILE_WRITES_HOOK, write_input(path)) == "allow"
 
+    def test_home_legacy_marker_overrides_disagreeing_config_dir_row(
+        self, non_opted_repo, user_marker_home, monkeypatch
+    ):
+        """worktree_required's config-dir-or-home union, exercised through
+        this hook rather than _config_value directly: an explicit
+        `worktree_required = false` row in the resolved CLAUDE_CONFIG_DIR's
+        own claude-config.toml must not defeat $HOME/.claude's legacy
+        marker -- mirrors test_config_lib.py's own
+        TestUnionSemantics.test_explicit_false_in_config_dir_does_not_defeat_true_under_home_legacy,
+        which pins the same invariant generically against _config_value."""
+        config_dir = user_marker_home.parent / "profile-config"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("worktree_required = false\n")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        path = str(non_opted_repo / "file.txt")
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "deny"
+
 
 def _lock_worktree(worktree, reason: str) -> None:
     """Fabricate a `git worktree lock` state on `worktree` with an arbitrary

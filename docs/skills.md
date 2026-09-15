@@ -33,7 +33,7 @@ Full descriptions for skills, slash commands, and project-scoped plugins in this
 
 Unlike the ten workflow-utility name-only skills (brief, handoff, read-docx-comments, pr-description, transcript-analysis, transcript-narrative, error-mode-analysis, tighten-prose, measure-check-output, review-loop-cost-audit), five other categories of name-only skill exist:
 
-- **Knowledge-domain skills** (`error-handling`, `test-conventions`, `sql-query-conventions`) — kept name-only because their trigger surfaces are too broad to scope reliably; reached by name from the review skills and by `Read` from reviewer agents.
+- **Knowledge-domain skills** (`error-handling`, `test-conventions`, `sql-query-conventions`, `feature-flags`) — reached by name from the review skills and by `Read` from reviewer agents. The first three are name-only because their trigger surfaces are too broad to scope reliably. `feature-flags` is name-only for a different reason: every realistic arrival moment is already covered by an in-budget skill, a reviewer agent, or a path-scoped rule that can name it.
 - **Debugging playbook** (`root-cause-analysis`) — invoke-only, no TRIGGER blocks, consulted by name during investigation planning.
 - **Dispatcher-reached reviewer** (`agent-review`) — carries TRIGGER blocks (graceful-degradation insurance on pre-v2.1.129 clients) but is always reached by name from `/code-review`, never by description auto-trigger.
 - **Periodic-audit workflow** (`memory-store-audit`) — carries TRIGGER blocks so its `DO NOT TRIGGER` clause can name `ai-instruction-and-memory-files` explicitly and keep the two skills' surfaces distinct at a glance.
@@ -43,7 +43,14 @@ Each skill lives in `claude-skills/skills/<skill-name>/SKILL.md`. A skill direct
 
 ## Skills available by name (no description budget cost)
 
-Sixteen skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Ten skills carry no TRIGGER blocks: nine of the ten workflow utilities (all but `transcript-analysis`) and the debugging playbook. The other six — `transcript-analysis`, the three knowledge-domain skills, `agent-review`, and `memory-store-audit` — carry TRIGGER blocks and may fire via description match on pre-v2.1.129 clients.
+Seventeen skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Ten skills carry no TRIGGER blocks: nine of the ten workflow utilities — all but `transcript-analysis` — and one debugging playbook.
+
+The other seven carry TRIGGER blocks and may fire via description match on older versions:
+
+- `transcript-analysis`
+- the four knowledge-domain skills
+- one dispatcher-reached reviewer skill
+- one periodic-audit workflow skill
 
 | Skill | Role |
 |---|---|
@@ -60,6 +67,7 @@ Sixteen skills in this repo use `skillOverrides: name-only` — the model can in
 | `/error-handling` | Canonical error-handling standard: code namespace, RFC 9457–derived envelope, developer-only message fields, call-site anti-patterns |
 | `/test-conventions` | Test authoring conventions: pyramid shape, fixture design, naming, regression-test intent; reached by name from code-review and by Read from reviewer agents |
 | `/sql-query-conventions` | Read-path SQL conventions: explicit limits, N+1 avoidance, explicit column selection; reached by name from code-review and by Read from reviewer agents |
+| `/feature-flags` | Deploy-time-vs-runtime toggle layering: which layer a toggle belongs at, and whether a flag platform is warranted; reached by name from `config-environments`, a Terraform rule clause, and two reviewer-agent pointers |
 | `/agent-review` | Reviewer audit for agent files (frontmatter, triggers, voice, length); dispatched by `/code-review`, never description-auto-triggered |
 | `/root-cause-analysis` | Debugging and root-cause investigation playbook: symptom-first, tool-ingestion verification, asymmetry capture, entity-level data pull, incident confirmation before shipping |
 | `/memory-store-audit` | Migrate-verify-delete workflow for auditing the machine's auto-memory stores; nudged by `nudge-memory-store-audit.sh` once a store outgrows its per-session load budget |

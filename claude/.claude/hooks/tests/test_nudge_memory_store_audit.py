@@ -79,6 +79,21 @@ def _base_payload(source: str = "startup") -> dict:
     return {"source": source}
 
 
+def _isolated_hooks_dir(tmp_path: Path) -> Path:
+    """Symlink the nudge hook plus its _lib.sh/_config.sh dependencies into
+    a directory with no config-keys.psv sibling, so _config_schema_field sees
+    an absent (unreadable) schema and _config_enabled memory_audit_nudge
+    returns exit 3. Mirrors
+    test_nudge_handoff_near_context_cap.py's identical-purpose helper.
+    Returns the isolated hook's own path."""
+    isolated = tmp_path / "isolated-hooks"
+    isolated.mkdir()
+    (isolated / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
+    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    return isolated / NUDGE_HOOK.name
+
+
 def _state_file(home: Path) -> Path:
     return _config_dir(home) / ".memory-audit-nudge-fired"
 
@@ -171,6 +186,30 @@ class TestNudgeMemoryStoreAudit:
         assert result.stdout.strip() == ""
         assert not _log_path(tmp_path).exists()
         assert not _state_file(tmp_path).exists()
+
+    def test_unreadable_config_keys_psv_keeps_nudge_enabled(self, tmp_path):
+        """The kill-switch check's own fail direction (comment above its
+        _config_enabled call): exit 3 (config-keys.psv unreadable) falls
+        through the same `case` as exit 2, leaving the nudge enabled rather
+        than silently suppressed. A schema-unreadable hook that stayed
+        silent here would be indistinguishable from a correctly-suppressed
+        one without this test."""
+        isolated_hook = _isolated_hooks_dir(tmp_path)
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-unreadable-schema", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
+        )
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            [str(isolated_hook)],
+            input=json.dumps(_base_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", "schema-unreadable must not suppress the nudge"
 
     @pytest.mark.parametrize(
         "payload",

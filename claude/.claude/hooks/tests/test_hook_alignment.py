@@ -1,10 +1,10 @@
 """Three-layer hook alignment test suite.
 
 Layer 0 — Docs coverage: every .sh hook in claude/.claude/hooks/ (excluding
-_lib.sh) must have its own list-item entry in docs/hooks.md.
+_lib.sh and _config.sh) must have its own list-item entry in docs/hooks.md.
 
 Layer 1 — Static checks: every .sh hook in claude/.claude/hooks/ and
-plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
+plugins/*/hooks/ (excluding _lib.sh/_config.sh siblings) must declare a
 `# hook-class: <value>` header on line 2 with a valid value, and hooks
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
 `# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
@@ -69,25 +69,34 @@ _MAIN_HOOKS_DIR = _REPO_ROOT / "claude" / ".claude" / "hooks"
 _PLUGIN_HOOKS_DIRS = list((_REPO_ROOT / "plugins").glob("*/hooks"))
 
 
+# Shared helper libraries, not hooks -- sourced by hooks/scripts, never
+# themselves registered on a PreToolUse/PostToolUse matcher or documented as
+# a standalone hook in docs/hooks.md.
+_HELPER_LIBRARY_NAMES: frozenset[str] = frozenset({"_lib.sh", "_config.sh"})
+
+
 def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
 
-    Excludes each directory's _lib.sh by default. Pass include_lib=True to
-    sweep those too. Each detector's default follows from its own
-    self-match risk against _lib.sh:
-    - `include_lib=True` (used only by the `\\s` detector) -- that detector
-      is safe against _lib.sh because it isn't defined there.
-    - The bare-jq and inline-matcher detectors stay excluded because each
-      is itself defined inside _lib.sh using the exact primitive it
-      detects -- including it would be a guaranteed self-match.
+    Excludes both shared helper libraries (_lib.sh, _config.sh) by default.
+    Pass include_lib=True to add _lib.sh back in -- used only by the `\\s`
+    detector, which is safe against _lib.sh because it isn't defined there.
+    _config.sh stays excluded even then: it exists only under
+    claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
+    test_all_hooks_and_libs_includes_every_lib_sh's one-_lib.sh-per-directory
+    count invariant. The bare-jq and inline-matcher detectors stay excluded
+    from _lib.sh because each is itself defined inside _lib.sh using the
+    exact primitive it detects -- including it would be a guaranteed
+    self-match.
     """
+    excluded = {"_config.sh"} if include_lib else _HELPER_LIBRARY_NAMES
     hooks: list[Path] = []
     for sh in sorted(_MAIN_HOOKS_DIR.glob("*.sh")):
-        if include_lib or sh.name != "_lib.sh":
+        if sh.name not in excluded:
             hooks.append(sh)
     for hooks_dir in _PLUGIN_HOOKS_DIRS:
         for sh in sorted(hooks_dir.glob("*.sh")):
-            if include_lib or sh.name != "_lib.sh":
+            if sh.name not in excluded:
                 hooks.append(sh)
     return hooks
 
@@ -388,6 +397,63 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     )
 
 
+def _pretooluse_matcher_groups_for(hook: Path) -> list[str]:
+    """The `matcher` string of every PreToolUse group containing an entry
+    wired to `hook` -- one entry per matcher group, using the same
+    exact-last-shell-word match _pretooluse_entries_for uses."""
+    if hook.parent == _MAIN_HOOKS_DIR:
+        config_path = _SETTINGS_PATH
+        expected_invocation = f"~/.claude/hooks/{hook.name}"
+    else:
+        config_path = hook.parent / "hooks.json"
+        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
+    config = json.loads(config_path.read_text())
+    matchers: list[str] = []
+    for group in config.get("hooks", {}).get("PreToolUse", []):
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks", []):
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            tokens = shlex.split(command)
+            if tokens and tokens[-1] == expected_invocation:
+                matchers.append(group.get("matcher", ""))
+    return matchers
+
+
+# enforce-marker-script-shape.sh declares, in its own header comment, that
+# closing its bypass class requires being wired on both the Bash and an
+# Edit|Write|MultiEdit PreToolUse matcher -- gating only the shell leaves a
+# direct file write as an open path to the same state.
+# test_gate_hook_registered_in_pretooluse_matcher above only proves "wired
+# into at least one matcher," not both surfaces.
+_DUAL_SURFACE_WRITE_GATE_HOOKS: tuple[str, ...] = ("enforce-marker-script-shape.sh",)
+
+
+@pytest.mark.parametrize("hook_name", _DUAL_SURFACE_WRITE_GATE_HOOKS)
+def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: str) -> None:
+    """Both dual-surface write-gate hooks must carry a bare `Bash` PreToolUse
+    entry AND an Edit|Write|MultiEdit-shaped one -- a settings.json edit
+    that drops either surface would still pass
+    test_gate_hook_registered_in_pretooluse_matcher (which only checks "at
+    least one") while silently reopening the direct-file-write or
+    shell-command bypass each hook's header names as the reason the second
+    surface exists.
+    """
+    hook = _MAIN_HOOKS_DIR / hook_name
+    matchers = _pretooluse_matcher_groups_for(hook)
+    assert "Bash" in matchers, f"{hook_name}: not wired on a bare 'Bash' PreToolUse matcher"
+    edit_write_multiedit_matchers = [
+        matcher for matcher in matchers if {"Edit", "Write", "MultiEdit"} <= set(matcher.split("|"))
+    ]
+    assert edit_write_multiedit_matchers, (
+        f"{hook_name}: no PreToolUse matcher spanning Edit|Write|MultiEdit "
+        f"found -- closing this hook's file-write bypass class requires "
+        f"both surfaces"
+    )
+
+
 def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     """The two config-value declarations backing plan-mode-entry discipline.
 
@@ -562,6 +628,7 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-private-project-refs.sh",
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
+    "enforce-marker-script-shape.sh",
 )
 
 

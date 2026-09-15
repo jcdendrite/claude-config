@@ -18,8 +18,10 @@
 # threshold -> re-arm band -> fire.
 # Exits 0 on every path.
 #
-# Kill-switch: touching <config-dir>/.memory-audit-nudge-disabled suppresses
-# every future fire, checked before any filesystem scan.
+# Kill-switch: delegates to _config_enabled's memory_audit_nudge schema row
+# (presence-disables, default true), checked before any filesystem scan.
+# The legacy file <config-dir>/.memory-audit-nudge-disabled still works via
+# the schema's legacy-import path.
 #
 # The timeout-binary precondition runs immediately after sourcing _lib.sh,
 # before any jq/filesystem call. Nothing below it ever runs uncapped as a
@@ -52,7 +54,20 @@ SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then
 
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
-[ -f "$CONFIG_DIR/.memory-audit-nudge-disabled" ] && exit 0
+# Exit 2 can't reach here: CONFIG_DIR is already resolved above.
+# Exit 3 (config-keys.psv missing or unreadable) and exit 4 (schema
+# readable but this key's row is absent or malformed) both fall through
+# the same `case` as 2, since neither matches the sole `1)` arm.
+# Result: the nudge stays enabled on a schema-read failure -- that is
+# memory_audit_nudge's documented fail-open direction, not an omission.
+# _config.sh's own contract treats 3 and 4 identically; this comment names
+# both so a future edit that adds a `4)` arm with different handling
+# doesn't silently diverge from that contract.
+_config_enabled memory_audit_nudge
+case "$?" in
+  1) exit 0 ;;
+  3) ;; # schema unreadable: intentional no-op, see comment above
+esac
 
 # Malformed override values (empty, literal zero, non-digit, zero-padded,
 # 9+ digits) fall back to the shipped default, reusing HANDOFF_NUDGE_ABS_CAP's

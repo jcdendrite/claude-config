@@ -92,6 +92,7 @@
     "error-handling": "name-only",
     "test-conventions": "name-only",
     "sql-query-conventions": "name-only",
+    "feature-flags": "name-only",
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",

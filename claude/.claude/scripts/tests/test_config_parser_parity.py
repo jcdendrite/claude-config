@@ -1,0 +1,657 @@
+"""Differential test: _config.sh (bash) and _config.py (Python) must return
+byte-identical verdicts for every key, over a shared adversarial fixture
+corpus. A shared schema data file (config-keys.psv) makes the *schema*
+divergence structurally impossible, but bash and Python are still two
+independently maintained parsers of the same claude-config.toml grammar,
+and this suite is what catches them silently disagreeing.
+
+CONFIG_KEYS_PSV and CONFIG_SH below are declared as module-level path
+constants (not inline strings) so TestCrossDomainReadCompleteness
+(test_select_tests.py) can see this file's dependency on them and enforce
+select-tests.py's own CONFIG_KEYS_PSV cross-domain-exception row.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from helpers import HOOKS_DIR
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from _config import schema  # noqa: E402
+from hooks.tests.test_config_lib import _isolated_hooks_dir_with_truncated_key_row  # noqa: E402
+
+CONFIG_SH = HOOKS_DIR / "_config.sh"
+CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
+
+_ALL_KEYS = sorted(schema().keys())
+
+
+def _bash_values() -> dict[str, str | None]:
+    """Runs _config_value for every schema key in one bash subprocess,
+    inheriting the current (test-monkeypatched) environment."""
+    lines = [f'. "{CONFIG_SH}"']
+    for key in _ALL_KEYS:
+        lines.append(
+            f'v=$(_config_value {key}); s=$?; '
+            f'if [ "$s" -eq 2 ]; then printf "%s\\tUNRESOLVED\\n" "{key}"; '
+            f'else printf "%s\\t%s\\n" "{key}" "$v"; fi'
+        )
+    result = subprocess.run(["bash", "-c", "; ".join(lines)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    values: dict[str, str | None] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("\t")
+        values[key] = None if value == "UNRESOLVED" else value
+    return values
+
+
+def _python_values() -> dict[str, str | None]:
+    # Re-import fresh each call: _config.py's schema()/config_value() re-read
+    # from disk every time (no caching), matching _config.sh's own behavior,
+    # so no explicit reload is needed here either.
+    from _config import config_value
+
+    return {key: config_value(key) for key in _ALL_KEYS}
+
+
+def _assert_parity() -> dict[str, str | None]:
+    bash_values = _bash_values()
+    python_values = _python_values()
+    assert bash_values == python_values, (
+        f"bash/python parser parity failure:\nbash:   {bash_values}\npython: {python_values}"
+    )
+    return bash_values
+
+
+def _write_state(home: Path, content: bytes) -> None:
+    state_file = home / ".claude" / "claude-config.toml"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_bytes(content)
+
+
+def _make_home(tmp_path: Path, monkeypatch) -> Path:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return home
+
+
+# ---------------------------------------------------------------------------
+# Adversarial state-file content fixtures -- each writes claude-config.toml,
+# then asserts every one of the 15 keys resolves identically in both readers.
+# ---------------------------------------------------------------------------
+
+ADVERSARIAL_FIXTURES: dict[str, bytes] = {
+    "crlf-line-endings": b"handoff_nudge = false\r\ncommit_stall_block = true\r\n",
+    "trailing-whitespace": b"handoff_nudge = false   \ncommit_stall_block = true\t\n",
+    "trailing-nbsp-on-value": "handoff_nudge = false \n".encode(),
+    "trailing-ideographic-space-on-value": "handoff_nudge = false　\n".encode(),
+    "trailing-form-feed-on-value": b"handoff_nudge = false\x0c\n",
+    "trailing-vertical-tab-on-value": b"handoff_nudge = false\x0b\n",
+    "leading-utf8-bom": b"\xef\xbb\xbfhandoff_nudge = false\n",
+    "mixed-crlf-and-lf": b"handoff_nudge = false\r\ncommit_stall_block = true\n",
+    "hash-inside-quoted-value": b'handoff_nudge = "true#123" \n',
+    "duplicate-keys-last-wins": b"handoff_nudge = false\nhandoff_nudge = true\n",
+    "uppercase-boolean-literal": b"handoff_nudge = TRUE\ncommit_stall_block = True\n",
+    "toml-table-header": b"[section]\nhandoff_nudge = false\n",
+    "toml-array-value": b"handoff_nudge = [true, false]\n",
+    "toml-multiline-string-value": b'handoff_nudge = """\nmulti\nline\n"""\n',
+    "empty-file": b"",
+    "comments-and-blank-lines-only": b"# just a comment\n\n   \n",
+    # U+212A KELVIN SIGN is a documented Unicode special-casefold case:
+    # Python's str.lower() folds it to ASCII "k", while bash's own
+    # LC_ALL=C-forced `tr '[:upper:]' '[:lower:]'` leaves the 3-byte UTF-8
+    # sequence untouched. Both readers still reject this row today (a bool
+    # key's value must be exactly "true"/"false", and neither the raw
+    # Kelvin sign nor its Python-folded "k" match that), so this pins the
+    # currently-passing parity rather than proving a live divergence. It is
+    # a parity-pin, not a regression test for glibc's unforced-locale `tr`
+    # casefold behavior. This fixture runs only under this repo's own
+    # LC_ALL=C-forced tr, so it cannot exercise that unverified mechanism
+    # either way. See TestSpecificFixtureExpectations below for the direct
+    # assertion this relies on.
+    "kelvin-sign-value-collapses-under-unicode-casefold": "handoff_nudge = K\n".encode(),
+    # A bare enum literal is not valid TOML (only true/false may be
+    # bare; any other scalar must be quoted) -- rejected as malformed in
+    # both readers, falling through to pr_cost_disclosure's own schema
+    # default.
+    "bare-enum-literal-is-malformed": b"pr_cost_disclosure = dollars\n",
+    "quoted-enum-literal-resolves": b'pr_cost_disclosure = "dollars"\n',
+    # A quoted boolean is not valid TOML either -- true/false must stay
+    # bare -- rejected as malformed in both readers, falling through to
+    # handoff_nudge's own schema default ("true").
+    "quoted-boolean-literal-is-malformed": b'handoff_nudge = "false"\n',
+    # The four quote-well-formedness shapes below pin the fiddlier edges of
+    # the same quoting rule, on both readers together, so a later change to
+    # either side's quote-stripping can't silently diverge on one of them.
+    "unmatched-quote-open-only": b'pr_cost_disclosure = "dollars\n',
+    "unmatched-quote-close-only": b'pr_cost_disclosure = dollars"\n',
+    "internal-quote-in-value": b'pr_cost_disclosure = "doll"ars"\n',
+    "whitespace-inside-quoted-value": b'pr_cost_disclosure = "dol lars"\n',
+    "empty-quoted-value": b'pr_cost_disclosure = ""\n',
+    # Grammar-valid (quoted) but schema-invalid for a bool key -- passes the
+    # bareness gate, then must be caught by the schema-type check instead;
+    # pins the combination TestSchemaTypeValidationOnRead exercises per-key,
+    # here on both readers together.
+    "quoted-non-boolean-value-for-bool-key": b'handoff_nudge = "notabool"\n',
+}
+
+
+class TestAdversarialFixtureParity:
+    @pytest.mark.parametrize("label", sorted(ADVERSARIAL_FIXTURES))
+    def test_fixture_parity(self, label, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, ADVERSARIAL_FIXTURES[label])
+        _assert_parity()
+
+
+class TestSpecificFixtureExpectations:
+    """A handful of the fixtures above have one obviously-correct expected
+    value worth pinning directly, beyond "both readers agree with each
+    other" -- agreeing on a wrong answer would still pass the parity-only
+    check above."""
+
+    def test_form_feed_is_stripped_not_rejected(self, tmp_path, monkeypatch):
+        """Unlike NBSP/ideographic space, form-feed IS part of both readers'
+        whitespace-trim set (POSIX [:space:] / _ASCII_WHITESPACE) -- so the
+        value parses as valid, trimmed "false", not as malformed."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"handoff_nudge = false\x0c\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_vertical_tab_is_stripped_not_rejected(self, tmp_path, monkeypatch):
+        """Unlike NBSP/ideographic space, vertical-tab IS part of both
+        readers' whitespace-trim set (POSIX [:space:] / _ASCII_WHITESPACE) --
+        so the value parses as valid, trimmed "false", not as malformed."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"handoff_nudge = false\x0b\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_empty_file_resolves_to_schema_default(self, tmp_path, monkeypatch):
+        """An empty state file has no row for any key, so every key falls
+        through to its config-keys.psv default -- handoff_nudge defaults to
+        "true"."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_comments_and_blank_lines_only_resolves_to_schema_default(self, tmp_path, monkeypatch):
+        """A state file with no conforming key=value row at all -- only
+        comments and blank lines -- resolves the same as an empty file: the
+        config-keys.psv default."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"# just a comment\n\n   \n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_nbsp_on_value_is_rejected_not_silently_trimmed(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, "handoff_nudge = false \n".encode())
+        values = _assert_parity()
+        # Malformed -- falls through to the schema default (true), not "false".
+        assert values["handoff_nudge"] == "true"
+
+    def test_duplicate_key_last_occurrence_wins(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"handoff_nudge = false\nhandoff_nudge = true\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_uppercase_boolean_literal_is_case_folded(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"handoff_nudge = TRUE\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_leading_bom_does_not_corrupt_the_first_key(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"\xef\xbb\xbfhandoff_nudge = false\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_toml_table_header_line_is_skipped_but_sibling_key_still_parses(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"[section]\nhandoff_nudge = false\n")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_kelvin_sign_value_is_rejected_by_both_readers(self, tmp_path, monkeypatch):
+        """U+212A KELVIN SIGN is a documented Unicode special-casefold case
+        (Python's str.lower() folds it to ASCII "k"; bash's own
+        LC_ALL=C-forced tr does not). Both readers still reject this row for
+        a bool key -- neither the raw Kelvin sign nor its Python-folded "k"
+        is "true"/"false" -- so it falls through to the schema default
+        (true), not just "the two readers happen to agree on some value"."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, "handoff_nudge = K\n".encode())
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_bare_enum_literal_falls_through_to_schema_default(self, tmp_path, monkeypatch):
+        """A bare (unquoted) enum literal is not valid TOML -- both readers
+        reject the row as malformed and fall through to pr_cost_disclosure's
+        own schema default ("false"), not the literal itself."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"pr_cost_disclosure = dollars\n")
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == "false"
+
+    def test_quoted_enum_literal_resolves_to_its_own_value(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b'pr_cost_disclosure = "dollars"\n')
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == "dollars"
+
+    def test_quoted_boolean_literal_falls_through_to_schema_default(self, tmp_path, monkeypatch):
+        """A quoted "false" is not valid TOML for a bool key -- both readers
+        reject the row as malformed and fall through to handoff_nudge's own
+        schema default ("true"), not the literal itself."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b'handoff_nudge = "false"\n')
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# The partial-file fixture -- N valid lines plus exactly one
+# subset-violating line, asserting the valid keys still resolve correctly in
+# BOTH readers (not just one -- test_config_lib.py's own partial-file test
+# covers bash alone and the warning-emission side; this is the cross-reader
+# agreement side).
+# ---------------------------------------------------------------------------
+
+
+class TestPartialFileFixtureParity:
+    def test_valid_keys_resolve_identically_in_both_readers_despite_one_bad_line(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(
+            home,
+            b"# a comment\n"
+            b"handoff_nudge = false\n"
+            b"this line has no equals sign\n"
+            b"commit_stall_block = true\n",
+        )
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+        assert values["commit_stall_block"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Legacy-file fixtures -- state file absent entirely (or, for the union
+# test, present at a different location), only a legacy sentinel file
+# present, run through the same byte-identical _assert_parity() check as the
+# state-file fixtures above. Union/legacy-probe/legacy-polarity logic is
+# independently implemented in each reader (_config.sh's
+# _config_location_value/_config_value, _config.py's _location_value/
+# config_value); test_config_lib.py (bash) and test_config_py.py (python)
+# each separately pin their own reader's expected value against a fixture
+# shape like this, but neither runs both readers against ONE shared fixture
+# the way this class does.
+# ---------------------------------------------------------------------------
+
+_SCHEMA = schema()
+
+
+def _write_legacy_file(directory: Path, key: str, content: str | None = None) -> None:
+    """Writes KEY's own config-keys.psv-declared legacy file at DIRECTORY --
+    content=None touches an empty file (presence-enables/presence-disables
+    polarity, where only presence matters); a content-matches key
+    (pr_cost_disclosure) passes its intended raw content instead."""
+    directory.mkdir(parents=True, exist_ok=True)
+    legacy_path = directory / _SCHEMA[key].legacy_filename
+    if content is None:
+        legacy_path.touch()
+    else:
+        legacy_path.write_text(content)
+
+
+class TestLegacyFileFixtureParity:
+    def test_presence_enables_legacy_file_present(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "worktree_required")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
+
+    def test_presence_enables_legacy_file_absent(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        values = _assert_parity()
+        assert values["worktree_required"] == "false"
+
+    def test_presence_disables_legacy_file_present(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "handoff_nudge")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_presence_disables_legacy_file_absent(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    @pytest.mark.parametrize(
+        "content,expected",
+        [
+            ("dollars\n", "dollars"),
+            ("DOLLARS\n", "dollars"),
+            ("garbled-not-dollars\n", "false"),
+        ],
+        ids=["valid", "case-folded", "invalid"],
+    )
+    def test_content_matches_legacy_file(self, tmp_path, monkeypatch, content, expected):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "pr_cost_disclosure", content=content)
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == expected
+
+    def test_config_dir_or_home_union_disagreeing_locations(self, tmp_path, monkeypatch):
+        """A config-dir-or-home key's legacy file present ONLY at
+        $HOME/.claude, with an explicit `false` row at the (different)
+        resolved config dir's own state file, must still resolve true in
+        both readers -- the union is OR'd across both locations'
+        independently-resolved effective value, not first-location-wins."""
+        home = _make_home(tmp_path, monkeypatch)
+        config_dir = tmp_path / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        (config_dir / "claude-config.toml").write_text("worktree_required = false\n")
+        _write_legacy_file(home / ".claude", "worktree_required")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
+
+    def test_legacy_probe_on_resolution_failure(self, tmp_path, monkeypatch):
+        """worktree_required is the sole key whose schema row carries
+        legacy-probe-on-resolution-failure: true -- with an unresolvable
+        primary config dir (a relative CLAUDE_CONFIG_DIR) and its own legacy
+        file present at the literal $HOME/.claude, both readers must still
+        resolve true rather than propagating the resolution failure."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "worktree_required")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE_CONFIG_DIR variants: unset, relative, absolute -- and an empty $HOME.
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDirEnvironmentVariants:
+    def test_unset_claude_config_dir(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        _assert_parity()
+
+    def test_relative_claude_config_dir(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        values = _assert_parity()
+        # round_consult_gate has no legacy-probe-on-resolution-failure, so a
+        # relative CLAUDE_CONFIG_DIR must resolve to unresolvable (None) in
+        # both readers.
+        assert values["round_consult_gate"] is None
+
+    def test_absolute_claude_config_dir(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        config_dir = home.parent / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _assert_parity()
+
+    def test_empty_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", "")
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        values = _assert_parity()
+        assert values["round_consult_gate"] is None
+
+
+class TestConfigDirOverrideEmptyString:
+    def test_empty_string_override_resolves_same_as_no_override(self, tmp_path, monkeypatch):
+        """config_dir_override="" must resolve identically to no override, in
+        both readers. Bash's `[ -n "$config_dir_override" ]` already treats ""
+        as unprovided, falling through to normal resolution. Python's
+        `config_value`/`config_enabled` must match that for a `str` argument
+        (a `Path("")` argument is a separate, untested case -- see the
+        docstring caveat on `config_value`)."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"handoff_nudge = false\n")
+
+        result = subprocess.run(
+            ["bash", "-c", f'. "{CONFIG_SH}"; _config_value handoff_nudge ""'],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        bash_value = result.stdout.strip()
+
+        from _config import config_value
+
+        python_value = config_value("handoff_nudge", "")
+
+        assert bash_value == python_value == "false"
+
+
+class TestSchemaRowParsingEdgeCases:
+    """config-keys.psv is read by two independently-implemented parsers --
+    _config_schema_field (bash) and schema() (Python) -- so a malformed row
+    shape must degrade identically in both, not just for a well-formed file."""
+
+    def test_duplicate_key_row_first_occurrence_wins_in_both_readers(self, tmp_path, monkeypatch):
+        """Two rows sharing a key: _config_schema_field returns on the first
+        matching row inside its read loop; schema() must agree rather than
+        letting a dict-building last-wins default silently diverge."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        fixture_schema = (
+            "handoff_nudge|bool|false|config-dir|false||||Handoff nudge||\n"
+            "handoff_nudge|bool|true|config-dir|false||||Handoff nudge (duplicate)||\n"
+        )
+        (isolated_hooks_dir / "config-keys.psv").write_text(fixture_schema)
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_schema_field handoff_nudge default'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 0, bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        python_default = _config.schema()["handoff_nudge"].default
+
+        assert bash_result.stdout == python_default == "false"
+
+    def test_blank_key_row_invisible_to_both_readers(self, tmp_path, monkeypatch):
+        """A row with an empty key field (a stray leading pipe) must be
+        skipped by both readers -- not indexed under the key "" in Python
+        only, the one shape _config_schema_known_keys'/_config_schema_field's
+        `case "$row_key" in ''|'#'*) continue ;; esac` already guards against."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text("|bool|false|config-dir|false||||Blank key row||\n")
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_schema_known_keys'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode != 0
+        assert "no recognized key rows" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        assert _config.schema() == {}
+
+
+class TestMissingSchemaFile:
+    def test_missing_schema_file_fails_clearly_in_both_readers(self, tmp_path, monkeypatch, capsys):
+        """config-keys.psv itself absent (a partial stow-relink, an
+        interrupted `git pull`) must fail loudly and distinctly in both
+        readers -- not bash's same-return-code "unknown key" mis-signal, and
+        not Python's uncaught FileNotFoundError."""
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        # _config.sh's schema-file path resolves via BASH_SOURCE relative to
+        # wherever it was sourced from (not realpath-followed) -- the same
+        # isolation technique conftest.py's isolated_home fixture uses.
+        # config-keys.psv is deliberately never symlinked in here.
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
+            capture_output=True, text=True,
+        )
+        assert "schema file not found or unreadable" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(KeyError):
+            _config.config_value("worktree_required")
+        assert "schema file not found or unreadable" in capsys.readouterr().err
+
+
+class TestReadableButEmptySchemaFile:
+    """config-keys.psv present and readable but parsing to zero rows --
+    empty, or comments/blank-lines-only content -- is a mid-write-truncation
+    or stow-relink race, distinct from the fully-absent-file case above.
+    _config_schema_field's own upfront [ -r ] check passes, so _config_value
+    now degrades the same way it does for the single-row-missing shape: exit
+    4, with a stderr warning naming the schema file (see
+    _config_schema_field's own docstring).
+    Python's own equivalent stays ConfigSchemaEmptyError, a KeyError subtype
+    carrying a more specific type/message than a bare KeyError would, so a
+    caller can tell this race apart from a genuinely typo'd key literal --
+    no enforcement-critical Python caller depends on numeric exit-code
+    parity with bash here."""
+
+    @pytest.mark.parametrize(
+        "schema_content",
+        ["", "# just a comment\n\n", "\n\n\n"],
+        ids=["empty-file", "comments-and-blank-lines-only", "blank-lines-only"],
+    )
+    def test_readable_empty_schema_returns_exit_4_in_bash_and_distinct_error_in_python(
+        self, tmp_path, monkeypatch, schema_content, capsys
+    ) -> None:
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(schema_content)
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 4
+        assert bash_result.stdout == ""
+        assert "parsed zero rows" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaEmptyError):
+            _config.config_value("worktree_required")
+        assert capsys.readouterr().err == "", (
+            "a readable-but-empty schema must degrade as silently as an "
+            "ordinary unknown key, not print a warning"
+        )
+
+
+class TestSchemaRowTruncatedMidRow:
+    """Security regression: a config-keys.psv row present but cut off after
+    the key/type fields (an interrupted stow-relink/git-pull caught mid-row,
+    rather than mid-file) must not resolve as an empty string that
+    config_enabled's any-value-but-false rule would then read as enabled.
+    autonomous_shipping is the key this matters most for: every other
+    enforcement-critical key's safe direction is "stays armed" regardless of
+    this bug, but autonomous_shipping's safe direction is "not shipping" -- a
+    silent empty resolution/default here would silently grant it. Bash-side
+    counterpart: test_config_lib.py's
+    test_mid_row_truncation_returns_exit_4_not_a_silent_grant."""
+
+    def test_truncated_row_raises_row_truncated_error_not_a_silent_grant(self, tmp_path, monkeypatch) -> None:
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+        )
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value autonomous_shipping'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 4
+        assert bash_result.stdout == ""
+        assert "autonomous_shipping" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaRowTruncatedError):
+            _config.config_value("autonomous_shipping")
+
+    def test_truncation_after_resolution_column_still_raises_row_truncated_error(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Security regression: a row truncated one column later than the
+        case above -- key/type/default/resolution all intact, only
+        legacy-probe-on-resolution-failure and beyond missing -- must still
+        raise ConfigSchemaRowTruncatedError. worktree_required is the key
+        this matters most for: its row is the one real row whose
+        legacy-probe-on-resolution-failure column is `true`, so a naive bool
+        coercion of the truncated (empty) column is indistinguishable from a
+        legitimate `false` unless the raw string is checked instead. Bash-side
+        counterpart: test_config_lib.py's
+        test_truncation_after_resolution_column_still_returns_exit_4."""
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "worktree_required", "worktree_required|bool|false|config-dir-or-home"
+        )
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 4
+        assert bash_result.stdout == ""
+        assert "worktree_required" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaRowTruncatedError):
+            _config.config_value("worktree_required")
+
+
+class TestGenuineToml:
+    """docs/config-file.md claims claude-config.toml stays genuine TOML,
+    confirmed by loading it through Python's stdlib `tomllib` -- this is
+    that test. Neither reader in this repo uses `tomllib` itself; this
+    only proves the file a hand-editor authors is what any real TOML tool
+    (a linter, an editor's syntax highlighter, `tomllib` itself) also
+    understands."""
+
+    def test_representative_state_file_parses_as_genuine_toml(self, tmp_path: Path) -> None:
+        import tomllib
+
+        lines = []
+        for key in _ALL_KEYS:
+            row = _SCHEMA[key]
+            value = '"dollars"' if key == "pr_cost_disclosure" else row.default
+            lines.append(f"{key} = {value}")
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("\n".join(lines) + "\n")
+
+        with state_file.open("rb") as handle:
+            parsed = tomllib.load(handle)
+
+        assert parsed["pr_cost_disclosure"] == "dollars"
+        assert len(parsed) == len(_ALL_KEYS)
