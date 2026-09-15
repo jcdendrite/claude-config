@@ -20,10 +20,9 @@ row, so it reports this key's TOML value like any other, while
 `_lib_reviewer_round_state_cap()` ignores that same TOML value when actually
 setting the cap. Setting `round_consult_round2_pilot = true` in
 `claude-config.toml` therefore makes `install.sh`'s reporter say "enabled"
-while the gate's round cap stays unaffected — a reporter/enforcement
-divergence, the exact defect class (one function's view of "is this on"
-disagreeing with another's) the whole migration was undertaken to eliminate
-per `docs/design-decisions/sentinel-config-consolidation.md`.
+while the gate's round cap stays unaffected. That is a reporter/enforcement
+divergence, per
+`docs/design-decisions/sentinel-config-consolidation.md`.
 
 A full audit of the other 14 migrated keys' legacy filenames against every
 non-test call site in the repo (bash and Python) found no sibling instances:
@@ -47,13 +46,8 @@ the TOML arm and the TOML-wins-over-legacy precedence, and
 `config-schema-audit.md`'s row for this key is rewritten to describe the
 delegation instead of asserting the raw-file check is intentional.
 
-**Root problem.** `_lib_reviewer_round_state_cap` resolves the round-2
-pilot from one source (the legacy file) while `install.sh`'s
-schema-driven reporter resolves it from another (the TOML key), so a user
-who sets `round_consult_round2_pilot = true` is told at install time that
-the pilot is enabled while the gate silently keeps the default cap of 2 —
-the reporter/enforcement divergence the sentinel-to-TOML migration exists
-to eliminate.
+**Root problem.** The reporter/enforcement divergence described in Context
+above — resolved here by making both read the same source.
 
 **Givens** (fixed conditions this design does not reach):
 
@@ -137,10 +131,10 @@ to eliminate.
     `[verified: require-architect-consult.sh:98,103;
     log-reviewer-round.sh:98,109]`
 11. The added per-call cost is one `_config_enabled` invocation on the
-    reviewer-persona dispatch path only, where
+    reviewer-persona dispatch path only — no new cost class, since
     `require-architect-consult.sh:71` already pays the identical cost for
-    `_lib_round_consult_gate_disabled` before any git call runs — and in
-    that hook the cap call sits at line 98, already past three capped git
+    `_lib_round_consult_gate_disabled` before any git call runs. In that
+    hook, the cap call sits at line 98, already past three capped git
     calls. `[verified: require-architect-consult.sh:70-98]`
 12. Stderr behavior on a torn schema (a `_config.sh` warning line) is
     likewise already present in `require-architect-consult.sh` via the
@@ -180,17 +174,9 @@ to eliminate.
   `_lib_round_consult_gate_disabled`'s shape — is rejected because nothing
   but this one function reads the key, so the wrapper would add an
   indirection with a single caller.
-  **New capability this introduces:** today, once the legacy file is
-  touched, nothing turns the pilot back off short of deleting that file;
-  post-fix, an explicit `round_consult_round2_pilot = false` in
-  `claude-config.toml` overrides a stale legacy file too, since
-  `_config_value`'s precedence is TOML-first (`_config.sh:447-457`). This
-  is a deliberate side effect, not a bug — it gives the same machine-level
-  principal a working off-switch that doesn't exist today — and is safe
-  under this gate's cooperative-agent model
-  (`docs/design-decisions/sentinel-config-consolidation.md`): it moves the
-  cap toward the *less* strict direction only via an explicit write to
-  config the same principal already controls.
+  **New capability this introduces:** TOML `round_consult_round2_pilot = false`
+  now overrides a stale legacy-file touch, since `_config_value` is
+  TOML-first (`_config.sh:447-457`) — intentional, not a regression.
 - **M2 — A plain `if`, not the sibling's `case "$?"` statement.**
   `[anchors: row 1]` `_lib_round_consult_gate_disabled` needs an explicit
   case because it must return 0 for exit code 1 alone and 1 for 2/3/4,
@@ -371,5 +357,4 @@ routes no additional required review.
 - **Restoring a capped (`_lib_capped`) probe** around the pilot lookup.
   Given G2, that would mean reintroducing a second resolution path;
   the uncapped read matches all 14 sibling call sites, including
-  `_lib_round_consult_gate_disabled` in the same hook.</new_string>
-
+  `_lib_round_consult_gate_disabled` in the same hook.

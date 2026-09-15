@@ -3081,10 +3081,7 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # shape below. Zero-arity, same machine-global scope as the kill switch
 # below.
 _lib_reviewer_round_state_cap() {
-  # Uncapped by design: _config_enabled has no _lib_capped-style timeout
-  # (see _config.sh's own header for why it can't depend on that machinery),
-  # same tradeoff every other config-key lookup in this codebase already
-  # accepts.
+  # Uncapped by design, like every other config-key lookup -- see _config.sh's header for why _config_enabled can't use _lib_capped.
   if _config_enabled round_consult_round2_pilot; then
     printf '1\n'
   else
