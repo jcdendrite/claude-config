@@ -164,8 +164,8 @@ when it is computed over this repository's own corpus on a single
 account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, the
 two exemptions, and the limits on the owner's case-by-case
 authorization for a wider figure. Anything wider goes to the owner
-privately; it publishes only with that authorization cited, and only
-for the one figure it covers. If in doubt, don't.
+privately and publishes only under that cited authorization
+exception. If in doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.

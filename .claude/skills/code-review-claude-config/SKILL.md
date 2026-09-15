@@ -15,14 +15,15 @@ So is any of:
 
 - a figure computed over a corpus wider than this repository on one
   account, unless that section's own-history-count exemption covers it
-  or the artifact cites the owner's timestamped authorization for that
-  exact figure
+  or the artifact cites the owner's timestamped authorization naming
+  the exact figure and the command that produced it
 - `--share-only` output in any artifact, regardless of dimensionality —
   it exists only to keep a wider corpus's raw absolutes out of the
   agent's own context, never to publish from
 - a figure citing no command, or citing one that cannot refuse a wider
   corpus, unless the artifact cites the owner's timestamped
-  authorization for that exact figure
+  authorization naming the exact figure and the command that produced
+  it
 - a figure with its own calendar-time axis (per-week, per-month, or a
   two-point before/after split) drawn from a corpus wider than this
   repository on one account — barred regardless of authorization

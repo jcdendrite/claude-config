@@ -187,18 +187,22 @@ gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
 An authorization covers the figure, the command, and the artifact it
-named. A second figure, the same figure in a second artifact, or a
-re-run over a grown corpus is a fresh ask. Cite each authorized
-figure on its own — one citation spanning several figures does not
-establish that each was individually proposed and approved. Before
-citing an authorized figure, check whether it composes with an
-already-published rate or count to reconstruct a calendar-time
-series or narrow a boundary. That comparison source can be the
-grandfathered set below or an earlier authorization under this
-section. If it composes, name that composition in the proposal.
-"New figures against the grandfathered set" below is the mechanical
-half of that check; it does not cover composition against a prior
-authorization on its own.
+named. The following each count as a fresh ask:
+
+- a second figure
+- the same figure published a second time in a different artifact
+- a re-run of the same figure over a grown corpus
+
+Cite each authorized figure on its own — one citation spanning
+several figures does not establish that each was individually
+proposed and approved. Before citing an authorized figure, check
+whether it composes with an already-published rate or count to
+reconstruct a calendar-time series or narrow a boundary. That
+comparison source can be the grandfathered set below or an earlier
+authorization under this section. If it composes, name that
+composition in the proposal. "New figures against the grandfathered
+set" below is the mechanical half of that check. It does not, on its
+own, cover composition against a prior authorization.
 
 An authorization releases the corpus-scope bar and nothing else. Four
 things stay barred alongside it:

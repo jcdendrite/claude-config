@@ -97,18 +97,22 @@ gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
 An authorization covers the figure, the command, and the artifact it
-named. A second figure, the same figure in a second artifact, or a
-re-run over a grown corpus is a fresh ask. Cite each authorized
-figure on its own — one citation spanning several figures does not
-establish that each was individually proposed and approved. Before
-citing an authorized figure, check whether it composes with an
-already-published rate or count to reconstruct a calendar-time
-series or narrow a boundary. That comparison source can be the
-grandfathered set below or an earlier authorization under this
-section. If it composes, name that composition in the proposal.
-"New figures against the grandfathered set" below is the mechanical
-half of that check; it does not cover composition against a prior
-authorization on its own.
+named. The following each count as a fresh ask:
+
+- a second figure
+- the same figure published a second time in a different artifact
+- a re-run of the same figure over a grown corpus
+
+Cite each authorized figure on its own — one citation spanning
+several figures does not establish that each was individually
+proposed and approved. Before citing an authorized figure, check
+whether it composes with an already-published rate or count to
+reconstruct a calendar-time series or narrow a boundary. That
+comparison source can be the grandfathered set below or an earlier
+authorization under this section. If it composes, name that
+composition in the proposal. "New figures against the grandfathered
+set" below is the mechanical half of that check. It does not, on its
+own, cover composition against a prior authorization.
 
 An authorization releases the corpus-scope bar and nothing else. Four
 things stay barred alongside it:
@@ -143,8 +147,8 @@ Same file, one phrase, in the next subsection: "Two classes fall outside **the b
 account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, the
 two exemptions, and the limits on the owner's case-by-case
 authorization for a wider figure. Anything wider goes to the owner
-privately; it publishes only with that authorization cited, and only
-for the one figure it covers. If in doubt, don't.
+privately and publishes only under that cited authorization
+exception. If in doubt, don't.
 ```
 
 The citation now names the authorization exception's limits, not only
@@ -162,20 +166,21 @@ them either.
 ```
 - a figure computed over a corpus wider than this repository on one
   account, unless that section's own-history-count exemption covers it
-  or the artifact cites the owner's timestamped authorization for that exact
-  figure
+  or the artifact cites the owner's timestamped authorization naming
+  the exact figure and the command that produced it
 - `--share-only` output in any artifact, regardless of dimensionality —
   it exists only to keep a wider corpus's raw absolutes out of the
   agent's own context, never to publish from
 - a figure citing no command, or citing one that cannot refuse a wider
-  corpus, unless the artifact cites the owner's timestamped authorization for
-  that exact figure
+  corpus, unless the artifact cites the owner's timestamped
+  authorization naming the exact figure and the command that produced
+  it
 - a figure with its own calendar-time axis (per-week, per-month, or a
   two-point before/after split) drawn from a corpus wider than this
   repository on one account — barred regardless of authorization
 ```
 
-The dimension clause reads as exhaustive today, so a reviewer trusting the checklist would P1 a validly authorized figure — the same gap applies to the "cannot refuse a wider corpus" sibling bullet, since an authorized figure's command can never itself refuse a wider corpus by construction. Both escapes are diff-visible, which is what the checklist wants. Both `unless` clauses require a *timestamped* authorization, not a bare claim, matching the doc's own citation-content requirement. The new calendar-time-axis bullet is unconditional, mirroring `--share-only`'s and account-cardinality's own absolute bars, since the doc's exclusion list bars it regardless of authorization. The `--share-only`, account-cardinality, and auto-publishing-scope sub-bullets otherwise stay byte-identical — the new subsection's exclusion list is written so those three keep agreeing with the doc by construction rather than by luck.
+The dimension clause reads as exhaustive today, so a reviewer trusting the checklist would P1 a validly authorized figure — the same gap applies to the "cannot refuse a wider corpus" sibling bullet, since an authorized figure's command can never itself refuse a wider corpus by construction. Both escapes are diff-visible, which is what the checklist wants. Both `unless` clauses require a *timestamped* authorization naming the figure and the command that produced it, not a bare claim, matching the doc's own citation-content requirement in full — not only the timestamp. The new calendar-time-axis bullet is unconditional, mirroring `--share-only`'s and account-cardinality's own absolute bars, since the doc's exclusion list bars it regardless of authorization. The `--share-only`, account-cardinality, and auto-publishing-scope sub-bullets otherwise stay byte-identical — the new subsection's exclusion list is written so those three keep agreeing with the doc by construction rather than by luck.
 
 ### Assumption ledger
 
@@ -207,6 +212,7 @@ The dimension clause reads as exhaustive today, so a reviewer trusting the check
 16. The deleted carve-out's "Approval gate" required a durable, independently-checkable citation and explicitly excluded a bare narrative claim, offering two session-ID-free anchor options: "session identifier plus turn index **or timestamp**." This repo's own `ready-for-review/SKILL.md` separately instructs never quoting a raw `session_id` into PR-reaching prose, ruling out the first option — but not the second. A first fix pass used a bare date, which a ciso-reviewer re-review flagged as too coarse for a repo with a high-frequency, multi-session-per-day usage pattern (a date alone doesn't identify which session carried the yes); a timestamp (date and time-of-day) is the closer match to the deleted gate's own durability bar and carries no `session_id` exposure. `[verified: git show e4857828 -- docs/private-project-redaction.md; claude-skills/skills/ready-for-review/SKILL.md's "Do not quote the raw session_id into prose" line; found by the same two ciso-reviewer passes as row 15]`
 17. The calendar-time-axis exclusion item's "time-bucketed breakdown" wording leaves an edge case ambiguous — whether a two-point before/after split counts — but the plan's own Out-of-scope section already states no permitted-split mechanism is being reinstated, so a two-point split has no sanctioned path regardless of how the bullet's wording is read; the clarification is stated inline to spare a reader from reconstructing that connection. `[verified: found by the second ciso-reviewer plan-re-review pass (row 15's second pass), Low severity, over-restrictive direction]`
 18. The `SKILL.md` mirror of the calendar-time-axis bullet initially dropped the doc's explicit `(per-week, per-month, or a two-point before/after split)` enumeration, leaving the checklist's own text ambiguous on the two-point-split shape even though the canonical doc bullet unconditionally covers it. `[verified: found by a final ciso-reviewer cumulative pass this session, Medium severity]`
+19. `SKILL.md`'s two `unless` clauses initially required only a timestamp and a figure binding, never inheriting the doc's own citation-content bar ("naming what was proposed and the timestamp of the yes," `docs/private-project-redaction.md:175-176`) — an under-cited "authorized" citation naming no command would satisfy the checklist's literal wording while the doc's own prose would reject it as "not a citation." Both clauses now also require naming the command that produced the figure. `[verified: found by the /ready-for-review mandatory cumulative-diff ciso-reviewer pass, Medium severity]`
 
 **Mechanisms:**
 
