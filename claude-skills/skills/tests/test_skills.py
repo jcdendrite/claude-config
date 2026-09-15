@@ -3185,9 +3185,9 @@ def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
     a real heading there.
 
     This is the one citation in that entry carrying evidentiary weight for
-    a security-relevant control (publication authorization); a future
-    heading rename or restructure would otherwise silently orphan it with
-    no reader-visible symptom, per this repo's own citation-grammar rule.
+    a security-relevant control (publication authorization). Per this
+    repo's citation-grammar rule, a future heading rename or restructure
+    would otherwise silently orphan it with no reader-visible symptom.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / "docs" / "cost-levers-considered.md",
