@@ -22487,10 +22487,10 @@ class TestRearmBacktestReport:
     def test_non_overlapping_session_ids_report_states_zero_join_validity(
         self, fake_projects, tmp_path, capsys
     ):
-        """Gate D condition 2's report-level half: well-formed,
-        never-coincident session ids from the two writers (hookid-A
-        nudged, pidwalk-B handoff) must print join validity 0, not
-        merely return it from _nudge_conversion_from_log. The
+        """Report-level check for a systematic session-id mismatch between
+        the two writers: well-formed, never-coincident session ids
+        (hookid-A nudged, pidwalk-B handoff) must print join validity 0,
+        not merely return it from _nudge_conversion_from_log. The
         pure-function half is pinned separately by
         TestNudgeConversionFromLog.test_non_overlapping_session_ids_yield_zero_join_validity."""
         _write_jsonl(fake_projects / "hookid-A.jsonl", [
