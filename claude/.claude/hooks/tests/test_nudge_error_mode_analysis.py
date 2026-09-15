@@ -505,6 +505,8 @@ class TestNudgeErrorModeAnalysis:
         """friction-count hanging past the timeout wrapper: hook exits 0 with
         no stdout. Uses a python3 shim that sleeps past the hook's 10s
         `timeout` wrapper."""
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "hangs")
@@ -525,6 +527,8 @@ class TestNudgeErrorModeAnalysis:
         nudge-handoff-near-context-cap.sh's call sites. Paired with
         test_friction_count_timeout_is_silent above (a 15s shim is killed) for
         the upper bound."""
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_denial_transcript(transcript, FRICTION_THRESHOLD)
         fake_bin = _fake_bin_dir(tmp_path, "slow-but-under-cap")
