@@ -16,6 +16,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
     bare_remote_with_default_branch,
     bash_input,
@@ -29,8 +30,10 @@ from helpers import (
     run_hook,
     run_hook_reason,
     run_skill_command,
+    scaled_shim_sleep,
     write_input,
     write_plan_review_marker,
+    write_scaled_timeout_shim,
 )
 
 from .conftest import _seed_session
@@ -2303,32 +2306,28 @@ class TestRequirePlanReviewPlanMode:
         """_lib_capped caps the sha256sum call at 5s; a stalled read (e.g. a
         dead network mount under the plan-mode file's path) must deny within
         that budget, not hang the ExitPlanMode call indefinitely."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_sha256sum} "$@"\n')
+        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_sha256sum} "$@"\n')
         stub.chmod(0o755)
 
         plan_mode_file = tmp_path / "slow-plan.md"
         plan_mode_file.write_text("# plan\n")
 
         sid = "session-planmode-timeout"
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
-            cwd=plan_review_repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "deny"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if it "
-            f"does not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_planfilepath_hung_jq_denies_within_timeout(
@@ -2352,37 +2351,33 @@ class TestRequirePlanReviewPlanMode:
         on the deny path this test exercises (a third, unrelated call),
         adding a second 5s timeout cycle and roughly doubling elapsed time —
         not a defect in the fix, just a test artifact this design avoids."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            '  *planFilePath*) sleep 10 ;;\n'
+            f'  *planFilePath*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
             "esac\n"
         )
         stub.chmod(0o755)
 
         sid = "session-planmode-hung-jq"
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
-            cwd=plan_review_repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "deny"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_jq timeout to fire on the second (planFilePath) "
-            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
 
 class TestPlanReviewSkillPlanModeFixture:
