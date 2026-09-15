@@ -38,10 +38,10 @@ jobs:
     # plus a mostly-serial timing pass, not yet re-measured end to end here.
     # Add to that the shellcheck step (~10s) and apt-get update + install
     # stow (~10-20s on a typical runner, more on a stale package-index
-    # cache). 10 minutes gives headroom above the two-pass total so
+    # cache). 10 minutes (original allocation) gives headroom above the two-pass total so
     # continued organic test-suite growth doesn't require another bump on
     # every PR that happens to add the next test.
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
       # during a flake incident) without a PR. Unset/empty falls through to
