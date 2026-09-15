@@ -126,6 +126,7 @@ from transcript_analysis.review_rounds import (
     # cmd_judgment_pair (its own --skills default) -- the one-directional
     # exception documented in docs/transcript-analysis-architecture.md.
     REVIEW_SKILLS,
+    _round_skill_name,
     cmd_review_round_cost,
     compute_review_round_counts,
 )
@@ -1674,14 +1675,15 @@ def _review_trace_session_events(
                     continue
                 block_name = block.get("name")
                 if block_name == "Skill":
-                    skill_name = (block.get("input") or {}).get("skill") or ""
-                    if skill_name not in REVIEW_TRACE_SKILLS:
+                    raw_skill_name = (block.get("input") or {}).get("skill") or ""
+                    matched_skill_name = _round_skill_name(raw_skill_name)
+                    if matched_skill_name not in REVIEW_TRACE_SKILLS:
                         continue
-                    if skill_filter and skill_name != skill_filter:
+                    if skill_filter and matched_skill_name != skill_filter:
                         continue
                     events.append({
                         "kind": "skill",
-                        "skill": skill_name,
+                        "skill": _normalize_skill_name(raw_skill_name),
                         "ts": rec_ts_str,
                         "line_no": line_no,
                         "branch": evt_branch,

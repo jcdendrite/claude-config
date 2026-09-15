@@ -3637,6 +3637,87 @@ class TestReviewTrace:
         assert events[0]["kind"] == "skill"
         assert events[0]["skill"] == "code-review"
 
+    def test_skill_invocation_plugin_qualified_spelling_matches_review_trace_skills(self):
+        """A plugin-qualified spelling (skill-management:skill-review) matches
+        REVIEW_TRACE_SKILLS membership. This exercises _round_skill_name's
+        plugin:/dir: strip branch."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "skill-management:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_invocation_worktree_qualified_spelling_matches_review_trace_skills(self):
+        """A worktree-path-qualified spelling matches REVIEW_TRACE_SKILLS
+        membership. The trailing ":"-strip alone already reduces this
+        spelling to the bare name. The leading "/"-strip is redundant for
+        every real fixture shape this codebase produces. This test
+        therefore does not isolate the "/"-strip branch."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_filter_matches_qualified_spelling(self):
+        """--skill's bare-name filter still matches a raw qualified spelling
+        (claude:plan-it), since the filter comparison normalizes the same
+        way the REVIEW_TRACE_SKILLS membership check does."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "claude:plan-it")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_filter_excludes_non_matching_qualified_spelling(self):
+        """--skill's filter drops a skill invocation whose normalized name
+        does not equal the filter, even when another invocation in the same
+        session matches."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "claude:plan-it")]),
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:01:00.000Z",
+                  content=[_skill_use("s2", "claude:code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:plan-it"
+
+    def test_skill_event_field_keeps_display_normalization_not_bare_form(self):
+        """The emitted skill event field keeps _normalize_skill_name's lighter
+        directory-only strip, including any plugin:/dir: prefix.
+        _round_skill_name's fully-bare strip is used only for the
+        REVIEW_TRACE_SKILLS membership test, not for this field."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:skill-review"
+
     def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
         records = [_hook_deny("require-code-review", stringified=False)]

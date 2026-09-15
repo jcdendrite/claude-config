@@ -65,15 +65,16 @@ _SLASH_COMMAND_RE = re.compile(r"<command-name>/([^<]+)</command-name>")
 
 
 def _round_skill_name(raw: str) -> str:
-    """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS
-    membership.
+    """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS or
+    REVIEW_TRACE_SKILLS membership: strip the directory qualifier (as
+    _normalize_skill_name does) and then the plugin:/dir: qualifier too.
 
-    Mirrors _normalize_skill_name (transcript-analysis.py:2253-2277)'s
-    directory-qualifier strip (segment after the last "/"), then also strips
-    a remaining `plugin:`/`dir:` qualifier by taking the segment after the
-    last ":" — safe here, unlike _normalize_skill_name (which deliberately
-    keeps such a prefix for its own display-label use), because REVIEW_SKILLS
-    is a closed three-name membership test, not a display label.
+    _normalize_skill_name (transcript-analysis.py:2253-2277) strips the
+    directory qualifier (segment after the last "/"). It keeps a
+    plugin:/dir: prefix for its own display-label use. This function also
+    strips that prefix, by taking the segment after the last ":". That is
+    safe here because both REVIEW_SKILLS and REVIEW_TRACE_SKILLS are
+    closed-set membership tests, not display labels.
     """
     normalized = raw.rsplit("/", 1)[-1]
     return normalized.rsplit(":", 1)[-1]
