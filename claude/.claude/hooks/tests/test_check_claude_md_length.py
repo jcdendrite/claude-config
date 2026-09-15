@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_rebase,
@@ -21,8 +22,6 @@ from helpers import (
     run_hook,
     run_hook_reason,
 )
-
-from .conftest import assert_cap_engaged
 
 CHECK_CLAUDE_MD_LENGTH_HOOK = HOOKS_DIR / "check-claude-md-length.sh"
 CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
@@ -830,7 +829,10 @@ class TestCheckClaudeMdLength:
         (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
         env = git_timeout_shim('[ "$3" = "cat-file" ]')
-        with assert_cap_engaged():
+        # One shim predicate matches both the new- and old-revision `cat-file`
+        # calls, so both are capped and killed here, not just one (ledger
+        # row 8's chained-call shape).
+        with assert_cap_engaged(tmp_path, production_cap=5, killed_calls=2):
             decision = run_hook(
                 CHECK_CLAUDE_MD_LENGTH_HOOK,
                 bash_input("git commit -m foo"),

@@ -14,6 +14,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
     bash_input,
     build_path_without,
@@ -25,7 +26,7 @@ from helpers import (
     run_skill_command,
 )
 
-from .conftest import _seed_session, assert_cap_engaged
+from .conftest import _seed_session
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"
@@ -995,7 +996,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_current_head_git_timeout_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim, tmp_path
     ):
         """The CURRENT_HEAD `git rev-parse HEAD` call's _lib_capped exit
         status must fail closed on timeout. This mirrors how an unresolvable
@@ -1013,7 +1014,7 @@ class TestRequireReadyForReview:
         marker.write_text(head_sha(repo_on_feature_branch) + "\n")
 
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin feature", session_id=sid),
@@ -1024,7 +1025,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_repo_root_git_timeout_allows(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim, tmp_path
     ):
         """Required regression test for a fail-open path: the header
         documents REPO_ROOT's git-timeout as the only one of this hook's
@@ -1034,7 +1035,7 @@ class TestRequireReadyForReview:
         `[ -z "$REPO_ROOT" ]` early exit — inverting the baseline deny this
         fixture combination otherwise produces."""
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin feature", session_id="s"),
@@ -1045,7 +1046,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_current_branch_git_timeout_arms_the_gate(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim, tmp_path
     ):
         """Checked out on `main`, the repo's default branch.
 
@@ -1060,7 +1061,7 @@ class TestRequireReadyForReview:
         With an open PR and no completion marker, the gate then denies."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--abbrev-ref" ]')
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin main", session_id="s"),
@@ -1071,7 +1072,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_default_branch_symbolic_ref_timeout_still_allows_via_candidate_loop(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim, tmp_path
     ):
         """Checked out on `main`, the repo's default branch.
 
@@ -1103,7 +1104,7 @@ class TestRequireReadyForReview:
         env = git_timeout_shim(
             '[ "$3" = "symbolic-ref" ]', fake_output="refs/remotes/origin/develop"
         )
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin main", session_id="s"),
@@ -1114,7 +1115,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_candidate_loop_exhausted_arms_the_gate(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim, tmp_path
     ):
         """Checked out on `main`, the repo's default branch.
 
@@ -1131,7 +1132,7 @@ class TestRequireReadyForReview:
         env = git_timeout_shim(
             '[ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "origin/main" ]'
         )
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin main", session_id="s"),
@@ -1187,7 +1188,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_gh_pr_view_timeout_allows(
-        self, isolated_home, repo_on_feature_branch, gh_timeout_shim
+        self, isolated_home, repo_on_feature_branch, gh_timeout_shim, tmp_path
     ):
         """The `gh pr view` network call's own `_lib_capped` cap must actually
         engage.
@@ -1203,7 +1204,7 @@ class TestRequireReadyForReview:
         completion-marker check — with no marker, that denies instead of
         allowing."""
         env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="999")
-        with assert_cap_engaged():
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin feature", session_id="s"),

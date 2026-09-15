@@ -29,6 +29,7 @@ from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
     _run_git,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_cherry_pick,
@@ -42,11 +43,13 @@ from helpers import (
     resolve_conflicted_rebase,
     reviewer_round_state_key,
     run_hook,
+    scaled_shim_sleep,
     staged_diff_hash,
     staged_diff_hash_at_base,
+    write_scaled_timeout_shim,
 )
 
-from .conftest import _worktree_lock_reason, assert_cap_engaged
+from .conftest import _worktree_lock_reason
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
@@ -544,9 +547,9 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """
     import shutil
 
-    timeout_path = shutil.which("timeout")
+    timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
     if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
     bash_path = shutil.which("bash")
     if not bash_path:
@@ -554,32 +557,37 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
 
     # Create a fake jq that sleeps 10 seconds, plus stubs for required tools.
     fake_jq = tmp_path / "jq"
-    fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
     fake_jq.chmod(0o755)
 
     # Symlink real timeout and bash so the harness can find them.
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
-    # Also symlink standard commands needed by the harness.
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
+    # Also symlink standard commands needed by the harness. dirname is
+    # required too: _lib.sh's own sourcing of _config.sh resolves its path
+    # via `$(dirname "${BASH_SOURCE[0]}")`, and a failed source now aborts
+    # _lib.sh's own sourcing entirely (see _lib.sh's header comment on that
+    # source line). sleep must be symlinked too: the fake jq's body shells
+    # out to it, and a missing sleep would return instantly instead of
+    # stalling.
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname", "sleep"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
 
+    # write_scaled_timeout_shim replaces the timeout symlink above, since
+    # Path.write_text follows a symlink rather than replacing it.
+    write_scaled_timeout_shim(tmp_path)
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
-    elapsed = time.monotonic() - start
+    with assert_cap_engaged(tmp_path, production_cap=5):
+        result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
 
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
-    assert elapsed < 6, f"hung-jq test took {elapsed:.1f}s — timeout did not fire within 6s"
 
 
+# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary
+# condition this test is named for, and the OK assertion below would still pass.
 def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> None:
     """Without timeout(1), valid payload still returns OK via bare jq."""
     import shutil
@@ -611,6 +619,8 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
+# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps
+# end-to-end evidence that the binary itself enforces a cap.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
     """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
@@ -647,6 +657,8 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
 
 
+# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test
+# would never execute and the exit-124 assertion would still pass.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
     """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
@@ -685,6 +697,7 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
 
 
+# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.
 def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     tmp_path: Path,
 ) -> None:
@@ -720,6 +733,8 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
+# the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
     """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
 
@@ -1577,11 +1592,12 @@ def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -
 
     stub_dir = tmp_path / "stub-bin-find"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_find = stub_dir / "find"
-    stub_find.write_text(f'#!/bin/bash\nsleep 10\nexec {real_find} "$@"\n')
+    stub_find.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
     stub_find.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5):
         result = subprocess.run(
             [
                 "bash",
@@ -1613,7 +1629,10 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
     the real `cat`, which would emit the marker's stored PID and grant the
     bypass; a working cap kills the stub before that exec runs, so this
     fails on a missing/broken `_lib_capped` wrap instead of passing
-    regardless of whether the cap engaged."""
+    regardless of whether the cap engaged.
+
+    cat and tr share the same 5s cap on this pipe; command="cat" isolates
+    cat's kill from tr's."""
     marker = _write_active_bypass_marker(tmp_path, "sess-cat-hang", str(os.getpid()))
 
     real_cat = shutil.which("cat")
@@ -1624,11 +1643,12 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
 
     stub_dir = tmp_path / "stub-bin-cat"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_cat = stub_dir / "cat"
-    stub_cat.write_text(f'#!/bin/bash\nsleep 10\nexec {real_cat} "$@"\n')
+    stub_cat.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
     stub_cat.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=1, command="cat"):
         result = subprocess.run(
             [
                 "bash",

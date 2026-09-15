@@ -22,13 +22,14 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     run_hook,
     run_hook_reason,
 )
 
-from .conftest import _write_conditional_sleep_shim, assert_cap_engaged
+from .conftest import _write_conditional_sleep_shim
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 
@@ -4112,13 +4113,15 @@ class TestDenyPrivateProjectRefs:
         both arms call the same _lib_capped-wrapped cat idiom."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         body_file = tmp_path / "body.md"
         body_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
         command = command_template.format(path=body_file)
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4136,13 +4139,15 @@ class TestDenyPrivateProjectRefs:
         _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         msg_file = tmp_path / "commit-msg.txt"
         msg_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(msg_file))} ]")
         command = f"git commit -F {msg_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4160,13 +4165,15 @@ class TestDenyPrivateProjectRefs:
         _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         body_file = tmp_path / "comment.json"
         body_file.write_text('{"body": "Fixes WIDGET-123"}\n')
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
         command = f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4184,13 +4191,15 @@ class TestDenyPrivateProjectRefs:
         share one _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         leak_file = tmp_path / "leak.txt"
         leak_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(leak_file))} ]")
         command = f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{leak_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
