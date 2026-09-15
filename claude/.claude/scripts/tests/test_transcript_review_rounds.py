@@ -1604,6 +1604,41 @@ class TestCmdReviewRoundCostPooled:
         assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
         assert not re.search(r"\d+\s+roots?\b", out)
 
+    def test_pooled_publication_and_refusal_pointers_cite_a_real_heading(self):
+        """_POOLED_PUBLICATION_POINTER and _POOLED_REFUSAL_DOC_POINTER cite
+        docs/private-project-redaction.md by heading text embedded in a
+        plain Python string, not the backtick-quoted, single-line markdown
+        citation grammar claude-skills/skills/tests/test_skills.py's
+        citation-resolution tests check. This .py file sits outside both
+        that test's scanned skill corpus and
+        test_tooling_measurement_citation_resolves_to_real_heading's
+        docs/*.md parametrize list, so a stale heading here would otherwise
+        go unnoticed by every other citation-resolution test.
+        """
+        repo_root = Path(__file__).resolve().parents[4]
+        doc_lines = (repo_root / "docs" / "private-project-redaction.md").read_text().splitlines()
+        doc_headings: set[str] = set()
+        in_fence = False
+        for line in doc_lines:
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            match = re.match(r"^#{1,6}\s+(.+)$", line)
+            if match:
+                doc_headings.add(match.group(1).strip())
+        for pointer in (
+            review_rounds._POOLED_PUBLICATION_POINTER,
+            review_rounds._POOLED_REFUSAL_DOC_POINTER,
+        ):
+            cited = re.search(r'§\s+"([^"\n]+)"', pointer)
+            assert cited, f"{pointer!r} does not cite a heading in the § \"...\" form"
+            assert cited.group(1) in doc_headings, (
+                f"{pointer!r} cites heading {cited.group(1)!r}, which does not "
+                "exist in docs/private-project-redaction.md"
+            )
+
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
     ):

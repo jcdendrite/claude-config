@@ -441,14 +441,14 @@ def compute_review_round_counts(
 #
 # Everything below prints percentages and 95% confidence intervals only --
 # no dollar amount, no raw count, no per-account/per-project/per-branch
-# split. See docs/private-project-redaction.md § "Publishing a pooled
-# tooling measurement". Promotion trigger: when a second subcommand grows
-# a pooled mode, move the doc pointer and approval pointer below to
+# split. See docs/private-project-redaction.md § "The owner can authorize
+# one figure, case by case". Promotion trigger: when a second subcommand
+# grows a pooled mode, move the doc pointer and approval pointer below to
 # scope.py, beside scope._DO_NOT_PUBLISH_BANNER.
 
 _POOLED_PUBLICATION_POINTER = (
     "POOLED — publishable only under docs/private-project-redaction.md\n"
-    '§ "Publishing a pooled tooling measurement". Propose the figure, this exact\n'
+    '§ "The owner can authorize one figure, case by case". Propose the figure, this exact\n'
     "command, and the destination artifact to the owner, then cite the owner's\n"
     "approval in that artifact. Nothing here checks that for you. Before citing\n"
     "this alongside any rate or count already published elsewhere (e.g. a $/PR\n"
@@ -474,7 +474,7 @@ _BOOTSTRAP_SEED = 0
 _CI_LEVEL = 0.95
 
 _POOLED_REFUSAL_DOC_POINTER = (
-    ' See docs/private-project-redaction.md § "Publishing a pooled tooling measurement".'
+    ' See docs/private-project-redaction.md § "The owner can authorize one figure, case by case".'
 )
 
 
