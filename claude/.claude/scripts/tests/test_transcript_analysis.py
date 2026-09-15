@@ -8730,22 +8730,30 @@ class TestCacheEfficiencyArgparseWiring:
 
 
 @pytest.fixture()
-def cost_ledger_enabled(tmp_path, monkeypatch):
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     """Isolated config dir carrying the cost-ledger opt-in sentinel and a
     seeded machine identity. Sets CLAUDE_CONFIG_DIR explicitly, rather than
     relying on _isolate_transcript_corpus_lookups' autouse fixture landing on
     the same literal tmp-path string by coincidence: _cost_ledger_report's
     sentinel check goes through _config.config_enabled, which resolves
     config_dir via _config.py's own independent binding, not _mod's --
-    patching _mod's config_dir binding alone has no effect on it. Setting the
-    env var instead makes both _mod.config_dir() (the ledger-path resolution
-    _cost_ledger_path() and _machine_identity_path() read) and
-    _config.config_enabled()'s own resolution agree on the same directory."""
+    patching _mod's config_dir binding alone has no effect on it. The env var
+    alone is not sufficient either: fake_projects monkeypatches _mod.config_dir
+    to a lambda returning its own tmp_path, which wins over an env var read
+    since it never re-reads the environment -- so fake_projects is declared
+    as this fixture's own dependency (not merely requested alongside it by
+    convention in each test's signature), which pytest's fixture graph
+    guarantees runs first regardless of a test's own parameter order, and
+    _mod.config_dir is patched again here to make _mod.config_dir() (the
+    ledger-path resolution _cost_ledger_path() and _machine_identity_path()
+    read) and _config.config_enabled()'s own env-var-based resolution agree
+    on the same directory."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
     (cfg_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
     return cfg_dir
 
 
@@ -24584,7 +24592,7 @@ class TestPrCostRecordingConfigDirUnresolvable:
 
         monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
@@ -24620,7 +24628,7 @@ class TestPrCostRecordingConfigDirUnresolvable:
 
         monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
 
-        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        args = _pr_cost_args(record=True, all_accounts=True)
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
         rows_b = _mod._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
@@ -24648,7 +24656,7 @@ class TestPrCostRecordingKeyError:
         monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
         monkeypatch.setattr(_mod._config, "schema", lambda: {})
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
@@ -24665,7 +24673,7 @@ class TestPrCostRecordingKeyError:
         monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
         monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
 
-        args = _pr_cost_args(record=True, machine_label="ci1")
+        args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
             _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
@@ -29304,6 +29312,16 @@ class TestMachineIdentity:
         by both subcommands rather than each minting its own."""
         (tmp_path / ".cost-ledger-enabled").touch()
         (tmp_path / ".pr-cost-enabled").touch()
+        # _cost_ledger_report's own sentinel check goes through
+        # _config.config_enabled with no override, which reads config_dir()
+        # via _config.py's own independent binding -- distinct from
+        # fake_projects' mod.config_dir patch above, which only the
+        # machine-identity/ledger-path resolution reads. (pr-cost's own gate
+        # check passes its own config_dir_override derived from `roots`,
+        # independent of mod.config_dir; it happens to agree here only
+        # because fake_projects' tmp_path/"projects" root's parent is this
+        # same tmp_path.)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z", branch="feature-a"),
         ])
