@@ -1,30 +1,26 @@
-# GH-978 Unit 3 — Bound concurrent test runs
+# GH-978 — Bound concurrent test runs
 
 ## Context
 
 Bound how much CPU each `select-tests.py` invocation claims when other
 invocations are already running, so concurrent agent-driven test runs on
-one machine stop oversubscribing its cores. This is GH-978 Unit 3, the
-next ordered item in the epic that already landed hook-chain
-consolidation (Unit 1, PR #985) and injectable timeout caps (Unit 2, PR
-#1014); the epic's own investigation measured 8 concurrent copies of one
-116-test file each taking 35.6s versus 16.2s running alone (2.2x), with
-0% idle CPU and 39% of busy CPU in the kernel — the signature of
-scheduler contention, not real test work. After this unit, each
+one machine stop oversubscribing its cores. This is the next item in
+GH-978, after hook-chain consolidation (PR #985) and injectable timeout
+caps (PR #1014); a measurement of this repo's own test suite found 8
+concurrent copies of one 116-test file each taking 35.6s versus 16.2s
+running alone (2.2x), with 0% idle CPU and 39% of busy CPU in the kernel
+— the signature of scheduler contention, not real test work. After this
+unit, each
 `select-tests.py` invocation independently sizes its own pytest-xdist
 worker count from the machine's current load average (no cross-process
 coordination), and every selection outcome is optionally logged so
 fallback-to-full-suite frequency becomes measurable instead of a stderr
 line that scrolls away.
 
-A cross-process counting semaphore was the epic's original proposal for
-this unit. It was considered and rejected during this planning
-conversation: it reintroduces exactly the "shared state plus stale-lock
-failure mode" risk that a separate, earlier plan
-(`.claude/plans/scope-test-worker-count.md`, from issue #758) already
-explicitly rejected for the same reason. The replacement approach below —
-load-average-informed worker sizing, no cross-process coordination at
-all — was confirmed with the engineer before design work began.
+A cross-process semaphore (the epic's original proposal) is rejected for
+the same stale-lock risk `.claude/plans/scope-test-worker-count.md`
+(from issue #758) already found; this unit uses load-average-informed
+per-process sizing instead, with no cross-process coordination.
 
 A related idea surfaced in the same conversation — decomposing
 `claude/.claude/tests/helpers.py` and/or `conftest.py` files to reduce
@@ -67,21 +63,22 @@ workers than `-n auto` would have picked" an invariant rather than an
 emergent property, and the floor arm is itself clamped by `cpu_budget` so
 a 1-CPU container is never handed 2.
 
-**Alternatives set aside.** A cross-process counting semaphore was
-rejected by the engineer this session and is not revisited (row3). Two
-*lighter* primitives were checked against mechanism M1 before adopting
-it: xdist's own `--maxprocesses` flag (`xdist/plugin.py:83-91`) caps `-n
-auto` without any code computing a number, but it is a static ceiling
-with no reading of current load, and appending it to argv would collide
-with `build_pytest_argv`'s contract that only the caller's own arguments
-follow the resolved targets; and a fixed `-n <N>` in `pyproject.toml`'s
-`addopts`, which `.claude/plans/scope-test-worker-count.md` already
-rejected for penalizing every single-session run and CI to serve one
-machine's concurrency pattern. Heavier options — `psutil` for a physical-
-core count, a lock file, a coordinating daemon — buy nothing the stdlib
-two-call reading does not, and each adds a failure mode (a new
-dependency, a stale lock, a process to supervise) that this design has
-none of.
+**Alternatives set aside.** A cross-process counting semaphore is
+rejected (row3) and not revisited here. Two *lighter* primitives were
+checked against mechanism M1 before adopting it:
+
+- `--maxprocesses` (`xdist/plugin.py:83-91`): a static ceiling with no
+  reading of current load; also collides with `build_pytest_argv`'s
+  contract that only the caller's own arguments follow the resolved
+  targets.
+- A fixed `-n <N>` in `pyproject.toml`'s `addopts`: already rejected by
+  `.claude/plans/scope-test-worker-count.md` for penalizing every
+  single-session run and CI to serve one machine's concurrency pattern.
+
+Heavier options — `psutil` for a physical-core count, a lock file, a
+coordinating daemon — buy nothing the stdlib two-call reading does not,
+and each adds a failure mode (a new dependency, a stale lock, a process
+to supervise) that this design has none of.
 
 **Root problem:** concurrent `select-tests.py` invocations each
 independently request a full machine's worth of xdist workers, because
@@ -99,21 +96,21 @@ beyond its reach):
 - **row1** — pytest-xdist owns how `-n auto` becomes a number and the
   order of its detection providers. Vendor-imposed: the chain lives in
   xdist's own `plugin.py`; this repo can feed it, not replace it.
-  `[verified: .venv/lib/python3.12/site-packages/xdist/plugin.py:16-53,
-  read this session; requirements-dev.txt pins pytest-xdist==3.*]`
+  `[verified: .venv/lib/python3.12/site-packages/xdist/plugin.py:16-53;
+  requirements-dev.txt pins pytest-xdist==3.*]`
 - **row2** — `os.getloadavg()` is the only load signal in the Python
   standard library, and it returns exponentially-smoothed 1/5/15-minute
   averages; no portable instantaneous run-queue reading exists.
   Platform/vendor-imposed: the kernel exposes the smoothed figures, and
   the one instantaneous alternative (`/proc/loadavg`'s fourth field) is
   Linux-only while this repo supports Linux, macOS, and WSL2. `[verified:
-  Python `os` module docs, read this session]`
+  Python `os` module docs]`
 - **row3** — no cross-process coordination mechanism (semaphore, lock
   file, shared counter, any persistent inter-invocation state) is
-  available to this design. `[engineer-verified]` — rejected in this
-  planning conversation on the same stale-state grounds
-  `.claude/plans/scope-test-worker-count.md` § "Out of scope" already
-  recorded ("introduces shared state and a stale-lock failure mode").
+  available to this design. `[engineer-verified]` — rejected on the same
+  stale-state grounds `.claude/plans/scope-test-worker-count.md` §
+  "Out of scope" already recorded ("introduces shared state and a
+  stale-lock failure mode").
 - **row4** — how many test runs will be in flight at once, and when each
   arrives, is a per-machine, per-moment fact no single invocation can
   observe. Dissolving the design's dependence on it needs exactly the
@@ -131,9 +128,9 @@ beyond its reach):
   created. *anchors: root, row1, row3, row12*
 - **M2 — Defer entirely when `PYTEST_XDIST_AUTO_NUM_WORKERS` is already
   set to a non-empty value in the inherited environment.** An operator
-  who exported a value has already answered this question, and
-  README.md:527 ships that override as supported guidance; the emptiness
-  test mirrors xdist's own `if env_var:` so "set but empty" resolves
+  who exported a value has already answered this question (README.md:527
+  documents the override as supported guidance). The emptiness test
+  mirrors xdist's own `if env_var:`, so "set but empty" resolves
   identically in both places. *anchors: row1, row6, row19*
 - **M3 — On `OSError` from `os.getloadavg()`, set nothing and launch
   pytest with an unmodified environment.** Today's behavior is the
@@ -148,15 +145,13 @@ beyond its reach):
   triggering paths, resolved-target count — to
   `<config-dir>/.test-selection-log.jsonl`, gated by a new
   `test_selection_tracking` config key defaulting to false.** Logging
-  *every* outcome, not only the fallbacks, is what makes the frequency
-  question answerable: the denominator and the numerator come from the
-  same file. A config key rather than an environment variable because the
-  runs whose fallback behavior matters most are agent-launched, and
-  README.md:530 records that an agent's Bash-tool subprocesses inherit
-  the environment `claude` had at launch — a shell export set afterwards
-  never reaches them, while a file under the config dir resolves
-  identically however the process was started. *anchors: root2, row15,
-  row17, row19*
+  every outcome, not just fallbacks, makes the frequency question
+  answerable from one file. A config key is used instead of an env var
+  because agent-launched runs — the population this measures — inherit
+  `claude`'s launch-time environment (README.md:530), so a shell export
+  set afterward never reaches them. A config-dir file resolves
+  identically regardless of how the process started. *anchors: root2,
+  row15, row17, row19*
 - **M6 — The log append is best-effort: `OSError` is swallowed with one
   stderr warning and the run proceeds.** `select-tests.py` is the
   test-selection entrypoint for every agent and for `/ready-for-review`;
@@ -183,21 +178,20 @@ beyond its reach):
   1. `[unverified]` — inferred from row7, not measured; the floor lives
   in a named module-level constant so it is a one-line change if field
   data contradicts it.
-- **row9** — the proportional formula itself is **my own derived choice,
-  not a cited one.** GNU Make's `-l` is the precedent for *conditioning
+- **row9** — the proportional formula itself is a derived choice, not a
+  cited one. GNU Make's `-l` is the precedent for *conditioning
   parallelism on existing load*, and it specifies a binary
   start/don't-start gate, not a proportional worker count; no primary
   source specifies the subtraction, the `round`, or the floor.
   `[unverified — derived]`
 - **row10** — GNU Make's `-l`/`--load-average` establishes the
   gate-on-existing-load precedent: "no new jobs should be started if… the
-  load average is at least *load*." `[verified: `make.1` man page, quoted
-  this session]`
+  load average is at least *load*." `[verified: `make.1` man page]`
 - **row11** — `os.getloadavg()` returns the 1/5/15-minute run-queue
   averages, raises `OSError` when the load average is unobtainable, and
   is Unix-only — consistent with this repo's documented Linux/macOS/WSL2
   support, so no Windows branch is needed. `[verified: Python `os` module
-  docs, read this session]`
+  docs]`
 - **row12** — with `psutil` absent, xdist's `-n auto` resolves to
   `len(os.sched_getaffinity(0))` where that import succeeds and
   `os.cpu_count()` otherwise, both falling back to 1. `_cpu_budget()`
@@ -262,23 +256,18 @@ beyond its reach):
   rather than iterating the schema]`
 
 **Promptability decision:** `test_selection_tracking` is **not**
-machine-promptable. `[engineer-verified]` — confirmed this session,
-matching `plan-architect`'s recommendation: a first-time installer has no
-basis to answer "do you want test-selection fallback telemetry?", since
-the key's only audience is whoever is tuning `select-tests.py`'s domain
-rules. Documented in README's Tests section instead of wired into
-`install.sh`'s prompt loop.
+machine-promptable. `[engineer-verified]`, matching `plan-architect`'s
+recommendation: a first-time installer has no basis to answer "do you
+want test-selection fallback telemetry?", since the key's only audience
+is whoever is tuning `select-tests.py`'s domain rules. Documented in
+README's Tests section instead of wired into `install.sh`'s prompt loop.
 
-**Rollback asymmetry, named explicitly.** Phase 1 ships no config-level
-kill switch, unlike Phase 2's `test_selection_tracking` gate. This is a
-deliberate choice, not an oversight: Phase 1 is completely stateless (no
-config row, no persisted data), so a misbehaving formula on some machine
-class is reverted by a single code revert with nothing left behind to
-clean up — the same low-risk lever this repo's stow-live-on-pull model
-already relies on for every other hook/script change. An individual
-developer can also self-override at any time via `-n <N>` or an exported
-`PYTEST_XDIST_AUTO_NUM_WORKERS` (row5, M2). A config gate was rejected as
-unnecessary machinery for a change this cheap to undo in full.
+**Rollback asymmetry, named explicitly.** Phase 1 ships no config gate
+because it is fully stateless (no config row, no persisted data) — a
+plain code revert undoes it completely, unlike Phase 2's persisted log,
+which keeps the `test_selection_tracking` gate. An individual developer
+can also self-override at any time via `-n <N>` or an exported
+`PYTEST_XDIST_AUTO_NUM_WORKERS` (row5, M2).
 
 **Dispatch split:** two phases, one `code-writer` dispatch each, strictly
 sequential and never parallel — both phases edit
@@ -513,8 +502,8 @@ exception (`select-tests.py:494`) already routes to.
 ## Out of scope
 
 - **No cross-process coordination of any kind** — no semaphore, lock
-  file, shared counter, or persistent inter-invocation state. Closed by
-  the engineer this session (row3) on the same stale-state grounds
+  file, shared counter, or persistent inter-invocation state. Closed
+  (row3) on the same stale-state grounds
   `.claude/plans/scope-test-worker-count.md` recorded.
 - **No bounding of a perfectly simultaneous cold-start burst.** Row14's
   limitation is accepted, not patched: closing it requires
@@ -534,7 +523,7 @@ exception (`select-tests.py:494`) already routes to.
   ever revisited.
 - **No worker-count or load-average fields in the selection log.**
   Tempting, and it would make the M1 formula tunable from field data —
-  but it couples two mechanisms the engineer scoped as independent, and
+  but it couples two mechanisms this design scopes as independent, and
   widens what the log records past the fallback-frequency question the
   epic actually posed. Worth a follow-up once the log has been running.
 - **No log rotation or size cap.** Matches
