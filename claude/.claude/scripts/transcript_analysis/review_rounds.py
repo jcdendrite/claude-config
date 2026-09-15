@@ -657,10 +657,11 @@ def _bootstrap_share_intervals(
         values = sorted(resample_values[key])
         if point_value is None or not values:
             # point=0.0 here is a filler value, never printed (see
-            # _fmt_share_with_ci); lo=None is what actually signals a
-            # zero-denominator branch. point=None is reserved for
-            # _render_pooled_block's separate "too few branches" case, so
-            # the two degenerate reasons stay distinguishable downstream.
+            # _fmt_share_with_ci).
+            # lo=None is what actually signals a zero-denominator branch.
+            # point=None is reserved for _render_pooled_block's separate
+            # "too few branches" case, so the two degenerate reasons stay
+            # distinguishable downstream.
             intervals[key] = (0.0, None, None)
         else:
             lo, hi = _resample_percentile(values)
@@ -688,9 +689,9 @@ def _pooled_resolved_scope_header(scope_label: str) -> str:
     clause is unconditional, even at one root, and would otherwise
     disclose the number of resolved scan roots (a per-account dimension)
     even under --pooled. scope_label is always the literal "*" here,
-    since --projects and --this-repo are both refused before this ever
-    prints; the fixed word "pooled" replaces the root-count clause
-    entirely, so this is a fixed string, not merely digit-free.
+    since --projects and --this-repo are both refused before this prints.
+    The fixed word "pooled" replaces the root-count clause entirely,
+    making this a fixed string rather than merely digit-free.
     """
     return f"REVIEW ROUND COST SOURCES ({scope_label}; pooled)"
 
@@ -704,8 +705,8 @@ def _render_pooled_block(
 ) -> None:
     """--pooled's entire render path: shares and 95% confidence intervals
     only, never a dollar amount, a raw count, or a per-account/per-project/
-    per-branch split. See docs/private-project-redaction.md § "Publishing
-    a pooled tooling measurement".
+    per-branch split. See docs/private-project-redaction.md
+    § "The owner can authorize one figure, case by case".
 
     Re-derives cmd_review_round_cost's own refusal check as defense in
     depth: every direct caller of this function, including this module's
@@ -771,26 +772,42 @@ def _render_pooled_block(
 
 
 _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
+# declared_transcript_roots()'s own per-line warning (_config_dir.py's
+# declared_roots_matching, warn_prefix="declared_transcript_roots"), raised
+# by scope.resolve_scan_roots() before either refusal call in
+# cmd_review_round_cost runs. The line-index it names is still a lower bound
+# on the declared-roots file's size, so it is root-count-revealing too.
+_DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared root \d+ unreadable$")
+_POOLED_STDERR_DIAGNOSTIC_RES: tuple[re.Pattern[str], ...] = (
+    _SCANNING_ROOT_DIAGNOSTIC_RE,
+    _DECLARED_ROOT_DIAGNOSTIC_RE,
+)
 
 
-def _pooled_compute_review_round_costs(*args, **kwargs) -> dict:
-    """compute_review_round_costs, with scope's own "scanning root N/M..."
-    diagnostic filtered out of stderr.
-
-    That diagnostic discloses the resolved root count. --pooled must never
-    print the resolved root count (see _pooled_resolved_scope_header).
-    Every other stderr line -- an OSError diagnostic, a warning -- passes
-    through unchanged.
+def _pooled_filtered_stderr_call(fn, *args, **kwargs):
+    """Call fn with every root-count-revealing diagnostic
+    (_POOLED_STDERR_DIAGNOSTIC_RES) filtered out of what it prints to
+    stderr. Every other stderr line -- an OSError diagnostic, a warning --
+    passes through unchanged, including one printed before fn raises.
     """
     captured = io.StringIO()
     try:
         with contextlib.redirect_stderr(captured):
-            data = compute_review_round_costs(*args, **kwargs)
+            result = fn(*args, **kwargs)
     finally:
         for line in captured.getvalue().splitlines():
-            if not _SCANNING_ROOT_DIAGNOSTIC_RE.match(line.strip()):
+            if not any(p.match(line.strip()) for p in _POOLED_STDERR_DIAGNOSTIC_RES):
                 print(line, file=sys.stderr)
-    return data
+    return result
+
+
+def _pooled_compute_review_round_costs(*args, **kwargs) -> dict:
+    """compute_review_round_costs, routed through _pooled_filtered_stderr_call.
+
+    --pooled must never print the resolved root count (see
+    _pooled_resolved_scope_header).
+    """
+    return _pooled_filtered_stderr_call(compute_review_round_costs, *args, **kwargs)
 
 
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
@@ -848,7 +865,17 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     skill_filter = {skill_arg} if skill_arg else None
     since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
-    roots = scope.resolve_scan_roots(args)
+    # --pooled routes resolve_scan_roots through the same diagnostic filter
+    # as compute_review_round_costs below: declared_transcript_roots()'s own
+    # "declared root N unreadable" warning (raised here, before either
+    # refusal call has a roots-dependent chance to fire) is root-count-
+    # revealing too, on both the still-poolable and the single-root-refusal
+    # path.
+    roots = (
+        _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
+        if pooled
+        else scope.resolve_scan_roots(args)
+    )
     multi_root = len(roots) > 1
 
     if pooled:
