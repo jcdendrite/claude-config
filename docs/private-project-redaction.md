@@ -298,6 +298,12 @@ predates this section's current single-account bar:
   `review-trace` corpus measurement
 - `docs/cost-levers-considered.md`'s machine-wide pooled review-round
   share and machine-wide rows
+- `docs/cost-levers-considered.md`'s 2026-09-13 sleep-poll figure
+  (166/143/0-of-309 Bash-call split): grandfathered by an approval
+  timestamp of 2026-09-13T03:39:31Z that predates this bar's
+  effective date, rather than by a publication date like the entries
+  above. This is a one-time exception tied to a since-deleted
+  approval mechanism, not a standing rule for future bar changes
 - `docs/case-studies.md`'s index blurbs
 - `docs/case-studies/effort-estimation-review-surface.md`,
   `hashline-edit-format.md`, `targeted-read-discipline.md`,
