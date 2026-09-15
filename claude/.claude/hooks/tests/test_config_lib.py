@@ -18,16 +18,39 @@ shape run_hook's own home-only call path uses.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
+_INSTALL_SH = REPO_ROOT / "install.sh"
+
+
+def _first_available_non_c_utf8_locale() -> str | None:
+    """Returns the first non-C/POSIX UTF-8 locale name `locale -a` reports
+    as installed, or None if none is -- a minimal container image may ship
+    only the C/POSIX locale. Used to skip (not silently no-op) the
+    ambient-locale guard test below on a machine that can't exercise it."""
+    try:
+        result = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    for name in result.stdout.splitlines():
+        if name.strip().lower() in ("c", "posix"):
+            continue
+        if "utf8" in name.lower() or "utf-8" in name.lower():
+            return name.strip()
+    return None
+
+
+_NON_C_UTF8_LOCALE = _first_available_non_c_utf8_locale()
 
 
 def _run(script: str) -> subprocess.CompletedProcess:
@@ -45,6 +68,19 @@ def _write_state_file(home, content: str, config_dir=None) -> None:
     target = (config_dir or (home / ".claude")) / "claude-config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
+
+
+def _schema_row_call_count_wrapper(count_file: Path) -> str:
+    """A shell prefix that renames the real _config_schema_row aside, then
+    redefines it to count into `count_file` before delegating. Counts into
+    a file rather than a shell variable because _config_location_value can
+    run inside a `$(...)` subshell capture, whose variable mutations don't
+    propagate back to the counting caller's shell."""
+    return (
+        'eval "$(declare -f _config_schema_row | '
+        "sed '1s/.*/_config_schema_row_real ()/')\"; "
+        f'_config_schema_row() {{ printf x >> "{count_file}"; _config_schema_row_real "$@"; }}; '
+    )
 
 
 def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProcess:
@@ -106,6 +142,55 @@ def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, 
         if line.startswith(f"{key}|"):
             fields = line.split("|")
             fields[7] = polarity
+            line = "|".join(fields)
+        lines.append(line)
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
+def _isolated_hooks_dir_with_empty_default_column(tmp_path: Path, key: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, blanking
+    KEY's own default column (field 3 of 11).
+    Every other column, including resolution and
+    legacy-probe-on-resolution-failure, is left intact.
+    Every other row is left untouched.
+    _isolated_hooks_dir_with_truncated_key_row drops trailing columns
+    wholesale and so also empties resolution/legacy-probe-on-resolution-
+    failure. This exercises a single mid-row column blanked out on its own,
+    the shape a bad find-and-replace or merge-conflict resolution would
+    produce."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = []
+    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
+        if line.startswith(f"{key}|"):
+            fields = line.split("|")
+            fields[2] = ""
+            line = "|".join(fields)
+        lines.append(line)
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
+def _isolated_hooks_dir_with_legacy_probe_override(tmp_path: Path, key: str, legacy_probe: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, replacing
+    KEY's own legacy-probe-on-resolution-failure column (field 4 of 11)
+    with LEGACY_PROBE.
+    Every other row and field is left untouched.
+    This exercises a synthetic opt-in to the legacy-probe fail-safe arm on
+    a key that doesn't carry it today.
+    Same field-index-override technique
+    _isolated_hooks_dir_with_legacy_polarity_override uses for a different
+    column."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = []
+    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
+        if line.startswith(f"{key}|"):
+            fields = line.split("|")
+            fields[4] = legacy_probe
             line = "|".join(fields)
         lines.append(line)
     (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
@@ -255,6 +340,50 @@ class TestExitCodeContract:
         enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
         assert enabled_result.returncode == 4
         assert enabled_result.stdout == ""
+
+    def test_empty_default_column_returns_exit_4_not_a_silent_grant(self, tmp_path):
+        """Security regression: a config-keys.psv row can have its default
+        column alone blanked. Resolution and legacy-probe-on-resolution-
+        failure stay intact. That row must not resolve as an empty string.
+        _config_enabled's any-value-but-false rule would then read that
+        empty string as enabled. autonomous_shipping's safe direction is
+        "not shipping", so a silent exit 0 with an empty default here would
+        silently grant it. This is the very failure path
+        _config_resolve_fail_safe's own default fallback exists to close."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_empty_default_column(
+            tmp_path, "autonomous_shipping"
+        )
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value autonomous_shipping")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "autonomous_shipping" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled autonomous_shipping")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+    def test_state_file_backed_key_with_corrupted_default_still_returns_exit_4(
+        self, tmp_path, monkeypatch
+    ):
+        """_config_resolve validates default eagerly, right after the schema
+        row is read -- before any state-file lookup -- matching
+        _config.py's config_value(), which raises ConfigSchemaRowTruncatedError
+        the same way regardless of whether the key's own resolution would
+        ever consume default (claude/.claude/scripts/_config.py:376-386).
+        handoff_nudge has a real, valid claude-config.toml entry here and
+        would resolve fine on its own -- default is never on its resolution
+        path -- but a truncated schema row is still a truncated schema row.
+        Pins that this exit-4 case reaches state-file-backed keys too, not
+        only the no-state-file fallback case
+        test_empty_default_column_returns_exit_4_not_a_silent_grant covers."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        _write_state_file(home, "handoff_nudge = true\n")
+        isolated_hooks_dir = _isolated_hooks_dir_with_empty_default_column(tmp_path, "handoff_nudge")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value handoff_nudge")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "handoff_nudge" in value_result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +564,25 @@ class TestLegacyPolarity:
 
     @pytest.mark.parametrize("content", ["DOLLARS", "Dollars", "DoLLaRs\n"])
     def test_content_matches_case_folded(self, isolated_home, content):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
+
+    @pytest.mark.skipif(
+        _NON_C_UTF8_LOCALE is None,
+        reason="no non-C UTF-8 locale installed on this machine to exercise the ambient-locale guard",
+    )
+    @pytest.mark.parametrize("content", ["DOLLARS", "Dollars", "DoLLaRs\n"])
+    def test_content_matches_case_folded_under_non_c_ambient_locale(self, isolated_home, content, monkeypatch):
+        """Targets _config_location_value's own `local LC_ALL=C`, which
+        scopes its `[A-Z]` guard to ASCII regardless of the caller's
+        ambient locale.
+        This class's other cases run under the test runner's own
+        (typically C or POSIX) ambient locale, so only a real non-C UTF-8
+        locale here can exercise that scoping.
+        Distinct from test_config_parser_parity.py's U+212A fixture, which
+        targets _config_line_key_value's own (already-locale-scoped) guard
+        instead."""
+        monkeypatch.setenv("LC_ALL", _NON_C_UTF8_LOCALE)
         (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
         assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
 
@@ -759,12 +907,110 @@ class TestPrecomputedArgsArityGuard:
         assert "unrecognized key" not in result.stderr
 
 
+class TestSingleLocationBranchSchemaRowCallCount:
+    """Pins the call-count reduction the single-location branch gets from
+    threading known_keys/key_type/legacy_filename/legacy_polarity into
+    _config_location_value's 6-arg precomputed form. Wraps
+    _config_schema_row via the declare-f-plus-sed rename technique used
+    elsewhere in this file. Counts into a tmp_path file, not a shell
+    variable, because _config_location_value runs inside _config_resolve's
+    own `$(...)` subshell capture, whose variable mutations don't propagate
+    back."""
+
+    def test_schema_row_called_once_for_a_state_file_backed_key(self, isolated_home, tmp_path):
+        """commit_stall_block's row is present in the state file, so
+        _config_location_value's state-file read resolves it directly --
+        the only schema pass is _config_resolve's own front-of-function
+        _config_schema_row call."""
+        _write_state_file(isolated_home, "commit_stall_block = true\n")
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run(
+            f"{_schema_row_call_count_wrapper(count_file)}_config_value commit_stall_block"
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "x", (
+            "a single-location key whose row is present in the state file "
+            "must call _config_schema_row exactly once -- a second call "
+            "means _config_location_value re-derived schema state instead "
+            "of using the locals _config_resolve already threaded through: "
+            f"{count_file.read_text()!r}"
+        )
+
+    def test_schema_row_called_twice_when_falling_through_to_the_schema_default(self, tmp_path):
+        """Counterpart for the path that reaches _config_location_value's
+        closing _config_schema_field "$key" default call (_config.sh:644),
+        which is not one of the four threaded locals, so it still makes its
+        own _config_schema_row pass. No real config-keys.psv row reaches
+        this path today: every real legacy-polarity value
+        (presence-enables/presence-disables/content-matches) resolves
+        definitively regardless of legacy-file presence. Exercising the
+        fallback needs a synthetic empty legacy-polarity
+        (TestUnrecognizedLegacyPolarityFallback's own
+        test_empty_legacy_polarity_falls_through_silently shape, via
+        _isolated_hooks_dir_with_legacy_polarity_override)."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(
+            tmp_path, "commit_stall_block", ""
+        )
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'{_schema_row_call_count_wrapper(count_file)}_config_value commit_stall_block "{target_dir}"',
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "xx", (
+            "a single-location key falling through to the schema default "
+            "must call _config_schema_row exactly twice: once from "
+            "_config_resolve's own lookup, once from "
+            "_config_location_value's closing _config_schema_field default "
+            f"call: {count_file.read_text()!r}"
+        )
+
+
+class TestHomeOnlyFallbackBranchSchemaRowCallCount:
+    """Same call-count property as TestSingleLocationBranchSchemaRowCallCount,
+    pinned for the home-only-fallback branch instead. worktree_required is
+    the only key that reaches this branch, when primary_dir is unresolvable.
+    A relative CLAUDE_CONFIG_DIR makes _lib_config_dir fail, landing here --
+    the same technique TestMemoizationHomeOnlyFallbackBranch uses above."""
+
+    def test_schema_row_called_once_for_a_state_file_backed_key(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """worktree_required's row is present in $HOME/.claude's state
+        file, so _config_location_value's state-file read resolves it
+        directly -- the only schema pass is _config_resolve's own
+        front-of-function _config_schema_row call."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        _write_state_file(isolated_home, "worktree_required = true\n")
+        count_file = tmp_path / "schema_row_calls"
+
+        result = _run(
+            f"{_schema_row_call_count_wrapper(count_file)}_config_value worktree_required"
+        )
+
+        assert result.stdout == "true", f"stderr={result.stderr!r}"
+        assert count_file.read_text() == "x", (
+            "the home-only-fallback branch's success path must call "
+            "_config_schema_row exactly once -- a second call means "
+            "_config_location_value re-derived schema state instead of "
+            "using the locals _config_resolve already threaded through: "
+            f"{count_file.read_text()!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
-# _config_value's union branch must check _config_location_value's own exit
-# status before treating its captured stdout as authoritative -- an
-# arity-guard trip on either call (unreachable today, since both union-branch
-# calls always pass exactly 6 args) must not let the resulting empty stdout
-# fall through to _config_enabled's any-value-but-false "enabled" reading.
+# _config_resolve's union branch must check _config_location_value's own exit
+# status before treating its captured stdout as authoritative. The
+# `_config_location_value() { return 1; }` override stub below forces a
+# nonzero status on both union-branch calls, proving the fold fails closed
+# to its per-key fail-safe value instead of reading the resulting empty
+# stdout as "enabled".
 # ---------------------------------------------------------------------------
 
 
@@ -1186,3 +1432,1040 @@ class TestConfigDirGuard:
         assert result.returncode == 2
         assert not write_attempted.exists()
         assert not Path("/claude-config.toml").exists()
+
+
+# ---------------------------------------------------------------------------
+# _CONFIG_MEMO_CACHE: per-process memoization of an already-resolved key.
+# Every test in this section drives two calls in a SINGLE bash process (one
+# _run/_run_with_schema invocation, multiple statements joined by `;`) --
+# a memo lives only for the lifetime of one process, so two separate
+# subprocess invocations could never observe it either way.
+# ---------------------------------------------------------------------------
+
+
+class TestMemoization:
+    def test_config_set_invalidates_a_memoized_value_for_config_value(self, isolated_home):
+        """Both _config_value calls below must stay bare/uncaptured (printed
+        directly, not wrapped in an inner $(...)) -- a captured call forks
+        a subshell that discards its own memo store before this script's
+        top-level frame ever sees it, exactly like install.sh's own real
+        _config_value calls.
+        A captured rewrite of this test would pass unconditionally
+        regardless of whether _config_memo_reset exists, testing nothing."""
+        result = _run(
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            "_config_set handoff_nudge false; "
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "true|false", (
+            "the second bare call must see the write _config_set just made, "
+            f"not a value memoized before it: stdout={result.stdout!r}"
+        )
+
+    def test_config_set_invalidates_a_memoized_value_for_config_enabled(self, isolated_home):
+        """Mirrors the sibling test above for _config_enabled: covers the
+        _config_enabled-frame store and its own _config_memo_reset-driven
+        invalidation together. Same bare-call constraint as the sibling
+        test -- $? after a bare call reads the real exit status, not a
+        subshell's, so this still exercises the top-level frame's cache."""
+        result = _run(
+            "_config_enabled commit_stall_block; "
+            "printf 'first=%d|' \"$?\"; "
+            "_config_set commit_stall_block false; "
+            "_config_enabled commit_stall_block; "
+            "printf 'second=%d' \"$?\""
+        )
+        assert result.stdout == "first=0|second=1", (
+            f"the second bare call must reflect _config_set's write: stdout={result.stdout!r}"
+        )
+
+    def test_legacy_file_created_mid_process_does_not_affect_memoized_value(self, isolated_home):
+        """A same-process legacy-file creation between two bare
+        _config_value calls for one key does not flip the second call's
+        result. This is the documented per-process memo contract, not a
+        bug: _config_value has no way to know a legacy sentinel file
+        changed underneath it without re-reading the filesystem, which is
+        exactly the cost memoization exists to skip. Only
+        _config_set/_config_scaffold invalidate the memo."""
+        legacy_path = isolated_home / ".claude" / "track-permission-prompts"
+        result = _run(
+            "_config_value permission_prompt_tracking; "
+            "printf '|'; "
+            f'touch "{legacy_path}"; '
+            "_config_value permission_prompt_tracking"
+        )
+        assert result.stdout == "false|false", (
+            "the second bare call must still return the value memoized before "
+            f"the legacy file appeared, per the per-process memo contract: stdout={result.stdout!r}"
+        )
+
+    def test_two_different_keys_memoized_without_cross_key_corruption(self, isolated_home):
+        """Two different keys memoized in one process, re-reading the first
+        one last -- pins the memo cache's own membership/extraction logic
+        against cross-key corruption, a shape a single-key test structurally
+        can't catch."""
+        result = _run(
+            "_config_value autonomous_shipping; "
+            "printf '|'; "
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            "_config_value autonomous_shipping"
+        )
+        assert result.stdout == "false|true|false", (
+            f"autonomous_shipping's own memoized value must survive handoff_nudge "
+            f"being memoized in between: stdout={result.stdout!r}"
+        )
+
+    def test_transient_exit_3_is_not_memoized_so_a_later_schema_fix_resolves(self, isolated_home, tmp_path):
+        """Only a successfully resolved value is memoized. A first
+        _config_value call fails with a transient exit 3 (config-keys.psv
+        missing), the schema file is then supplied in the same process, and
+        a second bare call for the same key now resolves successfully. If
+        the failed lookup had been memoized, this second call would either
+        replay the failure or resolve to a corrupted empty value instead."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        schema_path = isolated_hooks_dir / "config-keys.psv"
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            "_config_value commit_stall_block; "
+            "printf 'status1=%d|' \"$?\"; "
+            f'cp "{_CONFIG_KEYS_PSV}" "{schema_path}"; '
+            "_config_value commit_stall_block; "
+            "printf '|status2=%d' \"$?\"",
+        )
+        assert result.stdout == "status1=3|true|status2=0", (
+            f"exit 3 must not be memoized, so the fixed-schema call resolves "
+            f"normally: stdout={result.stdout!r}"
+        )
+
+    def test_transient_exit_4_truncated_row_is_not_memoized_so_a_later_fix_resolves(
+        self, isolated_home, tmp_path
+    ):
+        """Companion to the exit-3 test above, for _config_value's other
+        transient-failure call site: a truncated resolution-critical
+        column (empty `resolution`) is a different check at a different
+        point in _config_value than a missing schema file, and is
+        otherwise unexercised by any memo test."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks-truncated"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        schema_path = isolated_hooks_dir / "config-keys.psv"
+        # Empty `resolution` (the 4th field) is the truncation _config_value
+        # itself checks; built via join rather than a hand-counted literal
+        # so the field count (11, matching config-keys.psv's own grammar)
+        # can't silently drift from a miscounted `|`.
+        truncated_row = "|".join(
+            ["commit_stall_block", "bool", "false", "", "false", "", "", "", "", "", ""]
+        )
+        schema_path.write_text(truncated_row + "\n")
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            "_config_value commit_stall_block; "
+            "printf 'status1=%d|' \"$?\"; "
+            f'cp "{_CONFIG_KEYS_PSV}" "{schema_path}"; '
+            "_config_value commit_stall_block; "
+            "printf '|status2=%d' \"$?\"",
+        )
+        assert result.stdout == "status1=4|true|status2=0", (
+            f"exit 4 must not be memoized, so the fixed-schema call resolves "
+            f"normally: stdout={result.stdout!r}"
+        )
+
+    def test_claude_config_dir_reassignment_mid_process_invalidates_the_memo(self, isolated_home):
+        """Proves the _CONFIG_MEMO_ENV_DIR fingerprint invalidation: a
+        CLAUDE_CONFIG_DIR reassignment between two bare _config_value calls
+        for the same key must not replay the first dir's memoized value."""
+        dir_a = isolated_home / "config-dir-a"
+        dir_a.mkdir()
+        dir_b = isolated_home / "config-dir-b"
+        dir_b.mkdir()
+        _write_state_file(isolated_home, "handoff_nudge = false\n", config_dir=dir_a)
+        _write_state_file(isolated_home, "handoff_nudge = true\n", config_dir=dir_b)
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{dir_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export CLAUDE_CONFIG_DIR="{dir_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect dir_b's own state, not "
+            f"dir_a's memoized value: stdout={result.stdout!r}"
+        )
+
+    def test_home_reassignment_mid_process_invalidates_the_memo(self, isolated_home, tmp_path):
+        """Mirrors the CLAUDE_CONFIG_DIR test above for the $HOME fallback
+        path: a HOME reassignment between two bare _config_value calls for
+        the same key must not replay the first home's memoized value."""
+        home_a = tmp_path / "home-a"
+        home_b = tmp_path / "home-b"
+        _write_state_file(home_a, "handoff_nudge = false\n")
+        _write_state_file(home_b, "handoff_nudge = true\n")
+        result = _run(
+            f'export HOME="{home_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export HOME="{home_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect home_b's own state, not "
+            f"home_a's memoized value: stdout={result.stdout!r}"
+        )
+
+    def test_claude_config_dir_unset_mid_process_falls_back_to_home_and_invalidates_the_memo(
+        self, isolated_home, tmp_path
+    ):
+        """Covers the one reassignment shape the two tests above don't:
+        CLAUDE_CONFIG_DIR set then unset mid-process, falling back to $HOME.
+        Must not replay the first call's CLAUDE_CONFIG_DIR-anchored memoized
+        value."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        _write_state_file(tmp_path, "handoff_nudge = false\n", config_dir=config_dir)
+        _write_state_file(isolated_home, "handoff_nudge = true\n")
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{config_dir}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            "unset CLAUDE_CONFIG_DIR; "
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "the second bare call must reflect $HOME's own state, not the "
+            f"memoized CLAUDE_CONFIG_DIR-anchored value: stdout={result.stdout!r}"
+        )
+
+    def test_memo_fingerprint_independent_comparison_defeats_pipe_delimiter_aliasing(self, isolated_home):
+        """Pins the property _config_memo_lookup's own header comment names as
+        the reason CLAUDE_CONFIG_DIR/HOME are compared independently rather
+        than concatenated: a literal '|' in one value must not let two
+        distinct (dir, home) pairs alias to the same fingerprint. dir_a/home_a
+        and dir_b/home_b concatenate to the identical "X|Y|Z" string despite
+        dir_a != dir_b and home_a != home_b -- a naive concatenated
+        fingerprint would treat the second call as a cache hit and replay
+        dir_a's stale value instead of dir_b's real one."""
+        dir_a = isolated_home / "X|Y"
+        dir_a.mkdir()
+        dir_b = isolated_home / "X"
+        dir_b.mkdir()
+        # home_a/home_b are plain strings, not paths under isolated_home --
+        # handoff_nudge is a resolution=config-dir key, so $HOME is never
+        # read for its value resolution, only for the memo fingerprint.
+        # Nesting them under isolated_home too would prepend an identical
+        # "isolated_home/" prefix to both dir and home before the pipe,
+        # which breaks the collision this test needs to construct.
+        home_a = "Z"
+        home_b = "Y|Z"
+        _write_state_file(isolated_home, "handoff_nudge = false\n", config_dir=dir_a)
+        _write_state_file(isolated_home, "handoff_nudge = true\n", config_dir=dir_b)
+        result = _run(
+            f'export CLAUDE_CONFIG_DIR="{dir_a}"; export HOME="{home_a}"; '
+            "_config_value handoff_nudge; "
+            "printf '|'; "
+            f'export CLAUDE_CONFIG_DIR="{dir_b}"; export HOME="{home_b}"; '
+            "_config_value handoff_nudge"
+        )
+        assert result.stdout == "false|true", (
+            "a naive concatenated fingerprint would alias these two distinct "
+            "pairs and replay dir_a's memoized value; the independent "
+            f"comparison must treat this as a miss: stdout={result.stdout!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The union-active branch (_config_value's config-dir-or-home path with
+# CLAUDE_CONFIG_DIR diverged from $HOME) holds most of this file's
+# _config_memo_store call sites, including the OR-across-both-locations
+# comparison -- the costliest lookup shape in the repo. TestMemoization's
+# own isolated_home fixture always collapses primary_dir to $HOME, so none
+# of those tests exercise this branch; this class does.
+# ---------------------------------------------------------------------------
+
+
+class TestMemoizationUnionBranch:
+    def test_union_branch_memoizes_and_override_call_does_not_pollute_it(
+        self, isolated_home, monkeypatch
+    ):
+        """Drives worktree_required (a config-dir-or-home key) through the
+        union branch: a first bare call resolves and memoizes "true", a
+        CONFIG_DIR_OVERRIDE call to a third, unrelated directory resolves
+        its own "false" independently, a second no-override call still
+        returns the memoized "true", and a _config_set write flips the
+        primary location to "false" and resets the memo, so a final call
+        re-resolves the union branch to "false" -- covering both the
+        allow and deny direction through this branch, not just one.
+
+        This proves only the read side, since a CONFIG_DIR_OVERRIDE call
+        never enters this union branch (union_active requires an empty
+        override). See
+        TestMemoizationSingleLocationBranch::test_override_call_before_a_real_memoized_lookup_does_not_pollute_it
+        for the write-side proof."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "worktree_required = true\n", config_dir=config_dir)
+
+        override_dir = isolated_home / "override-config"
+        override_dir.mkdir()
+        _write_state_file(isolated_home, "worktree_required = false\n", config_dir=override_dir)
+
+        result = _run(
+            "_config_value worktree_required; "
+            "printf '|'; "
+            f'_config_value worktree_required "{override_dir}"; '
+            "printf '|'; "
+            "_config_value worktree_required; "
+            "printf '|'; "
+            "_config_set worktree_required false; "
+            "_config_value worktree_required"
+        )
+        assert result.stdout == "true|false|true|false", (
+            "expected: first union-branch call resolves and memoizes "
+            "'true'; the override call resolves its own directory's "
+            "'false' independently; the third call still returns the "
+            "memoized 'true'; and _config_set's write resets the memo so "
+            f"the union branch re-resolves to 'false': stdout={result.stdout!r}"
+        )
+
+    def test_internal_failure_fail_safe_is_not_memoized(self, isolated_home, monkeypatch):
+        """The union fold's internal-failure fail-safe path (both
+        _config_location_value calls fail) must not be memoized -- a
+        same-process retry after the forced failure is lifted re-resolves
+        fresh instead of replaying the stale fail-safe value.
+
+        Renames the real _config_location_value to
+        _config_location_value_real via `declare -f`+`sed`, so the forced
+        failure can be lifted for the second call alone.
+        TestUnionBranchLocationValueFailure's override stub above instead
+        stays in effect for its whole (single-call) subprocess.
+        worktree_required's fail-safe value is "true" (legacy_probe is
+        "true"). This is genuinely different from the real state-file-backed
+        value "false" this test drives it to -- the discriminating property
+        a broken _CONFIG_RESOLVED_MEMOIZABLE gate would fail. A broken gate
+        would replay the first call's fail-safe "true" for the second call
+        instead of re-resolving "false"."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "worktree_required = false\n", config_dir=config_dir)
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            "_config_location_value() { return 1; }; "
+            "_config_value worktree_required; "
+            "printf '|'; "
+            "_config_enabled worktree_required; "
+            "printf 'enabled1=%d|' \"$?\"; "
+            '_config_location_value() { _config_location_value_real "$@"; }; '
+            "_config_value worktree_required; "
+            "printf '|'; "
+            "_config_enabled worktree_required; "
+            "printf 'enabled2=%d' \"$?\""
+        )
+        assert result.stdout == "true|enabled1=0|false|enabled2=1", (
+            "the first call's union-fold fail-safe 'true' must not be "
+            "memoized, so the second call re-resolves fresh against the "
+            "real state file's 'false', and _config_enabled -- the real "
+            "enforcement call site's own contract, not just _config_value's "
+            "printed string -- must agree at both the fail-safe point and "
+            f"after the state change: stdout={result.stdout!r}"
+        )
+
+    def test_internal_failure_fail_safe_is_not_memoized_autonomous_shipping(
+        self, isolated_home, monkeypatch
+    ):
+        """autonomous_shipping counterpart to the worktree_required test
+        above. legacy_probe is "false" for this key, so its fail-safe value
+        is its own schema default, "false".
+        This is the opposite polarity from worktree_required's. It drives
+        the same _CONFIG_RESOLVED_MEMOIZABLE reset through the union fold's
+        other branch.
+
+        Catches a reset gated on only the legacy_probe="true" arm, which the
+        sibling worktree_required test above can't -- it never exercises
+        the "false"-default arm.
+
+        The real state-file-backed value "true" this test drives it to is
+        genuinely different from the fail-safe "false", the same
+        discriminating property the worktree_required test above relies on."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "autonomous_shipping = true\n", config_dir=config_dir)
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            "_config_location_value() { return 1; }; "
+            "_config_value autonomous_shipping; "
+            "printf '|'; "
+            "_config_enabled autonomous_shipping; "
+            "printf 'enabled1=%d|' \"$?\"; "
+            '_config_location_value() { _config_location_value_real "$@"; }; '
+            "_config_value autonomous_shipping; "
+            "printf '|'; "
+            "_config_enabled autonomous_shipping; "
+            "printf 'enabled2=%d' \"$?\""
+        )
+        assert result.stdout == "false|enabled1=1|true|enabled2=0", (
+            "the first call's union-fold fail-safe 'false' must not be "
+            "memoized, so the second call re-resolves fresh against the "
+            "real state file's 'true', and _config_enabled -- the real "
+            "enforcement call site's own contract, not just _config_value's "
+            "printed string -- must agree at both the fail-safe point and "
+            f"after the state change: stdout={result.stdout!r}"
+        )
+
+    def test_union_branch_fail_safe_when_only_primary_location_fails(
+        self, isolated_home, monkeypatch
+    ):
+        """Other union-branch failure tests fail both locations uniformly and
+        can't distinguish `||` from an accidentally-flipped `&&`. This stubs
+        only the primary location's failure (keyed on
+        `_config_location_value`'s own `$2` dir argument, delegating to the
+        real implementation for the home branch) and asserts the fail-safe
+        value wins over home's real value."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "autonomous_shipping = true\n")
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            f'_config_location_value() {{ [ "$2" = "{config_dir}" ] && return 1; '
+            '_config_location_value_real "$@"; }; '
+            "_config_value autonomous_shipping; "
+            "printf '|'; "
+            "_config_enabled autonomous_shipping; "
+            "printf 'enabled=%d' \"$?\""
+        )
+        assert result.stdout == "false|enabled=1", (
+            "a primary-location-only failure must still take the union's "
+            "fail-safe path ('false', autonomous_shipping's own schema "
+            "default) rather than falling through to home's real 'true': "
+            f"stdout={result.stdout!r}"
+        )
+
+
+class TestMemoizationSingleLocationBranch:
+    def test_override_call_before_a_real_memoized_lookup_does_not_pollute_it(
+        self, isolated_home, monkeypatch
+    ):
+        """The single-location branch is _config.sh's non-union path.
+        Every CONFIG_DIR_OVERRIDE call reaches it, since union_active
+        requires an empty override.
+        It gates its own _config_memo_store call on override-emptiness.
+        The override call below must run first.
+        Memo lookup is leftmost-match, so writing the real entry first
+        would mask a later polluting write instead of exposing it."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        _write_state_file(isolated_home, "commit_stall_block = true\n", config_dir=config_dir)
+
+        override_dir = isolated_home / "override-config"
+        override_dir.mkdir()
+        _write_state_file(isolated_home, "commit_stall_block = false\n", config_dir=override_dir)
+
+        result = _run(
+            f'_config_value commit_stall_block "{override_dir}"; '
+            "printf '|'; "
+            "_config_value commit_stall_block"
+        )
+        assert result.stdout == "false|true", (
+            "the override call's own 'false' must not leak into the "
+            "shared no-override memo entry: a broken guard would make the "
+            f"second call also read 'false': stdout={result.stdout!r}"
+        )
+
+    def test_internal_failure_is_not_memoized(self, isolated_home):
+        """The single-location branch's own _config_location_value failure
+        must not be memoized -- a same-process retry after the forced
+        failure is lifted re-resolves fresh instead of replaying the first
+        call's fail-safe value.
+
+        commit_stall_block's own schema default ("true") is already its
+        fail-closed direction, so an internal failure resolves to "true"
+        (see _config_resolve_fail_safe). The state file below drives the
+        real, post-recovery value to "false" instead, genuinely different
+        from the fail-safe -- the discriminating property a broken
+        _CONFIG_RESOLVED_MEMOIZABLE gate would fail.
+
+        Same declare-f-plus-sed rename technique as
+        TestMemoizationUnionBranch's own fail-safe test, so the forced
+        failure can be lifted for the second call alone.
+        Also checks _config_enabled's own exit code at both points, not
+        just _config_value's printed string -- _config_enabled is the real
+        enforcement call site in _lib.sh."""
+        _write_state_file(isolated_home, "commit_stall_block = false\n")
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            "_config_location_value() { return 1; }; "
+            "_config_value commit_stall_block; "
+            "printf '|'; "
+            "_config_enabled commit_stall_block; "
+            "printf 'enabled1=%d|' \"$?\"; "
+            '_config_location_value() { _config_location_value_real "$@"; }; '
+            "_config_value commit_stall_block; "
+            "printf '|'; "
+            "_config_enabled commit_stall_block; "
+            "printf 'enabled2=%d' \"$?\""
+        )
+        assert result.stdout == "true|enabled1=0|false|enabled2=1", (
+            "the first call's fail-safe 'true' must not be memoized, so "
+            "the second call re-resolves fresh against the real state "
+            "file's 'false', and _config_enabled must agree at both the "
+            f"fail-safe point and after the state change: stdout={result.stdout!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "key, expected_value, expected_enabled_returncode",
+        [
+            # autonomous_shipping is the one enforcement-critical key whose
+            # safe direction is deny, not armed -- its schema default
+            # ("false") is already its own fail-closed direction.
+            # A raw-passthrough regression (an empty value read as
+            # "enabled") would flip its exit code from 1 to 0 here.
+            ("autonomous_shipping", "false", 1),
+            # round_consult_gate, authorization_boundary_restore, and
+            # commit_stall_block are structurally identical (config-dir,
+            # presence-disables, default "true") -- see this repo's own
+            # "audit structural siblings" convention.
+            ("round_consult_gate", "true", 0),
+            ("authorization_boundary_restore", "true", 0),
+            ("commit_stall_block", "true", 0),
+            # worktree_required is the one enforcement-critical key whose
+            # own default ("false") isn't already fail-closed, so its
+            # fail-safe comes from legacy_probe's "true" override instead
+            # (see _config_resolve_fail_safe).
+            ("worktree_required", "true", 0),
+        ],
+    )
+    def test_internal_failure_resolves_value_and_exit_code_for_enforcement_critical_keys(
+        self, isolated_home, key, expected_value, expected_enabled_returncode
+    ):
+        """Asserts both the resolved value and the _config_enabled exit code
+        on a forced _config_location_value failure through the single-
+        location branch. test_internal_failure_is_not_memoized above already
+        covers commit_stall_block's escape from memoization. This test adds
+        the exit-code check across all five enforcement-critical keys. A
+        raw-passthrough regression would read as enabled (exit 0) regardless
+        of key. That's the wrong direction for autonomous_shipping.
+        worktree_required and autonomous_shipping are both
+        resolution=config-dir-or-home keys. They land on this branch's own
+        code path only because isolated_home leaves CLAUDE_CONFIG_DIR
+        unset, so union_active never activates for them here."""
+        override = "_config_location_value() { return 1; }; "
+
+        value_result = _run(f"{override}_config_value {key}")
+        assert value_result.stdout == expected_value, (
+            f"an internal _config_location_value failure for {key!r} must "
+            f"fail safe to {expected_value!r}, not an empty passthrough: "
+            f"stdout={value_result.stdout!r}"
+        )
+        assert value_result.returncode == 0
+
+        enabled_result = _run(f"{override}_config_enabled {key}")
+        assert enabled_result.returncode == expected_enabled_returncode, (
+            f"an empty passthrough would always read as enabled (exit 0) "
+            f"under _config_enabled's any-value-but-false rule -- {key!r} "
+            f"must resolve to exit {expected_enabled_returncode}"
+        )
+
+    def test_config_enabled_and_bare_config_value_share_one_memo_entry(self, isolated_home):
+        """_config_enabled and _config_value both call _config_lookup, the
+        single memo gate that reads and writes _CONFIG_MEMO_CACHE. A
+        same-process call to one must see, and not duplicate, the other's
+        stored value. _config_set between the two calls proves the shared
+        entry is invalidated for both, not just the function that wrote
+        it."""
+        result = _run(
+            "_config_enabled commit_stall_block; "
+            "printf 'first=%d|' \"$?\"; "
+            "_config_value commit_stall_block; "
+            "printf '|'; "
+            "_config_set commit_stall_block false; "
+            "_config_enabled commit_stall_block; "
+            "printf 'second=%d' \"$?\""
+        )
+        assert result.stdout == "first=0|true|second=1", (
+            f"a bare _config_value call must read _config_enabled's own "
+            f"stored entry, and _config_set must invalidate it for both "
+            f"functions: stdout={result.stdout!r}"
+        )
+
+
+class TestMemoizationHomeOnlyFallbackBranch:
+    def test_internal_failure_is_not_memoized(self, isolated_home, monkeypatch):
+        """The home-only fallback branch is reached only by worktree_required,
+        when primary_dir is unresolvable and its legacy-probe-on-resolution-
+        failure column is "true".
+        It must not memoize its own _config_location_value failure -- a
+        same-process retry after the forced failure is lifted re-resolves
+        fresh instead of replaying the first call's fail-safe value.
+
+        This branch's own guard requires legacy_probe = "true" to be
+        reached, so its fail-safe value is always "true" (see
+        _config_resolve_fail_safe).
+        That is genuinely different from the real, state-file-backed value
+        "false" this test drives it to -- the discriminating property a
+        broken _CONFIG_RESOLVED_MEMOIZABLE gate would fail.
+
+        A relative CLAUDE_CONFIG_DIR makes _lib_config_dir fail, landing in
+        this branch. Same technique TestLegacyProbeOnResolutionFailure
+        uses. Same declare-f-plus-sed rename technique as the sibling
+        fail-safe tests above.
+        Also checks _config_enabled's own exit code at both points, not
+        just _config_value's printed string -- _config_enabled is the real
+        enforcement call site in _lib.sh."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        _write_state_file(isolated_home, "worktree_required = false\n")
+
+        result = _run(
+            "eval \"$(declare -f _config_location_value | "
+            "sed '1s/.*/_config_location_value_real ()/')\"; "
+            "_config_location_value() { return 1; }; "
+            "_config_value worktree_required; "
+            "printf '|'; "
+            "_config_enabled worktree_required; "
+            "printf 'enabled1=%d|' \"$?\"; "
+            '_config_location_value() { _config_location_value_real "$@"; }; '
+            "_config_value worktree_required; "
+            "printf '|'; "
+            "_config_enabled worktree_required; "
+            "printf 'enabled2=%d' \"$?\""
+        )
+        assert result.stdout == "true|enabled1=0|false|enabled2=1", (
+            "the first call's fail-safe 'true' must not be memoized, so "
+            "the second call re-resolves fresh against the real state "
+            "file's 'false', and _config_enabled must agree at both the "
+            f"fail-safe point and after the state change: stdout={result.stdout!r}"
+        )
+
+    def test_success_is_memoized(self, isolated_home, monkeypatch):
+        """The home-only fallback branch's success path is reached when
+        primary_dir is unresolvable and _config_location_value then
+        succeeds against $HOME/.claude. That success path must also
+        memoize. The failure path above is
+        already proven unmemoized. This test proves the positive
+        direction, the perf property this branch exists to speed up.
+
+        Same direct-filesystem-rewrite-mid-process technique as
+        TestMemoization::test_legacy_file_created_mid_process_does_not_affect_memoized_value.
+        A same-process rewrite of the state file between two bare calls
+        must not change the second call's result, since a real re-read
+        (not a cache hit) would pick up the new value instead."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        _write_state_file(isolated_home, "worktree_required = true\n")
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+
+        result = _run(
+            "_config_value worktree_required; "
+            "printf '|'; "
+            f'printf "worktree_required = false\\n" > "{state_file}"; '
+            "_config_value worktree_required"
+        )
+        assert result.stdout == "true|true", (
+            "the second bare call must still return the value memoized by "
+            "the first home-only-branch resolution, not a fresh read of "
+            f"the state file rewritten in between: stdout={result.stdout!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# An unrecognized FIELD passed to _config_schema_field must return 1 only
+# when KEY's own row was found, and 4 (propagated from _config_schema_row)
+# when it wasn't.
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaFieldBogusFieldOrdering:
+    def test_bogus_field_on_an_existing_row_returns_1(self, isolated_home):
+        result = _run("_config_schema_field commit_stall_block not_a_real_field")
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_bogus_field_on_a_missing_row_returns_4(self, tmp_path):
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "commit_stall_block")
+        result = _run_with_schema(
+            isolated_hooks_dir, "_config_schema_field commit_stall_block not_a_real_field"
+        )
+        assert result.returncode == 4
+        assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# _config_schema_row's own per-key correctness, for every real
+# config-keys.psv key -- pins the consolidation's core correctness claim
+# directly, rather than trusting the incidental breadth of the existing
+# _config_value/_config_enabled behavioral suite (which wouldn't reliably
+# catch a single shifted column on a key whose test coverage happens to
+# route around that field).
+#
+# This oracle can't be _config_schema_field, since it delegates to
+# _config_schema_row, so both would report the same wrong value on a
+# column-swap bug.
+# _config.py's already-tested schema() is reused here rather than
+# hand-rolling a second PSV parser, per this repo's single-source-of-truth
+# rule for parsing logic.
+# TestConfigKeysPsvGrammarInvariants below covers a different gap both
+# parsers share: row-shape/field-count leniency on a malformed row.
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(SCRIPTS_DIR))
+from _config import schema  # noqa: E402
+
+_SCHEMA_ROWS_BY_KEY = schema()
+
+_SCHEMA_ROW_GLOBALS = [
+    "_CONFIG_ROW_TYPE",
+    "_CONFIG_ROW_DEFAULT",
+    "_CONFIG_ROW_RESOLUTION",
+    "_CONFIG_ROW_LEGACY_PROBE",
+    "_CONFIG_ROW_LEGACY_IMPORT",
+    "_CONFIG_ROW_LEGACY_FILENAME",
+    "_CONFIG_ROW_LEGACY_POLARITY",
+    "_CONFIG_ROW_HUMAN_NAME",
+    "_CONFIG_ROW_DOCS_ANCHOR",
+    "_CONFIG_ROW_PROMPT_DESCRIPTION",
+]
+
+# Same order as _SCHEMA_ROW_GLOBALS, mapped to SchemaRow's own field names.
+# legacy_probe_on_resolution_failure_raw is the raw column string (not the
+# coerced bool), matching _CONFIG_ROW_LEGACY_PROBE's own raw string value.
+_SCHEMA_ROW_PY_FIELDS = [
+    "type",
+    "default",
+    "resolution",
+    "legacy_probe_on_resolution_failure_raw",
+    "legacy_import_locations",
+    "legacy_filename",
+    "legacy_polarity",
+    "human_name",
+    "docs_anchor",
+    "prompt_description",
+]
+
+
+class TestSchemaRowMatchesIndependentPsvParse:
+    @pytest.mark.parametrize("key", list(_SCHEMA_ROWS_BY_KEY))
+    def test_schema_row_globals_match_independent_psv_parse(self, key):
+        row_globals_expr = " ".join(f'"${g}"' for g in _SCHEMA_ROW_GLOBALS)
+        script = (
+            f"_config_schema_row {key}; "
+            f'printf "%s\\n" {row_globals_expr} "$_CONFIG_ROW_KNOWN_KEYS"'
+        )
+        result = _run(script)
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        lines = result.stdout.splitlines()
+        assert len(lines) == 11, f"expected 11 lines, got {len(lines)}: {lines!r}"
+        row_values, known_keys = lines[:10], lines[10]
+        expected_row = _SCHEMA_ROWS_BY_KEY[key]
+        expected_values = [getattr(expected_row, field) for field in _SCHEMA_ROW_PY_FIELDS]
+        assert row_values == expected_values, (
+            f"_config_schema_row's own globals for {key!r} must match an "
+            f"independent Python parse of its config-keys.psv row: "
+            f"bash={row_values!r} python={expected_values!r}"
+        )
+        expected_known_keys = " " + " ".join(_SCHEMA_ROWS_BY_KEY) + " "
+        assert known_keys == expected_known_keys, (
+            f"_CONFIG_ROW_KNOWN_KEYS must list every schema key: "
+            f"got={known_keys!r} expected={expected_known_keys!r}"
+        )
+
+
+class TestConfigKeysPsvGrammarInvariants:
+    """Reads config-keys.psv directly, through neither _config_schema_row
+    (bash) nor _config.py's schema() -- both apply the same padding/
+    truncation leniency to a malformed row, so a row-shape bug is invisible
+    to TestSchemaRowMatchesIndependentPsvParse's comparison above."""
+
+    def test_every_row_has_exactly_eleven_fields(self):
+        offending_lines = [
+            (lineno, line)
+            for lineno, line in enumerate(_CONFIG_KEYS_PSV.read_text().splitlines(), start=1)
+            if line.strip() and not line.strip().startswith("#") and line.count("|") != 10
+        ]
+        assert offending_lines == [], (
+            "a config-keys.psv row does not have exactly 11 pipe-separated "
+            f"fields: {offending_lines!r}"
+        )
+
+    def test_grammar_comment_column_order_matches_schema_row_globals(self):
+        """Three-way check: the PSV file's own grammar comment, this
+        hand-typed `expected_fields`, and `_SCHEMA_ROW_PY_FIELDS`'s order
+        must all agree. `expected_fields` is hand-typed, not derived from
+        `_SCHEMA_ROW_PY_FIELDS`, so a lockstep reorder of both real lists
+        doesn't pass silently."""
+        grammar_line = next(
+            line for line in _CONFIG_KEYS_PSV.read_text().splitlines() if line.startswith("#   key|")
+        )
+        fields = grammar_line.lstrip("#").strip().split("|")[1:]  # drop the leading `key` field
+        expected_fields = [
+            "type",
+            "default",
+            "resolution",
+            "legacy-probe-on-resolution-failure",
+            "legacy-import-locations",
+            "legacy-filename",
+            "legacy-polarity",
+            "human-name",
+            "docs-anchor",
+            "prompt-description",
+        ]
+        assert fields == expected_fields, (
+            f"config-keys.psv's own grammar comment line's column order "
+            f"({fields!r}) no longer matches this test's independently "
+            f"hand-typed expected order ({expected_fields!r})"
+        )
+        # Normalizes _SCHEMA_ROW_PY_FIELDS's order to the grammar comment's
+        # hyphenated spelling (dropping the one "_raw" suffix) and checks it
+        # against expected_fields too.
+        # This is the leg that ties _SCHEMA_ROW_PY_FIELDS/_SCHEMA_ROW_GLOBALS
+        # to the independent oracle -- without it, a lockstep reorder of both
+        # real lists would go undetected.
+        normalized_py_fields = [
+            field.removesuffix("_raw").replace("_", "-") for field in _SCHEMA_ROW_PY_FIELDS
+        ]
+        assert normalized_py_fields == expected_fields, (
+            f"_SCHEMA_ROW_PY_FIELDS's own order ({_SCHEMA_ROW_PY_FIELDS!r}, "
+            f"normalized to {normalized_py_fields!r}) no longer matches "
+            f"expected_fields ({expected_fields!r}) -- update whichever "
+            f"one drifted so all three stay in agreement"
+        )
+
+
+class TestSingleLocationBranchNeverExercisesLegacyProbeArm:
+    def test_no_config_dir_only_row_opts_into_legacy_probe_on_resolution_failure(self):
+        """_config_resolve's single-location branch (resolution=config-dir)
+        threads legacy_probe into the shared _config_resolve_fail_safe
+        helper the same way the union and home-only branches do.
+        No real config-dir-only key exercises that helper's
+        legacy_probe="true" arm today -- only worktree_required
+        (resolution=config-dir-or-home) does, via the other two branches.
+        This pins that assumption directly
+        against config-keys.psv via the independent parser oracle above, so
+        a future config-dir row that opts into legacy-probe-on-resolution-
+        failure=true flags the gap in the single-location branch's own test
+        coverage instead of silently inheriting it."""
+        offending_rows = [
+            row.key
+            for row in _SCHEMA_ROWS_BY_KEY.values()
+            if row.resolution == "config-dir" and row.legacy_probe_on_resolution_failure_raw == "true"
+        ]
+        assert offending_rows == [], (
+            "a resolution=config-dir row now has legacy-probe-on-resolution-"
+            "failure=true -- add a TestMemoizationSingleLocationBranch case "
+            "driving that key's own legacy_probe=true fail-safe arm before "
+            f"landing this schema change: {offending_rows!r}"
+        )
+
+    def test_synthetic_config_dir_row_with_legacy_probe_true_overrides_its_own_default(
+        self, tmp_path
+    ):
+        """The tripwire above only inspects config-keys.psv's current rows.
+        It can't discriminate a call-site regression in _config_resolve's
+        single-location branch (_config.sh's
+        `_config_resolve_fail_safe "$legacy_probe" "$default"` call) from
+        correct behavior, since no real config-dir-only key exercises that
+        call's legacy_probe="true" arm today.
+
+        Exercises it directly instead, via a synthetic schema row.
+        Overrides permission_prompt_tracking's own
+        legacy-probe-on-resolution-failure column to "true". Its real
+        default stays "false" -- the opposite direction. Forces a
+        _config_location_value failure to reach the fail-safe path.
+
+        A call-site argument swap or a hardcoded fail-safe would resolve
+        "false" here instead of "true", since permission_prompt_tracking's
+        own default never overrides to "true" on its own."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_probe_override(
+            tmp_path, "permission_prompt_tracking", "true"
+        )
+        override = "_config_location_value() { return 1; }; "
+        value_result = _run_with_schema(
+            isolated_hooks_dir, f"{override}_config_value permission_prompt_tracking"
+        )
+        assert value_result.stdout == "true", (
+            "legacy_probe=true must override permission_prompt_tracking's "
+            "own default ('false') on an internal resolution failure: "
+            f"stdout={value_result.stdout!r}"
+        )
+        enabled_result = _run_with_schema(
+            isolated_hooks_dir, f"{override}_config_enabled permission_prompt_tracking"
+        )
+        assert enabled_result.returncode == 0, (
+            "_config_enabled must agree with _config_value's fail-safe "
+            f"value: returncode={enabled_result.returncode}"
+        )
+
+
+class TestConfigDirOrHomeRowsAreAllBoolTyped:
+    def test_no_config_dir_or_home_row_has_a_non_bool_type(self):
+        """_config_resolve's union branch (_config.sh:824-827) compares
+        each location's resolved value against the literal "true" to decide
+        the OR, which only works for a bool-typed key. Pins that assumption
+        against config-keys.psv via the independent parser oracle above, so
+        a future non-bool config-dir-or-home row flags here instead of
+        silently miscomputing the union."""
+        offending_rows = [
+            row.key
+            for row in _SCHEMA_ROWS_BY_KEY.values()
+            if row.resolution == "config-dir-or-home" and row.type != "bool"
+        ]
+        assert offending_rows == [], (
+            "a resolution=config-dir-or-home row is not bool-typed -- "
+            "_config_resolve's union branch's 'true'-literal comparison "
+            "does not generalize to an enum value; update that branch "
+            f"before landing this schema change: {offending_rows!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# No function anywhere in this file's scanned scope may declare a
+# `local`/`declare` sharing one of these global names, since bash's dynamic
+# (not lexical) scoping would silently intercept the plain global assignment
+# into that shadow. The scan splits into two, since the two groups don't
+# share the same risk shape:
+#
+# _CONFIG_ROW_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* are read immediately
+# after being written within _config.sh's own functions, so scanning
+# _config.sh alone is sufficient for that group.
+#
+# _CONFIG_MEMO_* persists across separate top-level calls in any caller, so
+# every hook/script sourcing this file needs scanning too, since a shadow
+# there can desync it from a legitimate _config_set-triggered reset.
+#
+# Both scans are fail-fast checks, not a completeness guarantee.
+# ---------------------------------------------------------------------------
+
+
+def _join_backslash_continuations(text: str) -> list[tuple[int, str]]:
+    """Joins a backslash-line-continued statement into one logical line, so
+    a `local`/`declare` declaration split across physical lines (or a
+    compound one-liner like `[ cond ] && local x=1`) is scanned as the
+    single bash simple-command it actually is. Each returned tuple's line
+    number is the first physical line of its logical line."""
+    logical_lines: list[tuple[int, str]] = []
+    buffer = ""
+    start_lineno: int | None = None
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if start_lineno is None:
+            start_lineno = lineno
+        if line.endswith("\\"):
+            buffer += line[:-1] + " "
+            continue
+        buffer += line
+        logical_lines.append((start_lineno, buffer))
+        buffer = ""
+        start_lineno = None
+    if buffer:
+        logical_lines.append((start_lineno, buffer))
+    return logical_lines
+
+
+# Not anchored to line start -- a shadowing declaration can follow `;`,
+# `&&`, `||`, `then`, or `do` on the same physical or joined logical line
+# (e.g. `[ -n "$x" ] && local _CONFIG_ROW_TYPE=1`), an idiom already used
+# elsewhere in this file. `declare` is function-scoped by default too.
+_LOCAL_OR_DECLARE_RE = re.compile(r"\b(?:local|declare)\b")
+# A real declaration target is a bare token, optionally followed by
+# `=value`. A value-position usage is always written `$_CONFIG_ROW_*`/
+# `${_CONFIG_ROW_*}` in this file. Excluding a token immediately preceded by
+# `$` or `${` distinguishes the two. Split into two regexes matching the two
+# scans' own prefix groups (see the class-level comment above): ROW/
+# RESOLVED/LOOKUP for the narrow, _config.sh-only scan, MEMO for the wide,
+# repo-scan.
+_ROW_SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_(?:ROW|RESOLVED|LOOKUP)_[A-Z_]+")
+_MEMO_SHADOWING_TOKEN_RE = re.compile(r"(?<!\$)(?<!\$\{)_CONFIG_MEMO_[A-Z_]+")
+
+
+class TestGlobalReturnShadowingInvariant:
+    def test_no_local_declares_a_config_row_resolved_or_lookup_global(self):
+        # Scoped to _config.sh alone -- a `local`/`declare` shadow declared
+        # by a caller elsewhere (_lib.sh, install.sh, a hook, a script)
+        # doesn't break the global-return contract for this same-call-chain
+        # group; only a shadow inside _config.sh's own writer functions does
+        # (see the class-level comment above).
+        scanned_files = [_CONFIG_SH]
+        violations = [
+            (path.name, lineno, logical_line)
+            for path in scanned_files
+            for lineno, logical_line in _join_backslash_continuations(path.read_text())
+            if _LOCAL_OR_DECLARE_RE.search(logical_line) and _ROW_SHADOWING_TOKEN_RE.search(logical_line)
+        ]
+        assert not violations, (
+            "a `local`/`declare` declaration shadows a _CONFIG_ROW_*/"
+            f"_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* global, which bash's "
+            f"dynamic scoping would silently redirect that global's "
+            f"assignment into: {violations!r}"
+        )
+
+    def test_no_local_declares_a_memo_global_anywhere_it_could_run(self):
+        # Wide scan -- _CONFIG_MEMO_CACHE/_CONFIG_MEMO_ENV_DIR/
+        # _CONFIG_MEMO_ENV_HOME persist across separate top-level calls, so a
+        # caller-declared shadow anywhere in this process's own call
+        # surface (not only inside _config.sh) can desync the real global
+        # from a legitimate reset (see the class-level comment above).
+        scanned_files = sorted(
+            {_CONFIG_SH, _LIB_SH, _INSTALL_SH, *HOOKS_DIR.glob("**/*.sh"), *SCRIPTS_DIR.glob("**/*.sh")}
+        )
+        violations = [
+            (path.name, lineno, logical_line)
+            for path in scanned_files
+            for lineno, logical_line in _join_backslash_continuations(path.read_text())
+            if _LOCAL_OR_DECLARE_RE.search(logical_line) and _MEMO_SHADOWING_TOKEN_RE.search(logical_line)
+        ]
+        assert not violations, (
+            "a `local`/`declare` declaration shadows a _CONFIG_MEMO_* "
+            f"global, which bash's dynamic scoping would silently redirect "
+            f"that global's assignment into, desyncing it from a real "
+            f"_config_set-triggered reset: {violations!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "shadowing_line,token_re",
+        [
+            ('[ -n "$x" ] && local _CONFIG_ROW_TYPE="shadow"', _ROW_SHADOWING_TOKEN_RE),
+            ("for k in a b; do local _CONFIG_ROW_TYPE=\"$k\"; done", _ROW_SHADOWING_TOKEN_RE),
+            ('if true; then local _CONFIG_MEMO_CACHE=1; fi', _MEMO_SHADOWING_TOKEN_RE),
+            ('if true; then local _CONFIG_MEMO_ENV_DIR=1; fi', _MEMO_SHADOWING_TOKEN_RE),
+        ],
+    )
+    def test_regex_catches_compound_statement_shadowing(self, shadowing_line, token_re):
+        """A shadowing `local` need not be the first token on its line --
+        e.g. a compound one-liner like `[ cond ] && local x=1`, an idiom
+        already used elsewhere in this file. Covers both split regexes, so
+        each is proven to still fire on its own prefix group."""
+        assert _LOCAL_OR_DECLARE_RE.search(shadowing_line)
+        assert token_re.search(shadowing_line)
+
+    def test_regex_catches_backslash_continued_shadowing(self):
+        text = 'local \\\n  _CONFIG_ROW_TYPE="shadow"\n'
+        joined = _join_backslash_continuations(text)
+        assert any(
+            _LOCAL_OR_DECLARE_RE.search(logical_line) and _ROW_SHADOWING_TOKEN_RE.search(logical_line)
+            for _, logical_line in joined
+        )
+
+    def test_row_regex_does_not_match_memo_prefixed_names(self):
+        """The narrow-scan regex must not widen onto _CONFIG_MEMO_* names --
+        those are covered by the separate wide scan instead."""
+        assert not _ROW_SHADOWING_TOKEN_RE.search("local _CONFIG_MEMO_CACHE=1")
+        assert not _ROW_SHADOWING_TOKEN_RE.search("local _CONFIG_MEMO_ENV_DIR=1")
+
+    def test_memo_regex_does_not_match_row_resolved_or_lookup_prefixed_names(self):
+        """The wide-scan regex must not narrow onto
+        _CONFIG_ROW_*/_CONFIG_RESOLVED_*/_CONFIG_LOOKUP_* names -- those are
+        covered by the separate narrow scan instead."""
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_ROW_TYPE=1")
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_RESOLVED_VALUE=1")
+        assert not _MEMO_SHADOWING_TOKEN_RE.search("local _CONFIG_LOOKUP_VALUE=1")
