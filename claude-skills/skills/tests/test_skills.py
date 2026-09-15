@@ -3178,6 +3178,25 @@ def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
     )
 
 
+def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
+    """docs/cost-levers-considered.md's sleep-poll follow-up entry cites
+    `docs/private-project-redaction.md` § "The owner can authorize one
+    figure, case by case" for its publication authorization — resolves to
+    a real heading there.
+
+    This is the one citation in that entry carrying evidentiary weight for
+    a security-relevant control (publication authorization). Per this
+    repo's citation-grammar rule, a future heading rename or restructure
+    would otherwise silently orphan it with no reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "cost-levers-considered.md",
+        "docs/private-project-redaction.md",
+        "The owner can authorize one figure, case by case",
+        repo_root=REPO_ROOT,
+    )
+
+
 _CASE_STUDY_POOLED_FIGURE_MARKERS_RE = re.compile(
     r"pooled across|machine-wide|cross-machine|multi-account", re.IGNORECASE
 )

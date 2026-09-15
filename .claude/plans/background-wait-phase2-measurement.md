@@ -1,0 +1,196 @@
+# Machine-wide sleep-poll measurement (Phase 2 of the background-wait-mechanism effort)
+
+## Context
+
+Measure, across this machine's whole multi-account transcript corpus rather
+than this repo's own dispatches alone, how often a background wait during
+Bash's own idle-gap cause (`waiting on own Bash call`) is a hand-rolled
+sleep-poll loop rather than some other shape — the empirical basis Phase 3's
+case study would build on, and production evidence toward or against
+reopening `docs/design-decisions.md` §49's `ScheduleWakeup`-deny Revisit
+condition ("a `Bash sleep`," `.claude/plans/subagent-idle-gap-cause-attribution.md:26`).
+
+Phase 1 (grounding the passive-notification mechanism, PR #930) shipped with
+this measurement deliberately deferred. The repo's one existing quantitative
+support for the no-polling rule is a `docs/cost-levers-considered.md:525`
+`--this-repo`-scoped finding: 4 of 11 `waiting on own Bash call` rebuilds are
+sleep-poll, ≈36%, from `cache-rebuild --this-repo`'s "Own-Bash wait shape"
+block (`docs/transcript-analysis.md:965-975`). That entry documents
+itself as "a small-n, non-generalizing in-repo data point." The same entry
+(`docs/cost-levers-considered.md:533`) records that a much larger hand-sampled
+corpus already exists but its sub-pattern share was withheld under the
+*prior* redaction rule, since that corpus mixes private-project and public
+transcripts. `narrow-provenance-redaction-rule` (PR #928, merged as
+`9ecaef83`) now permits a specific, gated carve-out for exactly this shape of
+figure (`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement"). Phase 2 designs the measurement against that now-settled
+rule, decides whether the existing withheld figure (or a fresh machine-wide
+run) can ship under it, and — if so — ships it through the carve-out's
+approval gate. Phase 3 (a case study) and any change to §49's own deny stay
+out of this plan's scope; §49's own Revisit-condition process governs
+whether this plan's finding is sufficient to trigger it, not this plan
+itself.
+
+## Carry-forward constraints (from Phase 1's plan, non-negotiable inputs to this design)
+
+1. Whatever this measurement's design turns out to be, a withhold-path
+   artifact — the thing produced when the gate below is *not* cleared —
+   records the outcome label and scope metadata only. No count, ratio, or
+   percentage derived from transcript content. A threshold chosen by looking
+   at the data is such a number; so is a bare `n`; so is the share itself.
+2. A per-account, per-project, or per-engagement breakdown is never
+   published, under any rule, in any artifact this plan or its follow-ups
+   produce. Absolute, not a factor to weigh.
+
+## Governing carve-out (from `docs/private-project-redaction.md`, current post-#986 rule)
+
+- **What may be counted:** this repo's own tooling in use — Claude Code tool
+  calls, sessions, and agent dispatches. Nothing else. (A sleep-poll-vs-other
+  sub-classification of Bash `tool_use` calls is a Counts share split along
+  the wait-shape dimension — not project, account, machine, engagement, or
+  calendar time — so it is in scope on this basis.)
+- **How it may be reported:** Counts may be reported as a total, a share, or
+  a median, at any pooling breadth, including one spanning every account on
+  this machine — Counts carry no account or machine pooling boundary. Cost
+  and Duration (not used by this measurement) stay scoped to a per-unit
+  rate, never a raw pooled total, never client-billed/engagement-revenue/
+  billable-hours. Cadence stays excluded even pooled. A whole-period figure
+  only, never a time series — binding across separate artifacts, not just
+  within one.
+- **A pooled Count that crosses the account/machine boundary is a one-time
+  disclosure.** Publishing one is the one exception the "No time series" bar
+  allows outside the split (see next bullet). A second Count of the *same*
+  quantity published later forms the barred two-point series. Whether this
+  allowance is spent per-quantity or categorically — as the split's own
+  allowance explicitly is ("regardless of label or statistic, same or
+  different") — is not settled by the carve-out's own text; M8(f) routes
+  that question to the owner rather than this plan assuming either reading.
+- **This plan does not invoke "the one permitted split."** The split is a
+  before/after comparison either side of a public pivot, reserved for a
+  different figure shape and bound to single-account/single-machine scope,
+  a per-side share with no per-side pool size, and a pivot named before any
+  exploratory query. This plan's wait-shape three-way breakdown is a Counts
+  share split along a permitted dimension (wait shape), not the
+  account/machine/project/engagement/calendar-time dimensions the split and
+  the share-split bullet both exclude — it is unrelated to the split and
+  does not spend its one-per-carve-out allowance.
+- **Approval gate:** an agent never publishes a figure under this carve-out
+  on its own judgment. It proposes the figure, the exact command/script
+  that produced it, and the destination artifact. For a boundary-crossing
+  pooled Count, the proposal additionally discloses — as approval-only
+  input, never in the published figure — which accounts/machines
+  contribute to the pool, and any already-published or
+  routinely-automated single-account/single-machine exact figure of the
+  same quantity, so the owner can judge whether the two combine to isolate
+  one account's or machine's own count by subtraction. The owner approves
+  per artifact, cited as a durable, independently-checkable record from the
+  owner's own account. No citation, no publication.
+
+## Approach
+
+This plan ships no code: it runs the existing `cache-rebuild` instrument once, machine-wide, with the tail gate off (`--threshold 0`), and transcribes exactly three integers out of its "Own-Bash wait shape" block. The design work is the pre-registration, the closed extraction list, and the owner-gate workflow that lets those three integers out of an all-accounts run reach the public repo without anything else following them.
+
+Two findings settle the mechanism question against a new script and against a new flag.
+
+**Finding 1.** The "Own-Bash wait shape" block is already pooled and already prints unconditionally: `bash_shape_rebuilds`/`bash_shape_excess`/`bash_shape_shares` carry no account key at all (`transcript-analysis.py:6551-6554`, accumulated at `:6898-6905`, printed at `:6996-7022` with no `multi_root` guard). This differs from the neighbouring `per_account_rebuilds`/`per_account_excess` pair (`:6528-6529`), whose table is gated on `if multi_root` (`:6945`), exactly as `docs/transcript-analysis.md:947` documents. Dropping `--this-repo` therefore pools this specific block correctly with zero code.
+
+**Finding 2.** The whole `cache-rebuild` report is already aggregate-only — its own `--no-redact` help states "This report's output is aggregate-only (no project names or session IDs)" (`:12416`). The carve-out's aggregation-boundary condition ("It may read the mixed corpus internally, but its output to the agent is the rounded pooled figure only — never per-session or per-project raw content", `docs/private-project-redaction.md:106-109`) is therefore satisfied on the clause's own terms: there is no per-session or per-project content in the output to begin with.
+
+Alternatives set aside:
+
+- **A `--pooled` reporting mode on `cache-rebuild`** was the tempting reuse, but the over-powered choice: it installs a permanent flag on every stow consumer's machine (root `CLAUDE.md`, "Plans in this repo affect all stow users") to solve a one-publication transcription-discipline problem, and it would suppress a per-account table that is aggregate, ordinal-labelled, and never published anyway.
+- **A one-off script on the `cache-write-analysis` plan's `/tmp`-resident-deliverable pattern** was set aside because that plan's `/tmp`-resident, outside-the-tree deliverables answer a provenance problem this plan does not have: there, the corpus was a de-identified TSV of *raw PR rows* received from another machine, so containment had to sit around row-level data. Here the corpus is `transcript-analysis.py`'s own default union, the tool already holds that exposure with a tested redaction contract, and the deliverable is three integers — a `/tmp` copy of a machine-wide report would be a durable copy with no consumer.
+- **A new instrument covering main-origin waits and sub-300s waits** is genuinely out of reach of the existing block (G5, G6) and is named in Out of scope rather than designed.
+
+What this plan does borrow from `cache-write-analysis` is its egress rule stated as a prohibition rather than a filter, and its containment reflex, reduced to what a three-integer deliverable needs:
+
+- a closed extraction list (M3);
+- no run output written to any file anywhere (M4);
+- no dispatch boundary between the run and the citation (M5).
+
+That plan's `/tmp`-then-durable-path machinery is deliberately not carried forward, for the provenance reason above.
+
+**Root problem.** The repo's only quantitative support for its no-polling rule is a `--this-repo`-scoped n=11 data point (`docs/cost-levers-considered.md:525`), and the larger machine-wide corpus that could replace it sits behind a redaction rule that — post-#986 — now has a gated path through it; this plan walks that path or records, publishably, that it did not clear.
+
+**Givens** — conditions the design treats as fixed and beyond its own reach:
+
+| # | Given | Why it is beyond this plan |
+|---|---|---|
+| G1 | `~/.claude/transcript-config-dirs` is populated on this machine and its contents are not this plan's to change. `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section documents that once populated, every declared root is unioned with the active account's own config dir and scanned together. `docs/transcript-analysis.md:979` records a machine-wide run against every declared root, so the file is populated on this machine — that citation's own root count is elided per the doc's sample-output convention (`:813`). This plan states no root-count digit anywhere, matching `docs/private-project-redaction.md` § "Account and machine scope"'s bar on publishing one. [verified: `docs/transcript-analysis.md:47-61`, `:979`, `:813`] | The operator owns it; it is gitignored per-account machine state, not a repo artifact, and `CLAUDE.local.md` directs tooling to scan its union rather than re-run per account. Populating or expanding it is operator action, not a plan step. |
+| G2 | The approval gate cannot be satisfied by any agent. `docs/private-project-redaction.md:333-355` requires a durable, independently-checkable record **from the owner's own account**, and states that "A narrative claim that approval occurred is not a citation either." [verified: `docs/private-project-redaction.md:333-355`] | The owner is another party. No plan step can produce this; the plan can only produce the proposal and then block. |
+| G3 | The two carry-forward constraints are non-negotiable inputs, not design choices: a withhold artifact records outcome label and scope metadata only, and no per-account/per-project/per-engagement breakdown is ever published. [verified: `.claude/plans/background-wait-phase2-measurement.md:36-43`, declared non-negotiable by Phase 1] | Settled by Phase 1's plan (PR #930). A contradiction pauses and asks rather than being re-derived here. |
+| G4 | The sleep-poll classifier's precision is bounded in both directions and cannot be tightened without shell parsing: a quoted or heredoc-embedded `sleep` counts as a match (over-count), and `sleep $VAR` does not (under-count). [verified: `transcript-analysis.py:6151-6154` and `_SLEEP_POLL_COMMAND_RE` at `:6106`; documented at `docs/transcript-analysis.md:971`] | The vendor records the command string, not the process tree; distinguishing a real wait from a mention needs a shell parser, which is a different instrument. |
+| G5 | The block sees **subagent-origin** gaps only. `_attribute_idle_gap_cause` — and therefore `bash_shape` — is computed only under `if origin == "subagent"` (`transcript-analysis.py:6821-6825`); `docs/transcript-analysis.md:963` states "**Main origin is excluded**". [verified: both cited lines] | Reaching main-thread waits means a different accumulation path, i.e. an instrument change. It bounds what the published claim may say, not what this plan builds. |
+| G6 | The block sees only gaps of **≥300 s**. A candidate is appended only when `cause in _CACHE_REBUILD_IDLE_GAP_CAUSES` (`:6812`), and those causes require `gap_seconds &gt;= _CACHE_REBUILD_IDLE_5M_SECONDS`, which is 300 (`:6015`, `:6141`). [verified: cited lines] | Same as G5 — the 300 s floor mirrors the vendor's own 5-minute cache tier (`:6013-6015`), so it is a property of the instrument's purpose, not a tunable. |
+
+**Assumptions:**
+
+| # | Assumption | Tag |
+|---|---|---|
+| A1 | `--threshold 0` turns the tail gate off rather than erroring: `in_tail = write_tokens &gt;= threshold` (`:6806`) is then always true, `--threshold` is a bare `type=int` with no lower bound (`:12407`), and no printed figure divides by the threshold. | [verified: `transcript-analysis.py:6806`, `:12407`] |
+| A2 | With the tail gate off, the block's denominator becomes "every priced subagent-origin turn whose prior-turn gap was ≥300 s," because the remaining filters are the idle-gap cause set (G6), subagent origin (G5), and a priced model (`excess_dollars is None` routes to the unpriced counters at `:6814-6816`). | [verified: `transcript-analysis.py:6806-6825`] |
+| A3 | The three wait-shape rows partition the own-Bash row exactly and still do so at threshold 0 — `_classify_bash_wait_shape` is total over its input domain (`str` → poll-or-other, non-`str` → no-command, `:6156-6160`), and the sum-exactly property is separately test-pinned. | [verified: `transcript-analysis.py:6148-6160`; `test_transcript_analysis.py:9147` ("the sleep-poll/other/no-command split sums exactly to…") and `:9507`] |
+| A4 | A machine-wide threshold-0 run completes inside a 15-minute Bash timeout. `docs/transcript-analysis.md:979` records ~3 minutes for a machine-wide, ~165k-call scan across every declared root; threshold 0 adds per-candidate bookkeeping and a bounded-range lookup (two bisections — `bisect_right` then `bisect_left`) per candidate against a pre-sorted index (`transcript-analysis.py:6867-6874`), not another corpus pass. The 15-minute value is 5x the documented observation, chosen as headroom over that citation rather than from a fresh measurement. | [verified: `docs/transcript-analysis.md:979`; `transcript-analysis.py:6867-6874`] |
+| A5 | Publishing the pooled partition alongside the already-published `--this-repo` figure (`docs/cost-levers-considered.md:525`) is judged against the composition and time-series bars on its own merits. A `transcript-analysis.py` Count "still answers to the closed lists, the time-series bar, the composition bar, and the Approval gate" regardless of `--this-repo` scoping (`docs/private-project-redaction.md` § "Own-history counts were never inside this class", `:253-303`); `:525`'s own "not carve-out content" label does not, by itself, clear this analysis. It clears both bars on independent grounds. Composition bar (`:199-216`): both are counts rather than a rate × pool-size product, so neither combines with the other into a raw pooled total, and the derivable non-this-repo remainder carries no per-project dimension. Time-series bar (`:176-184`): `:525`'s dated window and this run's `--since 30d` window are two dated observations of a near-identical statistic, but **the differing `--threshold` is what keeps them non-comparable rather than forming a series** (see M2). This assumption is stated for the owner's decision, not as a self-clearance: the M8 proposal names both `:525` and `docs/transcript-analysis.md:979`'s own machine-wide pooled tool-call count as prior publications found in the search `:383-388` requires, and states what each would newly disclose in combination. | [verified: `docs/private-project-redaction.md:199-216`, `:176-184`, `:253-303`, `:383-388`; `docs/cost-levers-considered.md:525`; `docs/transcript-analysis.md:979`] |
+| A6 | The `Excess $`, `5m-1h $`, `W5m`, `X`, and `Net$` figures in the run output are raw pooled dollar/token totals, which the carve-out bars from publication outright ("never as a raw pooled total", `docs/private-project-redaction.md:144-145`) — so they are excluded from the extraction list on a rule, not on relevance. | [verified: `docs/private-project-redaction.md:144-150`] |
+| A7 | The pre-registered n floor is **30 on the pooled `waiting on own Bash call` row**. Below roughly that count the share's own sampling error is wide enough that the figure would restate `:525`'s "small-n, non-generalizing" caveat at a larger scope — no gain. The value is not derivable from anything in this repo: it encodes how much precision `docs/design-decisions.md` §49's Revisit condition demands, which is a policy choice about evidentiary standards, and it is a manually-set policy choice, not a value inferred from the data. | [engineer-verified] |
+| A8 | The three `Rebuilds` rows are in bijection with distinct Bash `tool_use` calls, one per closed gap — not a novel counting unit. The block's own printed header states it sub-splits "by the shape of the winning Bash tool_use's own recorded command" (`transcript-analysis.py:6999`), and the third bin, "no command recorded," is still a Bash `tool_use` whose input lacked a `command` key (`:6156-6157`), not a different call type. Each gap contributes exactly one row (`:7005`: "classified once per gap it closed, not once per sleep"). This is why "Claude Code tool calls" — the closed list's literal term — covers all three rows even though the column is labeled `Rebuilds`; at `--threshold 0` a "rebuild" is really every qualifying turn (A2), not a cache rebuild specifically. | [verified: `transcript-analysis.py:6999`, `:6156-6157`, `:7005`] |
+
+**Mechanisms:**
+
+| # | Mechanism | Justification | Anchors |
+|---|---|---|---|
+| M1 | **Reuse `cache-rebuild` unchanged; ship no code.** The pooled block already exists, already prints unconditionally, and is already test-pinned. | Two lighter primitives than a new instrument were checked against the source and both suffice: dropping `--this-repo` widens the roots (the block has no account key, `:6551-6554`), and `--threshold 0` widens the per-root population (A1, A2). A third, heavier candidate — a `--pooled` output mode — was re-read for and rejected: it would install a permanent flag on every stow consumer to suppress blocks that are aggregate and never published, and the aggregation-boundary clause is already satisfied without it (`:12416`). | anchors: root, G1 |
+| M2 | **Pre-register exactly one command and one n floor before any run: `.venv/bin/python3 claude/.claude/scripts/transcript-analysis.py cache-rebuild --threshold 0 --since 30d`, no `--this-repo`, no `--config-dir`, no `--no-redact`; floor n ≥ 30 on the pooled `waiting on own Bash call` row (A7).** Fix both in this plan file, and commit the plan before running it. A row below 30 proposes no share — it routes straight to M7's withhold label without entering M8. | `--threshold 0` is chosen from the question's own definition — every subagent wait ≥300 s, not every wait that happened to trigger a &gt;100k-token rebuild — never from an observed n, which G3 bars. The floor rests on the same footing: its value comes from the engineer (A7), not from the run, and committing both before the run is what makes "fixed before the measurement ran" independently checkable, the same discipline `docs/cost-levers-considered.md:505` records. `--since 30d` is the tool's own default (`:6011`), so the window is the instrument's, not a chosen one. The cost of `--threshold 0` is loss of direct comparability with the `:525` figure at threshold 100,000 — accepted, and stated in the entry (A5); it is also what stops the published pair from composing into an exact non-this-repo remainder by subtraction (M6). | anchors: root, G3, A1, A2, A7 |
+| M3 | **Closed extraction list: exactly the three integers in the `Rebuilds` column of the "Own-Bash wait shape" block, and nothing else from the run.** Not `Excess $`, not `5m-1h $`, not `Median cov.`, not `Calls scanned`, not the `Corpus fingerprint` line, not the resolved-scope root count, not the by-account table, not `W5m`/`X`/`Net$`. | A closed allow-list is checkable; a per-line judgment call is not. Two of the excluded classes are barred outright (A6, and the by-account table under G3); the rest are excluded because they are unnecessary, and an unnecessary published figure is a composition surface (`docs/private-project-redaction.md:199-216`). Three counts are the whole deliverable, and counts are the one class the carve-out permits at any granularity (`:122-125`). | anchors: G3, A5, A6 |
+| M4 | **Egress rule, stated as a prohibition: neither run's raw output — M2's machine-wide run, nor M6's `--this-repo` pre-flight — is ever written to any file, inside or outside the repo tree, or quoted in any commit message or PR/issue body — not `/tmp`, not a durable non-stow path, not this plan file, not evidence pasted into the eventual PR description.** Both exist in the session transcript and nowhere else; only M3's three integers (from M2's run alone) travel by hand into the proposal and then into the register entry — nothing else from either run travels anywhere. **Any future publication of a `--this-repo` run of this same statistic needs the owner's word first**, because it would let a reader complete the same subtraction M6 and M8(f) flag against this plan's already-published machine-wide figure. An uncited in-session answer satisfies that future check, per `docs/private-project-redaction.md:293-302`'s own-history reconstruction-risk clause. | This mirrors `cache-write-analysis`'s own egress rule — stated as a prohibition rather than a filter — reduced to what a three-integer deliverable needs, and extended to the pre-flight run once M6 established that its numbers carry the same reconstruction risk as the machine-wide run's own raw output. E1/E2/E7's `/tmp`-then-durable-path machinery served a corpus of raw rows that a script had to re-read; three integers have no such consumer, so a written copy would add a durable artifact with no purpose. It also keeps root `CLAUDE.md`'s plan-content redaction rule trivially satisfied: this plan file cites the destination, never the figure. The commit-message/PR-body extension closes a live incentive this repo's own "Ground every choice" convention creates: citing supporting command output as evidence for a quantitative claim would carry far more than M3's closed list (per-account rows, dollar totals, the corpus fingerprint) into a surface `docs/private-project-redaction.md`'s own three-scan model already treats as a first-class egress point, distinct from file writes. | anchors: G3, root |
+| M5 | **No dispatch split. Every step runs inline in the orchestrating session; the whole plan is one phase with an owner gate in the middle.** | `cache-write-analysis` dispatched a subagent for its own measurement step because its script produced verbose raw-row output the parent would re-read every turn; here the output is aggregate-only (`:12416`) and ~60 lines, so that rationale does not transfer, while the costs do — a dispatch adds a durable transcript copy at `~/.claude/projects/&lt;slug&gt;/*/subagents/` and, worse, a restatement hop between the run that produced the figure and the citation that must be "tied to the exact figure" (G2). The register edit stays inline for the same reason and because `subagent-delegation/SKILL.md` § "Implementation work → `code-writer`" fails its condition (2): the target lines are already in the parent's context, so reaching them costs nothing. | anchors: G2, M4 |
+| M6 | **Pre-flight on public data: run the same command with `--this-repo --threshold 0` first.** Confirm the report renders at threshold 0, that the three wait-shape rows sum to the `waiting on own Bash call` row above them, and that the `Median cov.` column does not error. **The agent may look at this output — the carve-out's own aggregation-boundary clause permits reading the mixed corpus internally (`docs/private-project-redaction.md:106-109`) — but its numbers are never published or quoted anywhere once the machine-wide run in M2 also publishes** (see M4, M8(f)): this repo's own exact Count of the same quantity would let a reader solve the non-this-repo remainder by subtraction, the reconstruction the Counts bullet's boundary-crossing clause names (`:134-139`). | This exercises A1/A3 against real data before the ~15-minute machine-wide run, and is the cheapest possible check that threshold 0 is a supported value rather than a degenerate one. The *look* is grounded in "What it permits"'s internal-read clause (`:106-109`), not in an own-history exemption: post-#986, a `transcript-analysis.py` Count answers to the full carve-out regardless of `--this-repo` scoping (`:253-303`), so the *publish* half is barred outright rather than exempted. | anchors: A1, A3 |
+| M7 | **One undifferentiated withhold label.** If the figure does not ship, the register entry records the outcome as `withheld` — with no reason code distinguishing "n below the pre-registered floor" from "precision caveats dominate" from "owner declined" — plus the pre-registered command and the run date. The differentiating reason goes to the owner in-session and into no committed file. | This is the non-obvious half of G3. A differentiated label (`withheld — insufficient n`) published beside a pre-registered floor that lives in this same committed plan lets any reader derive `n &lt; floor` with certainty — a bound on a count derived from transcript content, which G3 bars as surely as the count itself. Collapsing the label set removes that certain inference, since the same undifferentiated label also covers an owner decline at n≥30. It does not close a residual *probabilistic* one: the pre-registered command pools accounts machine-wide, a population plausibly far larger than the already-published `:525` figure's this-repo n=11, so a reader can still weight "withheld" toward the n&lt;30 branch. M8's proposal states this residual explicitly to the owner rather than treating the label as a full closure. | anchors: G3, A7 |
+| M8 | **Proposal step, blocking: propose to the owner (a) the three integers and the derived share, (b) the exact pre-registered command from M2, (c) the destination — the `docs/cost-levers-considered.md` entry — (d) the prior-publication search: `:525`'s in-repo figure, `:533`'s withholding, and `docs/transcript-analysis.md:979`'s own machine-wide pooled tool-call count, named as near-neighbours with A5's composition/time-series reasoning stated as input, not as clearance — (e) the boundary-crossing pooled-Count disclosure the Approval gate requires for a Count spanning more than one account or machine. That disclosure names two things, both approval-only input never quoted in the published figure or any commit/PR/issue body: which accounts/machines contribute to the pool, and any already-published or routinely-automated single-account/single-machine exact figure of the same quantity (`pr-cost-section.sh`'s per-PR exact session counts, if `pr-cost-disclosure` is enabled, at minimum). (f) the open question this plan does not resolve: whether `docs/transcript-analysis.md:979`'s existing machine-wide pooled Count already spent the "one-time disclosure" the "No time series" bar allows a boundary-crossing pooled Count, and whether that allowance is one-time per-quantity or categorical. And, on the withhold path, (g) M7's residual-inference caveat, so the owner weighs a withheld outcome as probabilistic evidence toward n&lt;30, not proof of it. Then stop.** Resume only on a durable citable approval from the owner's own account, per G2. **This publish-path commit is exempt from any active autonomous-shipping default, regardless of sentinel state: being asked to run the measurement is never itself the approval this gate requires, and the workflow is expected to cross a session boundary while the owner-approval citation is pending.** | `docs/private-project-redaction.md:333-355` specifies (a)–(c) and `:383-388` requires (d) explicitly ("The proposal also names where the agent looked and what it found: any prior publication of the same or a composing statistic"). `:366-381` specifies (e) explicitly for exactly this figure's shape — a pooled Count spanning more than one account or machine — and states this disclosure "travels through a non-public channel" regardless of which channel carries the approval citation. (f) is a doubt this plan cannot resolve itself: `:330-331`'s "Doubt is never a reason to publish anyway" routes every content-purity and pool-diversity judgment call to the owner, and the one-time-disclosure sentence at `:181-184` is unqualified on the per-quantity-vs-categorical question. Stopping is the design, not a caveat: the plan has no branch in which an agent's own judgment — nor any ambient session-level default, including this machine's own autonomous-shipping instruction that treats being asked to do work as authorization to commit and open a PR without pausing — substitutes for the citation, since G2 requires the citation to trace to the owner's own account, not to the agent's own request-handling default. | anchors: G2, A5 |
+| M9 | **Published wording is constrained to the measured population and the counting unit: "of the N Bash tool calls that preceded a subagent-origin wait of five minutes or longer, K carried a literal `sleep` in command position" (A8), with both precision directions from G4 stated inline. Never "rebuilds," and never "how often a background wait is a sleep-poll."** | G5 and G6 are the two ways this figure would be over-claimed, and both are invisible in the output table itself — a reader of three row labels cannot tell that main-thread waits and sub-300 s polls were never in the denominator. "Rebuilds" is additionally off the closed list's literal terms once threshold 0 makes it mean every qualifying turn, not a cache rebuild (A2, A8) — "Claude Code tool calls" is the term the closed list actually permits. Stating the caveats follows the register's existing style (`:525`'s own "small-n, non-generalizing" qualifier) and is what keeps §49's Revisit-condition process from being handed a wider claim than the instrument supports. | anchors: G4, G5, G6, A8 |
+
+## Critical files
+
+**Single phase, single inline dispatch (M5) — no `code-writer` split.**
+
+- `.claude/plans/background-wait-phase2-measurement.md` — **modify.** Add the pre-registered command (M2) and the n floor (A7) to this file, and commit it *before* the machine-wide run. This is the pre-registration artifact; without the commit ordering, "fixed before the measurement ran" is unverifiable. Must not contain the figure, any run output, or a root count (M4, and root `CLAUDE.md`'s rule that a committed plan's cited evidence is subject to the same redaction rules as any other public-repo content).
+- `docs/cost-levers-considered.md` — **modify.** One new dated follow-up entry in the existing `From subagent-idle-gap-cache-rebuild-split.md` section (the section spanning `:504-533`), appended after `:533` so it reads as the resolution of the withholding that line records. Two mutually exclusive contents: on the publish path, the three counts, the derived share, M9's population wording, G4's two precision directions, the M2 command, and the M8 approval citation; on the withhold path, M7's undifferentiated `withheld` label plus the command and run date. **Do not edit `:525` or `:533` in place** — they are a dated record of what was known then, which Axis 3 of `CLAUDE.md`'s scope discipline makes read-only; the new entry supersedes by reference.
+
+**Reuse, not reimplementation:**
+
+- `claude/.claude/scripts/transcript-analysis.py` — **no change.** `cache-rebuild`'s "Own-Bash wait shape" block (accumulators `:6551-6554`, accumulation `:6898-6905`, print `:6996-7022`) and `_classify_bash_wait_shape` (`:6148-6160`) are the instrument. `--threshold` (`:12407`) is the widening knob; omitting `--this-repo` (`:11777-11789`) is the pooling knob.
+- `claude/.claude/scripts/tests/test_transcript_analysis.py` — **no change.** The partition property M3 depends on is already pinned (`:9147`, `:9507`), as is the classifier's match shape including the quoted/heredoc and `$VAR` edges (`:8698-8774`).
+- `docs/transcript-analysis.md` — **no change.** `--threshold 0` is an existing flag at a valid value, and `:965-975` already documents the block and both precision directions; the register entry cites that section rather than restating it.
+- `docs/private-project-redaction.md` — **no change.** It is the source of the gate M8 executes, cited not restated.
+
+## Verification
+
+1. **Pre-flight (M6), before the machine-wide run:** `.venv/bin/python3 claude/.claude/scripts/transcript-analysis.py cache-rebuild --this-repo --threshold 0 --since 30d`. Pass criteria: the report renders without error; the three "Own-Bash wait shape" `Rebuilds` values sum exactly to the `waiting on own Bash call` row in the "Subagent idle-gap cause attribution" table above it; `Median cov.` renders a percentage or `n/a`, never a traceback. This run's output is looked at only, per M6 — never published, quoted, or written anywhere, per M4's extension of the egress rule to this run.
+2. **The measurement run (M2), once, with an explicit ~15-minute Bash timeout** grounded in `docs/transcript-analysis.md:979`'s ~3-minute machine-wide observation (A4). A timeout kill mid-run is a re-run, not a partial figure — the report prints only after the whole scan completes.
+3. **Test suite, scoped to the diff:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py`, then run exactly what it selects. The diff is two `.md` files, and `select-tests.py` carries a blanket rule for every file under `docs/` (see its comment at `:139-144`, naming `test_hook_alignment.py`, `test_doc_counts.py`, and `test_skills.py`'s `test_doc_has_no_state_path`), so a docs-only diff still selects real tests rather than nothing. Per root `CLAUDE.md`, do not widen to the full suite by hand. Known caveat: `select-tests.py` under-collects when a domain directory and a file it contains are both selected (GH-882) — if its output names a bare directory alongside a file inside that directory, run the directory explicitly as well.
+4. **Lint:** `.venv/bin/ruff check claude/.claude/ claude-skills/` is a no-op for a docs-only diff and can be skipped; there is no Python or shell change in this plan.
+5. **Gate discipline, checked by hand before the commit that adds the register entry:** the entry contains no figure from M3's excluded set; on the publish path it carries an approval citation resolving to the owner's own account per G2; on the withhold path it carries M7's undifferentiated label and no number derived from transcript content. Also confirm, per M8's autonomous-shipping exemption, that this commit was not made under an ambient "don't pause" default before the owner-approval citation was already in hand. `deny-private-project-refs.sh` is a backstop for literal identifiers only and will not catch a wrongly-scoped aggregate — this check is reviewer discipline, exactly as `docs/private-project-redaction.md:93-95` states for tier 3.
+
+## Out of scope
+
+- **Phase 3's case study.** The published (or withheld) figure is this plan's terminal deliverable; a case study is a separate artifact with its own destination, and under `docs/private-project-redaction.md:339-340` a changed destination needs a fresh approval proposal regardless. It also cannot carry a second boundary-crossing pooled Count of its own — see below.
+- **Any edit to `docs/design-decisions.md` §49's `ScheduleWakeup` deny.** §49's own Revisit-condition process decides whether this finding is sufficient to reopen it; a plan that both produces the evidence and rules on it would collapse that separation.
+- **Widening the instrument to main-origin waits or to sub-300-second waits.** G5 and G6 are structural properties of the `cache-rebuild` accumulation path, so reaching either means new accumulators and new tests — an instrument change, not a measurement. Named as the limit on the published claim (M9) instead.
+- **A `--pooled` reporting mode on `cache-rebuild`.** Deliberately not built, not merely deferred: it is heavier than the task requires (M1), and the aggregation-boundary condition it would serve is already met.
+- **A lint enforcing the approval-citation requirement on carve-out figures in `docs/cost-levers-considered.md`.** Recommended as a follow-up, not designed here. It needs a machine-readable marker convention that every future carve-out publication would have to carry, and a convention derived from a single instance encodes a shape the second instance is likely to change — the marker design is the work, and it belongs in its own plan with its own enforcing test.
+- **Populating or expanding `~/.claude/transcript-config-dirs`.** G1: the operator owns that file, and the plan reads its union rather than changing it.
+- **Re-measuring this same quantity machine-wide, ever again, after this plan's
+  figure publishes.** Publishing a boundary-crossing pooled Count spends the "No
+  time series" bar's one-time disclosure allowance for this quantity
+  (`docs/private-project-redaction.md:181-184`) — a second Count of the same
+  statistic published later forms the barred two-point series. Whether that
+  allowance is spent per-quantity or categorically (barring a boundary-crossing
+  Count of *any* quantity) is an open question this plan does not resolve — see
+  M8(f) — so Phase 3's case study proposing its own new boundary-crossing pooled
+  Count must re-ask the owner rather than assume either reading.
+- **Publishing a future `--this-repo`-scoped run of this same statistic, without asking
+  first.** M4's forward-looking constraint (an uncited in-session answer suffices, per
+  `docs/private-project-redaction.md:293-302`'s own-history reconstruction-risk clause) is
+  not resolved as blanket-safe by this plan — it is a standing check any future session
+  touching this statistic must still perform.
