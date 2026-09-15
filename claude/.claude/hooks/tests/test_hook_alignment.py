@@ -636,6 +636,14 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
+    # Carry no "Bash(git commit *)" `if` -- the field was observed firing
+    # on non-commit Bash calls, so it performed no filtering. Each of
+    # these already carries its own in-body commit-shape matcher as the
+    # real gate.
+    "require-code-review.sh",
+    "guard-settings-session-keys.sh",
+    "check-skill-length.sh",
+    "check-claude-md-length.sh",
 )
 
 

@@ -368,6 +368,21 @@ class TestRequireNpmVersionBump:
     def test_non_bash_tool_allowed(self, isolated_home, git_repo):
         assert run_hook(VERSION_BUMP_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
 
+    def test_dash_c_global_flag_form_allows_despite_missing_bump(self, feature_clone):
+        """This hook keeps its own bespoke regex (`git[[:space:]]+commit`),
+        unlike the shared _lib_command_invokes_git_subcmd matcher every
+        other commit gate uses, and that regex stays blind to a `-c`
+        global flag ahead of the subcommand. A missing-bump change that
+        would deny under a bare `git commit` (see
+        test_bump_missing_denies) allows here instead -- pinned as an
+        assertion rather than left as prose."""
+        _write_source_file(feature_clone, "packages/demo/src/index.ts")
+        _git_q(feature_clone, "add", "packages/demo/src/index.ts")
+        assert (
+            run_hook(VERSION_BUMP_HOOK, bash_input("git -c core.editor=true commit -m foo"), cwd=feature_clone)
+            == "allow"
+        )
+
     def test_chained_add_commit_denies_without_bump(self, feature_clone):
         _write_source_file(feature_clone, "packages/demo/src/index.ts")
         _git_q(feature_clone, "add", "packages/demo/src/index.ts")

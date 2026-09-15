@@ -2674,6 +2674,27 @@ class TestCommandInvokesGitSubcmd:
     def test_empty_command_does_not_match(self) -> None:
         assert _command_invokes_git_subcmd("", "commit") == 1
 
+    def test_global_dash_c_flag_prefix_still_matches(self) -> None:
+        """A `-c key=val` global flag ahead of the subcommand must not hide
+        it -- require-skill-review.sh's bespoke regex missed exactly this
+        form, which is why this word-walking matcher exists."""
+        assert _command_invokes_git_subcmd("git -c core.editor=true commit", "commit") == 0
+
+    def test_global_dash_cap_c_flag_prefix_still_matches(self) -> None:
+        """A `-C <path>` global flag ahead of the subcommand must not hide
+        it, same rationale as the `-c` case above."""
+        assert _command_invokes_git_subcmd("git -C /tmp commit -m x", "commit") == 0
+
+    def test_continue_form_does_not_match_commit(self) -> None:
+        """`git merge --continue`'s subcommand genuinely is `merge`, not
+        `commit` -- this predicate correctly says no, which is why
+        _lib_command_concludes_commit exists as a new sibling rather than a
+        redefinition of this one."""
+        assert _command_invokes_git_subcmd("git merge --continue", "commit") == 1
+
+    def test_rebase_continue_form_does_not_match_commit(self) -> None:
+        assert _command_invokes_git_subcmd("git rebase --continue", "commit") == 1
+
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
             ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "git commit"'],
@@ -5221,6 +5242,12 @@ class TestCommandConcludesCommit:
             "git rebase --continue",
             "git cherry-pick --continue",
             "git revert --continue",
+            # git's own option parser accepts any unambiguous prefix of a
+            # long option (gitcli(1)) -- these must match the same way.
+            "git merge --cont",
+            "git rebase --cont",
+            "git cherry-pick --cont",
+            "git revert --cont",
         ],
     )
     def test_broad_predicate_true_for_concluding_shapes(self, command: str) -> None:
@@ -5234,6 +5261,17 @@ class TestCommandConcludesCommit:
             "git rebase --skip",
             "git commit-tree abc123",
             "git status",
+            # A clean cherry-pick or revert creates its commit inside the
+            # initiating command with no separate `git commit` call, so no
+            # gate keyed on this predicate ever sees one -- pinned here as
+            # suite fact rather than only as prose.
+            "git cherry-pick abc123",
+            "git revert abc123",
+            # A real git merge option, not a prefix of --continue.
+            "git merge --commit",
+            # Longer than --continue, not a proper prefix of it.
+            "git merge --continued",
+            "git merge --continue-foo",
         ],
     )
     def test_broad_predicate_false_for_non_concluding_shapes(self, command: str) -> None:
@@ -5266,6 +5304,12 @@ class TestCommandConcludesCommit:
         catch a regression that accidentally narrowed both."""
         assert _command_concludes_commit("git rebase --continue") == 0
         assert _command_concludes_marker_gated_commit("git rebase --continue") == 1
+
+    def test_narrow_predicate_excludes_abbreviated_rebase_continue_too(self) -> None:
+        """The rebase carve-out must exclude every abbreviated spelling of
+        `--continue`, not just the exact one."""
+        assert _command_concludes_commit("git rebase --cont") == 0
+        assert _command_concludes_marker_gated_commit("git rebase --cont") == 1
 
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(

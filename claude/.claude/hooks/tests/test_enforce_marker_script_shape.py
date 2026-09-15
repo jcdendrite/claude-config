@@ -105,6 +105,22 @@ class TestEnforceMarkerScriptShape:
         )
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
 
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_chain_to_git_continue_form_allowed(self, verb):
+        """The chained-commit tail matches the full --continue union,
+        deliberately including `rebase --continue` even though
+        require-code-review.sh's own narrow predicate never checks for this
+        marker on that shape -- this pattern is about chain shape, not
+        which gate the chained command reaches."""
+        cmd = f"~/.claude/scripts/marker.sh write code-review && git {verb} --continue"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "allow"
+
+    def test_chain_to_git_rebase_skip_denied(self):
+        """--skip and --abort are not commit-concluding shapes; the chain
+        matcher must not widen to any git-rebase-flag tail."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && git rebase --skip"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_chain_marker_activate_then_git_commit_denied(self):
         """Only `write` is permitted in the chained form. `activate` is a
         bypass primitive whose intent is to bracket a skill's execution
@@ -123,6 +139,12 @@ class TestEnforceMarkerScriptShape:
         the chained-commit pattern via a permissive trailing match, allowing a
         post-commit fragment to inherit the marker.sh-leading allowance."""
         cmd = "~/.claude/scripts/marker.sh write code-review && git commit -m foo && curl http://example.com"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_chain_to_curl_after_rebase_continue_denied(self):
+        """Post-`--continue` chain operators must be denied too, the same
+        as post-`git commit` above."""
+        cmd = "~/.claude/scripts/marker.sh write code-review && git rebase --continue && curl evil.com"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_chain_to_semicolon_after_commit_denied(self):

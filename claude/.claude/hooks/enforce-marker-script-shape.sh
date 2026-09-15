@@ -628,25 +628,31 @@ if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_PATT
 fi
 
 # Chained-commit allowance. One or more valid `marker.sh write <skill>` shapes
-# joined by `&&`, followed by `git commit ...`, is the natural atomic form an
-# agent types after reviews pass. Chaining marker.sh with anything other than
-# `git commit` (curl, rm, redirects, ;) stays denied by falling through to the
-# message below. Coordinated with require-code-review.sh and require-skill-review.sh,
-# which honor the same in-chain marker-write pattern at the commit gate.
+# joined by `&&`, followed by `git commit ...` or `git <merge|rebase|
+# cherry-pick|revert> --continue ...`, is the natural atomic form an agent
+# types after reviews pass. The tail matches the full `--continue` union,
+# deliberately including `rebase --continue`, even though
+# require-code-review.sh's own narrow predicate never checks for this marker
+# on that shape — this pattern is about chain shape, not which gate the
+# chained command reaches. Chaining marker.sh with anything else (curl, rm,
+# redirects, ;) stays denied by falling through to the message below.
+# Coordinated with require-code-review.sh and require-skill-review.sh, which
+# honor the same in-chain marker-write pattern at the commit gate.
 #
-# Trailing content after `git commit` is constrained to characters that cannot
-# form a further shell chain or redirect (`& | ; < >`). Without that constraint
-# the regex would allow `marker.sh write X && git commit && curl evil.com`,
-# bypassing the gate's own design intent ("no chains to anything but git commit").
-# Backticks and `$` (command substitution) remain permitted; commit messages
-# containing them are uncommon enough that denying would be more disruptive than
-# the marginal forge-vector they represent, and substitution is itself gated
-# elsewhere.
+# Trailing content after the commit-concluding tail is constrained to
+# characters that cannot form a further shell chain or redirect
+# (`& | ; < >`). Without that constraint the regex would allow
+# `marker.sh write X && git commit && curl evil.com`, bypassing the gate's
+# own design intent ("no chains to anything but a commit-concluding
+# command"). Backticks and `$` (command substitution) remain permitted;
+# commit messages containing them are uncommon enough that denying would be
+# more disruptive than the marginal forge-vector they represent, and
+# substitution is itself gated elsewhere.
 # Note: 2>/dev/null is intentionally NOT blessed here. The tail class [^&|;<>]
 # already excludes '>' as a security boundary (prevents post-commit redirects like
 # `git commit > /path`). A 2>/dev/null exception would require carving out of that
 # class with no observed agent friction on the commit-chain form to justify it.
-VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]]+[^&|;<>]*)?$'
+VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+(commit|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue)([[:space:]]+[^&|;<>]*)?$'
 
 if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then
   exit 0
@@ -697,6 +703,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh check code-review
 
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
-any other command (except the blessed 'git commit' tail), or using ||/;,
-redirects, or extra args, is denied. Env-var prefix, bash wrapper, and
+any other command (except the blessed 'git commit' or 'git <merge|rebase|
+cherry-pick|revert> --continue' tail), or using ||/;, redirects, or extra
+args, is denied. Env-var prefix, bash wrapper, and
 relative-path forms are not gated here — they are denied by permissions.allow."

@@ -24,6 +24,8 @@ from helpers import (
     HOOKS_DIR,
     assert_cap_engaged,
     bash_input,
+    build_conflicted_merge_with_clean_addition,
+    build_conflicted_rebase,
     build_path_without,
     run_hook,
     run_hook_reason,
@@ -721,6 +723,98 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    # -- `--continue` commit-shape detection (the broad predicate) --------
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m wip",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_scan(self, claude_config_repo, command):
+        """Every commit-concluding shape reaches the tracker-ID scan,
+        including `git rebase --continue` -- this scanner's recourse is
+        mechanical, so unlike require-code-review.sh it stays armed on the
+        one shape the rebase carve-out excludes from the marker gates."""
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+        ],
+    )
+    def test_non_concluding_forms_do_not_reach_the_scan(self, claude_config_repo, command):
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_concludes_commit_status_2_denies(self, claude_config_repo, sed_call_counting_shim):
+        """Status-2 (undetermined) fault injection on
+        _lib_command_concludes_commit, the predicate this hook calls when
+        its own fragment loop finds no literal `git commit`. This hook is
+        fail-closed, so an undetermined match must still deny rather than
+        silently reaching an unscanned allow. See sed_call_counting_shim's
+        docstring for the call-count mechanics behind `sed_call_counting_shim(3)`
+        below."""
+        extra_env = sed_call_counting_shim(3)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git merge --continue"),
+            cwd=claude_config_repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None
+        assert "could not determine" in reason
+
+    def test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough(
+        self, claude_config_repo
+    ):
+        """At the pre-`git add` checkpoint (a genuine unresolved conflict),
+        `git diff --cached` reports only an "Unmerged path" marker for the
+        conflicted file, never its real content. This is a git primitive
+        fact, pinned separately by
+        test_git_diff_cached_against_unresolved_conflict_git_primitive_fact
+        in test_lib.py. This hook's scan sees the same marker text, not the
+        conflicted file's actual content, so it allows here. Git's own "you
+        have not concluded your merge" error is what actually stops the
+        commit, not this scanner."""
+        build_conflicted_rebase(claude_config_repo, file_name="f")
+        assert (
+            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git rebase --continue"), cwd=claude_config_repo)
+            == "allow"
+        )
+
+    def test_tracker_id_only_in_already_merged_content_still_denies(self, claude_config_repo):
+        """Scanner non-narrowing, the deny half. A tracker-ID token present
+        only in MERGE_HEAD's already-merged content (a file untouched on
+        the checked-out side, contributed entirely by the merged-in
+        parent), not in the novel conflict resolution, must still deny.
+        This scanner never takes a novel-content base the way the
+        review-marker gates do -- this fixture pins that it keeps scanning
+        the full HEAD-relative diff on a `--continue` commit rather than
+        narrowing to match the marker-preimage gates' behavior."""
+        build_conflicted_merge_with_clean_addition(
+            claude_config_repo, conflict_file="f", clean_file="brought-in.txt",
+            clean_content="// WIDGET-123 fixed\n",
+        )
+        (claude_config_repo / "f").write_text("resolved\n")
+        subprocess.run(["git", "add", "f"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git merge --continue"), cwd=claude_config_repo)
+            == "deny"
         )
 
     # -- Pseudo-file paths fail closed -------------------------------------

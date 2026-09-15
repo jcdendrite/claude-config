@@ -18,6 +18,7 @@ from helpers import (
     bash_input,
     build_conflicted_rebase,
     build_conflicted_revert,
+    build_noconflict_rebase_edit_stop,
     build_path_without,
     edit_input,
     extract_skill_command,
@@ -272,10 +273,64 @@ class TestRequireCodeReview:
             "git status",
             "git log --oneline",
             "git commit-tree abc123",
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            # The rebase carve-out's negative case, pinned alongside the
+            # other non-concluding shapes. `git rebase --continue`
+            # concludes a commit under the broad predicate, but the narrow
+            # predicate this hook calls deliberately excludes it, so this
+            # hook reaches no opinion here exactly like a command that does
+            # not conclude a commit at all. No repo fixture needed: the
+            # narrow predicate runs before any staged-diff or marker logic,
+            # so this determination is a pure function of the command
+            # string.
+            "git rebase --continue",
         ],
     )
     def test_non_commit_git_commands_allowed(self, isolated_home, git_repo, command):
         assert run_hook(CODE_REVIEW_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m foo",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_gate(self, isolated_home, git_repo, command):
+        """Every commit-concluding shape the narrow predicate recognizes
+        reaches this hook. With no marker present, each denies -- the
+        rebase carve-out's positive case, mirroring the negative case
+        above. No repo fixture needed for the same reason as that case:
+        the narrow predicate's match/no-match determination runs before
+        any staged-diff or marker logic."""
+        assert run_hook(CODE_REVIEW_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    def test_noconflict_rebase_edit_stop_with_unrelated_staged_file_does_not_fire(
+        self, isolated_home, tmp_path
+    ):
+        """The rebase carve-out's command-shape exemption (see
+        test_non_commit_git_commands_allowed above) covers more than
+        genuine conflict resolution. At a conflict-free interactive rebase
+        paused on an `edit` step, staging an entirely unrelated file and
+        running `git rebase --continue` with no separate `git commit`
+        never reaches this hook at all. So no marker is required for that
+        file's content -- the narrow predicate's command-shape exclusion of
+        `rebase --continue` is what lets it through, not any conflict-only
+        framing."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        build_noconflict_rebase_edit_stop(repo)
+        (repo / "unrelated.txt").write_text("unreviewed content\n")
+        subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+        assert run_hook(CODE_REVIEW_HOOK, bash_input("git rebase --continue"), cwd=repo) == "allow"
 
     def test_non_bash_tool_allowed(self, isolated_home, git_repo):
         assert run_hook(CODE_REVIEW_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
@@ -299,6 +354,46 @@ class TestRequireCodeReview:
                 CODE_REVIEW_HOOK,
                 bash_input(
                     "~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("verb", ["merge", "cherry-pick", "revert"])
+    def test_chained_marker_write_then_continue_allowed(self, isolated_home, git_repo, verb):
+        """The chain matcher's full --continue union reaches this hook's own
+        in-chain honor check: `marker.sh write code-review && git <verb>
+        --continue` is the natural chained form for every --continue shape
+        the narrow predicate itself recognizes."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    f"~/.claude/scripts/marker.sh write code-review && git {verb} --continue",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_marker_write_then_rebase_continue_allowed_but_pointless(
+        self, isolated_home, git_repo
+    ):
+        """`marker.sh write code-review && git rebase --continue` is
+        allowed by the chain matcher, which matches on chain shape rather
+        than on which gate the chained command reaches. This hook's own
+        narrow predicate never recognizes `git rebase --continue` as a
+        commit-concluding shape at all, so the hook exits allow before
+        ever reaching the chain check. The allow is real either way -- this
+        pins that it is not evidence the marker did anything here."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write code-review && git rebase --continue",
                     session_id=DEFAULT_TEST_SESSION_ID,
                 ),
                 cwd=git_repo,
@@ -496,13 +591,13 @@ class TestRequireCodeReview:
         )
 
     def test_sed_absent_from_path_denies(self, isolated_home, git_repo, tmp_path):
-        """Status-2 propagation: the matcher could not determine whether
-        this command invokes git commit, and this gate's own documented
-        fail-closed posture means an undetermined match denies rather than
-        silently falling through to allow. Asserts the distinguishing
-        reason text, not just the verdict, so this test cannot be
-        satisfied by an ordinary missing-review deny reaching "deny" for
-        the wrong reason."""
+        """Status-2 propagation on the specific predicate this hook calls,
+        _lib_command_concludes_marker_gated_commit (the narrow predicate):
+        this gate's own documented fail-closed posture means an
+        undetermined match denies rather than silently falling through to
+        allow. Asserts the distinguishing reason text, not just the
+        verdict, so this test cannot be satisfied by an ordinary
+        missing-review deny reaching "deny" for the wrong reason."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)

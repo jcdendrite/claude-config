@@ -905,6 +905,43 @@ def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
     return theirs_oid
 
 
+def build_conflicted_merge_with_clean_addition(
+    repo: Path,
+    *,
+    conflict_file: str = "f",
+    clean_file: str = "clean.txt",
+    clean_content: str = "clean\n",
+) -> str:
+    """Like build_conflicted_merge, but "theirs" also adds `clean_file` with
+    no counterpart edit on the checked-out side, so it merges in unchanged
+    and its content is contributed entirely by MERGE_HEAD, not by any novel
+    resolution. Used to pin that the content scanners keep scanning the
+    full HEAD-relative diff on a `--continue` commit rather than narrowing
+    to the resolution -- narrowing would let content shaped like this file
+    (already-merged, not novel) pass unscanned. Returns the merged-in
+    branch's tip oid, same contract as build_conflicted_merge."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, conflict_file)
+    _run_git(repo, "checkout", "-qb", "theirs")
+    target.write_text("theirs-edit\n")
+    (repo / clean_file).write_text(clean_content)
+    _run_git(repo, "add", conflict_file, clean_file)
+    _run_git(repo, "commit", "-qm", f"theirs edits {conflict_file} and adds {clean_file}")
+    theirs_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("ours-edit\n")
+    _run_git(repo, "add", conflict_file)
+    _run_git(repo, "commit", "-qm", f"ours edits {conflict_file}")
+    result = subprocess.run(
+        ["git", "merge", "-q", "theirs"], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected merge conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    return theirs_oid
+
+
 def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
     """Build a real conflicted cherry-pick inside `repo`: branch "source"
     off the checked-out branch, commit a conflicting edit to `file_name` on
@@ -1020,6 +1057,44 @@ def resolve_conflicted_rebase(
     `git rebase --continue`."""
     (repo / file_name).write_text(resolution)
     _run_git(repo, "add", file_name)
+
+
+def build_noconflict_rebase_edit_stop(repo: Path, *, file_name: str = "f") -> None:
+    """Build a real, conflict-free interactive rebase paused at an `edit`
+    step: mark the tip commit `edit` via GIT_SEQUENCE_EDITOR (no
+    interactivity, fully agent-controlled), stopping at rebase-merge/ with
+    REBASE_HEAD set and no conflict at all. The rebase carve-out's command-
+    shape exemption covers this pause point too: staging an unrelated file
+    here and running `git rebase --continue` with no separate `git commit`
+    silently folds it into the replayed commit, invisible to any check
+    keyed on a literal `git commit` match. Returns control with the rebase
+    paused and nothing staged -- the caller decides what to stage before
+    continuing."""
+    _seed_tracked_file(repo, file_name)
+    target = repo / file_name
+    target.write_text("tip-commit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"tip commit on {file_name}")
+    env = dict(os.environ)
+    # Rewrites the todo list's sole "pick" line to "edit" -- one commit is
+    # being replayed (HEAD onto its own immediate parent), so line 1 is the
+    # only line. `-i.bak` is portable across BSD and GNU sed (both accept a
+    # suffix with no space before it), matching build_conflicted_rebase's
+    # own sequence.editor precedent above.
+    env["GIT_SEQUENCE_EDITOR"] = "sed -i.bak -e '1s/^pick/edit/'"
+    result = subprocess.run(
+        ["git", "rebase", "-i", "HEAD~1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, (
+        f"expected the edit stop to pause cleanly (no conflict), got: {result.stdout}{result.stderr}"
+    )
+    gitdir = repo / ".git"
+    assert (gitdir / "rebase-merge").is_dir(), "rebase did not leave rebase-merge/"
+    assert (gitdir / "REBASE_HEAD").exists(), "rebase did not leave REBASE_HEAD"
 
 
 def build_octopus_merge_conflict(repo: Path, *, file_name: str = "f") -> None:

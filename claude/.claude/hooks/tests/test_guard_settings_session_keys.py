@@ -505,6 +505,41 @@ class TestGuardSettingsSessionKeys:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m 'update settings'",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_guard(self, settings_repo, command):
+        """Every commit-concluding shape reaches the guarded-key check,
+        including `git rebase --continue` -- this gate's recourse is
+        mechanical (unstage the key), so unlike require-code-review.sh it
+        stays armed on the one shape the rebase carve-out excludes from the
+        marker gates."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus"}\n')
+        assert run_hook(GUARD_SETTINGS_SESSION_KEYS_HOOK, bash_input(command), cwd=repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+        ],
+    )
+    def test_non_concluding_forms_do_not_reach_the_guard(self, settings_repo, command):
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus"}\n')
+        assert run_hook(GUARD_SETTINGS_SESSION_KEYS_HOOK, bash_input(command), cwd=repo) == "allow"
+
     def test_deny_message_mentions_settings_json(self, settings_repo):
         """Deny reason must reference settings.json so the agent knows what to unstage."""
         repo, settings_file = settings_repo
@@ -931,8 +966,10 @@ class TestGuardSettingsSessionKeys:
 
     def test_sed_absent_from_path_still_allows(self, settings_repo, tmp_path):
         """Mirror-image of the checked hooks' status-2 deny tests: this
-        hook is deliberately, correctly unchecked (see its header's fail-
-        open posture), so a guarded-key change under a sed-absent PATH
+        hook calls _lib_command_concludes_commit (the broad predicate,
+        same as the two length gates and the two content scanners) and is
+        deliberately, correctly unchecked on its status (see its header's
+        fail-open posture), so a guarded-key change under a sed-absent PATH
         must still ALLOW -- the fast-reject can't determine a match,
         treats that the same as "no match", and the guarded-key check
         below never runs. Pins the accepted fail-open posture as an

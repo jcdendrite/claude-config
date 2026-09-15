@@ -190,6 +190,43 @@ def git_timeout_shim(tmp_path):
 
 
 @pytest.fixture
+def sed_call_counting_shim(tmp_path):
+    """`install(fail_after)` writes a `sed` shim that execs the real binary
+    for the first `fail_after` invocations (tracked via a counter file in
+    tmp_path) and fails (exit 1, no output) on every invocation after that.
+
+    deny-pii-in-commits.sh and deny-private-project-refs.sh each spend
+    exactly 3 sed invocations reaching their own fragment loop's "no
+    literal git commit found" outcome for a single, unquoted, chainless
+    fragment (2 inside _lib_split_fragments, 1 inside
+    _lib_strip_shell_quotes). `install(3)` lets the pre-loop sed calls
+    succeed and fails only _lib_command_concludes_commit's own first sed
+    call. Update this count if either hook's call sequence changes.
+    """
+    real_sed = shutil.which("sed")
+    if not real_sed:
+        pytest.skip("sed not found in PATH")
+
+    def install(fail_after: int) -> dict[str, str]:
+        counter_file = tmp_path / "sed-call-count"
+        counter_file.write_text("0")
+        fake_binary = tmp_path / "sed"
+        fake_binary.write_text(
+            "#!/bin/bash\n"
+            f"count=$(( $(cat {shlex.quote(str(counter_file))}) + 1 ))\n"
+            f"printf '%s' \"$count\" > {shlex.quote(str(counter_file))}\n"
+            f"if [ \"$count\" -gt {fail_after} ]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_sed} "$@"\n'
+        )
+        fake_binary.chmod(0o755)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@pytest.fixture
 def gh_timeout_shim(tmp_path):
     """`install(match_condition)` writes a `gh` shim with the same
     conditional-sleep contract as git_timeout_shim, for regression tests

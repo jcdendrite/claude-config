@@ -19,9 +19,11 @@
 # such as `git -c key=val commit` and `git -C <path> commit` slip past the
 # early dispatch unscanned. The hook identifies the commit with _lib's
 # word-walking subcommand extractor (which sees through global
-# `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and exits
-# immediately — before any git or scan work — whenever the command is not a
-# commit at all.
+# `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and also
+# recognizes `git <merge|rebase|cherry-pick|revert> --continue` via
+# _lib_command_concludes_commit — every `--continue` form conveys new
+# content the same way a literal `git commit` does. Exits immediately —
+# before any git or scan work — whenever the command concludes neither.
 #
 # Robust against `git commit --no-verify`: a Claude Code PreToolUse hook
 # intercepts the Bash tool call itself. --no-verify disables only git's
@@ -188,6 +190,25 @@ while IFS= read -r git_fragment; do
     HEAD_SCAN_NEEDED=1
   fi
 done <<< "$GIT_FRAGMENTS"
+
+# The fragment loop above only recognizes a literal `git commit`. A `git
+# <merge|rebase|cherry-pick|revert> --continue` concludes a commit too, with
+# no separate `git commit` call for the loop to see — checked here, once,
+# via the broad predicate (this scanner's recourse is mechanical, so it
+# stays armed on `git rebase --continue` same as every other `--continue`
+# form). No worktree-target rescan: none of those four verbs accepts
+# `-a`/`--`/a bare pathspec, so HEAD_SCAN_NEEDED is correctly left at
+# whatever the loop above set.
+if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
+  _lib_command_concludes_commit "$COMMAND"
+  CONCLUDES_COMMIT_STATUS=$?
+  if [ "$CONCLUDES_COMMIT_STATUS" -eq 0 ]; then
+    GIT_COMMIT_FOUND=1
+  elif [ "$CONCLUDES_COMMIT_STATUS" -ne 1 ]; then
+    emit_deny "Commit — could not determine whether this command concludes a git commit (status ${CONCLUDES_COMMIT_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+    exit 0
+  fi
+fi
 
 if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0

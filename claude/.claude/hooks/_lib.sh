@@ -1167,6 +1167,9 @@ _lib_commit_fragment_has_worktree_target() {
 # fail closed on non-zero, rather than proceeding with a silently empty
 # fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
 # computation for the pattern.
+# Spends 2 sed calls per invocation -- reordering this relative to
+# _lib_strip_shell_quotes or _lib_command_concludes_commit_shape changes the
+# invocation count sed_call_counting_shim's docstring (conftest.py) pins.
 _lib_split_fragments() {
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
@@ -1310,6 +1313,12 @@ _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 # present somewhere else in COMMAND -- `_lib_extract_git_subcmd_args` is
 # checked per matching fragment rather than grepping the whole command
 # string, so `git rebase origin/main && echo --continue` does not match.
+# Matches any unambiguous prefix of `--continue` (`--c` through `--continu`),
+# since git's option parser accepts the same abbreviations (gitcli(1),
+# "ENHANCED OPTION PARSER"). This also matches a few prefixes git itself
+# would reject as ambiguous against another long option on the same verb --
+# a false positive here only denies a command git would have rejected
+# anyway, never a bypass.
 # Tri-state via exit status, same 0/1/2 contract as
 # _lib_command_invokes_git_subcmd, which this delegates the `commit` check
 # to directly.
@@ -1317,6 +1326,9 @@ _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
   local command_unquoted fragments fragment
+  # This is the first sed call of this function's own call sequence --
+  # sed_call_counting_shim's docstring (conftest.py) pins the invocation
+  # count that precedes it. Reordering these two calls changes that count.
   command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
   fragments=$(_lib_split_fragments "$command_unquoted") || return 2
   local subcmd verb is_continue_verb arg
@@ -1336,9 +1348,11 @@ _lib_command_concludes_commit_shape() {
     done
     $is_continue_verb || continue
     while IFS= read -r arg; do
-      if [ "$arg" = --continue ]; then
-        return 0
-      fi
+      case "$arg" in
+        --continue | --c | --co | --con | --cont | --conti | --contin | --continu)
+          return 0
+          ;;
+      esac
     done < <(_lib_extract_git_subcmd_args "$fragment")
   done <<< "$fragments"
   return 1
@@ -1355,7 +1369,9 @@ _lib_command_concludes_commit_shape() {
 # _lib_command_concludes_marker_gated_commit
 # below for the narrower sibling used by the two gates whose recourse is a
 # review.
-# Not yet called from any hook in this codebase.
+# Called from the five mechanical gates: guard-settings-session-keys.sh,
+# check-skill-length.sh, check-claude-md-length.sh, deny-pii-in-commits.sh,
+# and deny-private-project-refs.sh.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1374,7 +1390,7 @@ _lib_command_concludes_commit() {
 # `git rebase --continue` -- this predicate is designed to narrow
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
-# Not yet called from any hook in this codebase.
+# Called from require-code-review.sh.
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
@@ -1578,9 +1594,11 @@ _lib_length_ratchet_exceeded() {
 # Also relies on the caller having already:
 # - populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny
 # - exited for a non-Bash TOOL_NAME
-# - confirmed this is a git-commit-shaped command (_lib_command_invokes_git_subcmd
-#   "$COMMAND" commit, failing closed on an undetermined match), before ever
-#   resolving REPO_ROOT or calling this
+# - confirmed this command concludes a commit, via the broad predicate
+#   `_lib_command_concludes_commit "$COMMAND"` (armed on `git rebase
+#   --continue` too, since this gate's recourse is mechanical), failing
+#   closed on an undetermined match, before ever resolving REPO_ROOT or
+#   calling this
 #
 # The commit-shape check must run before any git subprocess spawns, so it lives in
 # the caller, ahead of REPO_ROOT resolution, not in here.
@@ -1689,12 +1707,21 @@ _lib_staged_length_gate() {
 }
 
 # Decide whether a command chains `marker.sh write <skill>` before its first
-# `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
-# runs, so an on-disk marker check denies naturally-typed forms like
-# `marker.sh write code-review && git commit`. When the same Bash call will
-# write the marker before invoking commit, the in-chain marker.sh invocation
-# is the same evidence the on-disk marker would later provide — marker.sh is
-# the only sanctioned writer in either case.
+# commit-concluding command (`git commit`, or `git <merge|rebase|cherry-pick|
+# revert> --continue`). PreToolUse hooks fire once per Bash tool call before
+# the chain runs, so an on-disk marker check denies naturally-typed forms
+# like `marker.sh write code-review && git commit`. When the same Bash call
+# will write the marker before concluding the commit, the in-chain marker.sh
+# invocation is the same evidence the on-disk marker would later provide —
+# marker.sh is the only sanctioned writer in either case.
+#
+# The tail matches the full `--continue` union, deliberately including
+# `rebase --continue`, even though require-code-review.sh's own narrow
+# predicate never checks for this marker on that command shape. This
+# matcher is about chain *shape*, not about which gate the chained command
+# reaches. Denying `marker.sh write code-review && git rebase --continue`
+# would be a new, confusing footgun for an agent chaining defensively out
+# of habit.
 #
 # **Anchored at command start, not fragment start.** A fragment-walking
 # approach (split on `&&` / `;` / `|`, then scan each fragment) would treat
@@ -1704,9 +1731,10 @@ _lib_staged_length_gate() {
 # wedge the gate open without ever actually invoking marker.sh. The strict
 # command-start anchor here mirrors enforce-marker-script-shape.sh's
 # VALID_CHAINED_COMMIT_PATTERN: only the literal shape
-# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git commit`
-# is honored. Wrapper commands, env-var prefixes, `bash -c`, heredoc bodies,
-# and pipes all fail the anchor.
+# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git (commit|
+# (merge|rebase|cherry-pick|revert) --continue)` is honored. Wrapper
+# commands, env-var prefixes, `bash -c`, heredoc bodies, and pipes all fail
+# the anchor.
 #
 # Usage: _lib_chains_marker_write_before_commit "$COMMAND" code-review
 # Returns 0 (true) if the command matches the sanctioned chained shape AND
@@ -1718,7 +1746,7 @@ _lib_chains_marker_write_before_commit() {
   # more marker.sh write fragments joined by `&&`, then git commit. Anchored
   # so wrapper commands cannot trick the gate.
   if ! printf '%s' "$command" | grep -qE \
-    "^[[:space:]]*((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]].*)?$"; then
+    "^[[:space:]]*((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+(commit([[:space:]].*)?|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue([[:space:]].*)?)$"; then
     return 1
   fi
   # Step 2: target skill is among the chained writes. A chain like
@@ -2492,6 +2520,9 @@ _lib_config_lines() {
 # output back through it — a second pass can further collapse an
 # already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
 # pass, `ab` on a second).
+# Spends 1 sed call per invocation -- reordering this relative to
+# _lib_split_fragments or _lib_command_concludes_commit_shape changes the
+# invocation count sed_call_counting_shim's docstring (conftest.py) pins.
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')

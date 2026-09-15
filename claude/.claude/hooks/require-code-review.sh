@@ -3,10 +3,13 @@
 # Gate: require /code-review before git commit, verified via marker file.
 #
 # WARNING: Do NOT remove the internal git commit check below.
-# The "if" field in settings.json is unreliable — it has been observed
-# to fire this hook on ALL Bash commands (e.g., git reset, date).
-# The internal _lib_command_invokes_git_subcmd check is the actual gate.
-# The "if" field is a hint only.
+# settings.json carries no "if" pre-filter for this hook: it is dispatched on
+# every Bash tool call, and the internal commit-shape check below is the sole
+# dispatch gate.
+# This hook trusts the two locally-forgeable anchors _lib_gate_diff_base
+# resolves to exclude a merge/rebase/cherry-pick/revert parent's content from
+# the review hash. See docs/design-decisions.md for why both anchors are
+# admitted despite neither being unforgeable, and their residuals.
 #
 # How it works:
 # - The /code-review skill writes
@@ -59,17 +62,25 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands — exit 0 (no opinion) for everything else.
-# Checked and fail-closed: an undetermined match (sed/tr missing, killed, or
-# erroring inside the helper) must not silently let an unscanned commit
-# through the review gate.
-_lib_command_invokes_git_subcmd "$COMMAND" commit
+# Only gate commands that conclude a review-marker-gated commit — exit 0 (no
+# opinion) for everything else.
+# - Uses the narrow predicate _lib_command_concludes_marker_gated_commit,
+#   not the broad sibling _lib_command_concludes_commit.
+# - `git rebase --continue` is excluded (the rebase carve-out: REBASE_HEAD
+#   reaches no trusted anchor in the ordinary case, so gating it here would
+#   mean a full review at every conflicted step of a rebase).
+# - `git merge/cherry-pick/revert --continue` and any `git commit` form
+#   still reach the gate.
+# - Fails closed on an undetermined match (sed/tr missing, killed, or
+#   erroring inside the helper) rather than silently letting an unscanned
+#   commit through the review gate.
+_lib_command_concludes_marker_gated_commit "$COMMAND"
 GIT_COMMIT_MATCH_STATUS=$?
 if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
   exit 0
 fi
 if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
+  emit_deny "could not determine whether this command concludes a review-gated commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
   exit 0
 fi
 

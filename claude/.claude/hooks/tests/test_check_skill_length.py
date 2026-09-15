@@ -142,13 +142,12 @@ class TestCheckSkillLength:
         )
 
     def test_sed_absent_from_path_denies(self, isolated_home, skill_repo, tmp_path):
-        """Status-2 propagation: the matcher could not determine whether
-        this command invokes git commit, and this gate's own documented
-        fail-closed posture means an undetermined match denies rather than
-        silently falling through to allow. Asserts the distinguishing
-        reason text, not just the verdict, so this test cannot be
-        satisfied by an ordinary over-limit deny reaching "deny" for the
-        wrong reason."""
+        """Status-2 propagation on the predicate this hook calls,
+        _lib_command_concludes_commit: an undetermined match must deny
+        rather than silently falling through to allow. Asserts the
+        distinguishing reason text, not just the verdict, so this test
+        cannot be satisfied by an ordinary over-limit deny reaching "deny"
+        for the wrong reason."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         farm_dir = tmp_path / "path-without-sed"
@@ -162,6 +161,45 @@ class TestCheckSkillLength:
         )
         assert reason is not None
         assert "could not determine" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m foo",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_length_check(
+        self, isolated_home, skill_repo, command
+    ):
+        """Every commit-concluding shape reaches the length check, including
+        `git rebase --continue` -- this gate's recourse is mechanical
+        (shorten the file), so unlike require-code-review.sh it stays armed
+        on the one shape the rebase carve-out excludes from the marker
+        gates."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input(command), cwd=skill_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+        ],
+    )
+    def test_non_concluding_forms_do_not_reach_the_length_check(
+        self, isolated_home, skill_repo, command
+    ):
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input(command), cwd=skill_repo) == "allow"
 
     def test_new_skill_over_limit_denies(self, isolated_home, new_skill_repo):
         """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""

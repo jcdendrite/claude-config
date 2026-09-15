@@ -222,13 +222,11 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-code-review.sh",
-            "if": "Bash(git commit *)",
             "statusMessage": "Checking code review..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/guard-settings-session-keys.sh",
-            "if": "Bash(git commit *)",
             "statusMessage": "Checking settings.json session keys..."
           },
           {
@@ -273,13 +271,11 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/check-skill-length.sh",
-            "if": "Bash(git commit *)",
             "statusMessage": "Checking skill length..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/check-claude-md-length.sh",
-            "if": "Bash(git commit *)",
             "statusMessage": "Checking CLAUDE.md/AGENTS.md length..."
           },
           {
