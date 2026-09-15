@@ -235,6 +235,10 @@ predates this section's current single-account bar:
   its 649-session corpus window, byte-size distribution, dispatch
   count, and percentage breakdown all derive from the same pooled
   measurement
+- `docs/case-studies/check-runner.md`'s "Re-grounding: verdict quality,
+  not context cost" section, for its "median of roughly 100 tokens"
+  inline-test-run figure, drawn from an unscoped local-transcript-corpus
+  measurement
 - `docs/case-studies/worktree-enforcement.md`'s "The general
   philosophy" section, for its 785-session/387-denial/243-session
   `review-trace` corpus measurement
