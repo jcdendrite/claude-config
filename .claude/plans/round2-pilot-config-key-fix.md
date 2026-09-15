@@ -116,6 +116,24 @@ outcome measure computable with certainty rather than reconstruction.
 
 ### Phase A — read the config key
 
+**Outcome: superseded by an independently-merged fix.** A second session
+found the same gap and merged an equivalent, simpler fix as PR 1016 to
+`main` before this plan's own PR did. This branch rebased onto PR 1016's
+`_lib.sh`, `config-schema-audit.md`, and test-file changes rather than
+re-landing its own, dropping Mechanism A1 and A2 below to historical
+reasoning only. (PR 1016 delegates `_lib_reviewer_round_state_cap()` to
+`_config_enabled round_consult_round2_pilot` via a bare `if` condition
+rather than Mechanism A1's `||`-guarded capture — bash already exempts an
+`if`-condition command from `set -e`, so the guard this plan argued for was
+unneeded complexity, not a correctness gap in the simpler form.) Mechanism
+A3's two consumer-header comment fixes (`require-architect-consult.sh`,
+`log-reviewer-round.sh`) were not part of PR 1016 and still shipped as
+planned. This branch also shipped one unrelated fix: `config-schema-audit.md`'s
+`round_consult_gate` section (a different config key sharing the same audit
+doc) still described a pre-`_config_enabled` shape. PR 1016 didn't touch
+that section, so this branch corrected it to match
+`_lib_round_consult_gate_disabled`'s current implementation.
+
 **Mechanism A1 — replace the body with `_config_enabled`, guarded by `||`.**
 
 ```bash
@@ -463,11 +481,15 @@ Ask it before Phase B runs.
 ## Critical files
 
 **Phase A — one `code-writer` dispatch** (`model: sonnet`). The four files
-are a single coupled change: the function, its two consumers' headers, the
-audit doc asserting today's behavior, and the tests. They cannot be
-partitioned without restating the same background in each prompt.
+were planned as a single coupled change: the function, its two consumers'
+headers, the audit doc asserting today's behavior, and the tests. In the
+event, `_lib.sh`, `config-schema-audit.md`, and the test file were dropped
+from this branch in favor of PR 1016's already-merged equivalent (see the
+Phase A outcome note above) — only the two consumer-header bullets below
+still describe what this branch itself shipped.
 
-- `claude/.claude/hooks/_lib.sh` — replace
+- `claude/.claude/hooks/_lib.sh` — dropped; see the Phase A outcome note
+  above. Originally planned to replace
   `_lib_reviewer_round_state_cap()`'s body (lines 3082-3090) with Mechanism
   A1's five lines. Rewrite the header comment (lines 3071-3081) so the
   resolution line names the key, the fail-direction line covers every
@@ -486,8 +508,10 @@ partitioned without restating the same background in each prompt.
 - `claude/.claude/hooks/log-reviewer-round.sh` — line 18, the identical
   substitution in "The cap is 2 by default, 1 under the round-2 pilot
   sentinel."
-- `claude/.claude/hooks/tests/config-schema-audit.md` — the
-  `round_consult_round2_pilot` section, lines 343-364. Its Call-site bullet
+- `claude/.claude/hooks/tests/config-schema-audit.md` — dropped; see the
+  Phase A outcome note above (PR 1016 shipped this file's correction
+  independently). Originally planned: the `round_consult_round2_pilot`
+  section, lines 343-364. Its Call-site bullet
   currently states the file-only probe as the design and asserts "The schema
   row exists only for `install.sh`'s schema-driven reporter, not for this
   function's own enforcement" — now false, and the sentence to delete.
@@ -498,7 +522,9 @@ partitioned without restating the same background in each prompt.
   `touch`" to name editing `claude-config.toml`, with the legacy file as a
   readable fallback. Preserve the "Not part of pre-migration
   `SENTINEL_INVENTORY`" sentence — it is a historical record.
-- `claude/.claude/hooks/tests/test_lib_reviewer_round_state.py` — extend
+- `claude/.claude/hooks/tests/test_lib_reviewer_round_state.py` — dropped;
+  see the Phase A outcome note above (PR 1016 shipped its own, smaller
+  regression-test set for the same fix). Originally planned: extend
   `TestLibReviewerRoundStateCap` (lines 243-269). Keep all three existing
   cases; the pilot-sentinel one at :255 now exercises the legacy-fallback
   arm and its docstring should say so. Add six cases:

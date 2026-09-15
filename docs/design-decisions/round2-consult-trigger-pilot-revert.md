@@ -54,10 +54,13 @@ only the pilot's *arming* mechanism after accrual had already finished —
 every firing recorded during the pilot's active window carried CAP=1 per
 its own deny-message text, so the treatment itself was applied correctly
 throughout accrual. The G2 result above is not an artifact of that defect.
+A second session found the same gap independently and merged the fix as
+PR 1016 before this decision record's own PR did, so the resolver is
+already corrected on `main`.
 
 **Operational follow-up.** `round_consult_round2_pilot` must be set to
 `false` in `claude-config.toml` on every machine that ran this pilot, once
-this fix merges and is pulled — otherwise the now-correctly-wired
+PR 1016's resolver fix is pulled — otherwise the now-correctly-wired
 resolver would silently re-arm CAP=1 treatment for a pilot that has
 concluded.
 
