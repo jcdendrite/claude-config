@@ -26,6 +26,7 @@ from .conftest import (
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 _REVIEW_LEDGER_SH = Path(__file__).parent.parent / "review-ledger.sh"
+_LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
 # alone doesn't register it), so it can't shadow the real transcript_analysis package.
 # The standard importlib recipe does register in sys.modules and would shadow it --
@@ -437,6 +438,42 @@ class TestCleanupPeriodDays:
         (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": True}))
         assert ao._cleanup_period_days(tmp_path) == 30
 
+    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
+    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
+        self, tmp_path, cleanup_period_days,
+    ):
+        """json.loads parses a whole-number float like 90.0 as float, never
+        int -- this pins that isinstance(value, int) rejects it and the
+        result is the floor (30), never the truncated integer (90)."""
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_absurdly_large_all_digit_value_floors_to_thirty(self, tmp_path):
+        """Mirrors _lib.sh's own
+        test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring
+        in test_lib.py, and its identical 99999999999999999999 value: a
+        value this large must floor here too, rather than flow unfloored
+        into the max() comparison via Python's unbounded int arithmetic."""
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
+    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(self, tmp_path):
+        """Mirrors _lib.sh's own
+        test_eight_digit_value_below_the_nine_digit_guard_is_not_floored:
+        99999999 (8 digits) sits one digit under the guard's 10**8
+        threshold and is a real, above-floor value that must not be
+        truncated by the guard firing early."""
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 99999999}))
+        assert ao._cleanup_period_days(tmp_path) == 99999999
+
+    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(self, tmp_path):
+        """Mirrors _lib.sh's own
+        test_nine_digit_value_at_the_guard_threshold_floors_to_thirty:
+        100000000 (10**8, 9 digits) is the guard's exact threshold -- pins
+        that the boundary itself floors, not just values far past it."""
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 100000000}))
+        assert ao._cleanup_period_days(tmp_path) == 30
+
     def test_cache_resolves_two_distinct_config_dir_roots_independently(self, tmp_path):
         """The one invariant the cache exists to serve: two roots resolved
         in the same process must not collide on -- or overwrite -- each
@@ -450,6 +487,25 @@ class TestCleanupPeriodDays:
 
         assert ao._cleanup_period_days(root_a) == 60
         assert ao._cleanup_period_days(root_b) == 90
+
+
+class TestLedgerSweepFloorDaysMatchesLibSh:
+    def test_literal_floor_values_are_equal(self):
+        """_LEDGER_SWEEP_FLOOR_DAYS is duplicated independently in _lib.sh
+        and here -- an accepted small-duplicated-value exception since the
+        two runtimes share no process -- but nothing else pins the two
+        literals to the same value. This sources _lib.sh and reads its
+        variable's actual runtime value (rather than regex-scanning the
+        source text, which would pass even if a reformat left the
+        assignment unparseable) and asserts equality, so a future edit to
+        one side without the other fails CI instead of silently drifting
+        the two languages' resolved sweep window apart."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{_LIB_SH}"; printf %s "$_LEDGER_SWEEP_FLOOR_DAYS"'],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert int(result.stdout) == ao._LEDGER_SWEEP_FLOOR_DAYS
 
 
 class TestLedgerSweepWindowMatchesShellScript:

@@ -173,6 +173,15 @@ def _cleanup_period_days(config_dir_root: Path) -> int:
     rejected rather than truncated, matching review-ledger.sh's own
     bash-side rejection of the same shape.
 
+    A value of 10**8 (100,000,000 -- review-ledger.sh's own 9-digit
+    threshold) or more floors the same way, instead of flowing into the
+    max() comparison below: Python's arbitrary-precision int has no
+    equivalent to the integer-range failure bash's own -lt comparison
+    guards against, but leaving this unbounded would let an absurdly
+    large value pass through unfloored here while _ledger_sweep_window_days
+    floors it in bash, drifting the two languages' resolved sweep window
+    apart for the same settings.json.
+
     Cached per config_dir_root: every session under one root shares the
     same settings.json, so an uncached call would re-parse it once per
     session instead of once per root. Unbounded is safe because the key
@@ -185,6 +194,8 @@ def _cleanup_period_days(config_dir_root: Path) -> int:
         return _LEDGER_SWEEP_FLOOR_DAYS
     value = raw.get("cleanupPeriodDays") if isinstance(raw, dict) else None
     if not isinstance(value, int) or isinstance(value, bool):
+        return _LEDGER_SWEEP_FLOOR_DAYS
+    if value >= 100_000_000:
         return _LEDGER_SWEEP_FLOOR_DAYS
     return max(value, _LEDGER_SWEEP_FLOOR_DAYS)
 
@@ -471,14 +482,15 @@ def compute_author_outcomes(
     outcomes: Counter = Counter({key: 0 for key in _OUTCOME_KEYS})
     data_quality: Counter = Counter({key: 0 for key in _DATA_QUALITY_KEYS})
 
-    # (jsonl path, round open_idx) -> round bookkeeping. dispatch_count is
-    # the --since-filtered count (gates "Dispatches in scope" and which
-    # dispatches are charged an outcome); unfiltered_dispatch_count is a
-    # separate, --since-unfiltered count the authoring_agent inconsistency
-    # cross-check reads instead -- one field read two ways would report
-    # every round whose authoring dispatch falls just outside a --since
-    # cutoff as spuriously inconsistent, even though the round's own
-    # ledger rows are themselves read without regard to --since at all.
+    # (jsonl path, round open_idx) -> round bookkeeping.
+    # dispatch_count is the --since-filtered count: it gates "Dispatches in
+    # scope" and which dispatches are charged an outcome.
+    # unfiltered_dispatch_count is a separate, --since-unfiltered count the
+    # authoring_agent inconsistency cross-check reads instead.
+    # Reading one field two ways would report every round whose authoring
+    # dispatch falls just outside a --since cutoff as spuriously
+    # inconsistent, even though the round's own ledger rows are themselves
+    # read without regard to --since at all.
     rounds_by_key: dict[tuple[Path, int], dict] = {}
 
     for jsonl, raw_records in session_iter:

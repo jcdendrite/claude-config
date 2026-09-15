@@ -6552,6 +6552,20 @@ class TestLedgerSweepWindowDays:
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
 
+    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
+    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
+        self, tmp_path: Path, cleanup_period_days: float
+    ) -> None:
+        """jq's `select(type == "number")` passes a whole-number float like
+        90.0 through as the string "90.0", which the digit-only case
+        pattern rejects -- this pins that the result is the floor (30),
+        never the truncated integer (90)."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
     def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
         self, tmp_path: Path
     ) -> None:
@@ -6562,6 +6576,30 @@ class TestLedgerSweepWindowDays:
         comparison runs."""
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+
+    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(
+        self, tmp_path: Path
+    ) -> None:
+        """99999999 (8 digits) sits one digit under the 9-digit guard's
+        threshold and is a real, above-floor value -- pins that the guard
+        doesn't fire early and truncate a legitimate large-but-in-range
+        cleanupPeriodDays."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "99999999"
+
+    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(
+        self, tmp_path: Path
+    ) -> None:
+        """100000000 (9 digits) is the guard's exact threshold -- pins that
+        the boundary itself floors, not just values far past it."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 100000000}))
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"

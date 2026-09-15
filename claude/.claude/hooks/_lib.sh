@@ -3330,25 +3330,25 @@ _lib_append_line_locked() {
 # _lib_append_line_locked's whole-line match.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
-  # A DEDUP_KEY_JQ_FILTER outside a brace-delimited, comma-separated
-  # identifier list is a programmer error at the call site. A charset
-  # check alone is insufficient: a charset-legal but brace-free string
-  # like `env` is a real 0-arity jq builtin returning the process
-  # environment, not the inert field-shorthand this contract assumes. The
-  # check below therefore anchors the whole string to the `{...}` shape,
-  # before the string is ever spliced into jq below. This is still not a
-  # full grammar check: a syntactically invalid but shape-legal literal
-  # (e.g. `{,}`) still reaches jq and fails open via the dup_check_exit
-  # branch below.
-  # A shape-invalid filter fails open the same way, rather than exiting
-  # the process. Every other failure path in this function -- a missing
-  # jq, a shape-legal-but-invalid filter, a lock-acquisition failure --
-  # already degrades to an unconditional append with a stderr note.
-  # `exit` from inside this shared, sourced primitive would also collide
-  # with _lib_emit_deny's own exit-2 harness convention the first time a
-  # PreToolUse or PostToolUse hook caller reuses this function.
+  # Requires a brace-delimited, comma-separated identifier list -- rejects
+  # a bare builtin like `env`, and rejects `{}`/`{ }` since jq projects it
+  # to a constant, which would falsely dedup every future append.
+  # Not a full grammar check: a shape-legal but syntactically invalid
+  # literal (e.g. `{round,,disposition}`) still reaches jq and fails open
+  # via the dup_check_exit branch below.
+  # A single-field filter naming a field absent from every record (e.g. a
+  # typo) is shape-valid too and reproduces the same false-dedup failure --
+  # undetectable here, since telling it apart from a real field requires
+  # schema knowledge this guard doesn't have.
+  # Any shape-invalid filter fails open (unconditional append) rather than
+  # exiting, matching every other failure path in this function: missing
+  # jq, a shape-legal-but-invalid filter, or a lock-acquisition failure.
+  # `exit` would collide with _lib_emit_deny's own exit-2 harness
+  # convention the first time a PreToolUse/PostToolUse hook caller reuses
+  # this primitive.
   local dedup_filter_shape_valid=1
-  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]]; then
+  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]] \
+      || [[ ! "$dedup_filter" =~ [A-Za-z0-9_] ]]; then
     dedup_filter_shape_valid=0
     printf '_lib_append_json_line_locked: DEDUP_KEY_JQ_FILTER %q is not a brace-delimited, comma-separated list of identifiers (a jq object-projection literal) -- proceeding with unconditional append\n' \
       "$dedup_filter" >&2

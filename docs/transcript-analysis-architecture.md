@@ -135,14 +135,9 @@ the transcript's round-open sequence. The transcript is still the sole source fo
 positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
 fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
 
-**Ledger append-lock primitives (`claude/.claude/hooks/_lib.sh`).**
-`review-ledger.sh`'s schema-v2 append dedups a candidate line against
-`{round, finding, disposition, rationale, source, authoring_agent,
-authoring_effort}` via a caller-supplied jq projection, not whole-line
-matching. `author_outcome.py`'s read side depends on that row shape staying
-stable. See `_lib.sh`'s own `_lib_acquire_append_lock` and
-`_lib_append_json_line_locked` docstrings for the lock/eviction/atomicity
-mechanism itself.
+See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
+docstrings for the append-lock mechanism `review-ledger.sh`'s schema-v2
+write depends on.
 
 Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
 (attribute access), matching `review_rounds.py`'s own convention. See

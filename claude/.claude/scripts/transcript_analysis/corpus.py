@@ -177,9 +177,9 @@ _CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "No
 # Shell operators that chain multiple invocations into one Bash command --
 # splitting on these keeps one invocation from hiding in a later segment of
 # e.g. "cd worktree && git commit -m wip". Shared by turn-shape's
-# mutating-git classifier (transcript-analysis.py's
-# _bash_command_is_mutating_git) and author_outcome's ledger-append/
-# clean-marker-write matchers.
+# mutating-git classifier (`transcript-analysis.py`'s
+# `_bash_command_is_mutating_git`) and `author_outcome.py`'s clean-marker-write
+# matcher (`_is_clean_marker_write`).
 _SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
 
 

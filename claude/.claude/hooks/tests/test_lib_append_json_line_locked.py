@@ -213,6 +213,32 @@ class TestLibAppendJsonLineLocked:
         assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
         assert "is not a brace-delimited" in result.stderr
 
+    @pytest.mark.parametrize("empty_filter", ["{}", "{ }"])
+    def test_empty_braces_fails_open_instead_of_silently_dropping_every_append(self, tmp_path, empty_filter):
+        """`{}` is jq's constant-empty-object projection: `. | {}` evaluates
+        to `{}` for every input regardless of content, so if the shape
+        guard admitted it, the dedup comparison below would evaluate
+        `true` against any non-empty file and silently drop every
+        subsequent append as a false duplicate. This pins that `{}`/`{ }`
+        is instead rejected by shape and falls through to the documented
+        fail-open append, exactly like any other malformed filter -- a
+        second, distinct candidate must still land as its own line, not
+        be dropped."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', empty_filter,
+        )
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":2,"disposition":"CLEAN"}', empty_filter,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == [
+            '{"round":1,"disposition":"ADDRESS"}',
+            '{"round":2,"disposition":"CLEAN"}',
+        ], "an empty-braces filter must fail open, not silently drop the second append"
+        assert "is not a brace-delimited" in result.stderr
+
     @pytest.mark.parametrize("bad_char", ["\\", ";", "|", "'", "-", "."])
     def test_single_disallowed_character_fails_open_in_isolation(self, tmp_path, bad_char):
         """Each character is tested alone, not only bundled, so a future
@@ -243,6 +269,37 @@ class TestLibAppendJsonLineLocked:
         assert result.returncode == 0, result.stderr
         assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
         assert "is not a brace-delimited" in result.stderr
+
+    def test_braced_builtin_name_resolves_as_field_access_not_builtin_invocation(self, tmp_path):
+        """`{halt}` is shape-valid and named after a real jq builtin, but
+        jq's object-construction shorthand (`{x}` == `{x: .x}`) makes it a
+        field accessor on the piped-in candidate, never a call to the
+        `halt` builtin -- a genuine `halt` invocation would abort the jq
+        program and hit the fail-open append path instead of deduping, so
+        this assertion is falsifiable. (`{env}` is not: jq's grammar makes
+        `{ident}` unconditionally shorthand, so no environment difference
+        between the two calls could ever make that case fail either way --
+        dropped as decorative.) This does not generalize to every
+        absent-field filter: see the single-absent-field residual note on
+        _lib_append_json_line_locked's own shape-guard comment."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        braced_filter = "{halt}"
+        _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', braced_filter,
+        )
+        original_content = target.read_text()
+
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":2,"disposition":"CLEAN"}', braced_filter,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == original_content, (
+            "{halt} must project both candidates' absent `halt` field to "
+            "the same null value and dedup, confirming field-access "
+            "shorthand rather than builtin invocation"
+        )
 
     def test_malformed_neighbor_line_does_not_blind_dedup_against_the_rest(self, tmp_path):
         """A non-JSON line anywhere in the file (e.g. a partial write from a
