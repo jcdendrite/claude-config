@@ -186,6 +186,14 @@ The mechanical backstop is this repository's own human-only merge
 gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
+`transcript-analysis.py review-round-cost --pooled` is a worked
+instrument for this section: it refuses every scope-narrowing flag,
+requires two or more resolved scan roots, and prints dimensionless
+shares with bootstrap confidence intervals only — never a dollar
+amount, a raw count, or the resolved root count — alongside a pointer
+to this section, since nothing in the command itself checks that a
+figure it computes was ever proposed or approved.
+
 An authorization covers the figure, the command, and the artifact it
 named. The following each count as a fresh ask:
 

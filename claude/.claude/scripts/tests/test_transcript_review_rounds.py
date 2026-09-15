@@ -1,11 +1,14 @@
 """Tests for transcript_analysis/review_rounds.py (review-round-cost)."""
 import importlib.util
+import os
+import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
-from transcript_analysis import corpus, render, review_rounds
+from transcript_analysis import corpus, render, review_rounds, scope
 
 from .conftest import (
     _agent_use,
@@ -33,6 +36,8 @@ def _review_round_cost_args(
     since: str | None = None,
     until: str | None = None,
     skill: str | None = None,
+    pooled: bool = False,
+    config_dir: str | None = None,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -41,6 +46,8 @@ def _review_round_cost_args(
         "since": since,
         "until": until,
         "skill": skill,
+        "pooled": pooled,
+        "config_dir": config_dir,
     })()
 
 
@@ -1253,3 +1260,750 @@ class TestCmdReviewRoundCost:
         assert "account-1 Totals: 1 branches, 1 rounds (code-review=1  plan-review=0  ready-for-review=0)" in out
         assert out.count("Totals:") == 1
         assert "account-2" not in out
+
+
+def _asymmetric_two_branch_pooled_totals() -> list[review_rounds._PooledBranchTotals]:
+    """Two branches with deliberately unequal branch_dollars (0.40 and
+    1.00).
+
+    "Share of sums" (correct) and "mean of per-branch shares" (a plausible
+    regression) disagree on this fixture: 57.1% vs 55.0%. An equal-weight
+    fixture would make the two computations coincide, hiding the
+    regression.
+
+    Reused directly here, and via an equivalent priced-round JSONL fixture
+    in TestCmdReviewRoundCostPooled's own point-estimate test, so both
+    layers check the same arithmetic from a different entry point.
+    """
+    branch_a = review_rounds._PooledBranchTotals(
+        round_dollars=0.20, agent_dollars=0.0, branch_dollars=0.40,
+        skill_round_counts={"code-review": 1, "plan-review": 0, "ready-for-review": 0},
+        skill_round_dollars={"code-review": 0.20, "plan-review": 0.0, "ready-for-review": 0.0},
+        rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+    )
+    branch_b = review_rounds._PooledBranchTotals(
+        round_dollars=0.60, agent_dollars=0.0, branch_dollars=1.00,
+        skill_round_counts={"code-review": 1, "plan-review": 0, "ready-for-review": 0},
+        skill_round_dollars={"code-review": 0.60, "plan-review": 0.0, "ready-for-review": 0.0},
+        rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+    )
+    return [branch_a, branch_b]
+
+
+class TestBootstrapShareIntervals:
+    """Pure-math tests for --pooled's aggregation and bootstrap helpers.
+
+    2-5 synthetic per_branch tuples, no _write_jsonl, no fixture corpus,
+    no CLI -- the fast layer for the feature's actual arithmetic risk.
+    TestCmdReviewRoundCostPooled below is scoped to what only that layer
+    can prove (wiring, refusal enforcement, redaction, banner
+    suppression), not to re-proving the math.
+    """
+
+    def test_pooled_branch_aggregates_sums_every_accumulated_field(self):
+        """_pooled_branch_aggregates elementwise-sums a hand-built
+        per_branch list across every _PooledBranchTotals field, including
+        the two per-skill dicts summed independently of one another."""
+        a = review_rounds._PooledBranchTotals(
+            round_dollars=1.0, agent_dollars=0.5, branch_dollars=4.0,
+            skill_round_counts={"code-review": 1, "plan-review": 2, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 0.6, "plan-review": 0.4, "ready-for-review": 0.0},
+            rounds_with_dangling=1, rounds_with_unpriced=0, round_count=3,
+        )
+        b = review_rounds._PooledBranchTotals(
+            round_dollars=2.0, agent_dollars=1.5, branch_dollars=6.0,
+            skill_round_counts={"code-review": 0, "plan-review": 1, "ready-for-review": 2},
+            skill_round_dollars={"code-review": 0.0, "plan-review": 1.0, "ready-for-review": 1.0},
+            rounds_with_dangling=0, rounds_with_unpriced=2, round_count=3,
+        )
+        summed = review_rounds._pooled_branch_aggregates([a, b])
+        assert summed.round_dollars == 3.0
+        assert summed.agent_dollars == 2.0
+        assert summed.branch_dollars == 10.0
+        assert summed.skill_round_counts == {"code-review": 1, "plan-review": 3, "ready-for-review": 2}
+        assert summed.skill_round_dollars == {"code-review": 0.6, "plan-review": 1.4, "ready-for-review": 1.0}
+        assert summed.rounds_with_dangling == 1
+        assert summed.rounds_with_unpriced == 2
+        assert summed.round_count == 6
+
+    def test_pooled_shares_computes_every_stat_key_against_a_hand_computed_value(self):
+        """One hand-built aggregate covering every _POOLED_STAT_KEYS entry
+        with pairwise-distinct values, including gap_dangling and
+        gap_unpriced.
+
+        Every other fixture in this file gives rounds_with_dangling and
+        rounds_with_unpriced the same 0/1 ratio, so a swap between those
+        two keys in _pooled_shares would go undetected by them alone.
+        """
+        agg = review_rounds._PooledBranchTotals(
+            round_dollars=60.0, agent_dollars=20.0, branch_dollars=200.0,
+            skill_round_counts={"code-review": 6, "plan-review": 14, "ready-for-review": 30},
+            skill_round_dollars={"code-review": 9.0, "plan-review": 39.0, "ready-for-review": 12.0},
+            rounds_with_dangling=9, rounds_with_unpriced=22, round_count=50,
+        )
+        shares = review_rounds._pooled_shares(agg)
+        expected = {
+            "spend_inside": 30.0,
+            "spend_outside": 70.0,
+            "spend_reviewer_only": 10.0,
+            "skill_spend:code-review": 15.0,
+            "skill_spend:plan-review": 65.0,
+            "skill_spend:ready-for-review": 20.0,
+            "skill_rounds:code-review": 12.0,
+            "skill_rounds:plan-review": 28.0,
+            "skill_rounds:ready-for-review": 60.0,
+            "gap_dangling": 18.0,
+            "gap_unpriced": 44.0,
+        }
+        assert set(expected) == set(review_rounds._POOLED_STAT_KEYS)
+        assert len(set(expected.values())) == len(expected)  # every value is pairwise distinct
+        for key, expected_value in expected.items():
+            assert shares[key] == pytest.approx(expected_value)
+
+    def test_resample_percentile_matches_documented_index_formula(self):
+        """round(0.025 * (B-1)) / round(0.975 * (B-1)), checked against a
+        small fixed B (9) where the indices are easy to hand-verify:
+        lo_idx = round(0.2) = 0, hi_idx = round(7.8) = 8."""
+        sample = [float(i) for i in range(9)]
+        lo, hi = review_rounds._resample_percentile(sample)
+        assert (lo, hi) == (0.0, 8.0)
+
+    def test_bootstrap_share_intervals_deterministic_and_matches_hand_computed_point(self):
+        """Same seed, same fixture, two direct in-process calls agree
+        exactly -- the in-process half of the determinism property (the
+        cross-process half is TestCmdReviewRoundCostPooled's own
+        subprocess test).
+
+        Also asserts the point estimate against the hand-computed value
+        documented on _asymmetric_two_branch_pooled_totals: determinism
+        alone would pass a function that always returns 0.0.
+        """
+        per_branch = _asymmetric_two_branch_pooled_totals()
+        first = review_rounds._bootstrap_share_intervals(per_branch)
+        second = review_rounds._bootstrap_share_intervals(per_branch)
+        assert first == second
+
+        point, lo, hi = first["spend_inside"]
+        share_of_sums = round(100 * (0.20 + 0.60) / (0.40 + 1.00), 1)  # 57.1 -- correct
+        mean_of_shares = round((50.0 + 60.0) / 2, 1)  # 55.0 -- the regression this fixture rules out
+        assert share_of_sums != mean_of_shares
+        assert round(point, 1) == share_of_sums
+        assert lo <= point <= hi
+
+    def test_fmt_share_with_ci_renders_numeric_and_both_degenerate_forms(self):
+        """Numeric form, plus both degenerate parentheticals -- the "95% CI"
+        frame is a fixed literal shared by every line (numeric and
+        degenerate alike, per the grammar regex below), but neither
+        degenerate reason clause past the em dash contains a digit."""
+        assert review_rounds._fmt_share_with_ci(40.0, 35.0, 45.0) == "40.0% (95% CI 35.0-45.0%)"
+
+        too_few = review_rounds._fmt_share_with_ci(None, None, None)
+        assert too_few == "(95% CI not computed — too few branches in scope)"
+        assert not any(c.isdigit() for c in too_few.rsplit("—", 1)[-1])
+
+        zero_denom = review_rounds._fmt_share_with_ci(0.0, None, None)
+        assert zero_denom == "(95% CI not computed — no priced branch spend)"
+        assert not any(c.isdigit() for c in zero_denom.rsplit("—", 1)[-1])
+
+
+def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
+    """Two declared roots, two branches each (four total), one
+    distinctively named.
+
+    The cross-process determinism test elsewhere in this file has its own
+    >=4-branch requirement; this fixture happens to satisfy it too, though
+    it isn't used there.
+
+    Reused by the grammar, totals-absence, banner-suppression,
+    branch-name-leak, header, and stderr-diagnostic tests below, all of
+    which need the same non-degenerate, >1-root, >1-branch shape.
+    """
+    roots = _two_declared_roots(tmp_path, monkeypatch)
+    proj_a = roots[0] / "-home-user-repo-a"
+    proj_a.mkdir(parents=True)
+    _write_jsonl(proj_a / "sess-a1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a1-secret-branch", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _user_msg("thanks", branch="feat-a1-secret-branch", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    _write_jsonl(proj_a / "sess-a2.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s2", "plan-review")],
+        ),
+        _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    proj_b = roots[1] / "-home-user-repo-b"
+    proj_b.mkdir(parents=True)
+    _write_jsonl(proj_b / "sess-b1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-b1", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s3", "ready-for-review")],
+        ),
+        _user_msg("thanks", branch="feat-b1", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    _write_jsonl(proj_b / "sess-b2.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-b2", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s4", "code-review")],
+        ),
+        _user_msg("thanks", branch="feat-b2", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    return roots
+
+
+def _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch) -> list[Path]:
+    """Two declared roots, root A entirely code-review and root B entirely
+    plan-review.
+
+    The correctly-pooled code-review share is 50.0%, versus 100.0% for
+    root A alone and 0.0% for root B alone. This fixture distinguishes
+    correct cross-root pooling from a one-root-only regression. An
+    equal-mix fixture would not: every root's own share would already
+    agree with the pooled share.
+    """
+    roots = _two_declared_roots(tmp_path, monkeypatch)
+    proj_a = roots[0] / "-home-user-repo-a"
+    proj_a.mkdir(parents=True)
+    _write_jsonl(proj_a / "sess-a.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    proj_b = roots[1] / "-home-user-repo-b"
+    proj_b.mkdir(parents=True)
+    _write_jsonl(proj_b / "sess-b.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s2", "plan-review")],
+        ),
+        _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+    ])
+    return roots
+
+
+# _render_pooled_block's own figure-line format is `f"    {label:<30}{value}"`
+# -- 4 spaces of indent, then a 30-char label field. TestCmdReviewRoundCostPooled's
+# grammar test slices on this exact width instead of guessing at whitespace.
+_POOLED_FIGURE_LABEL_FIELD_END = 4 + 30
+
+
+class TestCmdReviewRoundCostPooled:
+    """cmd_review_round_cost's --pooled render path: grammar/redaction
+    enforcement, refusal-table coverage, and CLI-level correctness. See
+    TestBootstrapShareIntervals above for the underlying arithmetic."""
+
+    def test_grammar_every_figure_line_is_digit_free_or_matches_share_ci_regex(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The convention-enforcing test: no `$` in the actual figure
+        section, and every figure line after the literal _POOLED_CAPTION
+        constant either has no digit at all or matches the share/CI
+        grammar exactly.
+
+        Slicing on the _POOLED_CAPTION constant excludes the caption
+        paragraph above it, which has its own compliant digit (e.g.
+        "2,000-resample"). It also excludes the earlier publication-pointer
+        paragraph, whose illustrative "$/PR rate" prose names a hypothetical
+        figure published elsewhere, never one this block itself prints.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        block = capsys.readouterr().out
+
+        _, sep, after_caption = block.partition(review_rounds._POOLED_CAPTION)
+        assert sep, "_POOLED_CAPTION not found verbatim in the printed block"
+        assert "$" not in after_caption
+        lines = [line for line in after_caption.splitlines() if line.strip()]
+
+        section_headers = [line.strip() for line in lines if not line.startswith("    ")]
+        figure_lines = [line for line in lines if line.startswith("    ")]
+
+        assert section_headers == [
+            "Share of branch spend", "Round-window spend by skill",
+            "Rounds by skill", "Rounds affected by a data-quality gap",
+        ]
+
+        expected_labels = (
+            "inside round windows", "outside every round window", "reviewer dispatches only",
+            "code-review", "plan-review", "ready-for-review",
+            "code-review", "plan-review", "ready-for-review",
+            "dangling dispatch", "unpriced turn",
+        )
+        found_labels = tuple(line[4:_POOLED_FIGURE_LABEL_FIELD_END].strip() for line in figure_lines)
+        assert found_labels == expected_labels
+        # Checked against the raw block, not just found_labels: a future
+        # before/after-split label could slip in anywhere in the pooled
+        # render without ever matching a pinned expected_labels entry.
+        assert not re.search(r"\b(before|after|pivot)\b", block)
+
+        figure_re = re.compile(r"^\d{1,3}\.\d% \(95% CI (\d{1,3}\.\d-\d{1,3}\.\d%|not computed — [a-z ]+)\)$")
+        for line in figure_lines:
+            remainder = line[_POOLED_FIGURE_LABEL_FIELD_END:].strip()
+            assert not any(c.isdigit() for c in remainder) or figure_re.match(remainder)
+
+    def test_no_mean_rounds_per_branch_or_totals_line(self, tmp_path, monkeypatch, capsys):
+        """A branch is declined as a countable or reportable unit entirely
+        under --pooled: the existing footer's Mean-rounds-per-branch line,
+        and the per-branch Totals: line, have no pooled counterpart in any
+        form -- asserted by absence."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        assert "Mean rounds per branch" not in out
+        assert "Totals:" not in out
+
+    def test_banner_suppressed_under_pooled_but_present_without_it(self, tmp_path, monkeypatch, capsys):
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        pooled_out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in pooled_out
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        unpooled_out = capsys.readouterr().out
+        assert _mod._DO_NOT_PUBLISH_BANNER in unpooled_out
+
+    def test_no_branch_name_leak(self, tmp_path, monkeypatch, capsys):
+        """A distinctively-named fixture branch does not appear in pooled
+        output -- presence in the --this-repo-disclosed render (proving the
+        fixture really contains it) and absence from the pooled render are
+        asserted separately, matching the existing --this-repo-disclosed/
+        redacted pairing convention used elsewhere in this file (e.g.
+        TestCmdReviewRoundCost.test_branch_label_raw_under_this_repo_and_redacted_otherwise_multi_root)."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+
+        disclosed_args = _review_round_cost_args(this_repo=True)
+        disclosed_args._this_repo_slugs = ["-home-user-repo-a", "-home-user-repo-b"]
+        _mod.cmd_review_round_cost(disclosed_args)
+        disclosed_out = capsys.readouterr().out
+        assert "feat-a1-secret-branch" in disclosed_out
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        pooled_out = capsys.readouterr().out
+        assert "feat-a1-secret-branch" not in pooled_out
+
+    def test_pooled_header_is_exact_fixed_string_and_no_root_count_pattern_anywhere(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """An exact-string assertion, not merely digit-free, since
+        scope_label can no longer vary once --projects and --this-repo are
+        both refused.
+
+        Also asserts absence, across the entire block, of any
+        `_root_count_desc`-shaped substring. A test that only checks the
+        sanitized line is *present* would still pass if an unsanitized,
+        root-count-bearing header also printed ahead of it.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
+        assert not re.search(r"\d+\s+roots?\b", out)
+
+    def test_pooled_publication_and_refusal_pointers_cite_a_real_heading(self):
+        """_POOLED_PUBLICATION_POINTER and _POOLED_REFUSAL_DOC_POINTER cite
+        docs/private-project-redaction.md by heading text embedded in a
+        plain Python string, not the backtick-quoted, single-line markdown
+        citation grammar claude-skills/skills/tests/test_skills.py's
+        citation-resolution tests check. This .py file sits outside both
+        that test's scanned skill corpus and
+        test_tooling_measurement_citation_resolves_to_real_heading's
+        docs/*.md parametrize list, so a stale heading here would otherwise
+        go unnoticed by every other citation-resolution test.
+        """
+        repo_root = Path(__file__).resolve().parents[4]
+        doc_lines = (repo_root / "docs" / "private-project-redaction.md").read_text().splitlines()
+        doc_headings: set[str] = set()
+        in_fence = False
+        for line in doc_lines:
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            match = re.match(r"^#{1,6}\s+(.+)$", line)
+            if match:
+                doc_headings.add(match.group(1).strip())
+        for pointer in (
+            review_rounds._POOLED_PUBLICATION_POINTER,
+            review_rounds._POOLED_REFUSAL_DOC_POINTER,
+        ):
+            cited = re.search(r'§\s+"([^"\n]+)"', pointer)
+            assert cited, f"{pointer!r} does not cite a heading in the § \"...\" form"
+            assert cited.group(1) in doc_headings, (
+                f"{pointer!r} cites heading {cited.group(1)!r}, which does not "
+                "exist in docs/private-project-redaction.md"
+            )
+
+    def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """rounds under two roots produce one block with no account- label,
+        and a code-review rounds-by-skill share reflecting the pool
+        (50.0%) rather than either root's own share alone (100.0% for the
+        code-review-only root, 0.0% for the plan-review-only root)."""
+        _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        assert "account-" not in out
+        assert re.search(r"code-review\s+50\.0% \(95% CI", out)
+        assert re.search(r"plan-review\s+50\.0% \(95% CI", out)
+
+    def test_refuses_branches_flag(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, branches="feat"))
+        assert exc.value.code == 2
+        assert "--branches" in capsys.readouterr().err
+
+    def test_refuses_non_default_projects_glob(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, projects="feat-*"))
+        assert exc.value.code == 2
+        assert "--projects" in capsys.readouterr().err
+
+    def test_refuses_skill_flag(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, skill="code-review"))
+        assert exc.value.code == 2
+        assert "--skill" in capsys.readouterr().err
+
+    def test_refuses_since_flag(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, since="2026-08-01"))
+        assert exc.value.code == 2
+        assert "--since/--until" in capsys.readouterr().err
+
+    def test_refuses_until_flag(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, until="2026-08-01"))
+        assert exc.value.code == 2
+        assert "--since/--until" in capsys.readouterr().err
+
+    def test_refuses_top_level_config_dir(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, config_dir="/tmp/some-other-account"))
+        assert exc.value.code == 2
+        assert "--config-dir" in capsys.readouterr().err
+
+    def test_refuses_this_repo_on_single_root_fixture(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
+        assert exc.value.code == 2
+        assert "--this-repo" in capsys.readouterr().err
+
+    def test_refuses_this_repo_on_two_root_fixture(self, tmp_path, monkeypatch, capsys):
+        """--this-repo is checked in the flag block, not the root-count
+        clause, so it must refuse identically on a machine that already has
+        more than one declared root -- not only on the single-root fixture
+        above."""
+        _two_declared_roots(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
+        assert exc.value.code == 2
+        assert "--this-repo" in capsys.readouterr().err
+
+    def test_refuses_single_resolved_root_naming_declared_roots_file(self, fake_projects, capsys):
+        """The one-resolved-root row has no flag to name, unlike every other
+        refusal test above.
+
+        Asserted against scope.TRANSCRIPT_CONFIG_DIRS_LABEL's actual value
+        (imported and compared, never a hardcoded duplicate).
+
+        The plain single-root path is the only path that ever reaches the
+        root-count clause: the --this-repo refusal fires first when that
+        flag is set, even on this same single-root fixture.
+        """
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+
+    def test_render_pooled_block_called_directly_still_refuses(self, tmp_path, monkeypatch):
+        """Defense-in-depth, layer 2: bypasses cmd_review_round_cost's own
+        CLI-boundary refusal entirely by calling _render_pooled_block
+        directly, the way this module's own tests (and any other direct
+        caller) do."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        args = _review_round_cost_args(pooled=True, branches="feat")
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(args, roots, "*", [], {})
+        assert exc.value.code == 2
+
+    def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
+        """Two independently hash-seeded real `python3` invocations, not two
+        in-process calls: PYTHONHASHSEED is fixed once per interpreter
+        process, so two in-process calls would share a hash seed even if a
+        `set` iteration somewhere in the pooled path varied silently
+        across real, separate runs.
+
+        Four branches, not the two-root/two-branch shape reused elsewhere
+        in this file: with only two branches there are only two possible
+        orderings, so a fresh hash seed per process would have a
+        non-trivial chance of agreeing by luck even with the bug present.
+        """
+        acct_a = tmp_path / "acct-a"
+        proj_a = acct_a / "projects" / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        acct_b = tmp_path / "acct-b"
+        proj_b = acct_b / "projects" / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-a1", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        _write_jsonl(proj_a / "sess-a2.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        _write_jsonl(proj_b / "sess-b1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-b1", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s3", "ready-for-review")],
+            ),
+            _user_msg("thanks", branch="feat-b1", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        _write_jsonl(proj_b / "sess-b2.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-b2", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s4", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-b2", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n")
+        env = {
+            **os.environ,
+            "CLAUDE_CONFIG_DIR": str(acct_a),
+            "TRANSCRIPT_CONFIG_DIRS_FILE": str(roots_file),
+        }
+
+        def _run() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [sys.executable, str(_SCRIPT), "review-round-cost", "--pooled"],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+
+        first = _run()
+        second = _run()
+        assert first.returncode == 0, first.stderr
+        assert second.returncode == 0, second.stderr
+        assert first.stdout == second.stdout
+
+    def test_point_estimate_is_share_of_sums_not_mean_of_per_branch_shares(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """CLI-layer counterpart of _asymmetric_two_branch_pooled_totals's
+        own share-of-sums-vs-mean-of-shares check, via an equivalent
+        priced-round JSONL fixture instead of a hand-built
+        _PooledBranchTotals list."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.20
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),  # round: $0.20
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.40
+            _priced(
+                "claude-sonnet-5", input=300_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),  # round: $0.60
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+
+        share_of_sums = round(100 * (0.20 + 0.60) / (0.40 + 1.00), 1)  # 57.1 -- correct
+        mean_of_shares = round((50.0 + 60.0) / 2, 1)  # 55.0 -- the regression this fixture rules out
+        assert share_of_sums != mean_of_shares
+        match = re.search(r"inside round windows\s+(\d+\.\d)% \(95% CI (\d+\.\d)-(\d+\.\d)%\)", out)
+        assert match is not None
+        point = float(match.group(1))
+        assert point == share_of_sums
+        lo, hi = float(match.group(2)), float(match.group(3))
+        assert lo <= point <= hi
+
+    def test_degenerate_single_branch_prints_too_few_branches_wording_with_no_digit(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """--pooled requires more than one resolved *root*, but the
+        too-few-branches wording is about pooled *branches* -- this fixture
+        satisfies the root-count refusal gate with two declared roots while
+        leaving only one branch with an in-scope round."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert all(line.strip().endswith("(95% CI not computed — too few branches in scope)") for line in too_few_lines)
+        # "95% CI" is a fixed literal frame shared by every line (numeric and
+        # degenerate alike); only the reason clause past the em dash must be
+        # digit-free.
+        assert not any(c.isdigit() for line in too_few_lines for c in line.rsplit("—", 1)[-1])
+
+    def test_degenerate_zero_priced_branch_dollars_does_not_raise(self, tmp_path, monkeypatch, capsys):
+        """Two branches, each with an in-scope round but zero priced dollars
+        (an unrecognized-model turn) -- proves _render_pooled_block never
+        raises ZeroDivisionError, printing the zero-denominator wording for
+        every dollar-based share instead."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "some-unrecognized-model-id", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced(
+                "some-unrecognized-model-id", input=100_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        assert "(95% CI not computed — no priced branch spend)" in out
+
+    def test_degenerate_branch_with_no_in_scope_rounds_is_excluded_from_the_pool(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The pooled denominator only ever includes a branch key present
+        in the in-scope rounds list, mirroring the existing per-root
+        footer's own accumulation.
+
+        A branch with priced non-round spend but zero rounds must not
+        silently enter the pool via branch_totals alone. No other test in
+        this class exercises this shape.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),  # round: $0.20
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            # No review-skill invocation anywhere -- priced activity, zero rounds.
+            _priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+        # feat-b's $1.00 never enters the pool: if it wrongly did (via
+        # branch_totals alone), the pool would hold two branches instead of
+        # one and "too few branches" would not fire.
+        assert "(95% CI not computed — too few branches in scope)" in out
+
+    def test_no_print_before_refusal_on_single_root_case(self, fake_projects, capsys):
+        """The single-root refusal fires last in _pooled_scope_refusal's own
+        check order, so it is the one most exposed to a reordering
+        regression.
+
+        Confirms no pooled header, publication pointer, or DO NOT PUBLISH
+        banner ever reaches stdout ahead of the eventual exit(2). Every
+        other refusal test in this class checks the exit and the message
+        alone; only this one inspects the printed side effect.
+        """
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out = capsys.readouterr().out
+        assert out == ""
+
+    def test_pooled_scope_refusal_skips_root_count_clause_when_roots_is_none(self):
+        """The layer-1, pre-resolution call path: no narrowing flag set,
+        and roots=None (the default), returns None without raising -- no
+        other test in this class exercises _pooled_scope_refusal directly
+        with roots=None."""
+        args = _review_round_cost_args(pooled=True)
+        assert review_rounds._pooled_scope_refusal(args, roots=None) is None
+
+    def test_pooled_run_prints_no_root_count_diagnostic_to_stderr(self, tmp_path, monkeypatch, capsys):
+        """Regression test for the "scanning root N/M..." leak.
+
+        scope's own multi-root diagnostic prints that line on stderr
+        whenever more than one root is scanned, disclosing the resolved
+        root count on the one output stream _pooled_resolved_scope_header
+        doesn't reach -- stderr, not stdout.
+
+        A successful two-root --pooled run must produce no digit on
+        stderr at all.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        err = capsys.readouterr().err
+        assert not any(c.isdigit() for c in err)
+
+    def test_pooled_stderr_filter_passes_through_a_genuine_diagnostic(self, capsys):
+        """The filter is selective, not a blanket stderr suppression: a
+        genuine non-"scanning root" diagnostic emitted during the wrapped
+        call still reaches stderr, while a "scanning root N/M..." line
+        does not.
+        """
+        def fake_session_iter():
+            print("scanning root 1/2...", file=sys.stderr)
+            print(
+                "_iter_scoped_sessions: cannot scan account-1 (Permission denied) — skipping",
+                file=sys.stderr,
+            )
+            return
+            yield  # pragma: no cover -- makes this a generator function
+
+        review_rounds._pooled_compute_review_round_costs(fake_session_iter())
+        err = capsys.readouterr().err
+        assert "scanning root 1/2..." not in err
+        assert "cannot scan account-1" in err
+
+    def test_pooled_stderr_filter_reemits_buffered_lines_when_wrapped_call_raises(
+        self, monkeypatch, capsys,
+    ):
+        """A diagnostic buffered before the wrapped call raises still reaches stderr."""
+        def fake_compute(*args, **kwargs):
+            print("cannot scan account-9 (Permission denied) — skipping", file=sys.stderr)
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", fake_compute)
+        with pytest.raises(RuntimeError):
+            review_rounds._pooled_compute_review_round_costs()
+        err = capsys.readouterr().err
+        assert "cannot scan account-9" in err
