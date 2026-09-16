@@ -4069,10 +4069,10 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     resolves to.
 
     Shared row-lookup for `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    and `test_comment_discipline_row_points_to_its_deferral`, both of which
-    need the row's full text (not just its left-column shorthand from
-    `_change_type_table_left_columns`) to check for a literal string
-    reference.
+    and `test_comment_discipline_row_points_to_its_deferral`. Both need the
+    row's full text, not just the left-column shorthand
+    `_change_type_table_left_columns` returns, to check for a literal
+    string reference.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
     for line in _change_type_table_rows(skill_md_path):
@@ -4107,7 +4107,8 @@ class TestChangeTypeTableLeftColumns:
 
 class TestScopeExemptChangeTypeRowText:
     """Direct coverage for _scope_exempt_change_type_row_text's no-match raise
-    branch, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
+    branch, mirroring TestChangeTypeTableLeftColumns's edge-case-only
+    literal-fixture pattern.
     """
 
     def test_no_matching_row_raises(self, tmp_path: Path) -> None:
