@@ -27,6 +27,12 @@
 #                           value survives untouched when direnv is absent
 #                           or its resolution fails. See docs/scripts.md for
 #                           provisioning guidance.
+#   GH_HOST             -- optional; tells `gh` which host to target. Needed
+#                           when a GHE host is supplied only via direnv and
+#                           was never registered via `gh auth login`, so
+#                           `hosts.yml` has no fallback entry. Resolved by
+#                           resolve_gh_host after line 40's unset clears any
+#                           stale ambient value.
 #
 # Usage: ci-watch.sh <pr-number>
 
@@ -36,7 +42,9 @@ set -euo pipefail
 # from $PWD's git remote. GH_REPO/GH_HOST override that cwd-based resolution.
 # Unset them so a stale value from a differently-scoped invoking shell
 # doesn't leak in. Otherwise the repo gh targets could silently diverge from
-# the repo the token was resolved for.
+# the repo the token was resolved for. GH_HOST is resynced below
+# (resolve_gh_host) with this directory's own direnv-scoped value. GH_REPO
+# gets no equivalent resync, and stays unset for the rest of the run.
 unset GH_REPO GH_HOST
 
 # direnv_export_bash is shared with cleanup-merged-branches.sh.
@@ -94,6 +102,32 @@ resolve_ci_checks_gh_token() {
   return 0
 }
 resolve_ci_checks_gh_token
+
+# resolve_gh_host — resyncs GH_HOST via direnv, undoing line 40's unset with
+# this directory's own value before any gh call. Exported when non-empty
+# (gh reads GH_HOST from the environment, gh v2.97.0) — see docs/scripts.md's
+# GH_HOST entry for why.
+resolve_gh_host() {
+  command -v direnv >/dev/null 2>&1 || return 0
+  # resolved is assigned separately below (not `local resolved=$(...)`), so
+  # its exit status isn't masked by `local`'s own always-zero status.
+  local ambient="${GH_HOST:-}" resolved
+  if resolved=$(
+        eval "$(direnv_export_bash)"
+        status=$?
+        [[ $status -eq 0 ]] || exit "$status"
+        printf '%s' "${GH_HOST:-}"
+      ); then
+    if [[ -n "$resolved" ]]; then
+      export GH_HOST="$resolved"
+    fi
+    if [[ "$resolved" != "$ambient" ]]; then
+      echo "ci-watch: GH_HOST resolved via direnv for $(pwd)" >&3
+    fi
+  fi
+  return 0
+}
+resolve_gh_host
 
 # GH_TOKEN alone covers both github.com and *.ghe.com subdomains (gh help
 # environment, gh v2.97.0).

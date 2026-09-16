@@ -73,9 +73,11 @@ def _gh_shim_source(
                       ambient token untouched.
     repo_host_log -> optional path; when given, the shim appends one
                       tab-separated line per matched call recording that
-                      call's own GH_REPO and GH_HOST — lets a test assert
-                      that ci-watch.sh's blanket `unset GH_REPO GH_HOST`
-                      actually reaches every gh invocation.
+                      call's own GH_REPO and GH_HOST, each "<unset>" when the
+                      var is absent from that call's environment (distinct
+                      from present-but-empty) — lets a test assert that
+                      ci-watch.sh's blanket `unset GH_REPO GH_HOST` actually
+                      reaches every gh invocation.
     """
     token_log_repr = repr(str(token_log)) if token_log is not None else "None"
     repo_host_log_repr = repr(str(repo_host_log)) if repo_host_log is not None else "None"
@@ -108,8 +110,8 @@ def _gh_shim_source(
                 with open(REPO_HOST_LOG, "a") as f:
                     f.write(
                         name + "\\t"
-                        + os.environ.get("GH_REPO", "") + "\\t"
-                        + os.environ.get("GH_HOST", "") + "\\n"
+                        + os.environ.get("GH_REPO", "<unset>") + "\\t"
+                        + os.environ.get("GH_HOST", "<unset>") + "\\n"
                     )
 
         args = sys.argv[1:]
@@ -193,7 +195,9 @@ def _parse_token_log(path: Path) -> dict[str, tuple[str, str]]:
 
 def _parse_repo_host_log(path: Path) -> dict[str, tuple[str, str]]:
     """Map call name ("view"/"watch"/"json") -> (GH_REPO, GH_HOST) as
-    recorded by the gh shim's log_call, one entry per matched invocation."""
+    recorded by the gh shim's log_call, one entry per matched invocation.
+    Each field is "<unset>" when that var was absent from the call's own
+    environment, distinct from an empty-string present value."""
     calls = {}
     for line in path.read_text().splitlines():
         name, gh_repo, gh_host = line.split("\t")
@@ -494,7 +498,7 @@ def test_ambient_gh_token_untouched_on_view_but_overridden_on_watch_and_json(fak
 def test_gh_repo_and_host_unset_in_ambient_env_leaves_calls_unaffected(fake_gh, tmp_path):
     # No regression from the blanket `unset GH_REPO GH_HOST`: with neither
     # var set in the ambient env to begin with, every gh call still sees
-    # them unset, matching today's behavior.
+    # them genuinely absent, matching today's behavior.
     repo_host_log = tmp_path / "repo_host.log"
     checks = [
         {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
@@ -508,9 +512,9 @@ def test_gh_repo_and_host_unset_in_ambient_env_leaves_calls_unaffected(fake_gh, 
     result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
     calls = _parse_repo_host_log(repo_host_log)
-    assert calls["view"] == ("", "")
-    assert calls["watch"] == ("", "")
-    assert calls["json"] == ("", "")
+    assert calls["view"] == ("<unset>", "<unset>")
+    assert calls["watch"] == ("<unset>", "<unset>")
+    assert calls["json"] == ("<unset>", "<unset>")
 
 
 def test_ambient_gh_repo_and_host_are_unset_before_every_gh_call(fake_gh, tmp_path):
@@ -535,9 +539,9 @@ def test_ambient_gh_repo_and_host_are_unset_before_every_gh_call(fake_gh, tmp_pa
     result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
     calls = _parse_repo_host_log(repo_host_log)
-    assert calls["view"] == ("", "")
-    assert calls["watch"] == ("", "")
-    assert calls["json"] == ("", "")
+    assert calls["view"] == ("<unset>", "<unset>")
+    assert calls["watch"] == ("<unset>", "<unset>")
+    assert calls["json"] == ("<unset>", "<unset>")
 
 
 # ---------------------------------------------------------------------------
@@ -892,10 +896,13 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
     # run indefinitely. The shim sleeps well past the cap without reading
     # stdin, so the scaled timeout(1) shim's own started/completed record
     # proves the wall-clock cap fired, rather than the </dev/null guard
-    # test_stdin_reading_envrc_does_not_hang already covers.
+    # test_stdin_reading_envrc_does_not_hang already covers. resolve_gh_host
+    # calls direnv_export_bash a second time, so the stalled shim is hit
+    # (and capped) twice: once per resolver.
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
     token_log = tmp_path / "token.log"
+    repo_host_log = tmp_path / "repo_host.log"
     checks = [
         {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
     ]
@@ -904,12 +911,13 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
         watch_exit=0,
         json_payload=checks,
         token_log=token_log,
+        repo_host_log=repo_host_log,
         extra_env={"CI_CHECKS_GH_TOKEN": "ambient-survives-token"},
         direnv_source=_direnv_shim_source_stalls_without_reading_stdin(scaled_shim_sleep(30)),
     )
     shim_dir = Path(env["PATH"].split(os.pathsep)[0])
     write_scaled_timeout_shim(shim_dir)
-    with assert_cap_engaged(shim_dir, production_cap=5):
+    with assert_cap_engaged(shim_dir, production_cap=5, killed_calls=2):
         result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
     # A timed-out direnv resolution must degrade to the existing "ambient
@@ -917,4 +925,99 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
     calls = _parse_token_log(token_log)
     assert calls["watch"] == ("ambient-survives-token", "")
     assert calls["json"] == ("ambient-survives-token", "")
+    repo_host_calls = _parse_repo_host_log(repo_host_log)
+    assert repo_host_calls["watch"] == ("<unset>", "<unset>")
+    assert repo_host_calls["json"] == ("<unset>", "<unset>")
     assert "resolved via direnv" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# resolve_gh_host — direnv resolution of GH_HOST
+#
+# Same staleness problem as resolve_ci_checks_gh_token above, but for
+# GH_HOST — see docs/scripts.md's GH_HOST entry for the full mechanism.
+# ---------------------------------------------------------------------------
+
+def test_direnv_supplies_gh_host_when_ambient_unset(fake_gh, tmp_path):
+    # test_ambient_gh_repo_and_host_are_unset_before_every_gh_call (above)
+    # pins the stale-value-neutralization half; this pins the resync half —
+    # this directory's own direnv-supplied GH_HOST must reach every gh call.
+    # GH_REPO stays unset throughout: resolve_gh_host has no GH_REPO
+    # counterpart.
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        repo_host_log=repo_host_log,
+        direnv_source=_direnv_shim_source_static_export(
+            "GH_HOST", "octocat.ghe.com",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_repo_host_log(repo_host_log)
+    assert calls["view"] == ("<unset>", "octocat.ghe.com")
+    assert calls["watch"] == ("<unset>", "octocat.ghe.com")
+    assert calls["json"] == ("<unset>", "octocat.ghe.com")
+    assert "ci-watch: GH_HOST resolved via direnv" in result.stderr
+
+
+def test_direnv_exiting_nonzero_for_gh_host_leaves_it_absent_and_does_not_abort(fake_gh, tmp_path):
+    # Mirrors test_direnv_exiting_nonzero_leaves_ambient_untouched_and_does_not_abort
+    # above, for GH_HOST: an un-`allow`ed .envrc must not abort the script,
+    # and GH_HOST must end up genuinely absent (not exported empty) from
+    # every gh call.
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        repo_host_log=repo_host_log,
+        direnv_source=_direnv_shim_source_exits_nonzero_with_unset_payload(
+            name="GH_HOST",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_repo_host_log(repo_host_log)
+    assert calls["view"] == ("<unset>", "<unset>")
+    assert calls["watch"] == ("<unset>", "<unset>")
+    assert calls["json"] == ("<unset>", "<unset>")
+    assert "resolved via direnv" not in result.stderr
+
+
+def test_gh_host_resolved_via_direnv_pairs_with_ambient_ci_checks_token(fake_gh, tmp_path):
+    # Pins the token/host pairing docs/scripts.md's GH_HOST entry warns
+    # about, for the combination where GH_HOST resolves from this
+    # directory's .envrc but CI_CHECKS_GH_TOKEN doesn't.
+    token_log = tmp_path / "token.log"
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        repo_host_log=repo_host_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+        direnv_source=_direnv_shim_source_static_export(
+            "GH_HOST", "octocat.ghe.com",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    token_calls = _parse_token_log(token_log)
+    repo_host_calls = _parse_repo_host_log(repo_host_log)
+    assert token_calls["watch"] == ("ambient-token-scoped-elsewhere", "")
+    assert repo_host_calls["watch"] == ("<unset>", "octocat.ghe.com")
+    assert token_calls["json"] == ("ambient-token-scoped-elsewhere", "")
+    assert repo_host_calls["json"] == ("<unset>", "octocat.ghe.com")
