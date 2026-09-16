@@ -1342,7 +1342,7 @@ class TestCpuBudget:
 
     def test_zero_affinity_result_floors_at_one(self, monkeypatch):
         """Forces the `n if n else 1` guard by returning an empty affinity set."""
-        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set())
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(), raising=False)
 
         assert _mod._cpu_budget() == 1
 
@@ -2083,6 +2083,29 @@ class TestMainWorkerSizingStderr:
         assert "already set to" not in stderr
         assert "could not read" not in stderr
 
+    def test_computed_worker_count_omits_load_average_when_second_read_fails(self, monkeypatch, capsys):
+        """main()'s own re-read of os.getloadavg is for the stderr message
+        only, separate from pytest_subprocess_env's own internal read. It
+        can raise OSError even when a worker count was already computed."""
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            _mod, "pytest_subprocess_env",
+            lambda base_env: {**base_env, _mod.XDIST_WORKER_ENV_VAR: "5"},
+        )
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=5" in stderr
+        assert "1-minute load average" not in stderr
+        assert "already set to" not in stderr
+
     def test_already_set_value_defers_and_names_it(self, monkeypatch, capsys):
         self._stub_common(monkeypatch)
         monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "3")
@@ -2305,6 +2328,49 @@ class TestRecordSelection:
             (path,) = record["triggering_paths"]
             seen_paths.add(path)
         assert seen_paths == {f"concurrent-{i}.py" for i in range(n)}
+
+    def test_concurrent_calls_at_near_cap_payload_size_append_non_interleaved_json_lines(
+        self, monkeypatch, tmp_path,
+    ):
+        """Same property as the sibling test above. Each thread's
+        triggering_paths tuple here sits at _TRIGGERING_PATHS_LOG_CAP entries
+        of realistic path length, rather than the sibling test's single short
+        path per thread. This is a second concurrency data point with longer
+        per-thread payloads, not a stress test of the cap's atomic-write size
+        boundary. Empirically, this implementation issues one write() syscall
+        per record regardless of payload size, so no realistic size crosses
+        an atomicity boundary here."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        n = 20
+
+        def _paths_for_thread(i: int) -> tuple[str, ...]:
+            return tuple(
+                f"claude/.claude/scripts/tests/fixtures/near-cap-payload-thread-{i:02d}-path-{j:02d}.py"
+                for j in range(_mod._TRIGGERING_PATHS_LOG_CAP)
+            )
+
+        def _record(i: int) -> None:
+            selection = _mod.SelectionResult(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", _paths_for_thread(i),
+            )
+            _mod.record_selection(selection, [])
+
+        threads = [threading.Thread(target=_record, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == n
+        seen_paths = set()
+        for line in lines:
+            record = json.loads(line)  # raises if a raced write corrupted the line
+            assert "triggering_paths_truncated" not in record
+            seen_paths.update(record["triggering_paths"])
+        expected_paths = {path for i in range(n) for path in _paths_for_thread(i)}
+        assert seen_paths == expected_paths
 
     def test_called_before_run_pytest(self, monkeypatch):
         """An interrupted or failing pytest run must still have its

@@ -617,7 +617,8 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
 XDIST_WORKER_ENV_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
 # Below two workers, xdist's own per-worker spawn/IPC overhead outweighs
-# any parallelism gained -- a one-line change if field data contradicts it.
+# any parallelism gained.
+# A one-line change here if field data contradicts it.
 _MIN_LOAD_AWARE_WORKERS = 2
 
 

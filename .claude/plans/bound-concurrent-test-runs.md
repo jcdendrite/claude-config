@@ -83,12 +83,11 @@ to supervise) that this design has none of.
 **Root problem:** concurrent `select-tests.py` invocations each
 independently request a full machine's worth of xdist workers, because
 `pyproject.toml:24`'s `-n auto` is resolved per-process against the
-machine's core count with no awareness of sibling runs — measured at 8
-concurrent copies of one 116-test file taking 35.6s versus 16.2s alone,
-with 0% idle CPU and 39% of busy CPU in the kernel. **Second root problem
-(root2):** the four full-suite fallback reasons are printed to stderr and
-then lost, so "how often does selection fall back, and to which trigger"
-cannot be answered without re-instrumenting by hand.
+machine's core count with no awareness of sibling runs. See Context's
+measurement above. **Second root problem (root2):** the four full-suite
+fallback reasons are printed to stderr and then lost, so "how often does
+selection fall back, and to which trigger" cannot be answered without
+re-instrumenting by hand.
 
 **Givens** (conditions this design treats as fixed because they lie
 beyond its reach):

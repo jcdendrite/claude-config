@@ -374,10 +374,10 @@ Column legend:
   `record_selection`'s own `except ValueError` catches a `config_dir()`
   resolution failure and returns without falling through to a raw
   `$HOME/.claude` probe.
-- Legacy-import-locations: **config-dir**. Never machine-promptable, and
-  this key has no legacy predecessor at all — its `legacy-filename` and
-  `legacy-polarity` columns are both empty, so there is no legacy file for
-  `migrate-legacy-config.sh` to import from either location.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all: its `legacy-filename` and `legacy-polarity` columns
+  are both empty, so there is no legacy file for `migrate-legacy-config.sh`
+  to import from either location.
 - Fail direction on resolution failure: on resolution failure, logging is
   skipped — matching this key's off-by-default polarity, an unresolvable
   config dir must not turn into a failed test run over a telemetry write.
