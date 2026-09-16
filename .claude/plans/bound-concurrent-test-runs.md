@@ -202,16 +202,24 @@ beyond its reach):
 - **row13** — CI never invokes `select-tests.py`; both passes call
   `pytest` directly, so M1 through M4 cannot reach CI at all. `[verified:
   .github/workflows/tests.yml:160 and :166]`
-- **row14** — the mechanism bounds *staggered* concurrent arrivals and
-  does **not** bound a perfectly simultaneous cold-start burst: every
-  member of a simultaneous burst reads the same pre-burst load average
-  and sizes itself as if alone. The 8-concurrent measurement in the
-  Context is that simultaneous shape; the arrival pattern this unit
-  actually targets is independent agent sessions launching runs at
-  unrelated moments. `[unverified]` — derived from row2's smoothing
-  window against a run lifetime of tens of seconds; no post-implementation
-  A/B has been run. Bounding a simultaneous burst requires
-  reservation-at-start, which is row3's closed door.
+- **row14** — the mechanism's mitigation strength scales with
+  arrival-closeness to `os.getloadavg()`'s 1-minute decay constant, not
+  with simultaneity per se:
+  - A fully simultaneous burst gets none of it: every member reads the
+    same pre-burst load average and sizes itself as if alone.
+  - Arrivals within roughly that time constant of each other get partial,
+    not full, mitigation, since the earlier invocation's added load has
+    only partially decayed out of the later invocation's read.
+  - The Context's 8-concurrent measurement (35.6s per run) is the
+    simultaneous-arrival shape; the arrival pattern this unit actually
+    targets — independent agent sessions launching runs at unrelated
+    moments — can still land inside that partial-mitigation window rather
+    than fully outside it.
+
+  `[unverified]` — derived from row2's smoothing window against a run
+  lifetime of tens of seconds; no post-implementation A/B has been run.
+  Bounding either shape fully requires reservation-at-start, which is
+  row3's closed door.
 - **row15** — under stow directory-fold, `~/.claude/...` writes land
   physically inside this repository, so any new config-dir file needs its
   own `.gitignore` entry or it shows up in `git status` for every stow
@@ -504,10 +512,11 @@ exception (`select-tests.py:494`) already routes to.
   file, shared counter, or persistent inter-invocation state. Closed
   (row3) on the same stale-state grounds
   `.claude/plans/scope-test-worker-count.md` recorded.
-- **No bounding of a perfectly simultaneous cold-start burst.** Row14's
-  limitation is accepted, not patched: closing it requires
-  reservation-at-start, which is the door row3 closed. The unit's target
-  is the staggered arrival pattern of independent agent sessions.
+- **No bounding of a perfectly simultaneous cold-start burst.**
+- **No bounding of arrivals landing within the load average's smoothing-lag
+  window of each other.** Row14's limitation is accepted, not patched:
+  closing either requires reservation-at-start, which is the door row3
+  closed.
 - **No decomposition of `claude/.claude/tests/helpers.py` or any
   `conftest.py`** to reduce fallback frequency — filed as issue #1015 and
   deliberately separate, since this unit's job is to *measure* fallback

@@ -90,7 +90,7 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     test_config_parser_parity.py's TestMissingSchemaFile isolation
     technique. Used for schema shapes (e.g. a key with no legacy-polarity
     value) that none of today's other real 16 keys carry.
-    test_selection_tracking is the one real key with that shape; it is
+    test_selection_tracking is the one real key with that shape. It is
     exercised directly against the real schema by TestConfigScaffold."""
     return subprocess.run(
         ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
@@ -1300,7 +1300,7 @@ class TestConfigScaffold:
         protect, so scaffold's original additive-only default-fill contract
         still applies to it. test_selection_tracking is the one real key
         with this shape and is covered directly against the real schema by
-        TestConfigScaffold; this test exercises the same shape via an
+        TestConfigScaffold. This test exercises the same shape via an
         isolated config-keys.psv fixture."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()

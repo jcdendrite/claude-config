@@ -1319,9 +1319,9 @@ class TestCpuBudget:
         not a manifest scan, so this test checks importability directly rather
         than grepping requirements-dev.txt.
 
-        Deliberate environment-coupled tripwire, not flakiness: it asserts a
-        negative fact about the installed package set, and is meant to fail if
-        a dev/CI dependency ever starts pulling in psutil transitively."""
+        Deliberate environment-coupled tripwire, not flakiness. It is meant
+        to fail if a dev/CI dependency ever starts pulling in psutil
+        transitively."""
         assert importlib.util.find_spec("psutil") is None, (
             "psutil is importable in this environment -- _cpu_budget() mirrors "
             "xdist's non-psutil `-n auto` provider chain (sched_getaffinity / "
@@ -1343,6 +1343,15 @@ class TestCpuBudget:
     def test_zero_affinity_result_floors_at_one(self, monkeypatch):
         """Forces the `n if n else 1` guard by returning an empty affinity set."""
         monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(), raising=False)
+
+        assert _mod._cpu_budget() == 1
+
+    def test_cpu_count_none_floors_at_one(self, monkeypatch):
+        """Forces the ImportError branch's own `n if n else 1` guard.
+        os.cpu_count() returns None when the CPU count is undeterminable,
+        per its own docs."""
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: None)
 
         assert _mod._cpu_budget() == 1
 
@@ -2249,11 +2258,11 @@ class TestRecordSelection:
         self, monkeypatch, tmp_path, capsys,
     ):
         """config_enabled's own internal config_dir() call succeeds normally
-        here -- tracking is enabled via the real tmp_path -- so its
-        ValueError short-circuit never fires. Only select-tests.py's own
-        second config_dir() call is monkeypatched to raise, exercising the
-        except (OSError, ValueError) clause's ValueError arm rather than
-        the already-covered OSError arm above."""
+        here, since tracking is enabled via the real tmp_path. Its
+        ValueError short-circuit therefore never fires. Only select-tests.py's
+        own second config_dir() call is monkeypatched to raise, exercising the
+        except clause's ValueError arm rather than the already-covered
+        OSError arm above."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
 
@@ -2261,6 +2270,32 @@ class TestRecordSelection:
             raise ValueError("stub config-dir resolution failure")
 
         monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    @pytest.mark.parametrize(
+        "schema_error",
+        [_mod.ConfigSchemaEmptyError, _mod.ConfigSchemaRowTruncatedError],
+    )
+    def test_config_schema_error_from_config_enabled_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys, schema_error,
+    ):
+        """config_enabled() runs unconditionally, before the tracking gate
+        itself is known. A torn config-keys.psv -- mid-write truncation or
+        an interrupted stow-relink/git pull -- must not turn every
+        select-tests.py invocation into an uncaught crash, including runs
+        where test_selection_tracking was never turned on."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+        def _raise_schema_error(key: str) -> bool:
+            raise schema_error(key)
+
+        monkeypatch.setattr(_mod, "config_enabled", _raise_schema_error)
         selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
 
         _mod.record_selection(selection, [])  # must not raise
@@ -2299,6 +2334,7 @@ class TestRecordSelection:
 
         record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
         assert record["reason"] == reason
+        assert record["is_full_suite"] is is_full_suite
 
     def test_concurrent_calls_append_valid_non_interleaved_json_lines(self, monkeypatch, tmp_path):
         """N threads calling record_selection against one shared log file
@@ -2332,14 +2368,10 @@ class TestRecordSelection:
     def test_concurrent_calls_at_near_cap_payload_size_append_non_interleaved_json_lines(
         self, monkeypatch, tmp_path,
     ):
-        """Same property as the sibling test above. Each thread's
-        triggering_paths tuple here sits at _TRIGGERING_PATHS_LOG_CAP entries
-        of realistic path length, rather than the sibling test's single short
-        path per thread. This is a second concurrency data point with longer
-        per-thread payloads, not a stress test of the cap's atomic-write size
-        boundary. Empirically, this implementation issues one write() syscall
-        per record regardless of payload size, so no realistic size crosses
-        an atomicity boundary here."""
+        """Second concurrency data point using near-cap-size payloads, not an
+        atomicity stress test. This implementation issues one write()
+        syscall per record regardless of payload size, so no realistic size
+        crosses an atomicity boundary."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
         n = 20

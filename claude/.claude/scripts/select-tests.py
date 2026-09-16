@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from _config import config_enabled
+from _config import ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError, config_enabled
 from _config_dir import config_dir
 
 # Hang-detection backstop, not a measured worst case.
@@ -766,9 +766,10 @@ def record_selection(selection: SelectionResult, resolved_targets: list[str]) ->
     to <config-dir>/.test-selection-log.jsonl, gated by the off-by-default
     test_selection_tracking config key.
 
-    Best-effort: swallows a log-append OSError or a config_dir() resolution
-    ValueError with one stderr warning, since a full disk or an unresolvable
-    config dir must not turn into a failed test run.
+    Best-effort: swallows a log-append OSError, a config_dir() resolution
+    ValueError, or a config-keys.psv truncation error from config_enabled()
+    with one stderr warning, since a full disk, an unresolvable config dir,
+    or a torn schema row must not turn into a failed test run.
     """
     try:
         if not config_enabled("test_selection_tracking"):
@@ -786,7 +787,7 @@ def record_selection(selection: SelectionResult, resolved_targets: list[str]) ->
         log_path = config_dir() / SELECTION_LOG_FILENAME
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError) as exc:
         print(f"select-tests: could not record test selection to the log ({exc})", file=sys.stderr)
 
 
