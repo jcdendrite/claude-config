@@ -113,9 +113,13 @@ limit_for() {
 # - stowed skills: claude-skills/skills/
 # - project-scoped plugins: plugins/*/skills/
 # - repo-root plugin layouts: skills/*/SKILL.md (marketplace declares "source": "./")
+# - project-layer skills: `.claude/skills/**/SKILL.md`, README.md's
+#   documented `<parent>-<project>` composition pattern — live for every
+#   stow consumer that adopts it, not a claude-config-internal no-op.
+#   Anchored at line start so it cannot also match claude/.claude/skills/
+#   (the stowed source tree).
 # - the single hardcoded plan-review/ROUTING.md exception (see limit_for() above)
 #
 # A repo-root skill has no override path in limit_for() and resolves to the
-# 200-line default, same as plugins/*/skills/. In other repos this pattern
-# matches nothing and the gate exits 0 silently.
-_lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."
+# 200-line default, same as plugins/*/skills/.
+_lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^\.claude/skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."

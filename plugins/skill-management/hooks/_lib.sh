@@ -1,17 +1,17 @@
 #!/bin/bash
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helpers needed by
-# require-skill-review.sh: _lib_config_dir, _lib_jq,
+# require-skill-review.sh: _lib_config_dir, _lib_jq, _lib_capped_for,
 # _lib_parse_tool_input_or_deny, _marker_lib_repo_hash,
 # _lib_marker_value_present, and _lib_chains_marker_write_before_commit. No
 # git helpers, no worktree-enforcement helpers.
 #
 # _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
-# same functions in the stowed claude/.claude/hooks/_lib.sh — marker.sh (the
-# write side) always sources the stowed copy directly
-# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one, so a divergence
-# here breaks either the config directory or the repo-hash used to key
-# markers between the write side and this hook's read side.
+# same functions in the stowed claude/.claude/hooks/_lib.sh. marker.sh (the
+# write side) always sources that stowed copy directly
+# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one. A divergence
+# here would break the config-directory resolution or the repo-hash key
+# shared between the write side and this hook's read side.
 # _lib_marker_value_present is duplicated from that same file for the same
 # reason the others are: a plugin cannot source across the plugin boundary.
 
@@ -54,6 +54,26 @@ _lib_jq() {
     timeout 5 jq "$@"
   else
     jq "$@"
+  fi
+}
+
+# _lib_capped_for SECONDS CMD [ARGS...]
+# Probes timeout(1) then gtimeout(1); runs CMD uncapped (not denied) when
+# neither exists, so callers must check the exit status themselves.
+# Uncapped fallback trades a loud exit-127 failure for a silent hang risk
+# if CMD stalls -- same trade as claude/.claude/hooks/_lib.sh's
+# _lib_capped_for. Duplicated from that file's function of the same name
+# (see this file's header for why plugin hooks duplicate rather than
+# source).
+_lib_capped_for() {
+  local seconds="${1:?_lib_capped_for requires a seconds argument}"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
   fi
 }
 
