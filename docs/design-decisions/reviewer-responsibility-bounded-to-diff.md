@@ -2,6 +2,8 @@
 
 *2026-08-29. Formerly `docs/design-decisions.md` §34.*
 
+**Superseded in part by [deferring the comment/prose row to the cumulative pass](comment-discipline-reviewer-deferred-to-cumulative-pass.md) (2026-09-15):** the comment/prose row's additional match-narrowing described below — spawning it whenever the boundary carries prose — is replaced by deferring that row out of staged-diff rounds entirely. Every other clause here stands, including the uniform responsibility boundary and its default-branch and cumulative-pass guards.
+
 The redesign applies one uniform clause to every Change-type row: a spawn's exhaustive-enumeration duty is bounded to the diff already handed to it, but a defect outside that boundary the change causes, activates, or newly reaches stays in scope for the spawn's flagging duty. No per-row exemption list is needed to protect `ciso-reviewer`, `staff-sdet`, or any other row's cross-change reasoning.
 
 The boundary computes no new ref: it is simply the diff a spawn is already being handed (`git diff --cached` for the commit-gate pass, the same basis `require-code-review.sh` hashes), restated as file paths and line ranges for reviewers without `Bash`.

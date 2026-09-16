@@ -3676,13 +3676,15 @@ def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
 _SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
 _SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
 
-# The three anchor regions the staged-diff scope-boundary redesign introduced.
+# The anchor regions the staged-diff scope-boundary redesign introduced,
+# plus the comment/prose row's deferral clause nested inside the first one.
 # Asserted as an exact set, not just "each found anchor is non-trivial" — a
 # corpus scan alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_SCOPE_ANCHORS = {
     ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
     ("code-review", "SCOPE_EXEMPT_ROW"),
     ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
 }
 
@@ -3825,6 +3827,11 @@ def test_scope_rule_anchors_present() -> None:
             "SCOPE_RULE:code-review-causal-reach",
             "SCOPE_RULE:code-review-staged-diff-only",
         ),
+        (
+            "code-review",
+            "SCOPE_RULE:code-review-comment-row-deferred",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
     ],
 )
 def test_nested_anchor_fully_contained_within_outer_rule(
@@ -3861,6 +3868,18 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
     ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
         "A defect outside the boundary that the change causes, activates, or "
         "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"): (
+        "whenever this boundary applies, that row does not spawn, whatever "
+        "prose the boundary carries. Its exhaustive pass runs "
+        'in the cumulative unnarrowed review at `ready-for-review/SKILL.md` '
+        '§ "3. Code review (halt on findings)" rather than once per '
+        "commit-gate round. Still enumerate the row in "
+        "this step and report it on the `Spawn decisions:` line as "
+        "`skipped: <row> — deferred to ready-for-review's cumulative pass`, "
+        "per the Output format section's own convention. Every context "
+        "where this boundary does not apply spawns the row as it spawns "
+        "any other."
     ),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
         "This pass reviews the cumulative diff with no responsibility-boundary "
@@ -4045,6 +4064,28 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
 
 
+def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
+    """Full row-line text of the Change-type row SCOPE_EXEMPT_ROW's shorthand
+    resolves to.
+
+    Shared row-lookup for `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
+    and `test_comment_discipline_row_points_to_its_deferral`. Both need the
+    row's full text, not just the left-column shorthand
+    `_change_type_table_left_columns` returns, to check for a literal
+    string reference.
+    """
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    for line in _change_type_table_rows(skill_md_path):
+        # line.split("|")[1] truncates at an embedded pipe in the left cell,
+        # same caveat as _change_type_table_left_columns's identical parse.
+        if line.split("|")[1].strip() == exempt_shorthand:
+            return line
+    raise AssertionError(
+        f"{skill_md_path}: no Change-type row's left column matches "
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
+    )
+
+
 class TestChangeTypeTableLeftColumns:
     """Direct coverage for _change_type_table_left_columns's `line.split("|")`
     parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
@@ -4062,6 +4103,30 @@ class TestChangeTypeTableLeftColumns:
             "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
         )
         assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
+
+
+class TestScopeExemptChangeTypeRowText:
+    """Direct coverage for _scope_exempt_change_type_row_text's no-match raise
+    branch, mirroring TestChangeTypeTableLeftColumns's edge-case-only
+    literal-fixture pattern.
+    """
+
+    def test_no_matching_row_raises(self, tmp_path: Path) -> None:
+        """SCOPE_EXEMPT_ROW's shorthand ("Some other row") matches no
+        Change-type row's left column ("A different row entirely") —
+        AssertionError names both the path and the shorthand.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "<!-- SCOPE_EXEMPT_ROW start -->Some other row<!-- SCOPE_EXEMPT_ROW end -->\n"
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| A different row entirely | `some-reviewer` |\n"
+        )
+        with pytest.raises(AssertionError) as excinfo:
+            _scope_exempt_change_type_row_text(path)
+        assert str(path) in str(excinfo.value)
+        assert "Some other row" in str(excinfo.value)
 
 
 def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
@@ -4236,19 +4301,7 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
-    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-
-    row_text = None
-    for line in _change_type_table_rows(skill_md_path):
-        # line.split("|")[1] truncates at an embedded pipe in the left cell,
-        # same caveat as _change_type_table_left_columns's identical parse.
-        if line.split("|")[1].strip() == exempt_shorthand:
-            row_text = line
-            break
-    assert row_text is not None, (
-        f"{skill_md_path}: no Change-type row's left column matches "
-        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
-    )
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
 
     note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
     next_heading = "**Invalid skip rationales.**"
@@ -4288,6 +4341,19 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert "--staged)" in pr_diff_script_source, (
         "pr-diff-against-base.sh: expected the --staged case-arm label, not just "
         "the flag name in the usage line or header comment"
+    )
+
+
+def test_comment_discipline_row_points_to_its_deferral() -> None:
+    """The comment/prose Change-type row must carry its own pointer to Step
+    0.6's deferral clause — a rule stated only in Step 0.6 is invisible to a
+    reader who consults the table without also reading Step 0.6 itself.
+    """
+    skill_md_path = _skill_file("code-review")
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
+    assert "Step 0.6 defers this row out of staged-diff commit-gate rounds." in row_text, (
+        f"{skill_md_path}: the comment/prose row no longer points to its own "
+        "deferral out of staged-diff commit-gate rounds"
     )
 
 
