@@ -28,7 +28,7 @@ return as exactly one of three verdicts:
   that leaves the fix still to be designed does not qualify.
 
 Two rejected alternatives, both because a more literal reading of the
-engineer-endorsed consult would have opened a hole:
+trichotomy would have opened a hole:
 
 **A new `plan-architect` mode or return grammar.** Rejected in favor of
 routing the agent's existing free-prose return, because a second grammar
@@ -50,10 +50,11 @@ never a standing exemption from the closed DEFER list.
 substituting for a dispatch, which the invalid-skip-rationale class in
 `code-review/SKILL.md`'s *Ripple effect triage* section already forecloses
 by its own stated principle, whether or not the consult's wording matches
-it verbatim. A denied reviewer spawn is retried under the second and
-third verdicts; under the first, the round ends and those rows spawn
-again once Step 1 re-runs. Without this rule the new verdict-routing text
-would silently create an escape hatch around a near-mandatory
+it verbatim. A denied reviewer spawn is retried immediately under the
+second and third verdicts. Under the first, the round ends and those
+rows spawn again once Step 1 re-runs against the replaced surface.
+Without this rule the new verdict-routing text would silently create
+an escape hatch around a near-mandatory
 `ciso-reviewer`/`staff-product-engineer` spawn.
 
 ## Sources

@@ -386,8 +386,13 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
     """require-architect-consult.sh's deny message points a denied reviewer
     spawn at code-review/SKILL.md's "Round-cap architect consult" section for
     routing the consult's return. That pointer goes stale if either side is
-    renamed independently of the other, so this pins both halves: the hook
-    still names the section, and the section still exists in the skill.
+    renamed independently of the other, so this checks both halves: the hook
+    still names the section, and the section still exists in the skill. The
+    two checks aren't symmetrically scoped — the hook-side check is a
+    file-wide substring presence check, while the skill-side check below is
+    anchored to the exact heading; the actual emitted deny-message text is
+    pinned separately by test_require_architect_consult.py's
+    test_deny_message_contents.
 
     The skill-side check anchors a full-line match, not substring
     containment — a substring check would still pass a rename like "###
@@ -413,7 +418,7 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
     )
 
     skill_text = skill_file.read_text(encoding="utf-8")
-    heading_pattern = re.compile(r"^### Round-cap architect consult\s*$", re.MULTILINE)
+    heading_pattern = re.compile(r"^[ ]{0,3}### Round-cap architect consult\s*$", re.MULTILINE)
     assert heading_pattern.search(skill_text), (
         "code-review/SKILL.md no longer has a '### Round-cap architect "
         "consult' heading (exact title, level 3), but "
