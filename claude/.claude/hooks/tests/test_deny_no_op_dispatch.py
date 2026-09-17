@@ -268,13 +268,10 @@ class TestDenyNoOpDispatch:
         )
 
     def test_referent_ambiguous_no_further_action_idiom_about_another_actor_denied(self, isolated_home):
-        """Accepted false-positive residual (see
-        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
-        section): `no further action` can describe another actor's
-        inaction rather than the dispatched agent's own. This
-        prompt is a legitimate investigation task, not a no-op dispatch,
-        but still denies -- pinning the residual as accepted rather than
-        letting a future fix silently change this behavior unnoticed."""
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): `no further action` can describe another
+        actor's inaction, e.g. a status-check prompt about a retry
+        handler."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -285,13 +282,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_referent_ambiguous_no_work_to_do_idiom_about_another_actor_denied(self, isolated_home):
-        """Accepted false-positive residual (see
-        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
-        section): `no work to do` can describe another actor's inaction
-        rather than the dispatched agent's own. This prompt is a
-        legitimate investigation task, not a no-op dispatch, but still
-        denies -- pinning the residual as accepted rather than letting a
-        future fix silently change this behavior unnoticed."""
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): `no work to do` can describe another actor's
+        inaction, e.g. a status-check prompt about a background worker."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -304,13 +297,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_actionable_word_substring_residual_denied(self, isolated_home):
-        """Accepted false-positive residual (see
-        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
-        section): `no (further )?action` has no word boundary, so it
-        matches inside "actionable." This prompt is a legitimate status
-        update, not a no-op dispatch, but still denies -- pinning the
-        residual as accepted rather than letting a future fix silently
-        change this behavior unnoticed."""
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): `no (further )?action` has no word boundary,
+        so it matches inside `actionable`."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -402,11 +391,8 @@ class TestDenyNoOpDispatch:
         )
 
     def test_work_to_do_without_leading_no_allowed(self, isolated_home):
-        """Guards against an implementation that makes "no work to do"'s
-        leading "no" optional or drops it -- e.g. by copy-pasting the
-        adjacent `(further )?` optional-group syntax, or in a
-        well-intentioned attempt to also catch "no more work to do". A
-        "no"-dropped form would deny a large, ordinary class of legitimate
+        """Guards against a dropped or optional leading "no" in `no work to
+        do`, which would deny a large, ordinary class of legitimate
         task-assignment prompts."""
         assert (
             run_hook(
