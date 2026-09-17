@@ -328,6 +328,9 @@ class TestRequireArchitectConsult:
         - tells the agent to escalate to the engineer rather than resolve it
           unilaterally
         - never instructs touching the disable sentinel directly
+        - states the cap threshold as "2 distinct reviewed states"
+        - tells a subagent specifically to report the denial to its
+          dispatcher, not just the engineer
         """
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "deny-message")
         _stage_change(repo, "first\nround-one\nround-three\n")
