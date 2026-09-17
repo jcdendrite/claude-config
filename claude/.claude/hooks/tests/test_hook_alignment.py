@@ -383,30 +383,19 @@ def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> N
 
 
 def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None:
-    """require-architect-consult.sh's deny message points a denied reviewer
-    spawn at code-review/SKILL.md's "Round-cap architect consult" section for
-    routing the consult's return. That pointer goes stale if either side is
-    renamed independently of the other, so this checks both halves: the hook
-    still names the section, and the section still exists in the skill. The
-    two checks aren't symmetrically scoped: the hook-side check is a
-    file-wide substring presence check, while the skill-side check is
-    anchored to the exact heading. The actual emitted deny-message text is
-    pinned separately by `test_require_architect_consult.py`'s
-    `test_deny_message_contents`.
+    """Pins that the hook's deny message and the skill's heading name the
+    same section, so either side going stale independently of the other
+    is caught.
 
-    The skill-side check anchors a full-line match, not substring
-    containment — a substring check would still pass a rename like "###
-    Round-cap architect consult verdict routing" even though the heading
-    no longer means what the hook's pointer claims. The pinned contract
-    includes the `###` heading level: a level change (e.g. to `##`) is
-    treated as a rename the hook's pointer should be re-checked against,
-    even though the title text is unchanged.
-
-    What this does not prove: that the routing rule inside that section is
-    itself correct, or that a session actually follows it — only that the
-    hook's pointer and the skill's heading still agree on a name. It also does
-    not distinguish a real heading from the same literal string appearing
-    inside a markdown code-fence example elsewhere in the file.
+    - Hook-side check: substring presence anywhere in the file.
+    - Skill-side check: full-line match anchored to the exact `###`
+      heading text and level — a substring match would silently accept
+      a heading rename.
+    - Does not prove the routing rule is followed, only that the names
+      still agree, and does not distinguish a real heading from one
+      inside a code-fence example.
+    - The emitted deny-message text itself is pinned separately by
+      `test_require_architect_consult.py::test_deny_message_contents`.
     """
     hook_file = _MAIN_HOOKS_DIR / "require-architect-consult.sh"
     skill_file = _SKILLS_DIR / "code-review" / "SKILL.md"

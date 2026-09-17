@@ -45,6 +45,8 @@ absolutely. The "stop escalating" verdict is scoped narrowly instead: it
 ends the round and feeds the existing gold-plating criterion per finding,
 never a standing exemption from the closed DEFER list.
 
+## Spawn-obligation invariant
+
 **No verdict discharges a matched Change-type row's spawn obligation.**
 "The architect consult covered it" is non-specialist scrutiny
 substituting for a dispatch, which the invalid-skip-rationale class in
