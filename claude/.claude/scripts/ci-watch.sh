@@ -27,8 +27,12 @@
 #                           value survives when direnv is absent, its
 #                           resolution fails, or direnv has nothing to say
 #                           about this directory. It is cleared when
-#                           direnv's own payload clears it. See
-#                           docs/scripts.md for provisioning guidance.
+#                           direnv's own payload clears it. It is also
+#                           withheld outright when GH_HOST resolved via
+#                           direnv to a *.ghe.com host but this variable's
+#                           own resolution did not — see the cross-host
+#                           mismatch gate below and docs/scripts.md for
+#                           provisioning guidance.
 #   GH_HOST             -- optional; tells `gh` which host to target. Needed
 #                           when a GHE host is supplied only via direnv and
 #                           was never registered via `gh auth login`, so
@@ -85,11 +89,46 @@ fi
 # Set by resolve_ci_checks_gh_token/resolve_gh_host below when direnv's
 # export payload actually names that variable for this directory. This is
 # independent of whether the resolved value differs from that variable's
-# own pre-unset ambient value. Read after both resolvers run to warn when
+# own pre-unset ambient value. Read after both resolvers run by the
+# cross-host mismatch gate below, which withholds CI_CHECKS_GH_TOKEN when
 # GH_HOST resolved via direnv but CI_CHECKS_GH_TOKEN did not — see
 # docs/scripts.md's GH_HOST entry.
 CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV=0
 GH_HOST_RESOLVED_VIA_DIRENV=0
+
+# Set by resolve_ci_checks_gh_token below to 1 only when its own value_probe
+# command substitution succeeds. Read by the cross-host mismatch gate below,
+# since a failed value_probe can leave CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV
+# latched to 1 (from a separately-succeeding named_probe) while
+# CI_CHECKS_GH_TOKEN itself never got direnv's actual answer.
+CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK=0
+
+# direnv_probe VAR_NAME MODE
+#   MODE=ambient      -- eval direnv's payload against the ambient environment
+#   MODE=unset-first  -- unset VAR_NAME first, then eval
+# Prints "1<value>" to stdout when the payload leaves VAR_NAME set, "0" when
+# not. Runs in a subshell so direnv's arbitrary export payload (other
+# variables, secret values) never reaches the caller's environment — only
+# VAR_NAME's own presence and value escape, via stdout.
+# Callers must assign the result separately (`x=$(direnv_probe ...)`), never
+# via `local x=$(direnv_probe ...)` — `local`'s own always-zero exit status
+# would mask the command substitution's.
+direnv_probe() {
+  local name="$1" mode="$2"
+  (
+    if [[ "$mode" == unset-first ]]; then
+      unset "$name"
+    fi
+    eval "$(direnv_export_bash)"
+    status=$?
+    [[ $status -eq 0 ]] || exit "$status"
+    if [[ -n "${!name+x}" ]]; then
+      printf '1%s' "${!name}"
+    else
+      printf '0'
+    fi
+  )
+}
 
 # resolve_ci_checks_gh_token — resyncs CI_CHECKS_GH_TOKEN via direnv for
 # this directory before gh_with_checks_token's first call. See
@@ -103,29 +142,14 @@ GH_HOST_RESOLVED_VIA_DIRENV=0
 resolve_ci_checks_gh_token() {
   command -v direnv >/dev/null 2>&1 || return 0
   local ambient="${CI_CHECKS_GH_TOKEN:-}" value_probe named_probe
-  # value_probe/named_probe are declared via bare `local` above and
-  # assigned separately below, so their own command substitution's exit
-  # status isn't masked by `local`'s always-zero status.
 
   # value_probe answers "what value should CI_CHECKS_GH_TOKEN have here".
-  # The payload evaluates against the ambient environment, not a pre-unset
-  # one, so direnv's own `unset CI_CHECKS_GH_TOKEN` takes effect. direnv
-  # emits that unset when a prior directory's .envrc exported the
-  # variable and this directory's .envrc does not. Whether direnv named
-  # the variable at all is read via `${VAR+x}`, not a text/regex parse of
-  # the export payload, since a payload line can't be parsed without
-  # picking a delimiter that might collide with a value containing `;` or
-  # `=`.
-  if value_probe=$(
-        eval "$(direnv_export_bash)"
-        status=$?
-        [[ $status -eq 0 ]] || exit "$status"
-        if [[ -n "${CI_CHECKS_GH_TOKEN+x}" ]]; then
-          printf '1%s' "$CI_CHECKS_GH_TOKEN"
-        else
-          printf '0'
-        fi
-      ); then
+  # ambient mode evaluates the payload against the ambient environment, not
+  # a pre-unset one, so direnv's own `unset CI_CHECKS_GH_TOKEN` takes
+  # effect. direnv emits that unset when a prior directory's .envrc
+  # exported the variable and this directory's .envrc does not.
+  if value_probe=$(direnv_probe CI_CHECKS_GH_TOKEN ambient); then
+    CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK=1
     if [[ "${value_probe:0:1}" == 1 ]]; then
       CI_CHECKS_GH_TOKEN="${value_probe:1}"
       if [[ "$CI_CHECKS_GH_TOKEN" != "$ambient" ]]; then
@@ -143,24 +167,15 @@ resolve_ci_checks_gh_token() {
   # variable for this directory at all". direnv emits nothing for a value
   # it observes as already matching the environment, so value_probe alone
   # can't see a reconfirmation of an already-correct ambient value.
-  # Unsetting first forces direnv to re-state it. This is a second
+  # unset-first mode forces direnv to re-state it. This is a second
   # `direnv_export_bash` call, not a re-eval of value_probe's payload,
   # since each answer depends on which environment direnv observed when
   # it computed the payload. A value-equality comparison here would miss
   # an ambient value direnv merely reconfirms, and would wrongly report a
   # direnv-resolved value that happens to already match ambient as
   # unresolved.
-  if named_probe=$(
-        unset CI_CHECKS_GH_TOKEN
-        eval "$(direnv_export_bash)"
-        status=$?
-        [[ $status -eq 0 ]] || exit "$status"
-        if [[ -n "${CI_CHECKS_GH_TOKEN+x}" ]]; then
-          printf '1'
-        else
-          printf '0'
-        fi
-      ) && [[ "$named_probe" == 1 ]]; then
+  if named_probe=$(direnv_probe CI_CHECKS_GH_TOKEN unset-first) \
+      && [[ "${named_probe:0:1}" == 1 ]]; then
     CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV=1
   fi
   return 0
@@ -178,28 +193,13 @@ resolve_ci_checks_gh_token
 resolve_gh_host() {
   command -v direnv >/dev/null 2>&1 || return 0
   # probe is assigned separately below (not `local probe=$(...)`), so its
-  # exit status isn't masked by `local`'s own always-zero status. The
-  # subshell's own `unset GH_HOST` is defensive redundancy, not load-bearing
-  # today. The script's top-level `unset GH_REPO GH_HOST` already guarantees
-  # GH_HOST is absent here, since nothing repopulates it in between. That
-  # same top-level unset is also why this resolver needs no separate
-  # value_probe like resolve_ci_checks_gh_token's: GH_HOST already starts in
-  # the pre-unset state that resolver's own named_probe has to construct
-  # itself via its own `unset`. See resolve_ci_checks_gh_token's own comment
-  # for the unset-then-re-eval shape and its `${VAR+x}` presence test, which
-  # this function shares.
+  # exit status isn't masked by `local`'s own always-zero status. This
+  # resolver needs no separate ambient-mode probe like
+  # resolve_ci_checks_gh_token's: the script's top-level `unset GH_REPO
+  # GH_HOST` already puts GH_HOST in the state the unset-first probe would
+  # otherwise have to construct itself.
   local ambient="$AMBIENT_GH_HOST" probe
-  if probe=$(
-        unset GH_HOST
-        eval "$(direnv_export_bash)"
-        status=$?
-        [[ $status -eq 0 ]] || exit "$status"
-        if [[ -n "${GH_HOST+x}" ]]; then
-          printf '1%s' "$GH_HOST"
-        else
-          printf '0'
-        fi
-      ); then
+  if probe=$(direnv_probe GH_HOST unset-first); then
     if [[ "${probe:0:1}" == 1 ]]; then
       GH_HOST_RESOLVED_VIA_DIRENV=1
       local resolved="${probe:1}"
@@ -215,19 +215,27 @@ resolve_gh_host() {
 }
 resolve_gh_host
 
-# Warns when GH_HOST resolved via direnv but CI_CHECKS_GH_TOKEN stayed at
-# its ambient value, which may now be sent as GH_TOKEN to a different,
-# newly-reachable host. Scoped to *.ghe.com hosts — see docs/scripts.md's
-# GH_HOST entry for why.
+# Withholds CI_CHECKS_GH_TOKEN when GH_HOST resolved via direnv but
+# CI_CHECKS_GH_TOKEN's resolution did not, since the stale token may
+# otherwise reach a different, newly-reachable host as GH_TOKEN. Scoped to
+# *.ghe.com hosts — see docs/scripts.md's GH_HOST entry for why. A failed
+# value_probe (CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK != 1) is treated the same
+# as CI_CHECKS_GH_TOKEN not having resolved via direnv, since a failed
+# value_probe means CI_CHECKS_GH_TOKEN never actually got direnv's answer
+# even if the separately-succeeding named_probe latched
+# CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV to 1.
 # nocasematch scopes the glob match case-insensitively: [[ ]] glob
 # matching is case-sensitive by default, and a mixed-case GH_HOST (e.g.
 # Octocat.GHE.com) would otherwise dodge the *.ghe.com gate below.
+CI_CHECKS_GH_TOKEN_WITHHELD=0
 shopt -s nocasematch
 if [[ "$GH_HOST_RESOLVED_VIA_DIRENV" -eq 1 ]] \
-    && [[ "$CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV" -ne 1 ]] \
+    && { [[ "$CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV" -ne 1 ]] || [[ "$CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK" -ne 1 ]]; } \
     && [[ -n "${CI_CHECKS_GH_TOKEN:-}" ]] \
     && [[ "${GH_HOST:-}" == *.ghe.com ]]; then
-  echo "ci-watch: GH_HOST resolved via direnv for $(pwd) but CI_CHECKS_GH_TOKEN did not — a stale token may reach the newly-resolved host" >&3
+  echo "ci-watch: withholding CI_CHECKS_GH_TOKEN for $(pwd) — GH_HOST resolved via direnv to a *.ghe.com host but CI_CHECKS_GH_TOKEN's resolution did not, so a stale token is not being sent to it; see docs/scripts.md" >&3
+  unset CI_CHECKS_GH_TOKEN
+  CI_CHECKS_GH_TOKEN_WITHHELD=1
 fi
 shopt -u nocasematch
 
@@ -238,6 +246,8 @@ gh_with_checks_token() {
     echo "ci-watch: using CI_CHECKS_GH_TOKEN override for Checks API" >&3
     GH_TOKEN="$CI_CHECKS_GH_TOKEN" gh "$@" 3>&-
   else
+    # Unresynced ambient GH_TOKEN reaches gh here — docs/scripts.md's
+    # GH_HOST entry, "Known residual gap" bullet.
     gh "$@" 3>&-
   fi
 }
@@ -250,6 +260,8 @@ trap 'rm -f "$STDERR_FILE"' EXIT
 
 # Recorded before the watch starts so a mid-watch push is detectable as
 # "superseded," not silently diagnosed against.
+# Unresynced ambient GH_TOKEN reaches gh here — docs/scripts.md's GH_HOST
+# entry, "Known residual gap" bullet.
 if ! LAUNCH_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>"$STDERR_FILE" 3>&-); then
   REASON=$(tr '\n' ' ' < "$STDERR_FILE")
   echo "CI_RESULT: error could not resolve PR #${PR_NUMBER}'s head SHA: ${REASON:-unknown gh failure}"
@@ -271,7 +283,9 @@ if ! SNAPSHOT_JSON=$(gh_with_checks_token pr checks "$PR_NUMBER" \
       --json name,bucket,description,link,workflow 2>"$STDERR_FILE"); then
   REASON=$(tr '\n' ' ' < "$STDERR_FILE")
   HINT=""
-  if [[ -z "${CI_CHECKS_GH_TOKEN:-}" ]]; then
+  if [[ "$CI_CHECKS_GH_TOKEN_WITHHELD" -eq 1 ]]; then
+    HINT=" (if this is a 403: CI_CHECKS_GH_TOKEN was withheld due to a cross-host mismatch — see docs/scripts.md)"
+  elif [[ -z "${CI_CHECKS_GH_TOKEN:-}" ]]; then
     HINT=" (if this is a 403: fine-grained PATs cannot reach the Checks API at all, and no usable CI_CHECKS_GH_TOKEN was found in this process's ambient environment or via direnv's resolution for the current directory; see docs/scripts.md for how to provision one)"
   fi
   echo "CI_RESULT: error gh pr checks --json failed after --watch resolved: ${REASON:-unknown gh failure}${HINT}"
