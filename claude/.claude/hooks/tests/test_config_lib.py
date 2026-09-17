@@ -1266,10 +1266,9 @@ class TestConfigScaffold:
 
     def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
         """Every key but test_selection_tracking carries a legacy-polarity
-        value, so scaffold must leave it absent. Backfilling a polarity key
-        would shadow its legacy file with no warning. test_selection_tracking
-        has no legacy predecessor (empty legacy-filename and legacy-polarity),
-        so it is the one key scaffold backfills."""
+        value and stays absent (backfilling would shadow its legacy file);
+        test_selection_tracking has none, so scaffold backfills its default
+        row alone."""
         result = _run("_config_scaffold")
         assert result.returncode == 0
 

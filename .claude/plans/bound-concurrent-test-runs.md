@@ -37,10 +37,11 @@ that starts on an already-busy machine takes only the idle headroom
 instead of a full machine's worth. Nothing is shared between invocations
 — no lock, no counter, no persistent state. The two mechanisms are fully
 decoupled: logging happens independently of the sizing computation, with
-no shared state between them. Every selection outcome — reason code,
-full-suite fallback flag, and (when a sizing computation ran) worker
-count and load average — is appended as one JSON line to a per-machine
-log under the resolved config directory. Logging is gated by a new
+no shared state between them. Every selection outcome is appended as one
+JSON line to a per-machine log under the resolved config directory. Each
+line always carries a reason code and a full-suite fallback flag. When a
+sizing computation ran, it also carries the worker count and load
+average. Logging is gated by a new
 off-by-default config key, so fallback frequency becomes a countable
 number rather than a stderr line that scrolls away.
 

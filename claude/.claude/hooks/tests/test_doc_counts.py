@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -370,6 +371,53 @@ def _count_config_keys_psv_rows() -> int:
     return len(schema())
 
 
+_MIGRATE_LEGACY_CONFIG_REL_PATH = "claude/.claude/scripts/migrate-legacy-config.sh"
+
+
+def _enforcement_critical_keys() -> frozenset[str]:
+    """Return the enforcement-critical key set, derived behaviorally.
+
+    Sources migrate-legacy-config.sh in a bash subprocess and echoes
+    $_MIGRATE_ENFORCEMENT_CRITICAL_KEYS back out -- the script's own
+    BASH_SOURCE guard keeps sourcing it from running main(). Ground-truthed
+    against the actual bash variable rather than duplicated as a Python
+    literal: a hardcoded copy's len()-only usage below would silently pass
+    a future edit that swapped which five keys are enforcement-critical
+    while leaving the count unchanged.
+    """
+    script_path = REPO_ROOT / _MIGRATE_LEGACY_CONFIG_REL_PATH
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {shlex.quote(str(script_path))} "
+            '&& printf "%s" "$_MIGRATE_ENFORCEMENT_CRITICAL_KEYS"',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    keys = frozenset(result.stdout.split())
+    if not keys:
+        raise ValueError(
+            "Could not read $_MIGRATE_ENFORCEMENT_CRITICAL_KEYS from "
+            f"{_MIGRATE_LEGACY_CONFIG_REL_PATH} (stdout: {result.stdout!r}, "
+            f"stderr: {result.stderr!r}); the variable was renamed or removed "
+            "and this ground truth needs updating."
+        )
+    return keys
+
+
+def _count_config_keys_psv_non_enforcement_critical_rows() -> int:
+    """Return config-keys.psv's row count minus the enforcement-critical keys.
+
+    config-schema-audit.md confirms the enforcement-critical keys
+    individually, then audits the rest under a "Remaining N keys" heading --
+    a distinct count from the full config-keys.psv row count.
+    """
+    return len(schema()) - len(_enforcement_critical_keys())
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -533,6 +581,17 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/config-file.md",
                 pattern=r"merges \*all\s+(\d+)\s+keys\*",
                 description="docs/config-file.md: symlinking merges all N keys",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_config_keys_psv_non_enforcement_critical_rows,
+        label="config-keys.psv row count minus the enforcement-critical keys",
+        occurrences=[
+            Occurrence(
+                rel_path="claude/.claude/hooks/tests/config-schema-audit.md",
+                pattern=r"Remaining (\w+) keys",
+                description="config-schema-audit.md: Remaining N keys heading",
             ),
         ],
     ),

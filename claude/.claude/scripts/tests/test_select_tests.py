@@ -2478,7 +2478,10 @@ class TestRecordSelection:
     def test_concurrent_calls_append_valid_non_interleaved_json_lines(self, monkeypatch, tmp_path):
         """N threads calling record_selection against one shared log file
         must each land as a distinct, fully-parseable JSON line -- the
-        property _TRIGGERING_PATHS_LOG_CAP's own comment cites."""
+        property _TRIGGERING_PATHS_LOG_CAP's own comment cites.
+
+        Relies on the local filesystem's O_APPEND same-write atomicity,
+        which network and overlay filesystem mounts don't all guarantee."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
         n = 20
