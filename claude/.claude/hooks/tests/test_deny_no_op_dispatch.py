@@ -23,9 +23,9 @@ NOOP_MAX_PROMPT_LEN = 600
 # not already exercised by a dedicated test below, as a standalone or
 # minimally-wrapped short prompt. It also covers:
 # - one mixed-case fixture pinning grep -qiE's case-insensitivity.
-# - exhaustive branch coverage for the regex's two nested groups: every
-#   `do(ing|es)? nothing` verb form and both `exists only (so|to)`
-#   prepositions.
+# - exhaustive branch coverage for the regex's three nested groups: every
+#   `do(ing|es)? nothing` verb form, both `exists only (so|to)`
+#   prepositions, and both `no (further )?action` branches.
 # - one fixture pinning NOOP_STUB_TOKEN_RE's `[[:punct:]]*`
 #   trailing-punctuation quantifier (`noop.`).
 NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
@@ -39,6 +39,8 @@ NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("just wait", "phrase_just_wait"),
     ("report back immediately", "phrase_report_back_immediately"),
     ("no action", "phrase_no_action"),
+    ("no further action", "phrase_no_further_action"),
+    ("no work to do", "phrase_no_work_to_do"),
     ("doing nothing", "phrase_doing_nothing"),
     ("does nothing", "phrase_does_nothing"),
     ("exists only so", "phrase_exists_only_so"),
@@ -58,6 +60,20 @@ INCIDENT_PROMPT = (
     "acknowledgment and stop — do not read any files, do not run any "
     "commands, do not investigate anything."
 )
+
+# Verbatim from this repo's own transcript history (121 characters). Needs
+# no identifier substitution, unlike INCIDENT_PROMPT above -- it carries no
+# agentId, session ID, filesystem path, branch name, or person/project
+# name.
+CREATED_IN_ERROR_INCIDENT_PROMPT = (
+    "STOP — do not execute. This dispatch was created in error; there is "
+    "no work to do. Return immediately with no tool calls."
+)
+
+# The prompt quoted verbatim in GH-1022 and confirmed by the maintainer as
+# a real occurrence (71 characters) -- the third grounding source named in
+# deny-no-op-dispatch.sh's header comment.
+GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with no further action."
 
 # A long, over-ceiling prompt that deliberately contains two idioms
 # ("do nothing", "report back immediately") inside a legitimate
@@ -185,6 +201,32 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
+    def test_created_in_error_incident_prompt_denied(self, isolated_home):
+        """The verbatim repo-transcript-sourced occurrence that evaded the
+        pre-widening NOOP_PHRASE_RE, caught by the new "no work to do"
+        alternative."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=CREATED_IN_ERROR_INCIDENT_PROMPT),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_gh_1022_reported_prompt_denied(self, isolated_home):
+        """GH-1022 regression pin: the reported prompt clears every
+        pre-widening alternative and is caught only by the "no (further )?
+        action" widening."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=GH_1022_REPORTED_PROMPT),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     @pytest.mark.parametrize(
         "prompt",
         [pytest.param(p, id=tid) for p, tid in NOOP_IDIOM_COVERAGE_TABLE],
@@ -226,6 +268,59 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
+    def test_referent_ambiguous_no_further_action_idiom_about_another_actor_denied(self, isolated_home):
+        """Accepted false-positive residual (see
+        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
+        section): `no further action` can describe another actor's
+        inaction rather than the dispatched agent's own. This
+        prompt is a legitimate investigation task, not a no-op dispatch,
+        but still denies -- pinning the residual as accepted rather than
+        letting a future fix silently change this behavior unnoticed."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Check whether the retry handler takes no further action after the third failed attempt."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_referent_ambiguous_no_work_to_do_idiom_about_another_actor_denied(self, isolated_home):
+        """Accepted false-positive residual (see
+        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
+        section): `no work to do` can describe another actor's inaction
+        rather than the dispatched agent's own. This prompt is a
+        legitimate investigation task, not a no-op dispatch, but still
+        denies -- pinning the residual as accepted rather than letting a
+        future fix silently change this behavior unnoticed."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(
+                    prompt="Confirm the background worker correctly detects there is no work to do and exits cleanly."
+                ),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_actionable_word_substring_residual_denied(self, isolated_home):
+        """Accepted false-positive residual (see
+        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
+        section): `no (further )?action` has no word boundary, so it
+        matches inside "actionable." This prompt is a legitimate status
+        update, not a no-op dispatch, but still denies -- pinning the
+        residual as accepted rather than letting a future fix silently
+        change this behavior unnoticed."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There are no further actionable items, but keep monitoring the dashboard."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     # ------------------------------------------------------------------ #
     # Allow                                                               #
     # ------------------------------------------------------------------ #
@@ -262,6 +357,47 @@ class TestDenyNoOpDispatch:
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
                 agent_input(prompt="Review the diff. Do not run any commands."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_no_and_action_non_adjacent_allowed(self, isolated_home):
+        """Guards against an implementation that matches `no.*action`
+        instead of the intended `no (further )?action`, or that drops the
+        required space between the two tokens."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm no workflow under .github/ still pins the old runner action."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_no_work_without_the_full_idiom_allowed(self, isolated_home):
+        """Guards against an implementation that truncates the "no work to
+        do" alternative to bare "no work"."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm the scheduler idles cleanly when no work is queued."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_work_to_do_without_leading_no_allowed(self, isolated_home):
+        """Guards against an implementation that makes "no work to do"'s
+        leading "no" optional or drops it -- e.g. by copy-pasting the
+        adjacent `(further )?` optional-group syntax, or in a
+        well-intentioned attempt to also catch "no more work to do". A
+        "no"-dropped form would deny a large, ordinary class of legitimate
+        task-assignment prompts."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There's plenty of work to do before this ships."),
                 home=isolated_home,
             )
             == "allow"
