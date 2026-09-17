@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -705,13 +706,77 @@ def test_direnv_resolving_to_same_ambient_value_suppresses_notice(fake_gh, tmp_p
     assert "resolved via direnv" not in result.stderr
 
 
-def test_direnv_explicit_unset_statement_leaves_ambient_untouched(fake_gh, tmp_path):
-    # Synthetic robustness probe, not a real-direnv-reachable scenario: this
-    # resolver's own pre-eval unset already rules out real direnv ever
-    # observing CI_CHECKS_GH_TOKEN as present, so this input only reaches
-    # the resolver via a hand-crafted shim. Direnv only emits an explicit
-    # `unset NAME` for a variable still present in its own observed
-    # environment (verified against direnv 2.37.1).
+def test_direnv_supplied_token_value_containing_delimiters_round_trips(fake_gh, tmp_path):
+    # Falsifies a future accidental reintroduction of text/regex parsing of
+    # the export payload in place of `${VAR+x}` presence detection: a value
+    # containing `=` and `;` must round-trip exactly.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    value = "token=with=equals;and;semicolons"
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        direnv_source=_direnv_shim_source_static_export("CI_CHECKS_GH_TOKEN", value),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == (value, "")
+    assert calls["json"] == (value, "")
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+
+
+def test_direnv_resolving_token_to_empty_string_over_nonempty_ambient_clears_it(fake_gh, tmp_path):
+    # value_probe's true branch unconditionally assigns
+    # CI_CHECKS_GH_TOKEN="${value_probe:1}" with no non-empty guard (unlike
+    # GH_HOST's `-n` guard below) -- an explicit `.envrc` export of
+    # CI_CHECKS_GH_TOKEN="" leaves CI_CHECKS_GH_TOKEN present-but-empty.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-to-be-cleared"},
+        direnv_source=_direnv_shim_source_multi_export({
+            "CI_CHECKS_GH_TOKEN": "",
+            "GH_HOST": "octocat.ghe.com",
+        }),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    # (a) the per-token notice fires, since the resolved value ("") differs
+    # from the non-empty ambient value.
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+    # (b) gh_with_checks_token's own -n guard treats the now-empty
+    # CI_CHECKS_GH_TOKEN as unset, so both wrapped calls fall back to
+    # unwrapped gh.
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "using CI_CHECKS_GH_TOKEN override" not in result.stderr
+    # (c) the cross-host mismatch warning stays silent even with GH_HOST
+    # also resolving to a *.ghe.com host in the same run -- its own -n
+    # "${CI_CHECKS_GH_TOKEN:-}" guard protects this case regardless of
+    # whether CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV also gates it off.
+    assert "stale token may reach the newly-resolved host" not in result.stderr
+
+
+def test_direnv_explicit_unset_statement_clears_ambient_token(fake_gh, tmp_path):
+    # This is a real-direnv-reachable scenario, not just a synthetic shim
+    # input: direnv emits an explicit `unset NAME` when a prior directory's
+    # .envrc exported the variable and this directory's does not (see
+    # test_real_direnv_cd_between_directories_clears_stale_token below for
+    # the real-direnv end-to-end version of this exact transition).
+    # value_probe evaluates against the ambient environment, so this
+    # payload's `unset` genuinely clears the ambient token.
     token_log = tmp_path / "token.log"
     checks = [
         {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
@@ -727,9 +792,9 @@ def test_direnv_explicit_unset_statement_leaves_ambient_untouched(fake_gh, tmp_p
     result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
     calls = _parse_token_log(token_log)
-    assert calls["watch"] == ("stale-container-token", "")
-    assert calls["json"] == ("stale-container-token", "")
-    assert "resolved via direnv" not in result.stderr
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: CI_CHECKS_GH_TOKEN cleared by direnv for" in result.stderr
 
 
 def test_direnv_exiting_nonzero_leaves_ambient_untouched_and_does_not_abort(fake_gh, tmp_path):
@@ -900,9 +965,10 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
     # run indefinitely. The shim sleeps well past the cap without reading
     # stdin, so the scaled timeout(1) shim's own started/completed record
     # proves the wall-clock cap fired, rather than the </dev/null guard
-    # test_stdin_reading_envrc_does_not_hang already covers. resolve_gh_host
-    # calls direnv_export_bash a second time, so the stalled shim is hit
-    # (and capped) twice: once per resolver.
+    # test_stdin_reading_envrc_does_not_hang already covers. The stalled
+    # shim is hit (and capped) three times: resolve_ci_checks_gh_token's
+    # own value_probe and named_probe each call direnv_export_bash once,
+    # and resolve_gh_host calls it once more.
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
     token_log = tmp_path / "token.log"
@@ -921,7 +987,7 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
     )
     shim_dir = Path(env["PATH"].split(os.pathsep)[0])
     write_scaled_timeout_shim(shim_dir)
-    with assert_cap_engaged(shim_dir, production_cap=5, killed_calls=2):
+    with assert_cap_engaged(shim_dir, production_cap=5, killed_calls=3):
         result = _run(env, _PR_NUMBER)
     assert result.returncode == 0
     # A timed-out direnv resolution must degrade to the existing "ambient
@@ -936,30 +1002,17 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
 
 
 def test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end(tmp_path):
-    # Every other direnv test in this file substitutes a PATH-shimmed fake.
-    # This is the one test that runs the real direnv binary end-to-end, so a
-    # mismatch between the fixed shims above and real direnv's own export
-    # behavior can't hide undetected. `XDG_DATA_HOME`/`DIRENV_CONFIG` are
-    # redirected into `tmp_path` so this test can never read or write this
-    # machine's real direnv allow-store or config. Verified empirically
-    # against real direnv 2.37.1 on this machine. Its allow-store follows
-    # `XDG_DATA_HOME`, not `$HOME`; its config directory follows
-    # `DIRENV_CONFIG`. Local-machine-only coverage: .github/workflows/tests.yml
-    # doesn't install direnv, so this test is skipped in CI.
+    # Only test in this file running real direnv end-to-end, to catch drift
+    # between the shims above and real direnv's own export behavior.
+    # `XDG_DATA_HOME`/`DIRENV_CONFIG` are redirected into `tmp_path` so this
+    # test never touches this machine's real direnv allow-store or config.
+    # Skipped in CI: .github/workflows/tests.yml doesn't install direnv.
     if not shutil.which("direnv"):
         pytest.skip("direnv not installed")
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    # CI_CHECKS_GH_TOKEN is reconfirmed at the exact value already ambient
-    # below (env["CI_CHECKS_GH_TOKEN"]), so its own per-variable notice stays
-    # silent by design (value-equality-gated, like
-    # test_direnv_resolving_to_same_ambient_value_suppresses_notice's shim
-    # equivalent). `CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV` is presence-based,
-    # not value-equality-based, so it still latches to 1 here. That's
-    # observable only through `GH_HOST` also resolving via direnv. A
-    # value-equality bug in that flag would make the cross-host mismatch
-    # warning below incorrectly fire, since it would see
-    # `CI_CHECKS_GH_TOKEN` as unresolved.
+    # Token reconfirms at its already-ambient value, so the per-token
+    # notice stays silent — but the presence-based flag still latches.
     (repo_dir / ".envrc").write_text(
         "export CI_CHECKS_GH_TOKEN=ambient-reconfirmed-token\n"
         "export GH_HOST=octocat.ghe.com\n"
@@ -1014,6 +1067,91 @@ def test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end(tmp_path):
     assert "stale token may reach the newly-resolved host" not in result.stderr
 
 
+def test_real_direnv_cd_between_directories_clears_stale_token(tmp_path):
+    # The load-bearing regression test for the bug this fix closes: a
+    # contributor cd's from a directory whose .envrc exported
+    # CI_CHECKS_GH_TOKEN into a sibling directory with no .envrc at all.
+    # Priming this process from dir_a first (eval'ing its own `direnv
+    # export bash`) populates direnv's own DIRENV_DIFF bookkeeping, the
+    # same way an interactive shell's `cd` hook would. This process starts
+    # with CI_CHECKS_GH_TOKEN genuinely absent, so direnv's own diff
+    # records it as a variable direnv itself added in dir_a — direnv only
+    # unsets a variable its own diff shows it added, not one that merely
+    # happened to already equal the .envrc's exported value beforehand.
+    # dir_b's own `direnv export bash` payload then contains an explicit
+    # `unset CI_CHECKS_GH_TOKEN;`. Local-machine-only coverage, like
+    # test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end
+    # above: .github/workflows/tests.yml doesn't install direnv.
+    if not shutil.which("direnv"):
+        pytest.skip("direnv not installed")
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    (dir_a / ".envrc").write_text("export CI_CHECKS_GH_TOKEN=dir-a-scoped-token\n")
+
+    token_log = tmp_path / "token.log"
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    gh_shim_dir = tmp_path / "gh_shim"
+    gh_shim_dir.mkdir()
+    gh_shim = gh_shim_dir / "gh"
+    gh_shim.write_text(_gh_shim_source(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        repo_host_log=repo_host_log,
+    ))
+    gh_shim.chmod(0o755)
+
+    env = {
+        **_base_test_env(),
+        "PATH": os.pathsep.join([str(gh_shim_dir), os.environ.get("PATH", "")]),
+        "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
+        "DIRENV_CONFIG": str(tmp_path / "direnv-config"),
+    }
+    # CI_CHECKS_GH_TOKEN is absent from env here (scrubbed by
+    # _base_test_env), so the priming step below is the only source of the
+    # ambient value the running script will see.
+    assert "CI_CHECKS_GH_TOKEN" not in env
+    allow_result = subprocess.run(
+        ["direnv", "allow", "."], cwd=dir_a, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert allow_result.returncode == 0, allow_result.stderr
+
+    # One bash process: cd into dir_a and eval its direnv export (priming
+    # DIRENV_DIFF the way an interactive shell's `cd` hook would), then cd
+    # into dir_b (no .envrc) and exec the script — reproducing the real
+    # interactive-shell sequence inside one process's environment.
+    prime_and_run = (
+        f"cd {shlex.quote(str(dir_a))} && eval \"$(direnv export bash)\" "
+        f"&& cd {shlex.quote(str(dir_b))} "
+        f"&& exec {shlex.quote(str(_SCRIPT))} {shlex.quote(_PR_NUMBER)}"
+    )
+    result = subprocess.run(
+        ["bash", "-c", prime_and_run], env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    repo_host_calls = _parse_repo_host_log(repo_host_log)
+    # The bug this fix closes: the stale dir_a-scoped token must not reach
+    # dir_b's gh calls.
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "dir-a-scoped-token" not in result.stdout
+    assert "dir-a-scoped-token" not in result.stderr
+    assert "ci-watch: CI_CHECKS_GH_TOKEN cleared by direnv for" in result.stderr
+    # GH_HOST is exempt from this bug class: the script's own top-level
+    # `unset GH_REPO GH_HOST` already puts it in the state
+    # CI_CHECKS_GH_TOKEN's named_probe has to construct itself.
+    assert repo_host_calls["watch"] == ("<unset>", "<unset>")
+
+
 # ---------------------------------------------------------------------------
 # resolve_gh_host — direnv resolution of GH_HOST
 #
@@ -1047,6 +1185,29 @@ def test_direnv_supplies_gh_host_when_ambient_unset(fake_gh, tmp_path):
     assert calls["view"] == ("<unset>", "octocat.ghe.com")
     assert calls["watch"] == ("<unset>", "octocat.ghe.com")
     assert calls["json"] == ("<unset>", "octocat.ghe.com")
+    assert "ci-watch: GH_HOST resolved via direnv" in result.stderr
+
+
+def test_direnv_supplied_gh_host_value_containing_delimiters_round_trips(fake_gh, tmp_path):
+    # Mirrors test_direnv_supplied_token_value_containing_delimiters_round_trips
+    # above, for GH_HOST's own `${VAR+x}` presence detection.
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    value = "a;b.ghe.com"
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        repo_host_log=repo_host_log,
+        direnv_source=_direnv_shim_source_static_export("GH_HOST", value),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_repo_host_log(repo_host_log)
+    assert calls["watch"] == ("<unset>", value)
+    assert calls["json"] == ("<unset>", value)
     assert "ci-watch: GH_HOST resolved via direnv" in result.stderr
 
 
@@ -1201,6 +1362,34 @@ def test_gh_host_resolved_via_direnv_pairs_with_ambient_ci_checks_token(fake_gh,
     # now reach the newly-resolved host.
     assert "GH_HOST resolved via direnv for" in result.stderr
     assert "but CI_CHECKS_GH_TOKEN did not" in result.stderr
+    assert "stale token may reach the newly-resolved host" in result.stderr
+
+
+def test_gh_host_resolved_via_direnv_to_mixed_case_ghe_com_still_fires_mismatch_warning(fake_gh, tmp_path):
+    # [[ ]] glob matching is case-sensitive by default -- mirrors
+    # test_gh_host_resolved_via_direnv_pairs_with_ambient_ci_checks_token
+    # above, with GH_HOST resolving to a mixed-case *.ghe.com-shaped value,
+    # to pin that the warning's own glob comparison normalizes case first.
+    token_log = tmp_path / "token.log"
+    repo_host_log = tmp_path / "repo_host.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        repo_host_log=repo_host_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+        direnv_source=_direnv_shim_source_static_export(
+            "GH_HOST", "Octocat.GHE.com",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    repo_host_calls = _parse_repo_host_log(repo_host_log)
+    assert repo_host_calls["watch"] == ("<unset>", "Octocat.GHE.com")
     assert "stale token may reach the newly-resolved host" in result.stderr
 
 
