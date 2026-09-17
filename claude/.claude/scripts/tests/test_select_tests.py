@@ -1361,6 +1361,7 @@ class TestComputeWorkerCount:
             pytest.param(16, 0.4, 16, id="idle-machine-returns-cpu-budget-unchanged"),
             pytest.param(1, 0.0, 1, id="cpu-budget-one-returns-one-not-the-floor"),
             pytest.param(2, 0.0, 2, id="floor-and-cap-arms-coincide-at-cpu-budget-two"),
+            pytest.param(8, 3.0, 5, id="mid-range-load-lands-strictly-between-floor-and-cap"),
             pytest.param(8, 6.5, 2, id="moderate-contention-lands-at-the-floor"),
             pytest.param(8, 6.9, 2, id="proportional-term-alone-would-land-under-two"),
             pytest.param(8, 20.0, 2, id="extreme-overload-floors-at-two"),
@@ -2240,11 +2241,11 @@ class TestMainWorkerSizingStderr:
 
 
 class TestRecordSelection:
-    """record_selection's own gating, field shape, and best-effort failure
-    handling -- called directly with a hand-built SelectionResult rather
-    than through main(), so each case isolates one behavior. Every test
-    here points CLAUDE_CONFIG_DIR at tmp_path rather than touching the real
-    config dir."""
+    """Tests `record_selection`'s own gating, field shape, and best-effort
+    failure handling. Each case calls it directly with a hand-built
+    `SelectionResult` rather than through `main()`, so it isolates one
+    behavior at a time. Every test here points CLAUDE_CONFIG_DIR at
+    tmp_path rather than touching the real config dir."""
 
     def test_nothing_written_when_key_resolves_false(self, monkeypatch, tmp_path):
         """Default resolution (no claude-config.toml at all) is the

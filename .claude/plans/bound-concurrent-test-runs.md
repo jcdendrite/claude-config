@@ -116,8 +116,8 @@ beyond its reach):
   xdist-mirrored CPU budget, and inject it as
   `PYTEST_XDIST_AUTO_NUM_WORKERS` into the pytest subprocess at
   `run_pytest`'s single launch point.** This is the one override xdist
-  honors without a code change on its side, it is read per-process so two
-  concurrent runs never interfere, and `run_pytest`
+  honors without a code change on its side. It is read per-process, so
+  two concurrent runs never interfere. `run_pytest`
   (`select-tests.py:696-699`) is the sole place a pytest process is
   created. *anchors: root, row1, row3, row12*
 - **M2 — Defer entirely when `PYTEST_XDIST_AUTO_NUM_WORKERS` is already
@@ -135,11 +135,11 @@ beyond its reach):
   there is no parallelism left to buy, only xdist's per-worker spawn and
   IPC cost, and a saturated machine is exactly where a run is already
   slowest. *anchors: root, row7, row8*
-- **M5 — Append one JSON line per invocation — reason, full-suite flag,
-  triggering paths, resolved-target count — to
+- **M5 — Append one JSON line per invocation to
   `<config-dir>/.test-selection-log.jsonl`, gated by a new
-  `test_selection_tracking` config key defaulting to false.** Logging
-  every outcome, not just fallbacks, makes the frequency question
+  `test_selection_tracking` config key defaulting to false.** Each line
+  carries: reason, full-suite flag, triggering paths, resolved-target
+  count. Logging every outcome, not just fallbacks, makes the frequency question
   answerable from one file. A config key is used instead of an env var
   because agent-launched runs — the population this measures — inherit
   `claude`'s launch-time environment (README.md:530), so a shell export
@@ -265,23 +265,24 @@ want test-selection fallback telemetry?", since the key's only audience
 is whoever is tuning `select-tests.py`'s domain rules. Documented in
 README's Tests section instead of wired into `install.sh`'s prompt loop.
 
-**Rollback asymmetry, named explicitly.** Phase 1 ships no config gate
-because it is fully stateless (no config row, no persisted data) — a
-plain code revert undoes it completely, unlike Phase 2's persisted log,
-which keeps the `test_selection_tracking` gate. A Phase-1-only revert also
-removes `record_selection`'s two conditional `worker_count`/`load_average`
-fields, since they are populated from Phase 1's `WorkerSizingResult` — the
-log then reverts to Phase 2's original five-field shape, not to an
-error, because `size_result` is an optional parameter. An individual
+**Rollback asymmetry, named explicitly.** Phase 1 is fully stateless (no
+config row, no persisted data), so a plain code revert undoes it
+completely. Phase 2's persisted log is the exception: reverting it still
+leaves the `test_selection_tracking` gate in place. A Phase-1-only revert
+also removes `record_selection`'s two conditional
+`worker_count`/`load_average` fields, since Phase 1's `WorkerSizingResult`
+is what populates them. `size_result` is an optional parameter, so the
+log then reverts to Phase 2's original five-field shape rather than
+erroring. An individual
 developer can also self-override at any time via `-n <N>` or an exported
 `PYTEST_XDIST_AUTO_NUM_WORKERS` (row5, M2).
 
-**Dispatch split:** two phases, one `code-writer` dispatch each, strictly
-sequential and never parallel — both phases edit
-`claude/.claude/scripts/select-tests.py` and
-`claude/.claude/scripts/tests/test_select_tests.py`, and parallel
-dispatches share this worktree, where overlapping edits clobber silently
-rather than conflict. Phase 1 is the worker sizing (three files); Phase 2
+**Dispatch split:** Two phases, one `code-writer` dispatch each, run
+strictly sequentially, never in parallel. Both touch `select-tests.py`
+and `test_select_tests.py`. Parallel dispatches share this worktree,
+where overlapping edits clobber silently rather than conflict — that is
+why they cannot run concurrently. Phase 1 is the worker sizing (three
+files); Phase 2
 is the instrumentation (the config-key surface). Phase 1 first, because
 it is the unit's actual goal and stands alone if Phase 2 is deferred.
 

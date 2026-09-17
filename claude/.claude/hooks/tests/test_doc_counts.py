@@ -378,8 +378,8 @@ def _enforcement_critical_keys() -> frozenset[str]:
     """Return the enforcement-critical key set, derived behaviorally.
 
     Sources migrate-legacy-config.sh in a bash subprocess and echoes
-    $_MIGRATE_ENFORCEMENT_CRITICAL_KEYS back out -- the script's own
-    BASH_SOURCE guard keeps sourcing it from running main(). Ground-truthed
+    $_MIGRATE_ENFORCEMENT_CRITICAL_KEYS back out. The script's own
+    BASH_SOURCE guard keeps this from running main(). Ground-truthed
     against the actual bash variable rather than duplicated as a Python
     literal: a hardcoded copy's len()-only usage below would silently pass
     a future edit that swapped which five keys are enforcement-critical
