@@ -8,7 +8,7 @@ one machine stop oversubscribing its cores. This is the next item in
 GH-978, after hook-chain consolidation (PR #985) and injectable timeout
 caps (PR #1014); a measurement of this repo's own test suite found 8
 concurrent copies of one 116-test file each taking 35.6s versus 16.2s
-running alone (2.2x), with 0% idle CPU and 39% of busy CPU in the kernel
+running alone (2.2x). CPU was 0% idle with 39% of busy time in the kernel
 — the signature of scheduler contention, not real test work. After this
 unit, each
 `select-tests.py` invocation independently sizes its own pytest-xdist
@@ -35,14 +35,13 @@ from the machine's current 1-minute load average and injects that number
 into the pytest subprocess via `PYTEST_XDIST_AUTO_NUM_WORKERS`, so a run
 that starts on an already-busy machine takes only the idle headroom
 instead of a full machine's worth. Nothing is shared between invocations
-— no lock, no counter, no persistent state. Separately and independently
-of the sizing mechanism's own operation (no shared state, no
-cross-process coordination — the two mechanisms remain fully decoupled in
-that sense), every selection outcome (the reason code, whether it fell
-back to the full suite, and — since the reversal below — the worker count
-and load average when a sizing computation ran) is appended as one JSON
-line to a per-machine log under the resolved config directory, gated by a
-new off-by-default config key, so fallback frequency becomes a countable
+— no lock, no counter, no persistent state. The two mechanisms are fully
+decoupled: logging happens independently of the sizing computation, with
+no shared state between them. Every selection outcome — reason code,
+full-suite fallback flag, and (when a sizing computation ran) worker
+count and load average — is appended as one JSON line to a per-machine
+log under the resolved config directory. Logging is gated by a new
+off-by-default config key, so fallback frequency becomes a countable
 number rather than a stderr line that scrolls away.
 
 **The formula.** With `cpu_budget` = the worker count xdist's own `-n
@@ -53,18 +52,10 @@ workers = max(min(_MIN_LOAD_AWARE_WORKERS, cpu_budget),
               min(cpu_budget, round(cpu_budget - load_one_minute)))
 ```
 
-Three properties make this the shape to pick. `cpu_budget -
-load_one_minute` is dimensionally sound — a load average counts runnable
-processes, the same unit a worker count is denominated in — so the
-subtraction reads directly as "idle capacity," and the sum of (load
-already present) + (workers this run requests) lands at roughly
-`cpu_budget` no matter how many runs arrive. `round`, not `floor`, keeps
-a near-idle machine at exactly today's count (load 0.4 on a 16-CPU box
-still yields 16), so the change is a literal no-op precisely where there
-is no contention to fix. The `min(cpu_budget, ...)` arm makes "never more
-workers than `-n auto` would have picked" an invariant rather than an
-emergent property, and the floor arm is itself clamped by `cpu_budget` so
-a 1-CPU container is never handed 2.
+`round` keeps a near-idle machine at exactly today's worker count; the
+two `min` clamps make "never more than `-n auto` would pick" and "never
+below the 2-worker floor" both invariants rather than emergent
+properties.
 
 **Alternatives set aside.** A cross-process counting semaphore is
 rejected (row3) and not revisited here. Two *lighter* primitives were
@@ -101,11 +92,11 @@ beyond its reach):
   `[verified: .venv/lib/python3.12/site-packages/xdist/plugin.py:16-53;
   requirements-dev.txt pins pytest-xdist==3.*]`
 - **row2** — `os.getloadavg()` is the only load signal in the Python
-  standard library, and it returns exponentially-smoothed 1/5/15-minute
+  standard library. It returns exponentially-smoothed 1/5/15-minute
   averages; no portable instantaneous run-queue reading exists.
-  Platform/vendor-imposed: the kernel exposes the smoothed figures, and
-  the one instantaneous alternative (`/proc/loadavg`'s fourth field) is
-  Linux-only while this repo supports Linux, macOS, and WSL2. `[verified:
+  Platform/vendor-imposed: the kernel exposes the smoothed figures. The
+  one instantaneous alternative, `/proc/loadavg`'s fourth field, is
+  Linux-only, and this repo supports Linux, macOS, and WSL2. `[verified:
   Python `os` module docs]`
 - **row3** — no cross-process coordination mechanism (semaphore, lock
   file, shared counter, any persistent inter-invocation state) is
@@ -190,18 +181,19 @@ beyond its reach):
   gate-on-existing-load precedent: "no new jobs should be started if… the
   load average is at least *load*." `[verified: `make.1` man page]`
 - **row11** — `os.getloadavg()` returns the 1/5/15-minute run-queue
-  averages, raises `OSError` when the load average is unobtainable, and
-  is Unix-only — consistent with this repo's documented Linux/macOS/WSL2
-  support, so no Windows branch is needed. `[verified: Python `os` module
-  docs]`
+  averages. It raises `OSError` when the load average is unobtainable.
+  It is Unix-only, consistent with this repo's documented
+  Linux/macOS/WSL2 support, so no Windows branch is needed. `[verified:
+  Python `os` module docs]`
 - **row12** — with `psutil` absent, xdist's `-n auto` resolves to
   `len(os.sched_getaffinity(0))` where that import succeeds and
   `os.cpu_count()` otherwise, both falling back to 1. `_cpu_budget()`
   must mirror that non-psutil branch, using the same `from os import
-  sched_getaffinity` inside `try/except ImportError` idiom — a bare
+  sched_getaffinity` inside `try/except ImportError` idiom. A bare
   `os.sched_getaffinity(...)` raises `AttributeError`, not `ImportError`,
-  on macOS. `[verified: xdist/plugin.py:26-53; requirements-dev.txt
-  declares only pytest, pytest-xdist, ruff, pyyaml, shellcheck-py]`
+  on macOS, which is why the import-based idiom is required. `[verified:
+  xdist/plugin.py:26-53; requirements-dev.txt declares only pytest,
+  pytest-xdist, ruff, pyyaml, shellcheck-py]`
 - **row13** — CI never invokes `select-tests.py`; both passes call
   `pytest` directly, so M1 through M4 cannot reach CI at all. `[verified:
   .github/workflows/tests.yml:160 and :166]`
@@ -564,17 +556,14 @@ exception (`select-tests.py:494`) already routes to.
   logical to physical cores and still not adapt to load; the Phase 1
   guard test exists precisely to keep that decision explicit if it is
   ever revisited.
-- **Reversed during review: worker-count and load-average fields are now
-  in the selection log.** Originally deferred here as coupling two
-  mechanisms this design scopes as independent. A `/ready-for-review`
-  consult found that the deferral left Phase 1's success criterion
-  unfalsifiable in the field (row14 already concedes the mechanism may
-  not measurably help the arrival pattern it targets, with no way to
-  tell from the log alone) and that fixing an unrelated sizing-seam bug
-  (`select-tests.py`'s `main` re-deriving its worker-sizing outcome
-  instead of receiving it from the sizing function) already puts both
-  values in `main`'s hands before the log write, making the addition two
-  conditional JSON keys rather than new coupling.
+- **Worker-count and load-average fields are in the selection log**
+  because Phase 1's success criterion is otherwise unfalsifiable in the
+  field: row14 already concedes the mechanism may not measurably help the
+  arrival pattern it targets, with no way to tell from the log alone.
+  `select-tests.py`'s `main` holds both values in hand before the log
+  write — the sizing function returns them rather than `main`
+  re-deriving them — so the addition is two conditional JSON keys, not
+  new coupling between the sizing and logging mechanisms.
 - **No log rotation or size cap.** Matches
   `.permission-prompt-log.jsonl`'s documented posture
   (`docs/permission-prompt-tracking.md` § "Known limitations"):

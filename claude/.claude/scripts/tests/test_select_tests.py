@@ -1315,13 +1315,11 @@ class TestRunPytest:
 
 class TestCpuBudget:
     def test_psutil_is_not_importable(self):
-        """xdist detects psutil via `try: import psutil` (xdist/plugin.py:26-53),
-        not a manifest scan, so this test checks importability directly rather
-        than grepping requirements-dev.txt.
-
-        Deliberate environment-coupled tripwire, not flakiness. It is meant
-        to fail if a dev/CI dependency ever starts pulling in psutil
-        transitively."""
+        """Checks psutil importability directly, matching xdist's own `try:
+        import psutil` check (xdist/plugin.py:26-53) rather than
+        requirements-dev.txt's manifest text, as a tripwire against a
+        transitive psutil dependency silently diverging `_cpu_budget()` from
+        `-n auto`'s actual behavior."""
         assert importlib.util.find_spec("psutil") is None, (
             "psutil is importable in this environment -- _cpu_budget() mirrors "
             "xdist's non-psutil `-n auto` provider chain (sched_getaffinity / "
@@ -1914,15 +1912,11 @@ class TestMainComposition:
         this early-return path, not just on the run_pytest-reaching paths
         TestRecordSelectionReasonCoverage already covers.
 
-        Also pins that no worker-sizing fields reach the persisted log on
-        this path: main() must pass size_result=None to record_selection
-        here without ever calling getloadavg, mirroring the end-to-end
-        pinning done for the WORKER_SIZING_COMPUTED case in
-        TestMainWorkerSizingStderr. os.getloadavg is deliberately left
-        unstubbed -- a future edit that wastefully computes a real
-        WorkerSizingResult on this branch would still populate these
-        fields with the real machine's load average, so the absence
-        assertion below catches the regression either way."""
+        Also pins that `main()` passes `size_result=None` to
+        `record_selection` on this early-return path without calling
+        `getloadavg`; `os.getloadavg` is left unstubbed so a regression
+        that wastefully computes real sizing here still fails via the
+        absence assertion below."""
         fake_repo_root = Path("/fake/repo/root")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
@@ -2226,10 +2220,9 @@ class TestMainWorkerSizingStderr:
     ):
         """Pins that main()'s single size_result reaches both the stderr line
         and record_selection's log line with the same values, rather than two
-        independent computations (or a stale/wrong size_result at the
-        record_selection call site) that could silently diverge -- neither
+        independently-computed values that could silently diverge. Neither
         TestRecordSelection's hand-built WorkerSizingResult nor this class's
-        other stderr-only tests exercise that wiring end to end."""
+        other stderr-only tests exercise that end-to-end wiring."""
         self._stub_common(monkeypatch)
         monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
         monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
@@ -2395,6 +2388,34 @@ class TestRecordSelection:
         stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
         assert len(stderr_lines) == 1
         assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    def test_config_dir_fully_unresolvable_returns_silently_with_no_log_and_no_stderr(
+        self, monkeypatch, capsys,
+    ):
+        """Unlike the ValueError test above, config_dir() is left
+        unmonkeypatched here -- CLAUDE_CONFIG_DIR and HOME are both unset so
+        its own real resolution fails, and config_enabled() returns None
+        rather than raising. record_selection's `if not config_enabled(...):
+        return` gate then fires silently: no exception is caught, so no
+        warning is printed either. Path.open is spied on for append-mode
+        calls since there is no resolvable config dir to check a log
+        file's absence against; a regression that reaches the log-append
+        step would trip the spy."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("HOME", raising=False)
+        real_open = Path.open
+
+        def _fail_if_opened_for_append(self, mode="r", *args, **kwargs):
+            if mode == "a":
+                raise AssertionError("record_selection must not append to a log file on this path")
+            return real_open(self, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", _fail_if_opened_for_append)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        assert capsys.readouterr().err == ""
 
     @pytest.mark.parametrize(
         "schema_error",

@@ -1375,14 +1375,14 @@ class TestConfigScaffold:
     ):
         """Mirrors test_plain_key_with_no_legacy_polarity_still_gets_its_default_row's
         schema fixture -- a key with no legacy-polarity, so this run's
-        content build actually appends a default row, unlike the sibling
-        failure test above (which reaches the same unconditional write with
-        today's real config-keys.psv, but with no default row appended,
-        since every one of its 15 rows has a legacy-polarity value). This
-        test proves the failure check still fires when the write is reached
-        via that different condition -- scaffold's per-key inclusion logic
-        doesn't accidentally exempt a live, row-appending write from the
-        check."""
+        content build actually appends a default row. The sibling failure
+        test above reaches the same unconditional write with today's real
+        config-keys.psv, but no default row survives there either: the
+        write fails before anything is persisted, not because every row
+        carries a legacy-polarity value. This test proves the failure
+        check still fires when the write is reached via that different,
+        row-appending condition -- scaffold's per-key inclusion logic
+        doesn't accidentally exempt a live write from the check."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)

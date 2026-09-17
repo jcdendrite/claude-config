@@ -529,6 +529,11 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 pattern=r"[Nn]one exist among today's (\d+) keys",
                 description="docs/config-file.md: none exist among today's N keys",
             ),
+            Occurrence(
+                rel_path="docs/config-file.md",
+                pattern=r"merges \*all\s+(\d+)\s+keys\*",
+                description="docs/config-file.md: symlinking merges all N keys",
+            ),
         ],
     ),
 ]
