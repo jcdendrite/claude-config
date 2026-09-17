@@ -622,6 +622,25 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
         )
 
 
+def test_syncclaudeaiskills_stays_disabled_in_stow_source_settings() -> None:
+    """The declared config-value backing the claude.ai skill-sync default flip.
+
+    This proves the *declared* config state — `syncClaudeAiSkills` is
+    `false` in the stow-source settings file — not that the harness
+    actually stops syncing at runtime. That live-session verification
+    lives outside pytest (see
+    docs/design-decisions/claude-ai-skill-sync-disabled-by-default.md);
+    this test only pins the declaration so a future edit can't drop it
+    silently.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert settings.get("syncClaudeAiSkills") is False, (
+        f"syncClaudeAiSkills is not `false` in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — claude.ai skill sync "
+        f"is no longer disabled by default"
+    )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
