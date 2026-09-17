@@ -78,6 +78,7 @@
   "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
+  "syncClaudeAiSkills": false,
   "attribution": {
     "sessionUrl": false
   },

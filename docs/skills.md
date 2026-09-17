@@ -194,6 +194,8 @@ Stowed skills from claude-config use a small fraction of the skill-listing budge
 
 Tools have an analogous per-tool lever — `disableArtifact`/`disableWorkflows` — for the two largest eagerly-loaded built-in tool schemas, both disabled by default in the shared `settings.json`: see `design-decisions.md` §31.
 
+claude.ai skill sync is also disabled by default in the shared `settings.json`: see `docs/design-decisions/claude-ai-skill-sync-disabled-by-default.md` for the recovery path and scope details.
+
 ## Project-specific layers
 
 `/plan-it`, `/plan-review`, `/code-review`, `/pr-description`, and `/test-conventions` load a project-specific layer if one exists in the consuming repo — so a project can extend the base skill without forking the public skill body.
