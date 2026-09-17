@@ -382,6 +382,46 @@ def test_gate_backed_skill_has_a_live_gate(skill_name: str, hook_name: str) -> N
     )
 
 
+def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None:
+    """require-architect-consult.sh's deny message points a denied reviewer
+    spawn at code-review/SKILL.md's "Round-cap architect consult" section for
+    routing the consult's return. That pointer goes stale if either side is
+    renamed independently of the other, so this pins both halves: the hook
+    still names the section, and the section still exists in the skill.
+
+    The skill-side check anchors a full-line match, not substring
+    containment — a substring check would still pass a rename like "###
+    Round-cap architect consult verdict routing" even though the heading
+    no longer means what the hook's pointer claims. The pinned contract
+    includes the `###` heading level: a level change (e.g. to `##`) is
+    treated as a rename the hook's pointer should be re-checked against,
+    even though the title text is unchanged.
+
+    What this does not prove: that the routing rule inside that section is
+    itself correct, or that a session actually follows it — only that the
+    hook's pointer and the skill's heading still agree on a name.
+    """
+    hook_file = _MAIN_HOOKS_DIR / "require-architect-consult.sh"
+    skill_file = _SKILLS_DIR / "code-review" / "SKILL.md"
+    assert hook_file.is_file(), f"missing hook file: {hook_file}"
+    assert skill_file.is_file(), f"missing skill file: {skill_file}"
+
+    hook_text = hook_file.read_text(encoding="utf-8")
+    assert "Round-cap architect consult" in hook_text, (
+        "require-architect-consult.sh's deny message no longer names the "
+        "'Round-cap architect consult' section it points a denied spawn at"
+    )
+
+    skill_text = skill_file.read_text(encoding="utf-8")
+    heading_pattern = re.compile(r"^### Round-cap architect consult\s*$", re.MULTILINE)
+    assert heading_pattern.search(skill_text), (
+        "code-review/SKILL.md no longer has a '### Round-cap architect "
+        "consult' heading (exact title, level 3), but "
+        "require-architect-consult.sh's deny message still points a "
+        "denied reviewer spawn at it"
+    )
+
+
 @pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
 def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     """Every hook-class: gate hook must be wired into a PreToolUse matcher

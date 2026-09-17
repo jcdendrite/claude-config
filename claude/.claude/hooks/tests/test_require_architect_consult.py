@@ -321,9 +321,11 @@ class TestRequireArchitectConsult:
 
     def test_deny_message_contents(self, isolated_home, tmp_path):
         """Pins the deny message's content requirement: names the
-        plan-architect MODE=consult dispatch, tells the agent to escalate to
-        the engineer rather than resolve it unilaterally, and never
-        instructs touching the disable sentinel directly."""
+        plan-architect MODE=consult dispatch, points at the Round-cap
+        architect consult skill section for routing the consult's return,
+        tells the agent to escalate to the engineer rather than resolve it
+        unilaterally, and never instructs touching the disable sentinel
+        directly."""
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "deny-message")
         _stage_change(repo, "first\nround-one\nround-three\n")
         reason = run_hook_reason(
@@ -333,6 +335,7 @@ class TestRequireArchitectConsult:
         )
         assert reason is not None
         assert "plan-architect MODE=consult" in reason
+        assert "Round-cap architect consult" in reason
         assert "report this block to the engineer" in reason
         assert ".round-consult-gate-disabled" not in reason
         assert "2 distinct reviewed states " in reason
