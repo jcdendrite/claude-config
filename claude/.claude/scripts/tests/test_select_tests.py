@@ -1402,11 +1402,14 @@ class TestPytestSubprocessEnv:
         monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
         base_env = {"PATH": "/usr/bin"}
 
-        env = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (2.0, 1.0, 0.5))
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (2.0, 1.0, 0.5))
 
         # cpu_budget=8, load=2.0 -> round(8-2.0)=6, min(8,6)=6, floor min(2,8)=2, max(2,6)=6
-        assert env[_mod.XDIST_WORKER_ENV_VAR] == "6"
-        assert env["PATH"] == "/usr/bin"
+        assert result.outcome == _mod.WORKER_SIZING_COMPUTED
+        assert result.env[_mod.XDIST_WORKER_ENV_VAR] == "6"
+        assert result.env["PATH"] == "/usr/bin"
+        assert result.worker_count == 6
+        assert result.load_average == 2.0
 
     def test_preset_non_empty_value_passes_through_untouched(self):
         base_env = {_mod.XDIST_WORKER_ENV_VAR: "3", "PATH": "/usr/bin"}
@@ -1414,10 +1417,13 @@ class TestPytestSubprocessEnv:
         def fail_getloadavg():
             raise AssertionError("getloadavg must not be called when the var is already set")
 
-        env = _mod.pytest_subprocess_env(base_env, getloadavg=fail_getloadavg)
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=fail_getloadavg)
 
-        assert env == base_env
-        assert env is not base_env
+        assert result.outcome == _mod.WORKER_SIZING_ALREADY_SET
+        assert result.env == base_env
+        assert result.env is not base_env
+        assert result.worker_count is None
+        assert result.load_average is None
 
     def test_empty_string_value_does_not_count_as_set(self):
         """xdist treats an empty-string PYTEST_XDIST_AUTO_NUM_WORKERS as
@@ -1425,9 +1431,10 @@ class TestPytestSubprocessEnv:
         one."""
         base_env = {_mod.XDIST_WORKER_ENV_VAR: "", "PATH": "/usr/bin"}
 
-        env = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (1.0, 0.0, 0.0))
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (1.0, 0.0, 0.0))
 
-        assert env[_mod.XDIST_WORKER_ENV_VAR] != ""
+        assert result.outcome == _mod.WORKER_SIZING_COMPUTED
+        assert result.env[_mod.XDIST_WORKER_ENV_VAR] != ""
 
     def test_oserror_from_getloadavg_leaves_the_var_unset(self):
         base_env = {"PATH": "/usr/bin"}
@@ -1435,10 +1442,13 @@ class TestPytestSubprocessEnv:
         def raising_getloadavg():
             raise OSError("no load average on this platform")
 
-        env = _mod.pytest_subprocess_env(base_env, getloadavg=raising_getloadavg)
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=raising_getloadavg)
 
-        assert _mod.XDIST_WORKER_ENV_VAR not in env
-        assert env == base_env
+        assert result.outcome == _mod.WORKER_SIZING_UNAVAILABLE
+        assert _mod.XDIST_WORKER_ENV_VAR not in result.env
+        assert result.env == base_env
+        assert result.worker_count is None
+        assert result.load_average is None
 
 
 # Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
@@ -1902,7 +1912,17 @@ class TestMainComposition:
         a bare `pytest` invocation that recursively collects the whole
         repo. Also asserts the selection still gets logged exactly once on
         this early-return path, not just on the run_pytest-reaching paths
-        TestRecordSelectionReasonCoverage already covers."""
+        TestRecordSelectionReasonCoverage already covers.
+
+        Also pins that no worker-sizing fields reach the persisted log on
+        this path: main() must pass size_result=None to record_selection
+        here without ever calling getloadavg, mirroring the end-to-end
+        pinning done for the WORKER_SIZING_COMPUTED case in
+        TestMainWorkerSizingStderr. os.getloadavg is deliberately left
+        unstubbed -- a future edit that wastefully computes a real
+        WorkerSizingResult on this branch would still populate these
+        fields with the real machine's load average, so the absence
+        assertion below catches the regression either way."""
         fake_repo_root = Path("/fake/repo/root")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
@@ -1921,7 +1941,10 @@ class TestMainComposition:
         assert exit_code == 0
         log_lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
         assert len(log_lines) == 1
-        assert json.loads(log_lines[0])["reason"] == "domain-selected"
+        record = json.loads(log_lines[0])
+        assert record["reason"] == "domain-selected"
+        assert "worker_count" not in record
+        assert "load_average" not in record
 
     def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
         self, monkeypatch,
@@ -2061,10 +2084,10 @@ class TestMainWorkerSizingStderr:
     """main()'s three worker-sizing stderr branches (already-set / computed /
     unreadable), each pinned against the other two so a copy-paste bug that
     prints one branch's message from another branch's code path fails a test
-    rather than passing silently. pytest_subprocess_env is monkeypatched
-    wholesale per select-tests.py's own getloadavg keyword-default-binding
-    pitfall (a monkeypatched os.getloadavg would not reach
-    pytest_subprocess_env's default-bound reference)."""
+    rather than passing silently. os.getloadavg is monkeypatched directly
+    since main() looks it up fresh at call time and passes it to
+    pytest_subprocess_env explicitly, so the monkeypatch reaches the real
+    code path."""
 
     def _stub_common(self, monkeypatch):
         fake_repo_root = Path("/fake/repo/root")
@@ -2077,48 +2100,52 @@ class TestMainWorkerSizingStderr:
     def test_computed_worker_count_names_the_count_and_load_average(self, monkeypatch, capsys):
         self._stub_common(monkeypatch)
         monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
-        monkeypatch.setattr(
-            _mod, "pytest_subprocess_env",
-            lambda base_env: {**base_env, _mod.XDIST_WORKER_ENV_VAR: "5"},
-        )
-        # Only main()'s own informational-only re-read is exercised here --
-        # pytest_subprocess_env's internal read is bypassed by the stub above.
-        monkeypatch.setattr(os, "getloadavg", lambda: (2.5, 2.0, 1.5))
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
 
         _mod.main(["-k", "foo"])
 
         stderr = capsys.readouterr().err
-        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=5 (1-minute load average 2.5)" in stderr
+        # cpu_budget=8, load=2.0 -> round(8-2.0)=6, min(8,6)=6, floor min(2,8)=2, max(2,6)=6
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)" in stderr
         assert "already set to" not in stderr
         assert "could not read" not in stderr
 
-    def test_computed_worker_count_omits_load_average_when_second_read_fails(self, monkeypatch, capsys):
-        """main()'s own re-read of os.getloadavg is for the stderr message
-        only, separate from pytest_subprocess_env's own internal read. It
-        can raise OSError even when a worker count was already computed."""
-        self._stub_common(monkeypatch)
+    def test_full_suite_selection_still_prints_computed_worker_sizing_stderr(self, monkeypatch, capsys):
+        """Every other test in this class takes the domain-selected branch
+        via _stub_common; this pins that the full-suite branch (is_full_suite
+        True, will_run_pytest True via that disjunct rather than target_paths
+        truthiness) still runs worker sizing and prints both stderr lines in
+        the order main() emits them, not just one or the other."""
+        fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+
+        def fake_compute_changed_paths(repo_root):
+            raise _mod.GitDiffUnavailable("stub failure")
+
+        monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
         monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
-        monkeypatch.setattr(
-            _mod, "pytest_subprocess_env",
-            lambda base_env: {**base_env, _mod.XDIST_WORKER_ENV_VAR: "5"},
-        )
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
 
-        def raising_getloadavg():
-            raise OSError("no load average on this platform")
-
-        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
-
-        _mod.main(["-k", "foo"])
+        _mod.main([])
 
         stderr = capsys.readouterr().err
-        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=5" in stderr
-        assert "1-minute load average" not in stderr
-        assert "already set to" not in stderr
+        full_suite_line = "select-tests: running the full suite (git-unavailable)"
+        sizing_line = "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)"
+        assert full_suite_line in stderr
+        assert sizing_line in stderr
+        assert stderr.index(full_suite_line) < stderr.index(sizing_line)
 
     def test_already_set_value_defers_and_names_it(self, monkeypatch, capsys):
         self._stub_common(monkeypatch)
         monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "3")
-        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: dict(base_env))
+
+        def fail_getloadavg():
+            raise AssertionError("getloadavg must not be called when the var is already set")
+
+        monkeypatch.setattr(os, "getloadavg", fail_getloadavg)
 
         _mod.main(["-k", "foo"])
 
@@ -2130,7 +2157,11 @@ class TestMainWorkerSizingStderr:
     def test_load_average_unavailable_degrades_and_says_so(self, monkeypatch, capsys):
         self._stub_common(monkeypatch)
         monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
-        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: dict(base_env))
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
 
         _mod.main(["-k", "foo"])
 
@@ -2142,15 +2173,41 @@ class TestMainWorkerSizingStderr:
         assert "already set to" not in stderr
         assert "PYTEST_XDIST_AUTO_NUM_WORKERS=" not in stderr
 
+    def test_empty_string_preset_with_unreadable_load_average_degrades_and_says_so(
+        self, monkeypatch, capsys,
+    ):
+        """Regression guard: an empty-string preset is falsy, so it must
+        route to the unavailable-load-average message. An implementation
+        that infers the outcome from env-dict membership instead of an
+        explicit discriminator would see the still-present (empty) key on
+        the OSError path and print a malformed
+        'PYTEST_XDIST_AUTO_NUM_WORKERS=' line instead."""
+        self._stub_common(monkeypatch)
+        monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "")
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert (
+            "select-tests: could not read the 1-minute load average; "
+            "leaving PYTEST_XDIST_AUTO_NUM_WORKERS unset"
+        ) in stderr
+        assert "PYTEST_XDIST_AUTO_NUM_WORKERS=" not in stderr
+
     def test_computed_env_reaches_run_pytest_unchanged(self, monkeypatch, capsys):
-        """Pins that main() forwards pytest_subprocess_env's own return value
-        into run_pytest's env kwarg, not a copy-paste of the unmodified
+        """Pins that main() forwards the sizing decision's own env dict into
+        run_pytest's env kwarg, not a copy-paste of the unmodified
         os.environ -- the stderr message alone can't catch that regression
         since it's built from the same computed dict it's checking here."""
         self._stub_common(monkeypatch)
         monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
-        computed_env = {"PATH": "/usr/bin", _mod.XDIST_WORKER_ENV_VAR: "5"}
-        monkeypatch.setattr(_mod, "pytest_subprocess_env", lambda base_env: computed_env)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
         recorded = {}
 
         def fake_run_pytest(pytest_argv, *, cwd, env):
@@ -2161,7 +2218,32 @@ class TestMainWorkerSizingStderr:
 
         _mod.main(["-k", "foo"])
 
-        assert recorded["env"] == computed_env
+        assert recorded["env"][_mod.XDIST_WORKER_ENV_VAR] == "6"
+        assert recorded["env"] != dict(os.environ)
+
+    def test_computed_worker_sizing_reaches_the_persisted_log_matching_stderr(
+        self, monkeypatch, capsys, tmp_path,
+    ):
+        """Pins that main()'s single size_result reaches both the stderr line
+        and record_selection's log line with the same values, rather than two
+        independent computations (or a stale/wrong size_result at the
+        record_selection call site) that could silently diverge -- neither
+        TestRecordSelection's hand-built WorkerSizingResult nor this class's
+        other stderr-only tests exercise that wiring end to end."""
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)" in stderr
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["worker_count"] == 6
+        assert record["load_average"] == 2.0
 
 
 class TestRecordSelection:
@@ -2202,6 +2284,42 @@ class TestRecordSelection:
         # Parses as real ISO 8601, not merely non-empty -- matches
         # .permission-prompt-log.jsonl's own logged_at field name and format.
         datetime.fromisoformat(record["logged_at"].replace("Z", "+00:00"))
+
+    @pytest.mark.parametrize(
+        ("size_result", "expect_present"),
+        [
+            pytest.param(None, False, id="nothing-to-run"),
+            pytest.param(
+                _mod.WorkerSizingResult({"PATH": "/usr/bin"}, _mod.WORKER_SIZING_ALREADY_SET),
+                False, id="already-set",
+            ),
+            pytest.param(
+                _mod.WorkerSizingResult({"PATH": "/usr/bin"}, _mod.WORKER_SIZING_UNAVAILABLE),
+                False, id="unavailable",
+            ),
+            pytest.param(
+                _mod.WorkerSizingResult(
+                    {"PATH": "/usr/bin"}, _mod.WORKER_SIZING_COMPUTED, worker_count=4, load_average=1.5,
+                ),
+                True, id="computed",
+            ),
+        ],
+    )
+    def test_worker_sizing_fields_present_only_when_outcome_is_computed(
+        self, monkeypatch, tmp_path, size_result, expect_present,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [], size_result)
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert ("worker_count" in record) is expect_present
+        assert ("load_average" in record) is expect_present
+        if expect_present:
+            assert record["worker_count"] == 4
+            assert record["load_average"] == 1.5
 
     def test_triggering_paths_truncated_flag_set_when_list_exceeds_cap(
         self, monkeypatch, tmp_path,
@@ -2418,7 +2536,7 @@ class TestRecordSelection:
         )
         monkeypatch.setattr(
             _mod, "record_selection",
-            lambda selection, resolved_targets: call_order.append("record_selection"),
+            lambda selection, resolved_targets, size_result: call_order.append("record_selection"),
         )
 
         def fake_run_pytest(pytest_argv, *, cwd, env):

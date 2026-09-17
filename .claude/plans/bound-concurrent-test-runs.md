@@ -35,12 +35,15 @@ from the machine's current 1-minute load average and injects that number
 into the pytest subprocess via `PYTEST_XDIST_AUTO_NUM_WORKERS`, so a run
 that starts on an already-busy machine takes only the idle headroom
 instead of a full machine's worth. Nothing is shared between invocations
-— no lock, no counter, no persistent state. Separately and independently,
-every selection outcome (the reason code plus whether it fell back to the
-full suite) is appended as one JSON line to a per-machine log under the
-resolved config directory, gated by a new off-by-default config key, so
-fallback frequency becomes a countable number rather than a stderr line
-that scrolls away.
+— no lock, no counter, no persistent state. Separately and independently
+of the sizing mechanism's own operation (no shared state, no
+cross-process coordination — the two mechanisms remain fully decoupled in
+that sense), every selection outcome (the reason code, whether it fell
+back to the full suite, and — since the reversal below — the worker count
+and load average when a sizing computation ran) is appended as one JSON
+line to a per-machine log under the resolved config directory, gated by a
+new off-by-default config key, so fallback frequency becomes a countable
+number rather than a stderr line that scrolls away.
 
 **The formula.** With `cpu_budget` = the worker count xdist's own `-n
 auto` would have chosen here, and `load_one_minute` = `os.getloadavg()[0]`:
@@ -272,8 +275,12 @@ README's Tests section instead of wired into `install.sh`'s prompt loop.
 **Rollback asymmetry, named explicitly.** Phase 1 ships no config gate
 because it is fully stateless (no config row, no persisted data) — a
 plain code revert undoes it completely, unlike Phase 2's persisted log,
-which keeps the `test_selection_tracking` gate. An individual developer
-can also self-override at any time via `-n <N>` or an exported
+which keeps the `test_selection_tracking` gate. A Phase-1-only revert also
+removes `record_selection`'s two conditional `worker_count`/`load_average`
+fields, since they are populated from Phase 1's `WorkerSizingResult` — the
+log then reverts to Phase 2's original five-field shape, not to an
+error, because `size_result` is an optional parameter. An individual
+developer can also self-override at any time via `-n <N>` or an exported
 `PYTEST_XDIST_AUTO_NUM_WORKERS` (row5, M2).
 
 **Dispatch split:** two phases, one `code-writer` dispatch each, strictly
@@ -299,21 +306,30 @@ it is the unit's actual goal and stands alone if Phase 2 is deferred.
     machine gets today's worker count unchanged").
   - `compute_worker_count(*, cpu_budget: int, load_one_minute: float) ->
     int` — pure, no I/O, the formula above verbatim.
-  - `pytest_subprocess_env(base_env, *, getloadavg=os.getloadavg) ->
-    dict[str, str]` — M2's already-set check, M3's `except OSError` return
-    of `dict(base_env)`, otherwise `{**base_env, XDIST_WORKER_ENV_VAR:
-    str(workers)}`. The `getloadavg` keyword default is the injection
-    seam, matching `run_pytest`'s existing `run=subprocess.run` parameter
-    style.
+  - `pytest_subprocess_env(base_env, *, getloadavg) -> WorkerSizingResult`
+    — a `NamedTuple` of `env`, `outcome`, `worker_count: int | None`,
+    `load_average: float | None`, so the caller receives the sizing
+    decision itself rather than inferring it from the returned env dict.
+    `outcome` is one of three module-level string constants
+    (`WORKER_SIZING_ALREADY_SET`, `WORKER_SIZING_COMPUTED`,
+    `WORKER_SIZING_UNAVAILABLE`), matching `SelectionResult.reason`'s
+    existing bare-string convention in this file. `getloadavg` has no
+    default — the caller looks it up fresh at call time
+    (`getloadavg=os.getloadavg`) and passes it down explicitly, so a test
+    can monkeypatch `os.getloadavg` directly instead of stubbing this
+    function wholesale.
 
   Then give `run_pytest` an `env` keyword and pass it through to
-  `run(...)`; have `main()` build the env and print exactly one stderr
-  line in the same style as the existing reason lines — `select-tests:
-  PYTEST_XDIST_AUTO_NUM_WORKERS=<N> (1-minute load average <L>)`, or the
-  corresponding one-liner for the already-set and load-unavailable
-  branches. Naming what was set, rather than interpreting it, keeps the
-  line accurate even when a caller's own `-n <N>` wins per row5, with no
-  argv parsing.
+  `run(...)`; have `main()` compute the `WorkerSizingResult` once (skipped
+  entirely, as `None`, for the nothing-to-run early return, since pytest
+  never runs there and a `getloadavg()` syscall would be wasted) and print
+  exactly one stderr line in the same style as the existing reason lines
+  — `select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=<N> (1-minute load
+  average <L>)`, or the corresponding one-liner for the already-set and
+  load-unavailable branches, branching on `outcome` directly rather than
+  re-inspecting the env dict. Naming what was set, rather than
+  interpreting it, keeps the line accurate even when a caller's own
+  `-n <N>` wins per row5, with no argv parsing.
 
   **Reuse:** `run_pytest`'s existing `run=` parameter is already the test
   seam — do not add a second one. Do not touch `build_pytest_argv`; the
@@ -375,7 +391,10 @@ it is the unit's actual goal and stands alone if Phase 2 is deferred.
 - `claude/.claude/scripts/select-tests.py` — **modify.** Add `import
   json`, a UTC timestamp source, and `from _config import config_enabled`
   / `from _config_dir import config_dir` (row17). Add
-  `record_selection(selection, resolved_targets)`: return immediately
+  `record_selection(selection, resolved_targets, size_result=None)`,
+  where `size_result` is Phase 1's `WorkerSizingResult | None` (`None`
+  for the nothing-to-run outcome, where no sizing decision was made):
+  return immediately
   unless `config_enabled("test_selection_tracking")` is true; resolve the
   path as `config_dir() / ".test-selection-log.jsonl"`; append one JSON
   object with `logged_at` (ISO 8601 UTC, the field name
@@ -385,9 +404,16 @@ it is the unit's actual goal and stands alone if Phase 2 is deferred.
   longer — an unbounded list can push a single JSON line past one
   `write()` syscall's worth of bytes, and interleaving is exactly the
   failure mode concurrent invocations of this same log would otherwise
-  risk), `target_count`; wrap the whole body in `except
-  OSError` plus `except ValueError` (`config_dir()` raises `ValueError`
-  when unresolvable) and emit one stderr warning. Call it from `main()`
+  risk), `target_count`, and `worker_count` / `load_average` (added only
+  when a worker-sizing computation actually ran — omitted, not `null`,
+  for the already-set-by-caller, load-average-unavailable, and
+  nothing-to-run outcomes, matching `triggering_paths_truncated`'s own
+  conditional-field style); wrap the whole body in one `except` clause
+  catching `OSError`, `ValueError` (`config_dir()` raises `ValueError`
+  when unresolvable), `ConfigSchemaEmptyError`, and
+  `ConfigSchemaRowTruncatedError` (both `KeyError` subtypes `_config.py`'s
+  `config_enabled` raises for a torn or missing `config-keys.psv` row) and
+  emit one stderr warning. Call it from `main()`
   immediately after `resolved_targets` is computed and **before**
   `run_pytest`, so an interrupted or failing pytest run still records its
   selection.
@@ -431,10 +457,19 @@ it is the unit's actual goal and stands alone if Phase 2 is deferred.
 
 - `claude/.claude/scripts/tests/test_select_tests.py` — **modify.** Tests
   for: nothing written when the key resolves false; one well-formed JSON
-  line appended when true, with every one of the five documented fields
+  line appended when true, with every one of the seven documented fields
   (`logged_at`, `reason`, `is_full_suite`, `triggering_paths`,
-  `target_count`) asserted on the parsed object, not just JSON-validity
-  plus a `reason` match; the line's `reason` matching each of the five
+  `target_count`, `worker_count`, `load_average`) asserted on the parsed
+  object, not just JSON-validity plus a `reason` match, and `worker_count`
+  / `load_average` specifically asserted present when a sizing
+  computation ran and absent otherwise — at two layers: `record_selection`'s
+  own unit layer (a hand-built `WorkerSizingResult` passed directly is
+  sufficient to pin the field-gating logic) *and* a `main()`-level
+  integration test asserting the persisted log's `worker_count`/
+  `load_average` equal the values that same invocation's stderr line
+  reports, since the two are populated from one `size_result` computed
+  once in `main()` and a wiring regression at that call site would leave
+  the unit-layer test green; the line's `reason` matching each of the five
   outcomes `select-tests.py` actually produces —
   `"empty-diff"`, `"global-trigger"`, `"unmatched-path"`,
   `"domain-selected"`, `"git-unavailable"` — including
@@ -529,11 +564,17 @@ exception (`select-tests.py:494`) already routes to.
   logical to physical cores and still not adapt to load; the Phase 1
   guard test exists precisely to keep that decision explicit if it is
   ever revisited.
-- **No worker-count or load-average fields in the selection log.**
-  Tempting, and it would make the M1 formula tunable from field data —
-  but it couples two mechanisms this design scopes as independent, and
-  widens what the log records past the fallback-frequency question the
-  epic actually posed. Worth a follow-up once the log has been running.
+- **Reversed during review: worker-count and load-average fields are now
+  in the selection log.** Originally deferred here as coupling two
+  mechanisms this design scopes as independent. A `/ready-for-review`
+  consult found that the deferral left Phase 1's success criterion
+  unfalsifiable in the field (row14 already concedes the mechanism may
+  not measurably help the arrival pattern it targets, with no way to
+  tell from the log alone) and that fixing an unrelated sizing-seam bug
+  (`select-tests.py`'s `main` re-deriving its worker-sizing outcome
+  instead of receiving it from the sizing function) already puts both
+  values in `main`'s hands before the log write, making the addition two
+  conditional JSON keys rather than new coupling.
 - **No log rotation or size cap.** Matches
   `.permission-prompt-log.jsonl`'s documented posture
   (`docs/permission-prompt-tracking.md` § "Known limitations"):
