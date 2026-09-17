@@ -5,13 +5,12 @@
 `require-architect-consult.sh` denies a reviewer-persona spawn once a
 branch is at its round cap without a recent architect consult, and its
 deny message prescribes dispatching `plan-architect MODE=consult` and
-retrying. Before this entry, nothing told the dispatching session what the
-consult's free-prose return meant or where it routed, so the gate spent
-its one per-branch firing and the underlying review loop resumed
-unchanged the moment the retry succeeded. `code-review/SKILL.md`'s new
-`### Round-cap architect consult` section closes that gap by reading the
-return as exactly one of three verdicts — re-plan, stop escalating, or fix
-one concrete defect. `code-review/SKILL.md` § "Round-cap architect consult" states each verdict's routing directly; this entry doesn't restate it.
+retrying. `code-review/SKILL.md`'s `### Round-cap architect consult`
+section reads the consult's free-prose return as exactly one of three
+verdicts — re-plan, stop escalating, or fix one concrete defect — so the
+gate's one per-branch firing routes the loop instead of resuming it
+unchanged. `code-review/SKILL.md` § "Round-cap architect consult" states
+each verdict's routing directly. This entry doesn't restate it.
 
 Two rejected alternatives, both because a more literal reading of the
 trichotomy would have opened a hole:
@@ -33,10 +32,11 @@ never a standing exemption from the closed DEFER list.
 
 ## Spawn-obligation invariant
 
-**No verdict discharges a matched Change-type row's spawn obligation** — `code-review/SKILL.md` § "Round-cap architect consult" states this rule directly; this entry doesn't restate its routing. Without it, "the
-architect consult covered it" would function as non-specialist scrutiny
-silently substituting for a near-mandatory
-`ciso-reviewer`/`staff-product-engineer` spawn.
+**No verdict discharges a matched Change-type row's spawn obligation.**
+See `code-review/SKILL.md` § "Round-cap architect consult" for the
+routing rule itself. Without it, "the architect consult covered it"
+would function as non-specialist scrutiny silently substituting for a
+near-mandatory `ciso-reviewer`/`staff-product-engineer` spawn.
 
 ## Sources
 
