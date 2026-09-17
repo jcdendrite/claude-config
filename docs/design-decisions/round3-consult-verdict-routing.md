@@ -21,7 +21,7 @@ return as exactly one of three verdicts:
   The round finishes on the rows already enumerated and no new round
   opens. The verdict is evidence a given finding meets the existing
   gold-plating-beyond-declared-user-surface DEFER criterion, applied per
-  finding — never a blanket DEFER, and never a new criterion.
+  finding. It is never a blanket DEFER and never a new criterion.
 - **Foundation is fine, one concrete defect remains — fix it.** Only when
   the return names the defect's `file:line` and a concrete fix: an
   ordinary ADDRESS row, routed to `code-writer` like any other. A return
@@ -48,13 +48,13 @@ never a standing exemption from the closed DEFER list.
 ## Spawn-obligation invariant
 
 **No verdict discharges a matched Change-type row's spawn obligation.**
-"The architect consult covered it" is non-specialist scrutiny
-substituting for a dispatch, which the invalid-skip-rationale class in
-`code-review/SKILL.md`'s *Ripple effect triage* section already forecloses
-by its own stated principle, whether or not the consult's wording matches
-it verbatim. A denied reviewer spawn is retried immediately under the
-second and third verdicts. Under the first, the round ends and those
-rows spawn again once Step 1 re-runs against the replaced surface.
+"The architect consult covered it" is non-specialist scrutiny substituting
+for a dispatch. The invalid-skip-rationale class in `code-review/SKILL.md`'s
+*Ripple effect triage* section already forecloses that reasoning by its own
+stated principle, regardless of whether the consult's wording matches it
+verbatim. A denied reviewer spawn is retried immediately under the second
+and third verdicts. Under the first, the round ends and those rows spawn
+again once Step 1 re-runs against the replaced surface.
 Without this rule the new verdict-routing text would silently create
 an escape hatch around a near-mandatory
 `ciso-reviewer`/`staff-product-engineer` spawn.
