@@ -202,9 +202,8 @@ class TestDenyNoOpDispatch:
         )
 
     def test_created_in_error_incident_prompt_denied(self, isolated_home):
-        """The verbatim repo-transcript-sourced occurrence that evaded the
-        pre-widening NOOP_PHRASE_RE, caught by the new "no work to do"
-        alternative."""
+        """Regression pin: the repo-transcript-sourced occurrence that
+        NOOP_PHRASE_RE's "no work to do" alternative must catch."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -215,9 +214,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_gh_1022_reported_prompt_denied(self, isolated_home):
-        """GH-1022 regression pin: the reported prompt clears every
-        pre-widening alternative and is caught only by the "no (further )?
-        action" widening."""
+        """GH-1022 regression pin: the reported prompt is caught only by
+        the "no (further )?action" alternative, not any other alternative
+        in NOOP_PHRASE_RE."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -316,6 +315,21 @@ class TestDenyNoOpDispatch:
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
                 agent_input(prompt="There are no further actionable items, but keep monitoring the dashboard."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_no_further_actions_plural_status_report_residual_denied(self, isolated_home):
+        """Same missing-word-boundary residual as
+        test_actionable_word_substring_residual_denied, pinned here for the
+        plural "actions" status-report phrasing instead of "actionable" --
+        an ordinary sentence shape considerably more common in a genuine
+        legitimate prompt than the "actionable" fixture alone conveys."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There are no further actions required from you at this time."),
                 home=isolated_home,
             )
             == "deny"
