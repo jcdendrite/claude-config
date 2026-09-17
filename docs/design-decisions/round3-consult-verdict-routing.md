@@ -10,22 +10,8 @@ consult's free-prose return meant or where it routed, so the gate spent
 its one per-branch firing and the underlying review loop resumed
 unchanged the moment the retry succeeded. `code-review/SKILL.md`'s new
 `### Round-cap architect consult` section closes that gap by reading the
-return as exactly one of three verdicts:
-
-- **Foundation is wrong — re-plan.** The round ends: no further spawns, no
-  fix dispatch. The branch's plan file is revised through `plan-it` Step
-  5's revision re-dispatch, or `/plan-it` runs fresh when the branch has
-  none. The rows enumerated that round spawn again once Step 1 re-runs
-  against the replaced surface.
-- **Foundation is fine, the review loop is the noise — stop escalating.**
-  The round finishes on the rows already enumerated and no new round
-  opens. The verdict is evidence a given finding meets the existing
-  gold-plating-beyond-declared-user-surface DEFER criterion, applied per
-  finding. It is never a blanket DEFER and never a new criterion.
-- **Foundation is fine, one concrete defect remains — fix it.** Only when
-  the return names the defect's `file:line` and a concrete fix: an
-  ordinary ADDRESS row, routed to `code-writer` like any other. A return
-  that leaves the fix still to be designed does not qualify.
+return as exactly one of three verdicts — re-plan, stop escalating, or fix
+one concrete defect. `code-review/SKILL.md` § "Round-cap architect consult" states each verdict's routing directly; this entry doesn't restate it.
 
 Two rejected alternatives, both because a more literal reading of the
 trichotomy would have opened a hole:
@@ -47,16 +33,9 @@ never a standing exemption from the closed DEFER list.
 
 ## Spawn-obligation invariant
 
-**No verdict discharges a matched Change-type row's spawn obligation.**
-"The architect consult covered it" is non-specialist scrutiny substituting
-for a dispatch. The invalid-skip-rationale class in `code-review/SKILL.md`'s
-*Ripple effect triage* section already forecloses that reasoning by its own
-stated principle, regardless of whether the consult's wording matches it
-verbatim. A denied reviewer spawn is retried immediately under the second
-and third verdicts. Under the first, the round ends and those rows spawn
-again once Step 1 re-runs against the replaced surface.
-Without this rule the new verdict-routing text would silently create
-an escape hatch around a near-mandatory
+**No verdict discharges a matched Change-type row's spawn obligation** — `code-review/SKILL.md` § "Round-cap architect consult" states this rule directly; this entry doesn't restate its routing. Without it, "the
+architect consult covered it" would function as non-specialist scrutiny
+silently substituting for a near-mandatory
 `ciso-reviewer`/`staff-product-engineer` spawn.
 
 ## Sources
