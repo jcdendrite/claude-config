@@ -386,19 +386,19 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
     """Pins that the skill still has a heading matching the section name
     the hook file references.
 
-    - Hook-side check: substring presence anywhere in the file — an
-      unscoped scan that would still pass if the phrase survived only
-      in a stale comment after the actual deny message dropped it, so
-      this half alone does not catch hook-side message drift. That
-      drift is caught by the sibling behavioral test,
+    - Hook-side check: an unscoped substring scan, so it would still
+      pass if the phrase survived only in a stale comment after the
+      deny message itself dropped it.
+    - That drift is caught by the sibling behavioral test,
       `test_require_architect_consult.py::test_deny_message_contents`,
       which executes the hook and asserts on the real emitted string.
     - Skill-side check: full-line match anchored to the exact `###`
       heading text and level — a substring match would silently accept
       a heading rename.
     - Does not prove the routing rule is followed, only that the names
-      still agree, and does not distinguish a real heading from one
-      inside a code-fence example.
+      still agree.
+    - Does not distinguish a real heading from one inside a code-fence
+      example.
     """
     hook_file = _MAIN_HOOKS_DIR / "require-architect-consult.sh"
     skill_file = _SKILLS_DIR / "code-review" / "SKILL.md"

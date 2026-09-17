@@ -7,10 +7,9 @@ branch is at its round cap without a recent architect consult, and its
 deny message prescribes dispatching `plan-architect MODE=consult` and
 retrying. `code-review/SKILL.md`'s `### Round-cap architect consult`
 section reads the consult's free-prose return as exactly one of three
-verdicts — re-plan, stop escalating, or fix one concrete defect — so the
-gate's one per-branch firing routes the loop instead of resuming it
-unchanged. `code-review/SKILL.md` § "Round-cap architect consult" states
-each verdict's routing directly. This entry doesn't restate it.
+verdicts, so the gate's one per-branch firing routes the loop instead of
+resuming it unchanged. `code-review/SKILL.md` § "Round-cap architect consult" states each verdict's routing directly. This entry doesn't
+restate it.
 
 Two rejected alternatives, both because a more literal reading of the
 trichotomy would have opened a hole:
