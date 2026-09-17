@@ -388,11 +388,11 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
     routing the consult's return. That pointer goes stale if either side is
     renamed independently of the other, so this checks both halves: the hook
     still names the section, and the section still exists in the skill. The
-    two checks aren't symmetrically scoped — the hook-side check is a
-    file-wide substring presence check, while the skill-side check below is
-    anchored to the exact heading; the actual emitted deny-message text is
-    pinned separately by test_require_architect_consult.py's
-    test_deny_message_contents.
+    two checks aren't symmetrically scoped: the hook-side check is a
+    file-wide substring presence check, while the skill-side check is
+    anchored to the exact heading. The actual emitted deny-message text is
+    pinned separately by `test_require_architect_consult.py`'s
+    `test_deny_message_contents`.
 
     The skill-side check anchors a full-line match, not substring
     containment — a substring check would still pass a rename like "###
@@ -404,7 +404,9 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
 
     What this does not prove: that the routing rule inside that section is
     itself correct, or that a session actually follows it — only that the
-    hook's pointer and the skill's heading still agree on a name.
+    hook's pointer and the skill's heading still agree on a name. It also does
+    not distinguish a real heading from the same literal string appearing
+    inside a markdown code-fence example elsewhere in the file.
     """
     hook_file = _MAIN_HOOKS_DIR / "require-architect-consult.sh"
     skill_file = _SKILLS_DIR / "code-review" / "SKILL.md"
