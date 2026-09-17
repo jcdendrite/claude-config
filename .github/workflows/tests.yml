@@ -37,10 +37,10 @@ jobs:
     # the two-pass split trades that one number for parallel-pass wall time
     # plus a mostly-serial timing pass, not yet re-measured end to end here.
     # Add to that the shellcheck step (~10s) and apt-get update + install
-    # stow (~10-20s on a typical runner, more on a stale package-index
-    # cache). 10 minutes gives headroom above the two-pass total so
-    # continued organic test-suite growth doesn't require another bump on
-    # every PR that happens to add the next test.
+    # stow and direnv (~10-20s on a typical runner, more on a stale
+    # package-index cache). 10 minutes gives headroom above the two-pass
+    # total so continued organic test-suite growth doesn't require another
+    # bump on every PR that happens to add the next test.
     timeout-minutes: 15
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
@@ -144,12 +144,15 @@ jobs:
       # test_relocate_claude_config.py exercises real stow/stow -D (not a
       # stub) — a fake stow would let a wrong working directory or -t/-d
       # targeting pass silently, which is exactly what that script's
-      # correctness depends on.
-      - name: Install stow
+      # correctness depends on. Likewise, test_ci_watch.py's real-direnv
+      # tests exercise actual direnv hook output, not a stub, so direnv
+      # must be a real binary too.
+      - name: Install stow and direnv
         if: steps.detect.outputs.changed == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y stow
+          sudo apt-get install -y stow direnv
+          direnv --version
 
       - name: Report runner core count
         if: steps.detect.outputs.changed == 'true'

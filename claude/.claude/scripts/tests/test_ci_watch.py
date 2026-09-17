@@ -30,6 +30,7 @@ from .conftest import (
     _direnv_shim_source_static_export,
     _direnv_shim_source_unconditional_unset,
     _shimmed_env,
+    require_direnv,
 )
 
 # Path to the script under test (resolved relative to this file)
@@ -1172,14 +1173,41 @@ def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path
     assert "resolved via direnv" not in result.stderr
 
 
+# ---------------------------------------------------------------------------
+# require_direnv — unit-level coverage of the helper itself
+#
+# The two real-direnv end-to-end tests below both gate on require_direnv(),
+# but neither one can exercise its hard-fail branch (GITHUB_ACTIONS set,
+# direnv absent) — that combination never occurs on a real CI runner once
+# .github/workflows/tests.yml's "Install stow and direnv" step has run.
+# These tests drive require_direnv() directly, stubbing shutil.which so
+# neither branch depends on whether direnv actually happens to be
+# installed on the machine running the suite.
+# ---------------------------------------------------------------------------
+
+def test_require_direnv_raises_when_github_actions_set_and_direnv_absent(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with pytest.raises(pytest.fail.Exception):
+        require_direnv()
+
+
+def test_require_direnv_skips_when_github_actions_unset_and_direnv_absent(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        require_direnv()
+
+
 def test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end(tmp_path):
     # Only test in this file running real direnv end-to-end, to catch drift
     # between the shims above and real direnv's own export behavior.
     # `XDG_DATA_HOME`/`DIRENV_CONFIG` are redirected into `tmp_path` so this
     # test never touches this machine's real direnv allow-store or config.
-    # Skipped in CI: .github/workflows/tests.yml doesn't install direnv.
-    if not shutil.which("direnv"):
-        pytest.skip("direnv not installed")
+    # Runs in CI too: .github/workflows/tests.yml's "Install stow and
+    # direnv" step installs whatever direnv version Ubuntu 24.04's apt
+    # repo carries.
+    require_direnv()
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     # Token reconfirms at its already-ambient value, so the per-token
@@ -1250,11 +1278,11 @@ def test_real_direnv_cd_between_directories_clears_stale_token(tmp_path):
     # unsets a variable its own diff shows it added, not one that merely
     # happened to already equal the .envrc's exported value beforehand.
     # dir_b's own `direnv export bash` payload then contains an explicit
-    # `unset CI_CHECKS_GH_TOKEN;`. Local-machine-only coverage, like
-    # test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end
-    # above: .github/workflows/tests.yml doesn't install direnv.
-    if not shutil.which("direnv"):
-        pytest.skip("direnv not installed")
+    # `unset CI_CHECKS_GH_TOKEN;`. Runs in CI too, like
+    # test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end above:
+    # .github/workflows/tests.yml's "Install stow and direnv" step installs
+    # direnv there as well.
+    require_direnv()
     dir_a = tmp_path / "dir_a"
     dir_b = tmp_path / "dir_b"
     dir_a.mkdir()
