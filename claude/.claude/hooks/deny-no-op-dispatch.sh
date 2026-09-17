@@ -49,12 +49,11 @@ DENY_GATE_LABEL="no-op-dispatch"
 # into it.
 NOOP_MAX_PROMPT_LEN=600
 
-# Every idiom below traces to one of three sources: it appears verbatim in
-# a confirmed no-op dispatch from this repo's own transcript history, it
-# is named verbatim in claude/.claude/CLAUDE.md's Agent Briefing bullet as
-# a prohibited shape, or it is quoted verbatim in a public issue against
-# this repository and confirmed by the maintainer as a real occurrence. An
-# idiom grounded in none of the three does not go in either list -- see
+# Every idiom below traces to one of three sources, in order:
+# 1. verbatim in a confirmed no-op dispatch from this repo's transcript history
+# 2. named verbatim in claude/.claude/CLAUDE.md's Agent Briefing bullet as a prohibited shape
+# 3. quoted verbatim in a public issue against this repo, maintainer-confirmed as real
+# An idiom grounded in none of the three does not go in either list -- see
 # docs/design-decisions/no-op-dispatch-hook-gate.md.
 #
 # Anchored against the whole (whitespace-collapsed) prompt: the entire

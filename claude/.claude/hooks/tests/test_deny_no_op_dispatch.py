@@ -311,14 +311,51 @@ class TestDenyNoOpDispatch:
 
     def test_no_further_actions_plural_status_report_residual_denied(self, isolated_home):
         """Same missing-word-boundary residual as
-        test_actionable_word_substring_residual_denied, pinned here for the
-        plural "actions" status-report phrasing instead of "actionable" --
-        an ordinary sentence shape considerably more common in a genuine
-        legitimate prompt than the "actionable" fixture alone conveys."""
+        test_actionable_word_substring_residual_denied, pinned for the
+        plural "actions" status-report phrasing instead of "actionable"."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
                 agent_input(prompt="There are no further actions required from you at this time."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_no_work_to_document_word_substring_residual_denied(self, isolated_home):
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): `no work to do` has no trailing word boundary,
+        so it matches inside `document`."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm there is no work to document for this release."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_no_work_to_download_word_substring_residual_denied(self, isolated_home):
+        """Same missing-trailing-word-boundary residual as
+        test_no_work_to_document_word_substring_residual_denied, pinned
+        for "download" instead of "document"."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm there is no work to download before enabling offline mode."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_no_work_to_double_check_word_substring_residual_denied(self, isolated_home):
+        """Same missing-trailing-word-boundary residual as
+        test_no_work_to_document_word_substring_residual_denied, pinned
+        for "double-check" instead of "document"."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm there is no work to double-check before merging."),
                 home=isolated_home,
             )
             == "deny"
