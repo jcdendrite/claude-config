@@ -22,7 +22,7 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 ## Step 0.1 — Short-circuit already-reviewed diff
 
-Run `~/.claude/scripts/marker.sh check code-review` bare. Its stdout is the verdict, and the Bash tool already reports a nonzero exit, so append no `; echo $?` (the marker-script-shape gate denies it). Stdout `match age_seconds=<N>` (exit 0) means the staged diff's hash matches a clean code-review marker written within the freshness bound. Report "the staged diff already matches a clean code-review marker written <age> ago — skipping" (substituting a human-readable age for `<age>`) and stop, skipping every step below. Any other exit means proceed to Step 0.5.
+Run `~/.claude/scripts/marker.sh check code-review` bare: its stdout and the Bash tool's own exit-code report already carry the verdict. Do not append `; echo $?`, since the marker-script-shape gate denies that shape. Stdout `match age_seconds=<N>` (exit 0) means the staged diff's hash matches a clean code-review marker written within the freshness bound. Report "the staged diff already matches a clean code-review marker written <age> ago — skipping" (substituting a human-readable age for `<age>`) and stop, skipping every step below. Any other exit means proceed to Step 0.5.
 
 ## Step 0.5 — Load project-specific layer
 
