@@ -56,6 +56,129 @@ which is why the skill shapes it out rather than merely discouraging it.
 > review a CL description before submitting the CL, to ensure that the
 > description still reflects what the CL does.
 
+### Sources for the default section template
+
+`DEFAULT_TEMPLATE.md` supplies the section skeleton when the repo ships no
+`.github/PULL_REQUEST_TEMPLATE.md`. Its five headings rest on a survey of 21
+sources, tallied per element with no pre-filtering. The sources that carry
+content, in survey order:
+
+- Google, "Writing good CL descriptions" (URL above): the one source that
+  argues against rigid headings, for prose stating what and why with a
+  bug/issue reference line.
+- Microsoft, Code With Engineering Playbook:
+  `https://microsoft.github.io/code-with-engineering-playbook/code-reviews/pull-request-template/`
+  — an 8-part template: Work Item ID, Description (what/impact/solution),
+  Steps to Reproduce Bug (bug-only; the template says delete it for non-bug
+  PRs), PR Checklist, breaking-change flag with migration, Testing (OS, test
+  sets, scenarios), Logs/Outputs, additional info/known dependencies/TODOs.
+- GitHub blog, "How to write the perfect pull request":
+  `https://github.blog/developer-skills/github/how-to-write-the-perfect-pull-request/`
+  — no rigid template; purpose and why with links; an explicit ask for the
+  desired feedback type; a "[WIP]" prefix; an @mention with its rationale.
+- Atlassian, "The (written) unwritten guide to pull requests":
+  `https://www.atlassian.com/blog/git/written-unwritten-guide-pull-requests`
+  — explicitly guidelines, not rules; screenshots for front-end changes; a
+  useful summary title; related files grouped for reviewer navigation.
+- GitLab, Development docs, Merge Request Workflow:
+  `https://docs.gitlab.com/development/contributing/merge_request_workflow/`
+  — a clear title and description; setup or steps a reviewer needs (e.g.
+  feature flags); before/after screenshots for UI; changelog entries "if
+  necessary"; issue links as full URLs.
+- Chromium, contributing.md:
+  `https://chromium.googlesource.com/chromium/src/+/main/docs/contributing.md`
+  — a one-line summary plus a longer description (why, context, previous vs.
+  new behavior); a `Bug:` footer; an optional `Test:` footer.
+- Shopify Engineering, "On the Importance of Pull Request Discipline":
+  `https://shopify.engineering/on-the-importance-of-pull-request-discipline`
+  — summaries answer what and "why this way"; write as though the reviewer
+  has little to no context; diagrams (mermaid.js) for complex changes;
+  document alternatives considered and justify the chosen one; bug fixes
+  detail background, how it was caught, and resolution.
+- Kubernetes community guide, pull-requests.md:
+  `https://github.com/kubernetes/community/blob/master/contributors/guide/pull-requests.md`
+  — a WIP prefix; remaining TODOs tracked as a checklist; a "Special notes
+  for your reviewer" section for large or generated diffs; an AI-disclosure
+  requirement (single-source).
+- Kubernetes PULL_REQUEST_TEMPLATE.md: a bare `Fixes <issue number>` plus
+  SIG routing, with no rationale.
+- Rails, `.github/pull_request_template.md`: Motivation/Background (why,
+  issue link), Detail (what), Additional information (benchmarks,
+  alternatives, references), Checklist (single-topic scope, tests,
+  CHANGELOG).
+- Automattic, `wordpress-activitypub/docs/pull-request.md` (single repo):
+  issue link, proposed changes, testing instructions, changelog,
+  screenshots, title and summary.
+- Creative Commons, PR guidelines:
+  `https://opensource.creativecommons.org/contributing-code/pr-guidelines/`
+  — use the repo's PR template fully; detail over brevity; describe how it
+  was tested; preview-check the rendering.
+- opensource.guide (GitHub), `how-to-contribute.md`: explain the changes and
+  why they are valuable; reference issues; before/after screenshots for
+  HTML/CSS.
+- Gergely Orosz, The Pragmatic Engineer, "Pull Request (or Diff) Best
+  Practices":
+  `https://blog.pragmaticengineer.com/pull-request-or-diff-best-practices/`
+  — opinion tier: a short expressive title; a clear "why" section; a link to
+  the tracking task; before/after screenshots or gifs for client-side
+  changes.
+- Linux kernel, "Submitting patches":
+  `https://docs.kernel.org/process/submitting-patches.html` — email-patch
+  genre, not GitHub PR: describe the underlying problem and the user-visible
+  impact; back performance, memory, and size claims with numbers; why
+  matters more than what.
+- arXiv 2602.14611 (MSR 2026), "The Value of Effective Pull Request
+  Description": mixed-methods, 80,000 PRs across 156 projects plus a
+  64-developer survey. Purpose and rationale preserve change history, and
+  stating the desired feedback type is the study's strongest predictor of
+  change acceptance and reviewer engagement, despite being rare in vendor
+  templates. The ACM DL copy returned HTTP 403 and the arXiv preprint was
+  read through a summarizing fetch, so its findings here are paraphrase and
+  no effect-size figure is quoted.
+
+**Convergence tally (N of 21 sources).** Issue/ticket link 12; what-changed
+10; why/motivation 10; screenshots-when-applicable 6; testing instructions
+5; pre-submit checklist 3; desired-feedback-type 3; changelog 3; title
+clarity 3; alternatives-considered 2 (Shopify, Rails);
+context-for-unfamiliar-reviewer 2 (Shopify, Linux kernel); setup/repro steps
+2 (conditional); WIP flag 2; additional-info/follow-ups 2; breaking-change
+flag 1; quantified performance numbers 1; AI-disclosure 1; diagrams 1;
+related-file grouping 1.
+
+**Heading-based structure, with Google's dissent on record.** Every source
+that ships a template (Microsoft, GitLab, Rails, Chromium, Kubernetes) uses
+labeled headings. Only Google's "Writing good CL descriptions" argues for
+prose instead. The skill follows the majority convention.
+
+**Quotes the conditional headings rest on:**
+
+- `## Screenshots`: Atlassian — *"Add some screenshots for your front-end
+  changes!"*; GitLab — "before/after screenshots" for UI changes.
+- `## Alternatives considered`: Shopify — *"when multiple solutions existed,
+  document the main solution justified"*; Rails — the "Additional
+  information" heading includes *"alternative solutions, references."*
+- `## Context for the reviewer`: Shopify — *"write as though the reviewer
+  has little to no context"*; Linux kernel — *"there must be an underlying
+  problem that motivated you to do this work,"* *"describe user-visible
+  impact."*
+
+**Excluded from the default template despite citation** (each is cited by at
+least one source and left out by scope decision):
+
+- Pre-submit checklist (3 of 21): not part of the template's scope.
+- Changelog entry (3 of 21): most of the time not relevant.
+- AI-assistance disclosure (1 of 21, Kubernetes only): this repo's commit and
+  PR attribution lines already disclose it.
+- Issue/ticket linkage (12 of 21) is not a heading either: the
+  closing-keyword bullet in `SKILL.md` already owns it.
+
+**Deferred: reviewer-feedback-type.** The MSR 2026 paper's strongest
+empirical finding, but only 3 of 21 sources mention the element. A mandated
+reader-facing question is out of scope, and an optional-aside framing (à la
+Kubernetes' "Special notes for your reviewer") needs its own source check on
+what feedback guidance an AI PR author should give, since a human author's
+judgment call does not transfer directly.
+
 ## Sources checked and set aside
 
 **GitHub, "Creating a pull request":** carries no normative guidance on body
@@ -68,6 +191,26 @@ commit-message format, not PR body content, and this repo already derives
 its PR title grammar (`<TICKET-ID>: <slug>`) from the branch name in
 `/ready-for-review` step 1, so adopting it would conflict rather than fill a
 gap.
+
+**Section-template survey, sources set aside as element-level grounding:**
+
+- thoughtbot, `guides/code-review/README.md`: no PR-description-content
+  guidance found.
+- Google Blockly, "Write a good PR"
+  (`https://docs.blockly.com/guides/modify/contribute/write_a_good_pr`): too
+  thin to ground any specific element. It defers to the repo template and
+  warns that AI-drafted descriptions run long.
+- GNOME Handbook, Commit Messages
+  (`https://handbook.gnome.org/development/commit-messages.html`), and the
+  Linux kernel's "Submitting patches": commit-message and email-patch genres,
+  adjacent to GitHub PR-description guidance. Cited for background only,
+  where noted above.
+- Bacchelli and Bird, "Expectations, Outcomes, and Challenges of Modern Code
+  Review" (ICSE 2013): background on code review, not a content taxonomy, so
+  it grounds no specific template element.
+- Sadowski et al., "Modern Code Review: A Case Study at Google"
+  (ICSE-SEIP 2018): the fetch returned corrupted, binary text, so nothing is
+  cited from it.
 
 ## Tool behavior the skill depends on
 

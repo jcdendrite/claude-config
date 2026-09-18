@@ -45,6 +45,10 @@ from typing import NamedTuple
 
 import pytest
 
+# pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
+# path, where the auxiliary-filename constant shared with select-tests.py lives.
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
+
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
 from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
@@ -1165,6 +1169,35 @@ class TestPrDescriptionExternalStateCheck:
         claim, and can misclassify a CI-passing claim as re-verify-and-
         rewrite instead of strip (staff-sdet finding, GH-476 code review)."""
         assert "whether CI is *passing* is not" in self._body()
+
+
+class TestPrDescriptionDefaultTemplateWiring:
+    """Wiring tripwire: SKILL.md points at DEFAULT_TEMPLATE.md through the
+    harness-substituted skill-directory variable, and the file it points at
+    exists with the five section headings in their fixed order. Nothing else
+    reads that file at test time, so a deleted or reordered template would
+    otherwise ship silently."""
+
+    _EXPECTED_HEADINGS = [
+        "Summary",
+        "Screenshots",
+        "Context for the reviewer",
+        "Alternatives considered",
+        "Test plan",
+    ]
+
+    def test_skill_md_points_at_default_template(self):
+        assert "${CLAUDE_SKILL_DIR}/DEFAULT_TEMPLATE.md" in _skill_file("pr-description").read_text()
+
+    def test_default_template_file_exists(self):
+        assert (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").is_file()
+
+    def test_default_template_has_the_five_headings_in_order(self):
+        template = (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").read_text()
+        # Fence-unaware: a fenced `## ...` example added to the template would
+        # need this to skip code regions.
+        headings = re.findall(r"^## (.+)$", template, flags=re.MULTILINE)
+        assert headings == self._EXPECTED_HEADINGS
 
 
 class TestPrDescriptionCostSectionWiring:
@@ -2884,7 +2917,8 @@ _BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
 
 # Known limit, deliberately not closed: this extractor can't tell a live
 # citation from an illustrative example of the citation grammar, so an
-# example inside a scanned SKILL.md/REFERENCES.md will false-fail. Currently
+# example inside a scanned SKILL.md or SKILL_AUXILIARY_MD_NAMES sibling will
+# false-fail. Currently
 # safe only because the grammar's own explanation lives outside the scanned
 # corpus (`.claude/rules/skill-and-agent-self-review.md`).
 
@@ -3009,14 +3043,11 @@ def _resolve_citation_target(
 
 
 def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
-    """A SKILL.md plus its REFERENCES.md/ROUTING.md siblings, if present —
-    the two co-located auxiliary files `.claude/rules/skill-and-agent-self-review.md`
-    already names."""
+    """A SKILL.md plus its co-located auxiliary siblings, if present — the
+    files `.claude/rules/skill-and-agent-self-review.md` names, listed in
+    SKILL_AUXILIARY_MD_NAMES."""
     sources = [skill_md_path]
-    # This set must stay in sync with select-tests.py's
-    # _is_skill_auxiliary_md_change — a shared constant would be warranted
-    # if a third auxiliary filename type is ever added.
-    for sibling_name in ("REFERENCES.md", "ROUTING.md"):
+    for sibling_name in SKILL_AUXILIARY_MD_NAMES:
         sibling = skill_md_path.parent / sibling_name
         if sibling.exists():
             sources.append(sibling)
@@ -3060,9 +3091,9 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     a real file and an exact heading in it.
 
     Scanned corpus: every SKILL.md (`_all_skill_md_files`) plus every
-    REFERENCES.md/ROUTING.md sibling in those same skill directories —
-    widened past SKILL.md alone because a stale citation this test guards
-    against lives in review-permissions/REFERENCES.md.
+    auxiliary sibling (SKILL_AUXILIARY_MD_NAMES) in those same skill
+    directories — widened past SKILL.md alone because a stale citation this
+    test guards against lives in review-permissions/REFERENCES.md.
 
     Reports every violation at once rather than failing on the first, so a
     contributor fixes the whole set in one pass — same convention as
@@ -3118,7 +3149,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     warrant-check section resolves to a real heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus
-    (SKILL.md plus its REFERENCES.md/ROUTING.md siblings only), so
+    (SKILL.md plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
@@ -3148,7 +3179,7 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
     heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
-    plus its REFERENCES.md/ROUTING.md siblings only), so
+    plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees these citations
     — targeted narrowly here instead of widening that corpus.
     """
@@ -3465,6 +3496,18 @@ def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
             # ROUTING.md — would be 0 if that sibling were never scanned.
             1,
             id="routing-md-sibling-is-scanned",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": "## Real Heading\n",
+                "example-skill/DEFAULT_TEMPLATE.md": (
+                    "## Template\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'
+                ),
+            },
+            # Proves _citation_sources_for_skill_md walks into
+            # DEFAULT_TEMPLATE.md — would be 0 if that sibling were never scanned.
+            1,
+            id="default-template-md-sibling-is-scanned",
         ),
         pytest.param(
             {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Real Heading"\n'},

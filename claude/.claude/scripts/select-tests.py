@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 from _config import ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError, config_enabled
 from _config_dir import config_dir
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
 # Hang-detection backstop, not a measured worst case.
 # Sized between post-crash-sessions.py's 5.0s and 25.0s timeouts.
@@ -99,6 +100,11 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
 # this file's second target.
 HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
+
+# test_skills.py (SKILLS_TESTS_DIR) imports SKILL_AUXILIARY_MD_NAMES from this
+# module, an import dependency TestCrossDomainReadCompleteness cannot see.
+# SCRIPTS_DIR's own domain rule already selects SCRIPTS_TESTS_DIR for it.
+SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
 PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
@@ -271,12 +277,10 @@ def _is_skill_md_change(path: str) -> bool:
 
 
 # test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR) scans every
-# REFERENCES.md and ROUTING.md sibling of a SKILL.md, not just SKILL.md itself.
-# This set must stay in sync with _citation_sources_for_skill_md's sibling
-# names in test_skills.py — a shared constant would be warranted if a third
-# auxiliary filename type is ever added.
+# auxiliary sibling of a SKILL.md, not just SKILL.md itself. The filenames
+# live in _skill_auxiliary_files.py, shared with that test.
 def _is_skill_auxiliary_md_change(path: str) -> bool:
-    return _is_under(path, SKILLS_DIR) and Path(path).name in {"REFERENCES.md", "ROUTING.md"}
+    return _is_under(path, SKILLS_DIR) and Path(path).name in SKILL_AUXILIARY_MD_NAMES
 
 
 def _is_hooks_or_skills_change(path: str) -> bool:
@@ -400,6 +404,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # scripts and reads SKILL.md files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
+# SKILL_AUXILIARY_FILES_MODULE: see its own comment above for citation.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
@@ -472,6 +477,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
+    (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),

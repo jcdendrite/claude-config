@@ -505,8 +505,8 @@ class TestSelectPytestTargets:
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
         """test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR)
-        scans every REFERENCES.md/ROUTING.md sibling of a SKILL.md, not just
-        SKILL.md itself -- a REFERENCES.md-only diff must domain-select
+        scans every auxiliary sibling of a SKILL.md (SKILL_AUXILIARY_MD_NAMES),
+        not just SKILL.md itself -- a REFERENCES.md-only diff must domain-select
         rather than fall open to the full suite."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/REFERENCES.md"])
         assert result.is_full_suite is False
@@ -522,9 +522,28 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
+    def test_skill_default_template_md_change_selects_skills_tests(self):
+        """Same _is_skill_auxiliary_md_change rule as the REFERENCES.md and
+        ROUTING.md cases above, for the third filename in
+        SKILL_AUXILIARY_MD_NAMES -- a DEFAULT_TEMPLATE.md-only diff must
+        domain-select rather than fall open to the full suite."""
+        result = _mod.select_pytest_targets(["claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_skill_auxiliary_files_module_change_also_selects_skills_tests(self):
+        """test_skills.py (SKILLS_TESTS_DIR) imports SKILL_AUXILIARY_MD_NAMES
+        from this module. TestCrossDomainReadCompleteness resolves
+        path-constant reads, not imports, so this row is hand-declared;
+        without it SCRIPTS_DIR's domain rule claims the path alone."""
+        result = _mod.select_pytest_targets([_mod.SKILL_AUXILIARY_FILES_MODULE])
+        assert result.is_full_suite is False
+        assert _mod.SKILLS_TESTS_DIR in result.target_paths
+
     def test_non_skill_auxiliary_file_under_skills_is_unmatched_and_falls_open(self):
-        """A skill-directory file that is neither SKILL.md, REFERENCES.md,
-        nor ROUTING.md matches no skills domain rule and falls open."""
+        """A skill-directory file that is not SKILL.md or one of the
+        SKILL_AUXILIARY_MD_NAMES (REFERENCES.md, ROUTING.md,
+        DEFAULT_TEMPLATE.md) matches no skills domain rule and falls open."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/scratch.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
@@ -1455,6 +1474,7 @@ class TestPytestSubprocessEnv:
 # real on-disk path leaves that predicate silently dead -- it matches
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
+    _mod.SKILL_AUXILIARY_FILES_MODULE,
     _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST,
     _mod.README_MD,
     _mod.INSTALL_SH,

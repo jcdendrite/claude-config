@@ -396,6 +396,55 @@ class TestCheckSkillLength:
             == "deny"
         )
 
+    def test_pr_description_default_template_md_uses_default_limit(self, isolated_home, tmp_path):
+        """pr-description/DEFAULT_TEMPLATE.md has no override: at/under the 200-line default, growing → allow."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        template_path = "claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / template_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / template_path).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_pr_description_default_template_md_over_default_limit_denies(self, isolated_home, tmp_path):
+        """pr-description/DEFAULT_TEMPLATE.md over the 200-line default and growing → deny.
+
+        201 lines would be allowed under pr-description/SKILL.md's 210-line
+        override, so a deny proves the template takes the default instead."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        template_path = "claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / template_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / template_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_pr_description_over_default_under_override_allows(
         self, isolated_home, tmp_path
     ):
