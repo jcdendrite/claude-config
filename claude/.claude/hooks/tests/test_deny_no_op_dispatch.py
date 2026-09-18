@@ -80,8 +80,8 @@ GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with 
 # ("do nothing", "report back immediately") inside a legitimate
 # conditional clause -- pins that the length conjunct, not the idiom list,
 # is what makes a real task specification unreachable by this gate.
-# It is not re-instantiated per idiom added, because the length conjunct
-# short-circuits before either regex arm is evaluated.
+# The length conjunct short-circuits before either regex arm runs, so one
+# fixture covers every idiom.
 ADVERSARIAL_OVER_CEILING_PROMPT = (
     "Check the feature-flag rollout status before doing anything else. If "
     "the flag is still in the 'paused' state, do nothing further this "
@@ -299,125 +299,41 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
-    def test_actionable_word_substring_residual_denied(self, isolated_home):
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "There are no actionable items right now, but keep monitoring the dashboard.",
+                id="trailing-bare-no-action",
+            ),
+            pytest.param(
+                "There are no further actions required from you at this time.",
+                id="trailing-no-further-action",
+            ),
+            pytest.param(
+                "Review the piano action mechanism before the recital.",
+                id="leading-no-action",
+            ),
+            pytest.param(
+                "Confirm there is no work to document for this release.",
+                id="trailing-no-work-to-do",
+            ),
+            pytest.param(
+                "The construction crew has considerable casino work to do before opening night.",
+                id="leading-no-work-to-do",
+            ),
+            pytest.param(
+                "The task exists only sometimes.",
+                id="trailing-exists-only-so",
+            ),
+        ],
+    )
+    def test_word_substring_residual_denied(self, isolated_home, prompt):
         """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no (further )?action` has no word boundary,
-        so it matches inside `actionable`."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="There are no further actionable items, but keep monitoring the dashboard."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_further_actions_plural_status_report_residual_denied(self, isolated_home):
-        """Same missing-word-boundary residual as
-        test_actionable_word_substring_residual_denied, pinned for the
-        plural "actions" status-report phrasing instead of "actionable"."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="There are no further actions required from you at this time."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_action_bare_word_substring_residual_denied(self, isolated_home):
-        """Same missing-word-boundary residual as
-        test_actionable_word_substring_residual_denied, pinned for the
-        bare `no action` form instead of `no further action`."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="There are no actionable items right now, but keep monitoring the dashboard."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_actions_plural_bare_word_substring_residual_denied(self, isolated_home):
-        """Same missing-word-boundary residual as
-        test_no_further_actions_plural_status_report_residual_denied,
-        pinned for the bare `no action` form instead of `no further
-        action`."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="There are no actions required from you at this time."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_work_to_document_word_substring_residual_denied(self, isolated_home):
-        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no work to do` has no trailing word boundary,
-        so it matches inside `document`."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="Confirm there is no work to document for this release."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_work_to_download_word_substring_residual_denied(self, isolated_home):
-        """Same missing-trailing-word-boundary residual as
-        test_no_work_to_document_word_substring_residual_denied, pinned
-        for "download" instead of "document"."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="Confirm there is no work to download before enabling offline mode."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_no_work_to_double_check_word_substring_residual_denied(self, isolated_home):
-        """Same missing-trailing-word-boundary residual as
-        test_no_work_to_document_word_substring_residual_denied, pinned
-        for "double-check" instead of "document"."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="Confirm there is no work to double-check before merging."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_piano_action_leading_word_substring_residual_denied(self, isolated_home):
-        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no (further )?action` has no leading word
-        boundary, so it matches inside "piano action"."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="Review the piano action mechanism before the recital."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_casino_work_to_do_leading_word_substring_residual_denied(self, isolated_home):
-        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no work to do` has no leading word boundary,
-        so it matches inside "casino work to do"."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(
-                    prompt="The construction crew has considerable casino work to do before opening night."
-                ),
-                home=isolated_home,
-            )
-            == "deny"
-        )
+        Known gaps section): no NOOP_PHRASE_RE alternative carries a word
+        boundary, so each matches inside a longer word. A future boundary
+        fix must revisit this table."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "deny"
 
     # ------------------------------------------------------------------ #
     # Allow                                                               #
