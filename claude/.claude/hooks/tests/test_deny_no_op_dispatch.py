@@ -23,9 +23,10 @@ NOOP_MAX_PROMPT_LEN = 600
 # not already exercised by a dedicated test below, as a standalone or
 # minimally-wrapped short prompt. It also covers:
 # - one mixed-case fixture pinning grep -qiE's case-insensitivity.
-# - exhaustive branch coverage for the regex's three nested groups: every
-#   `do(ing|es)? nothing` verb form, both `exists only (so|to)`
-#   prepositions, and both `no (further )?action` branches.
+# - exhaustive branch coverage for the regex's three nested groups:
+#   - every `do(ing|es)? nothing` verb form
+#   - both `exists only (so|to)` prepositions
+#   - both `no (further )?action` branches
 # - one fixture pinning NOOP_STUB_TOKEN_RE's `[[:punct:]]*`
 #   trailing-punctuation quantifier (`noop.`).
 NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
@@ -71,8 +72,8 @@ CREATED_IN_ERROR_INCIDENT_PROMPT = (
 )
 
 # The prompt quoted verbatim in GH-1022 and confirmed by the maintainer as
-# a real occurrence (71 characters) -- the third grounding source named in
-# deny-no-op-dispatch.sh's header comment.
+# a real occurrence (71 characters). It is the third grounding source
+# named in deny-no-op-dispatch.sh's header comment.
 GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with no further action."
 
 # A long, over-ceiling prompt that deliberately contains two idioms
