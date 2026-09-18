@@ -399,6 +399,8 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
       still agree.
     - Does not distinguish a real heading from one inside a code-fence
       example.
+    - Does not match the closing-hash ATX form (`### heading ###`), a
+      CommonMark-legal variant this corpus does not currently use.
     """
     hook_file = _MAIN_HOOKS_DIR / "require-architect-consult.sh"
     skill_file = _SKILLS_DIR / "code-review" / "SKILL.md"
