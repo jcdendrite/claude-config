@@ -1906,18 +1906,17 @@ class TestMainComposition:
         assert recorded["cwd"] == fake_repo_root
 
     def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch, tmp_path):
-        """A domain-selected-but-empty target set (e.g. a .claude/plans/
-        change) must short-circuit before run_pytest, not fall through to
-        a bare `pytest` invocation that recursively collects the whole
-        repo. Also asserts the selection still gets logged exactly once on
-        this early-return path, not just on the run_pytest-reaching paths
-        TestRecordSelectionReasonCoverage already covers.
-
-        Also pins that `main()` passes `size_result=None` to
-        `record_selection` on this early-return path without calling
-        `getloadavg`; `os.getloadavg` is stubbed to raise if called, so a
-        regression that wastefully computes real sizing here fails
-        directly rather than via the absence assertion below."""
+        """Asserts three things: (1) a domain-selected-but-empty target set
+        (e.g. a .claude/plans/ change) short-circuits before `run_pytest`
+        rather than falling through to a bare `pytest` invocation that
+        recursively collects the whole repo; (2) the selection still gets
+        logged exactly once on this early-return path, not just on the
+        run_pytest-reaching paths TestRecordSelectionReasonCoverage already
+        covers; (3) `main()` passes `size_result=None` to `record_selection`
+        on this early-return path without calling `getloadavg` --
+        `os.getloadavg` is stubbed to raise if called, so a regression that
+        wastefully computes real sizing here fails directly rather than via
+        the absence assertion below."""
         fake_repo_root = Path("/fake/repo/root")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
@@ -2397,25 +2396,19 @@ class TestRecordSelection:
     def test_config_dir_fully_unresolvable_returns_silently_with_no_log_and_no_stderr(
         self, monkeypatch, capsys,
     ):
-        """Unlike the ValueError test above, config_dir() is left
-        unmonkeypatched here -- CLAUDE_CONFIG_DIR and HOME are both unset so
-        its own real resolution fails, and config_enabled() returns None
-        rather than raising. record_selection's `if not config_enabled(...):
-        return` gate then fires silently: no exception is caught, so no
-        warning is printed either. Path.open is spied on for append-mode
-        calls since there is no resolvable config dir to check a log
-        file's absence against; a regression that reaches the log-append
-        step would trip the spy."""
+        """Unlike the ValueError test above, `config_dir()` is left
+        unmonkeypatched: with `CLAUDE_CONFIG_DIR` and `HOME` both unset, its
+        real resolution fails and `config_enabled()` returns `None` instead
+        of raising. `record_selection`'s `if not config_enabled(...):
+        return` gate therefore fires silently, with nothing caught and
+        nothing printed. A regression that skipped the gate would still
+        reach `record_selection`'s own second `config_dir()` call for
+        `log_path`, which raises the same unresolvable-environment error
+        and is caught and printed. The empty-stderr assertion below is
+        therefore sufficient proof the log-append step was never reached,
+        with no need for a `Path.open` spy."""
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("HOME", raising=False)
-        real_open = Path.open
-
-        def _fail_if_opened_for_append(self, mode="r", *args, **kwargs):
-            if mode == "a":
-                raise AssertionError("record_selection must not append to a log file on this path")
-            return real_open(self, mode, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", _fail_if_opened_for_append)
         selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
 
         _mod.record_selection(selection, [])  # must not raise

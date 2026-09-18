@@ -747,9 +747,9 @@ def pytest_subprocess_env(base_env: dict[str, str], *, getloadavg) -> WorkerSizi
     - the caller already set it to a non-empty value (WORKER_SIZING_ALREADY_SET)
     - the load average can't be read (WORKER_SIZING_UNAVAILABLE)
 
-    getloadavg has no default. The caller must look it up fresh at call
-    time and pass it down explicitly, so a test can monkeypatch
-    os.getloadavg directly instead of stubbing this function wholesale.
+    getloadavg has no default, since Python binds a default once at
+    def-time -- a default of os.getloadavg would capture the pre-monkeypatch
+    function and defeat tests that patch os.getloadavg after import.
     """
     if base_env.get(XDIST_WORKER_ENV_VAR):
         return WorkerSizingResult(dict(base_env), WORKER_SIZING_ALREADY_SET)
