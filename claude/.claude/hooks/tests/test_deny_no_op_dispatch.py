@@ -62,10 +62,10 @@ INCIDENT_PROMPT = (
     "commands, do not investigate anything."
 )
 
-# Verbatim from this repo's own transcript history (121 characters). Needs
-# no identifier substitution, unlike INCIDENT_PROMPT above -- it carries no
-# agentId, session ID, filesystem path, branch name, or person/project
-# name.
+# Verbatim from this repo's own transcript history (121 characters).
+# It carries no agentId, session ID, filesystem path, branch name, or
+# person/project name. Unlike INCIDENT_PROMPT above, it therefore needs
+# no identifier substitution.
 CREATED_IN_ERROR_INCIDENT_PROMPT = (
     "STOP — do not execute. This dispatch was created in error; there is "
     "no work to do. Return immediately with no tool calls."
@@ -80,6 +80,10 @@ GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with 
 # ("do nothing", "report back immediately") inside a legitimate
 # conditional clause -- pins that the length conjunct, not the idiom list,
 # is what makes a real task specification unreachable by this gate.
+# It is not re-instantiated per idiom added since, because the length
+# conjunct short-circuits before either regex arm is evaluated, making it
+# idiom-agnostic like the NBSP-evasion and description-arm-scoping gaps
+# documented in no-op-dispatch-hook-gate.md's Known gaps section.
 ADVERSARIAL_OVER_CEILING_PROMPT = (
     "Check the feature-flag rollout status before doing anything else. If "
     "the flag is still in the 'paused' state, do nothing further this "
@@ -215,9 +219,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_gh_1022_reported_prompt_denied(self, isolated_home):
-        """GH-1022 regression pin: the reported prompt is caught only by
-        the "no (further )?action" alternative, not any other alternative
-        in NOOP_PHRASE_RE."""
+        """GH-1022 regression pin: the reported prompt must be denied. At the
+        time this test was written, only the "no (further )?action" alternative
+        matches it; the test itself only asserts the black-box `deny` outcome."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
