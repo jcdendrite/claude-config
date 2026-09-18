@@ -699,4 +699,10 @@ Valid shapes:
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
 any other command (except the blessed 'git commit' tail), or using ||/;,
 redirects, or extra args, is denied. Env-var prefix, bash wrapper, and
-relative-path forms are not gated here — they are denied by permissions.allow."
+relative-path forms are not gated here — they are denied by permissions.allow.
+
+To see a result, run the op alone: its stdout and the tool's reported exit
+code already carry the verdict. For a multi-line commit message, write it to
+a file with the Write tool and chain 'git commit -F' on that file. Never use a
+heredoc or -m \"\$(cat ...)\" (code-review's SKILL.md, \"Authoring the commit
+message\", gives why)."
