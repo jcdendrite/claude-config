@@ -201,7 +201,12 @@ class TestDenyPiiInCommits:
             == "allow"
         )
 
-    def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo):
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_unarmed_f_pseudo_file_still_denied(self, isolated_home, git_repo, pseudo_path):
         """The `-F`/pseudo-file fail-closed check used to run only for armed
         users, since the whole commit-detection/extraction path lived
         behind the arming check. Hoisting that machinery above the arming
@@ -209,7 +214,11 @@ class TestDenyPiiInCommits:
         slip that leaves this check under the old `if` doesn't silently
         reopen a fail-closed path with nothing catching it."""
         _stage(git_repo, "f.txt", "x\nclean\n")
-        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F -"), cwd=git_repo) == "deny"
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {pseudo_path}"), cwd=git_repo
+        )
+        assert reason is not None
+        assert "pseudo-file path" in reason
 
     def test_unarmed_f_unreadable_file_still_denied(self, isolated_home, git_repo):
         """Same hoist as above, for the unreadable-message-source-file
@@ -475,10 +484,19 @@ class TestDenyPiiInCommits:
     # -F / --file message-source files                                    #
     # ------------------------------------------------------------------ #
 
-    def test_F_pseudo_file_rejected(self, isolated_home, git_repo, pii_patterns):
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    def test_F_pseudo_file_rejected(self, isolated_home, git_repo, pii_patterns, pseudo_path):
         pii_patterns("# no user patterns\n")
         _stage(git_repo, "f.txt", "x\nclean\n")
-        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F -"), cwd=git_repo) == "deny"
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {pseudo_path}"), cwd=git_repo
+        )
+        assert reason is not None
+        assert "pseudo-file path" in reason
 
     def test_F_file_with_pii_denied(self, isolated_home, git_repo, pii_patterns):
         pii_patterns("# no user patterns\n")

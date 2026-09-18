@@ -1009,6 +1009,16 @@ _lib_is_repo_plan_file() {
   esac
 }
 
+# Succeeds for pseudo-file paths (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`).
+# A hook cannot meaningfully scan their contents: they may resolve differently
+# at hook time than when the guarded command runs, or point into the hook's own stdin.
+_lib_is_pseudo_file_path() {
+  case "$1" in
+    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Decide whether a shell fragment actually invokes `git`, not just mentions it
 # as a substring of a path or URL. Walks whitespace-separated words; returns
 # success iff any word equals `git` or ends in `/git`. Env-var prefixes

@@ -182,13 +182,6 @@ extract_body_source_paths() {
     | sed -E "s/^['\"](.*)['\"]$/\\1/"
 }
 
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Build scan target: command (covers inline --body / --title), body-
 # source file contents, and — if --fill is in play — commit messages on
 # the branch since main.
@@ -198,7 +191,7 @@ BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
-    is_pseudo_file_path "$body_source_path" && continue
+    _lib_is_pseudo_file_path "$body_source_path" && continue
     [ ! -r "$body_source_path" ] && continue
     SCAN_TARGET+=$'\n'"$(cat "$body_source_path" 2>/dev/null || true)"
   done <<< "$BODY_SOURCES"

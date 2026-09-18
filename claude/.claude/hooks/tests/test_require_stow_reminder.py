@@ -222,6 +222,29 @@ class TestRequireStowReminder:
         cmd = f"gh pr create --title T --body-file {body}"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
+    def test_body_file_pseudo_path_is_not_read(self, stow_repo, tmp_path):
+        """A `/dev/fd/N` --body-file is skipped, not read: the marker in the
+        file behind an fd the hook inherits must not satisfy the gate."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        body = tmp_path / "body.md"
+        body.write_text("Adds agents/.\n\nPost-merge: run ./install.sh.\n")
+        with body.open() as body_handle:
+            fd = body_handle.fileno()
+            cmd = f"gh pr create --title T --body-file /dev/fd/{fd}"
+            result = subprocess.run(
+                [str(STOW_REMINDER_HOOK)],
+                input=json.dumps(bash_input(cmd)),
+                capture_output=True,
+                text=True,
+                cwd=stow_repo,
+                pass_fds=(fd,),
+                check=False,
+            )
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        # The stow-marker deny, not an unrelated fail-closed deny.
+        assert "adds new files" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+
     def test_fill_with_marker_in_commit_message_allowed(self, stow_repo):
         """`gh pr create --fill` sources body from commits — a marker
         in any commit message on the branch satisfies the gate."""
