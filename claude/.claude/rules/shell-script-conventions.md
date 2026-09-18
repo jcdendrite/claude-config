@@ -50,3 +50,12 @@ tied to a specific citation.
   each non-obvious fact as one sentence, not a multi-sentence rationale — move
   elaboration or design rationale to `docs/`, cited by path, rather than
   inlining it in the comment.
+- **Extract pure bash into a sourceable `_<topic>-lib.sh`, then unit-test it
+  by sourcing that file directly.** Never regex-extract a function's source
+  text out of a script at test time. Keep the subprocess test to one case
+  per branch; move the input matrix to the direct tests instead. "Bash has
+  no in-process test harness" is not a reason to skip the unit test —
+  extraction *is* the seam. Worked example:
+  `claude/.claude/scripts/_worktree-lib.sh` +
+  `claude/.claude/scripts/tests/test_worktree_lib.py` in the claude-config
+  repo.
