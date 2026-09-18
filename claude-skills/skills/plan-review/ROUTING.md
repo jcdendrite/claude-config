@@ -52,7 +52,7 @@ Other spawned specialists — those without a `findings_path`, and reviewers tha
 
 ## Ledger cross-check
 
-When the plan carries an assumption ledger (see `plan-it` Step 5) and this is a re-review of a prior round, include this instruction in every spawned reviewer's prompt: diff the current plan revision against every `[verified]` and `[engineer-verified]` ledger row for continued consistency. Do not resolve a contradiction against an `[engineer-verified]` row unilaterally — flag it to the human instead, mirroring the tag's own rule for the plan author. If the revision touches a row already confirmed in a prior round, the reviewer's findings must name it under **Previously-settled, now reopened** — surfacing the human's own version of the failure (re-litigating something already decided), not just the agent's.
+When the plan carries an assumption ledger (see `plan-it` Step 5) and this is a re-review of a prior round, include this instruction in every spawned reviewer's prompt: diff the current plan revision against every `[verified]` and `[engineer-verified]` ledger row for continued consistency. Do not resolve a contradiction against what an `[engineer-verified: "<quote>"]` row's quote states unilaterally — flag it to the human instead, mirroring the tag's own rule for the plan author. A contradiction against the rest of the row's claim, beyond what the quote states, is an ordinary B5 finding. If the revision touches a row already confirmed in a prior round, the reviewer's findings must name it under **Previously-settled, now reopened** — surfacing the human's own version of the failure (re-litigating something already decided), not just the agent's.
 
 ## Reconciliation
 
