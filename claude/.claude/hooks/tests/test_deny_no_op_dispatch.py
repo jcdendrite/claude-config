@@ -217,10 +217,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_gh_1022_reported_prompt_denied(self, isolated_home):
-        """GH-1022 regression pin: the reported prompt must be denied. At the
-        time this test was written, only the `no (further )?action`
-        alternative matches it. The test itself asserts only the black-box
-        `deny` outcome, not which alternative fired."""
+        """GH-1022 regression pin: asserts only the black-box `deny` outcome, not
+        which alternative currently matches, so a future alternative change can't
+        silently reopen this without failing here."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
@@ -462,9 +461,11 @@ class TestDenyNoOpDispatch:
         )
 
     def test_no_and_action_non_adjacent_allowed(self, isolated_home):
-        """Guards against two mistakes: matching the over-broad `no.*action`
-        instead of the intended `no (further )?action`; and dropping the
-        required space between "no" and "action"."""
+        """Guards against two mistakes:
+        - matching the over-broad `no.*action` instead of the intended
+          `no (further )?action`
+        - dropping the required space between "no" and "action"
+        """
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
