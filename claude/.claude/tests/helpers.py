@@ -26,6 +26,7 @@ REPO_ROOT = CLAUDE_DIR.parent.parent
 HOOKS_DIR = CLAUDE_DIR / "hooks"
 SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
+SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
@@ -279,6 +280,51 @@ def run_hook_payload(
         return {"permissionDecision": "deny"} if result.returncode == 2 else None
     payload = json.loads(result.stdout)
     return payload["hookSpecificOutput"]
+
+
+def run_hook_raw(
+    hook: Path,
+    tool_input: dict,
+    home: Path,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """Like `run_hook`, but returns the raw `subprocess.CompletedProcess`
+    instead of a decoded decision — needed by tests asserting on
+    `systemMessage`, a field neither `run_hook_advisory` (returns only a
+    decision string) nor `run_hook_payload` (returns only
+    `hookSpecificOutput`) exposes.
+
+    home is required (not optional like the other run_hook_* helpers'
+    home param) so a caller can't silently inherit the real ambient HOME —
+    every current caller already passes it explicitly.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    return subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def registered_hook_event_name(hook_path: Path, settings_path: Path = SETTINGS_PATH) -> str:
+    """Return the hook event name `hook_path` is registered under in
+    `settings_path`, derived from settings.json rather than hardcoded — a
+    divergence between the emitted and registered event name silently drops
+    hookSpecificOutput.additionalContext, per CLAUDE.md's discriminator-
+    literal rule.
+    """
+    settings = json.loads(settings_path.read_text())
+    for event_name, groups in settings["hooks"].items():
+        for group in groups:
+            for entry in group.get("hooks", []):
+                if entry.get("command", "").endswith(hook_path.name):
+                    return event_name
+    raise AssertionError(f"{hook_path.name} not found in {settings_path}")
 
 
 def run_hook_stop(

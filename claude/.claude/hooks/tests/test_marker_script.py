@@ -628,6 +628,23 @@ class TestMarkerScriptClearStale:
         result = _run(["clear-stale", "--unknown-flag"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
 
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    def test_clear_stale_report_omits_exempted_sibling_suffix(self, isolated_home, git_repo, suffix):
+        """Neither declared-path sibling suffix appears in clear-stale's
+        eviction report -- the name-based exemption is a PID-liveness
+        bypass, not merely a survival guarantee, so the report itself must
+        never name either suffix as kept or evicted. This is narrower than
+        TestMarkerScriptPlanModeSibling's own survival coverage of
+        .planmode-path: that test asserts on file survival, this one on
+        eviction-report content, for both suffixes."""
+        d = self._make_active_dir(isolated_home, "plan-review")
+        sibling = d / f"orphan-session.{suffix}"
+        sibling.write_text("/repo/.claude/plans/example-plan.md")
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert suffix not in result.stdout
+        assert sibling.exists()
+
 
 class TestMarkerScriptEmptyStagedGuard:
     """Guard added to hash-based marker writes (code-review, skill-review):
@@ -2057,6 +2074,8 @@ class TestMarkerScriptRoutingReadBackfill:
         routing_read_dir.mkdir(parents=True)
         (routing_read_dir / sid).touch()
         self._seed_pending_read(isolated_home, sid, age_seconds=10)
+        reviewed_plan_path_sibling = active_dir / f"{sid}.reviewed-plan-path"
+        reviewed_plan_path_sibling.write_text("/repo/.claude/plans/example-plan.md")
 
         result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home)
 
@@ -2064,6 +2083,7 @@ class TestMarkerScriptRoutingReadBackfill:
         assert not (active_dir / sid).exists()
         assert not (routing_read_dir / sid).exists()
         assert not self._pending_read_path(isolated_home, sid).exists()
+        assert not reviewed_plan_path_sibling.exists()
 
 
 class TestMarkerScriptPlanModeSibling:
@@ -2152,6 +2172,44 @@ class TestMarkerScriptPlanModeSibling:
         marker_dir = isolated_home / ".claude" / "plan-review-markers"
         stored_hash = (marker_dir / next(f.name for f in marker_dir.iterdir())).read_text().strip()
         assert re.fullmatch(r"[0-9a-f]{64}", stored_hash)
+
+    def test_reviewed_plan_path_sibling_alone_does_not_shift_write_off_repo_relative_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`write plan-review` deliberately reads neither `.reviewed-plan-path`
+        nor gives it any effect on the stored hash -- that sibling's only
+        consumer is announce-plan-review-path.sh, not marker.sh. A present
+        `.reviewed-plan-path` with no `.planmode-path` must leave the write
+        on the same _lib_active_plan_hash path as no sibling at all, the
+        regression that would otherwise silently narrow the completion
+        marker's coverage below the repo-relative plan set
+        require-plan-review.sh gates against."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+        assert not self._sibling_path(isolated_home, sid).exists()
+
+        baseline_result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert baseline_result.returncode == 0, baseline_result.stderr
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        marker = marker_dir / next(f.name for f in marker_dir.iterdir())
+        baseline_hash = marker.read_text().strip()
+
+        reviewed_plan_path_sibling = (
+            isolated_home / ".claude" / ".plan-review-active.d" / f"{sid}.reviewed-plan-path"
+        )
+        reviewed_plan_path_sibling.parent.mkdir(parents=True, exist_ok=True)
+        reviewed_plan_path_sibling.write_text(str(tmp_path / "reviewed-plan.md"))
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        stored_hash = marker.read_text().strip()
+        assert stored_hash == baseline_hash, (
+            "a .reviewed-plan-path sibling with no .planmode-path must not shift "
+            "`write plan-review` off the repo-relative _lib_active_plan_hash path"
+        )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_sibling_present_but_target_unreadable_aborts_without_writing(

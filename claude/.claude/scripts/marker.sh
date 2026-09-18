@@ -657,6 +657,7 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.reviewed-plan-path"
         rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
         ;;
@@ -713,11 +714,11 @@ case "$SUBCOMMAND" in
       dir_name=$(basename "$active_dir")
       for entry in "$active_dir"/*; do
         [ -f "$entry" ] || continue
-        # Name-based exemption, not a PID-liveness question: this sibling
-        # holds a declared plan-mode path, never a PID, so the ^[0-9]+$ test
-        # below would always misread it as a dead marker and evict it.
+        # Name-based exemption, not a PID-liveness question: these siblings
+        # hold declared paths, never a PID, so the ^[0-9]+$ test below would
+        # always misread them as dead markers and evict them.
         case "$entry" in
-          *.planmode-path) continue ;;
+          *.planmode-path|*.reviewed-plan-path) continue ;;
         esac
         stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
