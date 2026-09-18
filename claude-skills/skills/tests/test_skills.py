@@ -1938,10 +1938,11 @@ class TestValidateContextForkRequiresExplicitBackground:
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
-# The four DISPOSITION_RULE anchor regions in the corpus. Asserted as an
+# The DISPOSITION_RULE anchor regions in the corpus. Asserted as an
 # exact set, not just "each found anchor is non-trivial" — a corpus scan
 # alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
+    ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
     ("code-review", "code-review-new-primitive-route"),
     ("code-review", "code-review-round-cap-consult-verdict"),
@@ -3885,8 +3886,10 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
         "This pass reviews the cumulative diff with no responsibility-boundary "
         "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
-        "Per-commit findings from earlier in this branch's fix loop feed in as "
-        "context, not a substitute for this pass. The cache marker is written "
+        "Decisions from earlier in this branch's fix loop — per-commit rounds "
+        "and prior cumulative passes alike — feed in as context per "
+        '`code-review/SKILL.md` § "Ripple effect triage", never as a '
+        "substitute for this pass. The cache marker is written "
         "only from a clean pass of this step's own cumulative `/code-review`, "
         "never from a fix commit's staged-diff pass."
     ),
@@ -4183,11 +4186,10 @@ def _section_between(
 
     end_idx is exclusive, at the next line starting with '## ' (or len(lines)
     if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, since none of the four
-    headings this module bounds is currently last in its file). The start
-    heading is asserted found, not inferred — a renamed or deleted heading
-    would otherwise extract as empty and compare equal to another empty
-    extraction.
+    extractor, EOF is not itself a failure here, so a section that is last in
+    its file is bounded correctly). The start heading is asserted found, not
+    inferred — a renamed or deleted heading would otherwise extract as empty
+    and compare equal to another empty extraction.
     """
     start_idx = next(
         (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
@@ -4684,6 +4686,159 @@ class TestReadyForReviewHaltRoutesToContextBudgetDeferral:
             pinned_text,
             raw_section,
             context="ready-for-review/SKILL.md: Overview's halt-deferral sentence no longer matches.",
+        )
+
+
+# The Overview's fix-loop rule: every fix produced by step 2, 3, or 4
+# re-enters at step 2, and step 4 never re-runs on its own output.
+_PINNED_FIX_LOOP_CLAUSE = (
+    "After a fix produced by step 2, 3, or 4, return to step 2 and continue "
+    "in order. Step 3 then re-reviews the fixed cumulative diff in full, "
+    "because its cache marker misses on the changed bytes. Step 4 does not "
+    "re-run on its own output."
+)
+
+
+class TestReadyForReviewFixLoopRule:
+    """Pin the Overview's fix-loop rule, so a future edit that lets the fix
+    commit's own staged-diff review stand in for a cumulative re-run fails
+    this test instead of drifting silently.
+    """
+
+    def test_overview_fix_loop_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        pinned_text = " ".join(_PINNED_FIX_LOOP_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: Overview's fix-loop clause no longer matches.",
+        )
+
+
+# Step 3's loop cap: it bounds consecutive dirty passes, and its clauses bind
+# conditions to outcomes (an unparseable record counts as dirty; an existing
+# cap row stops for the human; two or more dirty records trigger the consult;
+# a stop verdict, a return that reads as neither verdict, or disagreement
+# stops for the human).
+_PINNED_STEP3_CAP_CLAUSE = (
+    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
+    "records newer than its newest clean one, in suffix-timestamp order, "
+    "counting any record you cannot parse as dirty. If one of them already "
+    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
+    "number two or more, first dispatch `plan-architect` with "
+    "`MODE=consult`, carrying the records' paths and the plan path if one "
+    "exists, to judge whether the loop is converging (*proceed*) or its "
+    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
+    "table row whose finding cell reads `cap` and whose Outcome is the "
+    "verdict. A *stop*, a return that reads as neither verdict, or an "
+    "orchestrator disagreement with the return, is a blocking stop-and-ask to "
+    "the human."
+)
+
+# Step 3's clean/dirty definition for a disposition record: the Cap counts
+# records newer than the newest clean one, and the closing sentence keeps the
+# record from authorizing anything.
+_PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
+    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
+    '§ "Step — Record review completion" counts it, and dirty otherwise. The '
+    "record authorizes nothing: the `cumulative-review` marker stays the "
+    "only authorization, and later reviews read the record only as context."
+)
+
+
+class TestReadyForReviewStep3LoopCapPins:
+    """Pin step 3's Cap paragraph and its clean/dirty definition, so dropping
+    the unparseable-record-counts-as-dirty rule, the cap consult, or the
+    statement that the disposition record authorizes nothing fails a test
+    instead of drifting silently.
+    """
+
+    @pytest.mark.parametrize(
+        ("pinned_clause", "site"),
+        [
+            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
+            pytest.param(
+                _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
+                "step 3's clean/dirty definition",
+                id="clean-dirty-definition",
+            ),
+        ],
+    )
+    def test_step3_clause_matches_live_text(self, pinned_clause: str, site: str) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        pinned_text = " ".join(pinned_clause.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=f"ready-for-review/SKILL.md: {site} no longer matches.",
+        )
+
+
+_READY_FOR_REVIEW_CI_WATCH_HEADING = "## CI watch (out-of-band)"
+
+# CI watch's "Land the fix" item routes a CI fix through the Overview's
+# fix-loop rule instead of restating a separate push-then-loop mechanic, so
+# a CI fix gets the same full cumulative re-review as a local-failure fix.
+_PINNED_CI_LAND_THE_FIX_CLAUSE = (
+    "**Land the fix.** Step 8 removed this session's active marker and "
+    "`require-ready-for-review.sh` denies a push without one, so re-run "
+    "step 0's `marker.sh activate` command, then treat the fix as a "
+    "step-2 failure's fix under the Overview's fix-loop rule, which "
+    "carries it through step 8."
+)
+
+
+class TestReadyForReviewCiWatchLandsFixUnderFixLoopRule:
+    """Pin the CI watch's "Land the fix" item, which routes the fix through
+    the Overview's fix-loop rule. That rule gives a CI fix the same fresh
+    cumulative review as a local-failure fix.
+    """
+
+    def test_land_the_fix_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_CI_WATCH_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CI_LAND_THE_FIX_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: CI watch's 'Land the fix' clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_RECORD_COMPLETION_HEADING = "## Step — Record review completion"
+
+# The clean-definition sentence: a DEFERred finding or a contradiction
+# consult's *keep current text* verdict both count as resolved, so neither
+# blocks the review-completion marker written by `marker.sh write code-review`.
+_PINNED_CLEAN_DEFINITION_CLAUSE = (
+    "A finding DEFERred under the closed list, or settled *keep current "
+    "text* by a contradiction consult, counts as resolved. If the review "
+    "is **clean** (no blockers, no unresolved critical findings, and you "
+    "reviewed the currently staged changes), record it by running this "
+    "command exactly once:"
+)
+
+
+class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
+    """Pin code-review/SKILL.md's clean-definition sentence, so a future edit
+    can't silently drop the contradiction-consult *keep* branch and make a
+    settled-keep finding block the review-completion marker.
+    """
+
+    def test_clean_definition_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RECORD_COMPLETION_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CLEAN_DEFINITION_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: clean-definition clause no longer matches.",
         )
 
 

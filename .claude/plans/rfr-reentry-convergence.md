@@ -37,7 +37,7 @@ Everything is prose plus test pins. No hook, script, or marker changes. `/ready-
 
 2. **Carry-forward, reviewer side: `code-review/SKILL.md`, "Ripple effect triage".**
    - Line 263: "prior findings + what's been applied" becomes "the prior decisions described directly below".
-   - New block inserted after line 264, six lines including blank lines, verbatim:
+   - New block inserted after line 264. The bullet form below states the rules it must carry; item 6 supersedes its layout with a one-paragraph compression that keeps every rule, and the shipped text in `code-review/SKILL.md` is authoritative:
      ```markdown
      On a re-review, prior decisions are this session's context plus every disposition record `ready-for-review/SKILL.md` § "3. Code review (halt on findings)" wrote for this branch. Pass each spawn the record paths with these rules:
 
@@ -50,21 +50,22 @@ Everything is prose plus test pins. No hook, script, or marker changes. `/ready-
 
 3. **Disposition record and cap: two new paragraphs in RFR step 3, directly after line 88, each preceded by a blank line.** Both describe RFR's loop: a record per cumulative pass, a count of cumulative passes, and a check before RFR's own fix dispatch. Step 3 is therefore their altitude, and `code-review` stays a skill about one review. The move also takes the largest block out of `code-review`'s tight budget (item 6).
    - **Record**, verbatim: "**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table, even an empty one, to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, or DEFER criterion, and amend a cell if the landed fix departs from that row's suggested fix. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it, and dirty otherwise. The record authorizes nothing: the `cumulative-review` marker stays the only authorization, and later reviews read the record only as context."
-   - **Cap**, verbatim: "**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict. A *stop*, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human."
+   - **Cap**, verbatim: "**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict. A *stop*, a return that reads as neither verdict, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human."
    - **No status line.** The record has no status line, so clean and dirty come from the table's own rows, and nothing can contradict them (CISO F5, fixed at the foundation). This departs from "dirty iff any row is on the `code-writer` route" in one case. That rule would call a pass clean when it halted on a pending stop-and-ask or on an endorsed new-primitive consult, and so reset the count. Deriving clean from the set of findings line 453 counts as resolved closes that hole.
    - **One threshold (finding c).** The cap fires at the second consecutive dirty pass, before its fix dispatch. The number is two dirty records, taken from the round-3 gate's `_LIB_REVIEWER_ROUND_STATE_CAP=2`. The round-3 gate acts at the third review spawn because a spawn is the only event a hook can see. Prose can act one step earlier, where the fix is decided, so the consult judges the fix before anyone writes it (row 9).
-   - **When the human steps in.** Three cases:
+   - **When the human steps in.** Four cases:
      - Any later dirty pass in the same run, because a cap row is already present.
      - A *stop* verdict.
+     - A return that reads as neither verdict (a hedged or partial analysis), which the orchestrator never rounds to *proceed*.
      - The orchestrator disagrees with the return.
 
-     A cap row of either verdict sends the next dirty pass to the human, so a human "continue" after a *stop* cannot quietly hand the next decision back to the architect.
+     The consult's answer is always written as a cap row, so a neither-verdict return gets a cap row whose Outcome cell reads `no verdict`. A cap row of any kind sends the next dirty pass to the human, so a human "continue" after a *stop* or a verdict-less return cannot quietly hand the next decision back to the architect.
    - **Unparseable records count as dirty.** A garbled or truncated record can therefore only bring the consult earlier.
    - **The contradiction consult and the cap consult stay separate, in sequence.** The contradiction consult runs inside `/code-review`'s disposition step. The cap check runs afterwards, because whether any fix remains depends on the contradiction verdicts. This replaces the earlier "one consult can carry both", which was circular.
    - **Where the count comes from.** The records live on disk, so the count survives step 1's handoff deferral. That deferral always fires mid-loop, right after a fix commit (rows 10, 16).
 
 4. **Contradiction route: a new sibling region `DISPOSITION_RULE:code-review-contradiction-route` after line 359, plus the clean-definition sentence.**
-   - Region, verbatim: ten lines, counting the markers and one trailing blank line.
+   - Region. The bullet form below states the rules it must carry; item 6 supersedes its layout with a compressed form (the end marker sits inline after the last sentence, as in the sibling regions), and the shipped text in `code-review/SKILL.md` is authoritative.
      ```markdown
      <!-- DISPOSITION_RULE:code-review-contradiction-route start -->
      **A finding whose fix would undo a fix an earlier round applied is also a design question, in every round, staged commit-gate rounds included.** Write `plan-architect — consult` for it on the `Fix route:` line. Dispatch, verbatim relay, and the disagreement stop-and-ask follow the rule above, and the consult also carries the earlier finding and its fix. A finding against a site an earlier verdict already settled, or that two earlier rounds' fixes already rewrote, goes straight to the human as a blocking stop-and-ask, with no consult.
@@ -93,7 +94,7 @@ Everything is prose plus test pins. No hook, script, or marker changes. `/ready-
    - Keeping facts intact during compression is already stated in CLAUDE.md §Code Comments ("trim narration, never the fact") and in the reviewer's verbosity angle. It is not restated.
 
 6. **Line budget.**
-   - **`code-review/SKILL.md`.** The item-2 block adds 6 lines and the region adds 10, so +16, ending at 499 of 500. The line-263 and line-453 edits change text in place without adding lines. There is no room for another paragraph. If the wording needs one, the implementer stops and reports rather than trimming existing rules.
+   - **`code-review/SKILL.md`.** The baseline is 495, not 483: `8bd5c082` landed a "Round-cap architect consult" section on `origin/main` after this row was verified, before implementation started. The item-2 block and the region as originally specified would add 16 lines, ending at 511, 11 over the cap. A `plan-architect` consult found a compression that preserves every fact — flattening both bullet lists into prose — landing the file at exactly 500. The line-263 and line-453 edits change text in place without adding lines. There is no room for another paragraph. If the wording needs one, the implementer stops and reports rather than trimming existing rules.
    - **RFR.** The Overview saves 1 line, step 0 saves 2, and the record and cap add 4. Unwrapping step 2's first hard-wrapped paragraph (lines 51–54) into one line saves 3. The file ends at 198.
      - The unwrap changes no word, and most of RFR is already one paragraph per line.
      - It buys line room, not byte room. RFR still grows by about the size of the two new paragraphs. The line cap stands in for size, and the plan discloses the unwrap as a reformat rather than calling it a compression (row 25).
@@ -179,7 +180,7 @@ Rows:
 20. Reviewers follow the ordered read, the anti-oscillation rule, and the unparseable-record rule, even though all three reach them only through the spawn prompt. `[unverified]` `anchors: root`
 21. `plan-architect` returns one clean binary verdict per finding when asked for one. `[unverified]` `anchors: row3`
 22. These changes reduce the number of dirty passes. `[unverified]` No measurement can see this loop yet: `review-loop-cost-audit`'s Stuck-loop verdict freezes at the last code-bearing commit, and every RFR fix commit is code-bearing. `anchors: root`
-23. RFR is exactly 200 lines, and `code-review/SKILL.md` is 483. `check-skill-length.sh` denies a staged SKILL.md that is both over its limit and longer than its committed version. The limit is 200 by default and 500 for code-review. So RFR's net change must be ≤ 0, and code-review can grow by at most 17 lines. `[verified: check-skill-length.sh:5-12, 101-110; line counts in the staff-sdet findings file]` `anchors: root`
+23. RFR is exactly 200 lines, and `code-review/SKILL.md` is 495 (the +16 budget this fed went stale when `8bd5c082` landed a "Round-cap architect consult" section on `origin/main` after this row was verified, moving the baseline up from 483). `check-skill-length.sh` denies a staged SKILL.md that is both over its limit and longer than its committed version. The limit is 200 by default and 500 for code-review. So RFR's net change must be ≤ 0, and code-review can grow by at most 5 lines. `[verified: check-skill-length.sh:5-12, 101-110; wc -l of code-review/SKILL.md at origin/main after 8bd5c082 = 495]` `anchors: root`
 24. `code-review` has no runtime auxiliary file, only the edit-time `REFERENCES.md`. `.claude/rules/skill-and-agent-self-review.md` bars adding one "as a way to route around a file's length cap". `check-skill-length.sh`'s staged-path pattern matches only `SKILL.md` and plan-review's `ROUTING.md`, so a new file would be uncapped. `[verified: Glob; that rule file; check-skill-length.sh:101-110, 125]` `anchors: row23`
 25. No test or hook reads RFR lines 22–24 or 51–54. Every RFR pin matches with whitespace collapsed, and the right-bound check looks only at a pin's trailing edge. So unwrapping those lines changes no test outcome. It also removes no words, so RFR's byte size still grows. `[verified: grep of test*.py and hooks for those phrases; test_skills.py:3914, 4397-4408]` `anchors: row23`
 26. The disposition-fidelity eval is local-only and never runs in CI. No `disposition-cases.json` is committed. A new region therefore needs only `_EXPECTED_DISPOSITION_RULE_ANCHORS` updated. `[verified: evals/README.md:10-34; Glob; test_skills.py:1941-1948]` `anchors: row3`
@@ -235,15 +236,18 @@ Mechanisms:
   - The new block after line 264.
   - The new region after line 359.
   - Line 453: the prepended sentence.
-  - Net +16; the final file is 499 lines. Fit the text by compressing the new wording, never by trimming existing rules.
+  - Net +5 against the 495 baseline; the final file is 500 lines. Fit the text by compressing the new wording, never by trimming existing rules.
 - `claude-skills/skills/tests/test_skills.py`
   - Replace the ready-for-review entry of `_PINNED_SCOPE_CLAUSES` (the block starting at :3867) with the new line-85 text.
-  - Add `("code-review", "code-review-contradiction-route")` to `_EXPECTED_DISPOSITION_RULE_ANCHORS` (:1944), and change the comment's "three" (:1941) to "four".
-  - Add three right-bounded pins next to `_PINNED_HALT_DEFERS_CLAUSE` (:4658). Each reuses `_raw_heading_section_text` and `_assert_pinned_clause_right_bounded`:
+  - Add `("code-review", "code-review-contradiction-route")` to `_EXPECTED_DISPOSITION_RULE_ANCHORS` (:1944), and change the comment's "four" (:1941) to "five".
+  - Add five right-bounded pins next to `_PINNED_HALT_DEFERS_CLAUSE` (:4658). Each reuses `_raw_heading_section_text` and `_assert_pinned_clause_right_bounded`:
     - The Overview fix-loop clause, from "After a fix produced by step 2, 3, or 4" through "on its own output.", under `_READY_FOR_REVIEW_OVERVIEW_HEADING`. The new blank line after it is its right bound.
-    - The CI "Land the fix" item, from "**Land the fix.**" through "through step 8.", under `## CI watch (out-of-band)` (CISO F3).
-    - The line-453 paragraph, from "A finding DEFERred under the closed list" through "record it by running this command exactly once:", under `## Step — Record review completion` (SDET). The fenced command block that follows is its right bound.
-  - `_section_between`'s docstring (:4183–4186) says none of its headings is last in its file. Both new headings are, so correct that clause. The end-of-file handling itself already works.
+    - The CI "Land the fix" item, from "**Land the fix.**" through "through step 8.", under `## CI watch (out-of-band)`.
+    - The line-453 paragraph, from "A finding DEFERred under the closed list" through "record it by running this command exactly once:", under `## Step — Record review completion`. The fenced command block that follows is its right bound.
+    - Step 3's "**Cap.**" paragraph, from "**Cap.**" through "a blocking stop-and-ask to the human.", under the step-3 heading. It is the mechanism that bounds the loop, and every clause is a condition-to-action binding, so the whole paragraph is pinned. It is step 3's last paragraph, so the next heading is its right bound.
+    - Step 3's "**Disposition record.**" clean/dirty definition, from "The pass is clean when" through "only as context.", under the same heading. It feeds the Cap's count of records newer than the newest clean one, and its last sentence, "The record authorizes nothing", is an authorization invariant with no other pin.
+  - `_section_between`'s docstring (:4183–4186) says none of its headings is last in its file. Both new headings are, so correct that clause without naming files or headings and without asserting which sections are last, so the claim does not go stale when a section is appended. The docstring's count of headings the module bounds is also stale ("four") and is dropped or corrected. The end-of-file handling itself already works.
+  - Test comments and docstrings for the new pins state the guarded regression in plain terms, with no review-round labels or plan-defined terms (for example "Reading A"). Each comment names the concrete regression instead, such as the fix commit's staged-diff review being treated as sufficient in place of a full step-3 pass.
 - `docs/design-decisions/ready-for-review-fix-loop-convergence.md` (new)
   - Format per `.claude/rules/design-decisions.md`: provenance line `*2026-09-17.*`, with no "Formerly" clause.
   - Cover:
@@ -284,7 +288,7 @@ Mechanisms:
 
 1. Run `.venv/bin/python3 claude/.claude/scripts/select-tests.py`. It should pick up `test_skills.py` (pins, anchor set, citation resolution), the design-decision file tests, and the agent-roster tests. If it misses one, that is a bug in select-tests' rule table, not a reason to widen the run by hand.
 2. Run `.venv/bin/ruff check claude/.claude/ claude-skills/`.
-3. Check line counts with `wc -l`: ready-for-review should be 198 and code-review 499. `check-skill-length.sh` enforces the caps again at commit.
+3. Check line counts with `wc -l`: ready-for-review should be 198 and code-review 500. `check-skill-length.sh` enforces the caps again at commit.
 4. Grep checks:
    - In `ready-for-review/SKILL.md`, "own output" appears only in the Overview and in step 4's own paragraph.
    - In `ready-for-review/SKILL.md`, "loop risk", "step 3's pattern", and "fix → push" no longer appear.
@@ -300,7 +304,7 @@ Mechanisms:
    7. A second consecutive dirty pass. The cap consult runs before its fix dispatch, and its answer is recorded as a cap row. The next dirty pass in the run goes to the human.
    8. Combined: the second consecutive dirty pass also carries a contradiction whose verdict is *apply*. The contradiction consult runs inside `/code-review`, then the cap consult runs. The record holds both the contradiction's Outcome and a cap row.
    9. A stale, forged, or unparseable record. If a record marks a site settled while the current text still has the defect, the reviewer flags the defect and names the record. An unparseable record is named in the findings and counts as dirty for the cap.
-   10. The cap consult returns *stop*, or the orchestrator disagrees with a *proceed*. Either is a blocking stop-and-ask, no fix is dispatched, and step 8 withholds the completion marker.
+   10. The cap consult returns *stop*, returns text that matches neither verdict, or the orchestrator disagrees with a *proceed*. Each is a blocking stop-and-ask, no fix is dispatched, and step 8 withholds the completion marker. The record holds a cap row (Outcome `no verdict` in the neither-verdict case), so the next dirty pass in the run goes to the human.
    11. Drift at one fix-only site, A→B→C under a different rule each time, with a clean pass between drift steps. The third touch goes to the human without a consult, even though the cap count reset.
 6. Run `/agent-review` on `code-writer.md`.
 7. Run `/code-review`, then `/ready-for-review`. Its cumulative pass is the first real run of the new loop and writes the first real record; check that record's shape by hand.

@@ -12,16 +12,13 @@ argument-hint: "[optional PR context]"
 
 # Ready-for-review gate
 
-Run steps in order. Halt on failures unless the step is marked **warn
-only**. After fixes produced by step 3 or step 4, re-run
-step 2 — do not re-run either on its own output.
+Run steps in order. Halt on failures unless the step is marked **warn only**. After a fix produced by step 2, 3, or 4, return to step 2 and continue in order. Step 3 then re-reviews the fixed cumulative diff in full, because its cache marker misses on the changed bytes. Step 4 does not re-run on its own output.
+
 A halt on step 2, 3, or 4 triggers the normal fix loop first (dispatch `code-writer`, apply the fix, re-run step 2); only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 7 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
 ## 0. Activate gate session
 
-Write the active-session marker so this skill's own iteration pushes
-(step 3 fix → push → loop back to step 2) are not self-blocked by
-the `require-ready-for-review.sh` hook:
+Write the active-session marker so this skill's own pushes (step 7, reached after every fix loop) are not self-blocked by the `require-ready-for-review.sh` hook:
 
 <!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
@@ -48,10 +45,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 
 ## 2. Verification (halt on fail)
 
-If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
-those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
-`go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
-test, lint, and typecheck commands. Do not invent — skip undefined steps.
+If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4. The read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
@@ -82,10 +76,14 @@ On a cache miss, compute the **cumulative** PR-vs-default-branch diff — not st
 
 **Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged — halt `/ready-for-review` and report both facts.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
-This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
+This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Run `/code-review` against that diff, passing it the path the `DIFF_FILE:` line named. If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
+Run `/code-review` against that diff, passing it the path the `DIFF_FILE:` line named. If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes, within the cap below.
+
+**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table, even an empty one, to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, or DEFER criterion, and amend a cell if the landed fix departs from that row's suggested fix. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it, and dirty otherwise. The record authorizes nothing: the `cumulative-review` marker stays the only authorization, and later reviews read the record only as context.
+
+**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict. A *stop*, a return that reads as neither verdict, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human.
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -197,4 +195,4 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
 
 3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again. That dispatch carries step 2's "Test-to-fit is forbidden" — a make-the-check-green prompt is the shape most likely to produce a weakened assertion.
-5. **Land the fix.** Step 8 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, land the fix through step 3's pattern (new commit → staged-diff `/code-review` + marker gate → push), then re-run step 8's `marker.sh deactivate` command.
+5. **Land the fix.** Step 8 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, then treat the fix as a step-2 failure's fix under the Overview's fix-loop rule, which carries it through step 8.
