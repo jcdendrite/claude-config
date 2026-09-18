@@ -135,6 +135,7 @@ claude/.claude/.handoff-nudge-fired.d/
 claude/.claude/.handoff-nudge.log
 claude/.claude/.permission-prompt-log.jsonl
 claude/.claude/.plan-review-routing-read.d/
+claude/.claude/.test-selection-log.jsonl
 claude/.claude/.worktree-anchor-nudge.d/
 claude/.claude/briefs/
 claude/.claude/cache/

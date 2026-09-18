@@ -103,3 +103,4 @@ session_title_from_branch|bool|true|config-dir|false|config-dir|.session-title-d
 round_consult_gate|bool|true|config-dir|false|config-dir|.round-consult-gate-disabled|presence-disables|Round-3 architect-consult gate|docs/hooks.md § Gate hooks|
 round_consult_round2_pilot|bool|false|config-dir|false|config-dir|.round-consult-round2-pilot|presence-enables|Round-2 architect-consult pilot cap override (time-boxed)|docs/hooks.md § Gate hooks|
 authorization_boundary_restore|bool|true|config-dir|false|config-dir|.authorization-boundary-disabled|presence-disables|Authorization-boundary restore on compact|docs/hooks.md § Utility hooks|
+test_selection_tracking|bool|false|config-dir|false|config-dir|||Test-selection fallback tracking|README.md § Tests|

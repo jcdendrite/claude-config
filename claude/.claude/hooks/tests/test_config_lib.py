@@ -89,7 +89,9 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     needs only _config.sh's own functions, matching
     test_config_parser_parity.py's TestMissingSchemaFile isolation
     technique. Used for schema shapes (e.g. a key with no legacy-polarity
-    value) that none of today's real 15 keys carry."""
+    value) that none of today's other real 16 keys carry.
+    test_selection_tracking is the one real key with that shape. It is
+    exercised directly against the real schema by TestConfigScaffold."""
     return subprocess.run(
         ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
         capture_output=True,
@@ -1254,18 +1256,24 @@ class TestConfigScaffold:
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        assert state_file.read_text().splitlines() == ["handoff_nudge = false"]
+        # test_selection_tracking has no legacy-polarity (see
+        # test_presence_and_content_matches_polarity_keys_stay_absent's own
+        # docstring) so scaffold backfills its default row alongside the
+        # untouched hand-edited one.
+        assert state_file.read_text().splitlines() == [
+            "handoff_nudge = false", "test_selection_tracking = false",
+        ]
 
     def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
-        """Every one of today's 15 keys carries a legacy-polarity value, so
-        scaffold over an empty state file must leave the file with no rows
-        at all -- backfilling any of them would permanently shadow that
-        key's own legacy file with zero warning."""
+        """Every key but test_selection_tracking carries a legacy-polarity
+        value and stays absent (backfilling would shadow its legacy file);
+        test_selection_tracking has none, so scaffold backfills its default
+        row alone."""
         result = _run("_config_scaffold")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        assert not state_file.exists() or state_file.read_text() == ""
+        assert state_file.read_text() == "test_selection_tracking = false\n"
 
     def test_legacy_file_created_after_scaffold_still_takes_effect(self, isolated_home):
         """A legacy kill switch touched after `install.sh`/
@@ -1281,13 +1289,18 @@ class TestConfigScaffold:
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        assert not state_file.exists() or state_file.read_text() == ""
+        # Neither excluded key would have been backfilled anyway -- both
+        # carry a legacy-polarity value. test_selection_tracking has none,
+        # so it alone gets a default row.
+        assert state_file.read_text() == "test_selection_tracking = false\n"
 
     def test_plain_key_with_no_legacy_polarity_still_gets_its_default_row(self, isolated_home, tmp_path):
         """A key with an empty legacy-polarity column has no legacy file to
         protect, so scaffold's original additive-only default-fill contract
-        still applies to it -- a schema shape none of today's real 15 keys
-        carry, exercised via an isolated config-keys.psv fixture."""
+        still applies to it. test_selection_tracking is the one real key
+        with this shape and is covered directly against the real schema by
+        TestConfigScaffold. This test exercises the same shape via an
+        isolated config-keys.psv fixture."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
@@ -1359,16 +1372,13 @@ class TestConfigScaffold:
     def test_write_failure_leaves_state_file_untouched_when_a_default_row_would_be_emitted(
         self, isolated_home, monkeypatch, tmp_path
     ):
-        """Mirrors test_plain_key_with_no_legacy_polarity_still_gets_its_default_row's
-        schema fixture -- a key with no legacy-polarity, so this run's
-        content build actually appends a default row, unlike the sibling
-        failure test above (which reaches the same unconditional write with
-        today's real config-keys.psv, but with no default row appended,
-        since every one of its 15 rows has a legacy-polarity value). This
-        test proves the failure check still fires when the write is reached
-        via that different condition -- scaffold's per-key inclusion logic
-        doesn't accidentally exempt a live, row-appending write from the
-        check."""
+        """Mirrors `test_plain_key_with_no_legacy_polarity_still_gets_its_default_row`'s
+        fixture: a key with no legacy-polarity, so this run's write appends
+        a default row. The sibling failure test above also reaches an
+        unconditional write against the real schema, but its write fails
+        before persisting anything -- not because every row carries a
+        legacy-polarity value. This test pins that the failure check still
+        fires on this different, row-appending path."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)

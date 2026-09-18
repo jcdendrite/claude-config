@@ -1196,9 +1196,9 @@ _config_scaffold() {
   # See _config_set's identical comment: full new state-file content built
   # in one variable, with no intermediate redirects, so the single write
   # below has one exit status to check rather than the block's own
-  # last-executed-statement status (here, always a bash `continue`'s own 0
-  # against today's config-keys.psv, since every one of its 15 rows has a
-  # legacy-polarity value).
+  # last-executed-statement status, which differs per row (`continue`'s own
+  # 0 for a legacy-polarity row, `_config_quote_value_for_write`'s status
+  # for a row with none).
   local content=""
   for ((i = 0; i < ${#existing_lines[@]}; i++)); do
     content+="${existing_lines[$i]}"$'\n'
@@ -1206,8 +1206,8 @@ _config_scaffold() {
   local schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
   local already excluded present_key
   # One pass over config-keys.psv, not a per-key _config_schema_field call
-  # inside this loop (which would re-read this 15-row file once per key,
-  # 15 total re-reads for one scaffold call) -- same field list as
+  # inside this loop (which would re-read this 16-row file once per key,
+  # 16 total re-reads for one scaffold call) -- same field list as
   # _config_schema_field's own read, so key and default come off the same
   # line here instead of a second file scan.
   while IFS='|' read -r schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do

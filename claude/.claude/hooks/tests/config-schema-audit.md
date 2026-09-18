@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 15 keys in `config-keys.psv`, this table traces the
+For every one of the 16 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -165,7 +165,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining ten keys
+## Remaining eleven keys
 
 ### `permission_prompt_tracking`
 
@@ -362,3 +362,22 @@ Column legend:
   (`$_LIB_REVIEWER_ROUND_STATE_CAP`, currently 2) rather than the pilot's
   lowered cap of 1. This is the safe direction — an unresolvable config dir
   allows more review rounds before the gate fires, never fewer.
+
+### `test_selection_tracking`
+
+- Call site: `claude/.claude/scripts/select-tests.py`'s `record_selection`,
+  called from `main()`.
+- Resolution: **config-dir**. `record_selection` reads `config_enabled` and
+  `config_dir()` directly, both of which resolve only the one config dir —
+  no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  `record_selection`'s own `except ValueError` catches a `config_dir()`
+  resolution failure and returns without falling through to a raw
+  `$HOME/.claude` probe.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all: its `legacy-filename` and `legacy-polarity` columns
+  are both empty, so there is no legacy file for `migrate-legacy-config.sh`
+  to import from either location.
+- Fail direction on resolution failure: on resolution failure, logging is
+  skipped — matching this key's off-by-default polarity, an unresolvable
+  config dir must not turn into a failed test run over a telemetry write.
