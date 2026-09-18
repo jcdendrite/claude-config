@@ -1387,8 +1387,8 @@ class TestComputeWorkerCount:
         """Pins round()'s tie-breaking rule at a .5 boundary so a later
         change to _MIN_LOAD_AWARE_WORKERS or the formula shape can't
         silently invert it."""
-        assert round(1.5) == 2
-        assert _mod.compute_worker_count(cpu_budget=8, load_one_minute=6.5) == 2
+        assert round(2.5) == 2
+        assert _mod.compute_worker_count(cpu_budget=8, load_one_minute=5.5) == 2
 
 
 class TestPytestSubprocessEnv:
@@ -1915,9 +1915,9 @@ class TestMainComposition:
 
         Also pins that `main()` passes `size_result=None` to
         `record_selection` on this early-return path without calling
-        `getloadavg`; `os.getloadavg` is left unstubbed so a regression
-        that wastefully computes real sizing here still fails via the
-        absence assertion below."""
+        `getloadavg`; `os.getloadavg` is stubbed to raise if called, so a
+        regression that wastefully computes real sizing here fails
+        directly rather than via the absence assertion below."""
         fake_repo_root = Path("/fake/repo/root")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
@@ -1925,11 +1925,15 @@ class TestMainComposition:
         def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
 
+        def fake_getloadavg():
+            raise AssertionError("getloadavg must not be called for an empty target selection")
+
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(
             _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
         )
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+        monkeypatch.setattr(os, "getloadavg", fake_getloadavg)
 
         exit_code = _mod.main([])
 

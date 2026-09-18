@@ -6,7 +6,7 @@ Bound how much CPU each `select-tests.py` invocation claims when other
 invocations are already running, so concurrent agent-driven test runs on
 one machine stop oversubscribing its cores. This is the next item in
 GH-978, after hook-chain consolidation (PR #985) and injectable timeout
-caps (PR #1014); a measurement of this repo's own test suite found 8
+caps (PR #1014). A measurement of this repo's own test suite found 8
 concurrent copies of one 116-test file each taking 35.6s versus 16.2s
 running alone (2.2x). CPU was 0% idle with 39% of busy time in the kernel
 — the signature of scheduler contention, not real test work. After this
