@@ -1190,15 +1190,6 @@ def _missing_bullet_lead_ins(names: Iterable[str], section_text: str) -> list[st
     return [name for name in names if name not in lead_in_names]
 
 
-def _fence_delimiter_line_numbers(markdown_text: str) -> list[int]:
-    """1-based line numbers of every fence delimiter line (opening or closing)."""
-    return [
-        lineno
-        for lineno, line in enumerate(markdown_text.split("\n"), start=1)
-        if _FENCE_OPEN_RE.match(line)
-    ]
-
-
 class TestPrDescriptionDefaultTemplateWiring:
     """Wiring tripwire: SKILL.md points at DEFAULT_TEMPLATE.md through the
     harness-substituted skill-directory variable, and the file it points at
@@ -1222,23 +1213,9 @@ class TestPrDescriptionDefaultTemplateWiring:
 
     def test_default_template_has_the_five_headings_in_order(self):
         template = (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").read_text()
-        # Fence-unaware: a fenced `## ...` example added to the template would
-        # need this to skip code regions.
-        headings = re.findall(r"^## (.+)$", template, flags=re.MULTILINE)
+        prose = _blank_code_regions(_blank_frontmatter(template))
+        headings = re.findall(r"^## (.+)$", prose, flags=re.MULTILINE)
         assert headings == self._EXPECTED_HEADINGS
-
-    def test_default_template_has_no_fenced_code_block(self):
-        """The heading test's regex is fence-unaware, so a fenced `## ...`
-        example in the template would falsely count as a heading; keeping the
-        template free of fences means that misfire cannot happen."""
-        template = (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").read_text()
-        assert _fence_delimiter_line_numbers(template) == []
-
-    def test_fence_detector_flags_backtick_and_tilde_fences(self):
-        """Deny fixture: the fence check must fire on both fence styles."""
-        assert _fence_delimiter_line_numbers("Prose.\n```\n## Heading\n```\n") == [2, 4]
-        assert _fence_delimiter_line_numbers("Prose.\n~~~text\n## Heading\n~~~\n") == [2, 4]
-        assert _fence_delimiter_line_numbers("Prose with `inline` code only.\n") == []
 
     def test_template_bullet_pointers_resolve_to_skill_md_bullets(self):
         """The template's Summary and Test plan sections are only pointers to
@@ -2878,10 +2855,8 @@ def test_skill_bodies_carry_no_citation_urls() -> None:
 
     violations: list[str] = []
     for path in skill_files:
-        prose = _blank_code_regions(_blank_frontmatter(path.read_text()))
-        for lineno, line in enumerate(prose.split("\n"), start=1):
-            if _URL_RE.search(line):
-                violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
+        for lineno in _prose_url_line_numbers(path.read_text()):
+            violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
 
     assert not violations, (
         "SKILL.md bodies must not carry citation URLs — a body is re-read on "

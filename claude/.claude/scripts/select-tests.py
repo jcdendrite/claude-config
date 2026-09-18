@@ -402,7 +402,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # scripts and reads SKILL.md files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
-# SKILL_AUXILIARY_FILES_MODULE: see SKILL_AUXILIARY_FILES_MODULE's comment.
+# SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
+# module, and that import is invisible to path-constant scanning.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py

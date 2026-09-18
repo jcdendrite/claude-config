@@ -4,9 +4,16 @@ Two consumers import it, so a rename or addition here changes both:
 
 - select-tests.py's `_is_skill_auxiliary_md_change` domain predicate, which
   selects SKILLS_TESTS_DIR for a change to any of these files.
-- claude-skills/skills/tests/test_skills.py's `_citation_sources_for_skill_md`
-  citation-sibling expansion, which scans each of these files for `§`
-  citations alongside its SKILL.md.
+- claude-skills/skills/tests/test_skills.py, which uses the names for:
+  - citation-sibling expansion (`_citation_sources_for_skill_md`), which
+    scans each of these files for `§` citations alongside its SKILL.md, and
+    the per-name sibling-scan test that pins it;
+  - an on-disk presence check per runtime-read name;
+  - the URL-hygiene scan over runtime-read files.
+
+Every name except REFERENCES.md, the edit-time reference, is treated as a
+runtime-read file. A new edit-time auxiliary name would need that rule
+revisited.
 
 Entries are bare filenames with no path separator, because select-tests.py
 matches `Path(path).name` against them.

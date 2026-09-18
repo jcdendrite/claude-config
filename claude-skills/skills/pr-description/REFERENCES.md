@@ -61,8 +61,8 @@ which is why the skill shapes it out rather than merely discouraging it.
 `DEFAULT_TEMPLATE.md` supplies the section skeleton when the repo ships no
 `.github/PULL_REQUEST_TEMPLATE.md`. Its five headings rest on a survey of 21
 sources, tallied per element with no pre-filtering. The tally covers the 16
-sources listed here plus the 5 under "Sources checked and set aside" (in its
-section-template survey list). The sources that carry content:
+sources listed here plus the 5 in the "Section-template survey" list under
+"Sources checked and set aside". The sources that carry content:
 
 - Google, "Writing good CL descriptions" (URL above): the one source that
   argues against rigid headings, for prose stating what and why with a
@@ -154,12 +154,16 @@ prose instead. The skill follows the majority convention.
 **Quotes the conditional headings rest on:**
 
 - `## Screenshots`: Atlassian — *"Add some screenshots for your front-end
-  changes!"*; GitLab — "before/after screenshots" for UI changes.
-- `## Alternatives considered`: Shopify — *"when multiple solutions existed,
-  document the main solution justified"*; Rails — the "Additional
-  information" heading includes *"alternative solutions, references."*
-- `## Context for the reviewer`: Shopify — *"write as though the reviewer
-  has little to no context"*; Linux kernel — *"there must be an underlying
+  changes!"*; GitLab — the MR must include "Before" and "After" screenshots
+  when UI changes are made (paraphrase).
+- `## Alternatives considered`: Shopify — when multiple solutions were
+  considered, they are jotted down with the main solution justified
+  (paraphrase); Rails — the template's "Additional information" comment
+  lists alternative solutions as one item alongside benchmarks and
+  references (paraphrase).
+- `## Context for the reviewer`: Shopify — PR summaries are written as
+  though the reviewer has little to no context on the PR scope
+  (paraphrase); Linux kernel — *"there must be an underlying
   problem that motivated you to do this work,"* *"describe user-visible
   impact."*
 
@@ -204,8 +208,8 @@ gap.
 - GNOME Handbook, Commit Messages
   (`https://handbook.gnome.org/development/commit-messages.html`), and the
   Linux kernel's "Submitting patches": commit-message and email-patch genres,
-  adjacent to GitHub PR-description guidance. Cited for background only,
-  where noted above.
+  adjacent to GitHub PR-description guidance. The Linux kernel entry above
+  carries the content; this entry is background only.
 - Bacchelli and Bird, "Expectations, Outcomes, and Challenges of Modern Code
   Review" (ICSE 2013): background on code review, not a content taxonomy, so
   it grounds no specific template element.
