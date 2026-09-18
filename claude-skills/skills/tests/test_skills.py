@@ -1938,12 +1938,13 @@ class TestValidateContextForkRequiresExplicitBackground:
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
-# The three DISPOSITION_RULE anchor regions in the corpus. Asserted as an
+# The four DISPOSITION_RULE anchor regions in the corpus. Asserted as an
 # exact set, not just "each found anchor is non-trivial" — a corpus scan
 # alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
     ("code-review", "code-review-defer-invariant"),
     ("code-review", "code-review-new-primitive-route"),
+    ("code-review", "code-review-round-cap-consult-verdict"),
     ("plan-review", "plan-review-fix-or-ask"),
 }
 
