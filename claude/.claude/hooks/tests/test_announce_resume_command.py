@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     edit_input,
     multiedit_input,
     read_input,
@@ -149,6 +150,18 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         assert result.stdout == ""
 
+    def test_tool_input_missing_file_path_key_emits_nothing(self, isolated_home):
+        """tool_input carries no file_path key at all. This converges on the
+        same exit-0/no-stdout outcome as a path-glob mismatch (a missing key
+        resolves to the literal string "null", which fails the glob), so it
+        does not independently pin the `// empty` jq fallback -- it only
+        pins that this input shape is still handled without error."""
+        payload = write_input(str(isolated_home / ".claude" / "handoffs" / "example-handoff.md"))
+        del payload["tool_input"]["file_path"]
+        result = _run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
     # -----------------------------------------------------------------------
     # --cwd branch
     # -----------------------------------------------------------------------
@@ -189,6 +202,31 @@ class TestAnnounceResumeCommand:
         assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
         assert "resume-context" in payload["hookSpecificOutput"]["additionalContext"]
 
+    @pytest.mark.timing
+    def test_git_dir_check_timeout_falls_back_to_bare_command(
+        self, isolated_home, linked_worktree, git_timeout_shim, tmp_path
+    ):
+        """_lib_capped's 5s cap on the git-dir comparison is actually
+        exercised, not merely present in the code: a hung `git -C ... rev-
+        parse --git-dir` must not hang the hook, and the capped-off branch
+        must fall back to the bare (no --cwd) resume command rather than
+        erroring."""
+        env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--git-dir" ]')
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            result = _run_hook_raw(
+                ANNOUNCE_HOOK,
+                write_input(str(fixture), cwd=str(linked_worktree)),
+                home=isolated_home,
+                extra_env=env,
+            )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert "--cwd" not in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
+        assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
+        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+
     def test_cwd_naming_non_repo_dir_omits_cwd_flag(self, isolated_home, tmp_path):
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
@@ -208,6 +246,19 @@ class TestAnnounceResumeCommand:
     # -----------------------------------------------------------------------
     # Allowlist gate on the interpolated file_path
     # -----------------------------------------------------------------------
+
+    def test_clean_file_path_passes_allowlist(self, isolated_home):
+        """Explicit pass-case regression for the FILE_PATH allowlist gate,
+        for symmetry with
+        test_worktree_root_with_embedded_space_falls_back_to_bare_command's
+        pass-case coverage of WORKTREE_ROOT below: a file_path built only
+        from letters, digits, and the allowed punctuation clears
+        ^[A-Za-z0-9._/@+-]+$ and is included in the emitted command."""
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert f"resume-context {fixture}" in payload["systemMessage"]
 
     def test_file_path_with_embedded_space_emits_nothing(self, isolated_home):
         """A file_path that clears the continuity-path glob but fails the
@@ -338,3 +389,26 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         assert result.stdout == ""
         assert not marker.exists(), "git must not be invoked before the path glob matches"
+
+    def test_allowlist_failing_path_never_invokes_git(self, isolated_home, tmp_path):
+        """Mirrors test_non_matching_path_never_invokes_git above, but for a
+        path that clears the continuity-file glob and fails the FILE_PATH
+        allowlist instead of never matching the glob at all — the
+        allowlist gate must also run ahead of the git calls, not just the
+        glob."""
+        stub_bin = tmp_path / "stub-bin"
+        stub_bin.mkdir()
+        marker = stub_bin / "git-invoked"
+        fake_git = stub_bin / "git"
+        fake_git.write_text(f"#!/bin/bash\ntouch {shlex.quote(str(marker))}\nexit 1\n")
+        fake_git.chmod(0o755)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/my notes-handoff.md")
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(isolated_home)),
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert not marker.exists(), "git must not be invoked when FILE_PATH fails the allowlist"

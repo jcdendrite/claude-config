@@ -1,36 +1,37 @@
 #!/bin/bash
 # hook-class: informational
-# PostToolUse Edit|Write|MultiEdit hook: when the tool call just wrote a
-# /handoff or /brief continuity file (<config-dir>/handoffs/*-handoff.md,
-# <config-dir>/briefs/*-task.md), independently compute and announce its
-# resume-context command on both hook output channels -- systemMessage for
-# the engineer, hookSpecificOutput.additionalContext for the model -- so
-# display no longer depends on the authoring model recalling
-# handoff/SKILL.md's §7 or brief/SKILL.md's §7.5.
+# PostToolUse Edit|Write|MultiEdit hook: announces the resume-context
+# command for a just-written /handoff or /brief continuity file
+# (<config-dir>/handoffs/*-handoff.md, <config-dir>/briefs/*-task.md), on
+# systemMessage (engineer) and hookSpecificOutput.additionalContext
+# (model).
+# This removes the dependency on the authoring model recalling
+# handoff/SKILL.md §7 or brief/SKILL.md §7.5.
 #
-# --cwd is included only when the payload's .cwd sits inside a linked
+# Includes --cwd only when the payload's .cwd sits inside a linked
 # worktree (git rev-parse --absolute-git-dir differs from
-# --path-format=absolute --git-common-dir), matching what those skill
-# sections themselves prescribe; a main-tree or unresolvable .cwd emits the
-# bare command instead. The git -C calls that decide this run only after
-# the path glob below has already matched a continuity file, and each is
-# wrapped in _lib_capped (5s): unlike require-worktree-for-file-writes.sh's
-# identical comparison, this hook buys no correctness benefit from blocking
-# (the write already succeeded; --cwd is a cosmetic annotation), so a hang
-# here would trade the gate hook's justified risk for an unjustified one.
+# --path-format=absolute --git-common-dir).
+# A main-tree or unresolvable .cwd emits the bare command instead,
+# matching what those skill sections prescribe.
+# The git -C calls run only after the path glob has matched, each capped
+# at 5s via _lib_capped.
 #
-# Fail posture: fail-silent, never blocks. Every failure path (missing
-# _lib.sh, unparseable stdin, a non-matching tool or path, a failed
-# allowlist check, a capped or erroring git call) falls through to exit 0
-# with no output; PostToolUse cannot deny, so there is nothing to fail
-# closed against.
+# Fail posture: fail-silent, never blocks. Each of the following falls
+# through to exit 0 with no output:
+#   - missing _lib.sh
+#   - unparseable stdin
+#   - a non-matching tool or path
+#   - a failed allowlist check
+#   - a capped or erroring git call
+# PostToolUse cannot deny, so there is nothing to fail closed against.
 #
 # Both interpolated values (the written file's path, and the linked
 # worktree's root when present) must match ^[A-Za-z0-9._/@+-]+$ under
-# LC_ALL=C or nothing is emitted at all -- closes the shell-quoting,
-# terminal-escape, and additionalContext semantic-injection exposures a
-# tool-supplied path would otherwise open (set-session-title-from-branch.sh:
-# 18-23, :151-155).
+# LC_ALL=C or nothing is emitted at all.
+# This closes the shell-quoting, terminal-escape, and newline-based
+# structural case-glob bypass a tool-supplied path would otherwise open
+# (set-session-title-from-branch.sh: 18-23, :151-155).
+# It is a structural filter only, not general semantic-content filtering.
 #
 # Paired glob site: the continuity-path case glob below is copied verbatim
 # from consume-durable-continuity-file-on-read.sh:120.
@@ -42,8 +43,12 @@
 # path containing a space instead drops only --cwd, falling back to the
 # bare `resume-context $FILE_PATH` form. The continuity file's own
 # §7/§7.5 text still carries the correct command either way. Resolving the
-# bare `resume-context` name requires ~/.local/bin on PATH (install.sh
-# manages this for bash/zsh; README documents the manual fish step).
+# bare `resume-context` name requires ~/.local/bin on PATH. install.sh
+# manages this for bash/zsh; README documents the manual fish step. A
+# same-character-set English directive -- a handoff/brief filename spelled
+# as an instruction using only letters, digits, and the allowed
+# punctuation -- still passes the allowlist and is echoed verbatim into
+# additionalContext. This is a known, accepted residual, not a bug.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.
@@ -71,11 +76,11 @@ case "$FILE_PATH" in
 esac
 
 ALLOWLIST_RE='^[A-Za-z0-9._/@+-]+$'
-# -z (null-data): treats the whole value as one line, so ^/$ anchor its
-# start/end rather than each embedded line's -- a bash `case` glob matches
-# across embedded newlines, and the bracket class above excludes \n, so a
-# plain (non -z) grep -q would wrongly pass on a line that happens to fully
-# match even though the value as a whole carries other text.
+# -z (null-data) treats the whole value as one line, so ^/$ anchor its
+# start/end rather than each embedded line's.
+# Without it, grep -q would wrongly pass on a value containing an embedded
+# newline, since a bash case glob -- and the bracket class above, which
+# excludes \n -- both operate line-by-line.
 printf '%s' "$FILE_PATH" | LC_ALL=C grep -Eqz "$ALLOWLIST_RE" || exit 0
 
 WORKTREE_ROOT=""
