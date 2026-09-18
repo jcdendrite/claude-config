@@ -63,7 +63,7 @@ INCIDENT_PROMPT = (
 )
 
 # Verbatim from this repo's own transcript history (121 characters).
-# It carries no agentId, session ID, filesystem path, branch name, or
+# Contains none of: agentId, session ID, filesystem path, branch name,
 # person/project name. Unlike INCIDENT_PROMPT above, it therefore needs
 # no identifier substitution.
 CREATED_IN_ERROR_INCIDENT_PROMPT = (
@@ -462,9 +462,9 @@ class TestDenyNoOpDispatch:
         )
 
     def test_no_and_action_non_adjacent_allowed(self, isolated_home):
-        """Guards against an implementation that matches `no.*action`
-        instead of the intended `no (further )?action`, or that drops the
-        required space between the two tokens."""
+        """Guards against two mistakes: matching the over-broad `no.*action`
+        instead of the intended `no (further )?action`; and dropping the
+        required space between "no" and "action"."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
