@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -210,10 +211,32 @@ def _parse_repo_host_log(path: Path) -> dict[str, tuple[str, str]]:
     return calls
 
 
+_HERMETIC_CWD: Path | None = None
+
+
+def _hermetic_cwd() -> Path:
+    """A fresh, git-free directory for ci-watch.sh to run from by default.
+
+    candidate_gh_hosts() (ci-watch.sh) shells out to `git config
+    --get-regexp` in $PWD whenever GH_HOST is unset. Left at the pytest
+    process's own ambient cwd, an unrelated git remote there would leak
+    into every test that doesn't deliberately build its own repo —
+    test_ghe_remote_with_no_gh_host_anywhere_still_withholds_ambient_token
+    and its siblings below do, via their own explicit cwd=repo_dir.
+    Memoized for the whole test session: the directory is read-only from
+    ci-watch.sh's perspective, so every test can safely share it.
+    """
+    global _HERMETIC_CWD
+    if _HERMETIC_CWD is None:
+        _HERMETIC_CWD = Path(tempfile.mkdtemp(prefix="ci-watch-test-cwd-"))
+    return _HERMETIC_CWD
+
+
 def _run(env, *args):
     return subprocess.run(
         [str(_SCRIPT), *args],
         env=env,
+        cwd=_hermetic_cwd(),
         capture_output=True,
         text=True,
         check=False,
@@ -1018,6 +1041,43 @@ def _direnv_shim_source_fails_first_call_then_static_exports(counter_file: str, 
     """)
 
 
+def _direnv_shim_source_second_call_fails_others_succeed(counter_file: str, exports: dict) -> str:
+    """direnv shim whose first and every later call export `exports`
+    unconditionally, except the second call, which fails via the same
+    syntactically-invalid-payload technique as
+    _direnv_shim_source_exits_zero_with_unparseable_payload above. Models a
+    .envrc that answers resolve_ci_checks_gh_token's own value_probe (1st
+    call) normally, fails transiently on named_probe (2nd call) against the
+    same directory, then answers resolve_gh_host's own probe (3rd call)
+    normally again — the mirror ordering to
+    _direnv_shim_source_fails_first_call_then_static_exports above, which
+    fails only the first call. counter_file persists the call count across
+    the separate `direnv` subprocess invocations."""
+    payload = json.dumps(exports)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import shlex
+        import sys
+        from pathlib import Path
+
+        COUNTER_FILE = Path({counter_file!r})
+        EXPORTS = json.loads({payload!r})
+
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            count = int(COUNTER_FILE.read_text()) if COUNTER_FILE.exists() else 0
+            count += 1
+            COUNTER_FILE.write_text(str(count))
+            if count == 2:
+                print("export OTHER_VAR='unterminated")
+            else:
+                for name, value in EXPORTS.items():
+                    print(f"export {{name}}={{shlex.quote(value)}}")
+        sys.exit(0)
+    """)
+
+
 def test_direnv_export_succeeding_with_unparseable_payload_leaves_ambient_untouched_and_does_not_abort(fake_gh, tmp_path):
     # Unlike test_direnv_exiting_nonzero_leaves_ambient_untouched_and_does_not_abort
     # above, where direnv itself exits nonzero, this shim's `export bash`
@@ -1111,7 +1171,7 @@ def test_stdin_reading_envrc_does_not_hang(fake_gh):
     )
     read_fd, write_fd = os.pipe()
     proc = subprocess.Popen(
-        [str(_SCRIPT), _PR_NUMBER], env=env, stdin=read_fd,
+        [str(_SCRIPT), _PR_NUMBER], env=env, cwd=_hermetic_cwd(), stdin=read_fd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     os.close(read_fd)
@@ -1202,8 +1262,11 @@ def test_require_direnv_skips_when_github_actions_unset_and_direnv_absent(monkey
 def test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end(tmp_path):
     # Only test in this file running real direnv end-to-end, to catch drift
     # between the shims above and real direnv's own export behavior.
-    # `XDG_DATA_HOME`/`DIRENV_CONFIG` are redirected into `tmp_path` so this
-    # test never touches this machine's real direnv allow-store or config.
+    # `HOME`/`XDG_DATA_HOME`/`DIRENV_CONFIG` are redirected into `tmp_path`
+    # so this test never touches this machine's real direnv allow-store or
+    # config. `HOME` must be included: real direnv's stdlib falls back to
+    # sourcing `$HOME/.direnvrc` when `$DIRENV_CONFIG/direnvrc` doesn't
+    # exist, which it never does here.
     # Runs in CI too: .github/workflows/tests.yml's "Install stow and
     # direnv" step installs whatever direnv version Ubuntu 24.04's apt
     # repo carries.
@@ -1237,6 +1300,7 @@ def test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end(tmp_path):
     env = {
         **_base_test_env(),
         "PATH": os.pathsep.join([str(gh_shim_dir), os.environ.get("PATH", "")]),
+        "HOME": str(tmp_path / "home"),
         "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
         "DIRENV_CONFIG": str(tmp_path / "direnv-config"),
         "CI_CHECKS_GH_TOKEN": "ambient-reconfirmed-token",
@@ -1306,9 +1370,13 @@ def test_real_direnv_cd_between_directories_clears_stale_token(tmp_path):
     ))
     gh_shim.chmod(0o755)
 
+    # HOME is redirected alongside XDG_DATA_HOME/DIRENV_CONFIG for the same
+    # reason as test_resolve_ci_checks_gh_token_against_real_direnv_end_to_end
+    # above: real direnv's stdlib falls back to sourcing $HOME/.direnvrc.
     env = {
         **_base_test_env(),
         "PATH": os.pathsep.join([str(gh_shim_dir), os.environ.get("PATH", "")]),
+        "HOME": str(tmp_path / "home"),
         "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
         "DIRENV_CONFIG": str(tmp_path / "direnv-config"),
     }
@@ -1808,6 +1876,51 @@ def test_failed_value_probe_with_succeeding_named_probe_still_withholds_token(fa
     assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" not in result.stderr
 
 
+def test_succeeding_value_probe_with_failing_named_probe_still_discards_good_token(fake_gh, tmp_path):
+    # The mirror ordering to test_failed_value_probe_with_succeeding_named_probe_still_withholds_token
+    # above: here value_probe (the 1st direnv call) succeeds and resolves
+    # CI_CHECKS_GH_TOKEN's correct value, but named_probe (the 2nd,
+    # separate direnv call against the same directory) transiently fails.
+    # CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV never latches, so the gate's OR
+    # condition fires and discards a token that did get direnv's correct
+    # answer. This is the documented fail-closed cost of the gate's design
+    # (docs/scripts.md), not a bug: an availability/false-positive issue,
+    # never a security hole, since it fails toward the safer,
+    # more-withholding direction.
+    token_log = tmp_path / "token.log"
+    repo_host_log = tmp_path / "repo_host.log"
+    counter_file = tmp_path / "direnv_call_count"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        repo_host_log=repo_host_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "stale-ambient-value-overwritten-by-value-probe"},
+        direnv_source=_direnv_shim_source_second_call_fails_others_succeed(
+            str(counter_file),
+            {"CI_CHECKS_GH_TOKEN": "direnv-resolved-good-token", "GH_HOST": "octocat.ghe.com"},
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    token_calls = _parse_token_log(token_log)
+    repo_host_calls = _parse_repo_host_log(repo_host_log)
+    # value_probe (1st call) succeeded and resolved the good token...
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+    # resolve_gh_host's own probe (3rd call) also succeeded, so a
+    # *.ghe.com candidate host exists for the gate to react to.
+    assert repo_host_calls["watch"] == ("<unset>", "octocat.ghe.com")
+    # ...but named_probe (2nd call) failed, so the gate discards the
+    # correctly-resolved token anyway.
+    assert token_calls["watch"] == ("", "")
+    assert token_calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr
+
+
 def test_json_failure_with_token_withheld_by_cross_host_gate_gets_withheld_hint(fake_gh, tmp_path):
     # Distinguishes the withheld-by-gate 403 hint from both
     # test_json_failure_with_token_unset_appends_hint_to_existing_error
@@ -1871,3 +1984,229 @@ def test_ambient_gh_token_reaches_view_and_unwrapped_fallback_despite_withholdin
     assert calls["view"] == ("ambient-token-scoped-elsewhere", "")
     assert calls["watch"] == ("ambient-token-scoped-elsewhere", "")
     assert calls["json"] == ("ambient-token-scoped-elsewhere", "")
+
+
+# ---------------------------------------------------------------------------
+# candidate_gh_hosts — the gate bypass this branch closes: a GHE host
+# already registered via `gh auth login` needs no GH_HOST at all, so a
+# directory's .envrc has no reason to export it. The cross-host mismatch
+# gate must still react to the destination host gh actually resolves from
+# this repo's own git remote, not only to a direnv-supplied GH_HOST.
+# ---------------------------------------------------------------------------
+
+def test_ghe_remote_with_no_gh_host_anywhere_still_withholds_ambient_token(fake_gh, tmp_path):
+    # The fixed bypass: no .envrc names GH_HOST (modeling a GHE host
+    # already registered via `gh auth login`, so no fallback entry is
+    # needed), but this repo's own `origin` remote resolves to a *.ghe.com
+    # host. candidate_gh_hosts must fall back to that remote host instead
+    # of only ever checking GH_HOST.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://octocat.ghe.com/owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr
+
+
+def test_github_com_remote_with_no_gh_host_anywhere_leaves_ambient_token_untouched(fake_gh, tmp_path):
+    # Companion to the regression test above: an ordinary github.com remote,
+    # same no-GH_HOST-anywhere shape, must never trip the gate — proves the
+    # git-remote fallback is a real narrowing, not a blanket withhold.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("ambient-token-scoped-elsewhere", "")
+    assert calls["json"] == ("ambient-token-scoped-elsewhere", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" not in result.stderr
+
+
+def test_scp_like_ghe_remote_with_no_gh_host_anywhere_still_withholds_ambient_token(fake_gh, tmp_path):
+    # candidate_gh_hosts' second regex branch (the scp-like `user@host:path`
+    # form, e.g. `git@host.ghe.com:owner/repo.git`) is untested above --
+    # every other candidate-host test in this file uses the scheme://...
+    # branch only.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@octocat.ghe.com:owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr
+
+
+def test_credential_embedded_remote_url_withholds_without_leaking_credentials(fake_gh, tmp_path):
+    # candidate_gh_hosts' scheme://[user@]host regex strips a
+    # `user:pass@`-shaped credential portion before capturing the host --
+    # the gate must still match the bare host, and neither the withholding
+    # line nor any other stdout/stderr output may ever surface the
+    # credential embedded in the remote URL.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        [
+            "git", "remote", "add", "origin",
+            "https://leaked-cred-user:leaked-cred-pass@octocat.ghe.com/owner/repo.git",
+        ],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr
+    assert "leaked-cred-user:leaked-cred-pass" not in result.stdout
+    assert "leaked-cred-user:leaked-cred-pass" not in result.stderr
+    assert "leaked-cred-pass" not in result.stdout
+    assert "leaked-cred-pass" not in result.stderr
+
+
+def test_multi_remote_repo_with_ghe_remote_not_first_still_withholds_token(fake_gh, tmp_path):
+    # candidate_gh_hosts' while-loop reads `git config --get-regexp`'s
+    # output in the order remotes were added to .git/config -- the
+    # *.ghe.com candidate must still trip the gate when a non-matching
+    # remote (origin, added first) precedes it, proving the loop doesn't
+    # short-circuit on the first candidate it reads.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "upstream", "https://octocat.ghe.com/owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr
+
+
+def test_mixed_case_ghe_remote_with_no_gh_host_anywhere_still_withholds_ambient_token(fake_gh, tmp_path):
+    # Companion to
+    # test_gh_host_resolved_via_direnv_to_mixed_case_ghe_com_still_fires_mismatch_warning
+    # above, which only exercises the mixed-case host via the direct
+    # GH_HOST path. Here the mixed-case *.ghe.com-shaped host arrives via
+    # the git-remote fallback instead, with GH_HOST never set anywhere.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://Octocat.GHE.com/owner/repo.git"],
+        cwd=repo_dir, check=True,
+    )
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-token-scoped-elsewhere"},
+    )
+    result = subprocess.run(
+        [str(_SCRIPT), _PR_NUMBER], cwd=repo_dir, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "ci-watch: withholding CI_CHECKS_GH_TOKEN" in result.stderr

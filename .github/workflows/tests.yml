@@ -148,6 +148,7 @@ jobs:
       # tests exercise actual direnv hook output, not a stub, so direnv
       # must be a real binary too.
       - name: Install stow and direnv
+        # This step's `if:` must keep matching both "Run tests" steps' `if:` below — conftest.py's require_direnv() hard-fail guarantee depends on all three staying in sync.
         if: steps.detect.outputs.changed == 'true'
         run: |
           sudo apt-get update
@@ -159,11 +160,13 @@ jobs:
         run: nproc
 
       - name: Run tests (parallel)
+        # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.
         if: steps.detect.outputs.changed == 'true'
         run: pytest claude/.claude/ claude-skills/ plugins/ -v -m "not timing"
 
       # !cancelled() (not bare `if:`) so a parallel-pass failure above doesn't
       # suppress this step's own report in the same run.
+      # This step's `if:` must keep matching "Install stow and direnv" and "Run tests (parallel)" above — see that step's own comment.
       - name: Run tests (timing, serial)
         if: ${{ !cancelled() && steps.detect.outputs.changed == 'true' }}
         run: pytest claude/.claude/ claude-skills/ plugins/ -v -m timing -n0

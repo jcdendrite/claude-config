@@ -21,18 +21,9 @@
 # Input (environment):
 #   CI_CHECKS_GH_TOKEN  -- optional; used only for the two `gh pr checks`
 #                           calls, since fine-grained PATs 403 on the Checks
-#                           API. Resolved automatically via direnv for the
-#                           current directory before first use (see
-#                           resolve_ci_checks_gh_token below). An ambient
-#                           value survives when direnv is absent, its
-#                           resolution fails, or direnv has nothing to say
-#                           about this directory. It is cleared when
-#                           direnv's own payload clears it. It is also
-#                           withheld outright when GH_HOST resolved via
-#                           direnv to a *.ghe.com host but this variable's
-#                           own resolution did not — see the cross-host
-#                           mismatch gate below and docs/scripts.md for
-#                           provisioning guidance.
+#                           API. Resolved via direnv and withheld on a
+#                           cross-host mismatch — see docs/scripts.md's
+#                           CI_CHECKS_GH_TOKEN entry for the full mechanism.
 #   GH_HOST             -- optional; tells `gh` which host to target. Needed
 #                           when a GHE host is supplied only via direnv and
 #                           was never registered via `gh auth login`, so
@@ -86,15 +77,10 @@ if ! command -v gh &>/dev/null; then
   exit 1
 fi
 
-# Set by resolve_ci_checks_gh_token/resolve_gh_host below when direnv's
-# export payload actually names that variable for this directory. This is
-# independent of whether the resolved value differs from that variable's
-# own pre-unset ambient value. Read after both resolvers run by the
-# cross-host mismatch gate below, which withholds CI_CHECKS_GH_TOKEN when
-# GH_HOST resolved via direnv but CI_CHECKS_GH_TOKEN did not — see
-# docs/scripts.md's GH_HOST entry.
+# Set by resolve_ci_checks_gh_token below when direnv names this variable
+# for this directory, independent of whether the value changed. Consumed
+# by the cross-host mismatch gate below.
 CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV=0
-GH_HOST_RESOLVED_VIA_DIRENV=0
 
 # Set by resolve_ci_checks_gh_token below to 1 only when its own value_probe
 # command substitution succeeds. Read by the cross-host mismatch gate below,
@@ -164,16 +150,9 @@ resolve_ci_checks_gh_token() {
   fi
 
   # named_probe answers a different question: "did direnv name this
-  # variable for this directory at all". direnv emits nothing for a value
-  # it observes as already matching the environment, so value_probe alone
-  # can't see a reconfirmation of an already-correct ambient value.
-  # unset-first mode forces direnv to re-state it. This is a second
-  # `direnv_export_bash` call, not a re-eval of value_probe's payload,
-  # since each answer depends on which environment direnv observed when
-  # it computed the payload. A value-equality comparison here would miss
-  # an ambient value direnv merely reconfirms, and would wrongly report a
-  # direnv-resolved value that happens to already match ambient as
-  # unresolved.
+  # variable for this directory at all". unset-first mode forces direnv to
+  # re-state a value it would otherwise silently reconfirm, so a
+  # value-equality check can't substitute for it.
   if named_probe=$(direnv_probe CI_CHECKS_GH_TOKEN unset-first) \
       && [[ "${named_probe:0:1}" == 1 ]]; then
     CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV=1
@@ -186,10 +165,6 @@ resolve_ci_checks_gh_token
 # `unset GH_REPO GH_HOST` near the top with this directory's own value
 # before any gh call. Exported when non-empty (gh reads GH_HOST from the
 # environment, gh v2.97.0) — see docs/scripts.md's GH_HOST entry for why.
-# GH_HOST_RESOLVED_VIA_DIRENV is set independently of the notice's
-# value-equality comparison below, from whether direnv's export payload
-# names GH_HOST at all. See resolve_ci_checks_gh_token's own comment for
-# why value-equality is the wrong signal for that flag.
 resolve_gh_host() {
   command -v direnv >/dev/null 2>&1 || return 0
   # probe is assigned separately below (not `local probe=$(...)`), so its
@@ -201,7 +176,6 @@ resolve_gh_host() {
   local ambient="$AMBIENT_GH_HOST" probe
   if probe=$(direnv_probe GH_HOST unset-first); then
     if [[ "${probe:0:1}" == 1 ]]; then
-      GH_HOST_RESOLVED_VIA_DIRENV=1
       local resolved="${probe:1}"
       if [[ -n "$resolved" ]]; then
         export GH_HOST="$resolved"
@@ -215,29 +189,56 @@ resolve_gh_host() {
 }
 resolve_gh_host
 
-# Withholds CI_CHECKS_GH_TOKEN when GH_HOST resolved via direnv but
-# CI_CHECKS_GH_TOKEN's resolution did not, since the stale token may
-# otherwise reach a different, newly-reachable host as GH_TOKEN. Scoped to
-# *.ghe.com hosts — see docs/scripts.md's GH_HOST entry for why. A failed
-# value_probe (CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK != 1) is treated the same
-# as CI_CHECKS_GH_TOKEN not having resolved via direnv, since a failed
-# value_probe means CI_CHECKS_GH_TOKEN never actually got direnv's answer
-# even if the separately-succeeding named_probe latched
-# CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV to 1.
-# nocasematch scopes the glob match case-insensitively: [[ ]] glob
-# matching is case-sensitive by default, and a mixed-case GH_HOST (e.g.
-# Octocat.GHE.com) would otherwise dodge the *.ghe.com gate below.
+# candidate_gh_hosts — print, one per line, the host(s) `gh` is actually
+# about to target: GH_HOST when non-empty (gh help environment, gh
+# v2.97.0), else every host parsed from this repo's git remote URLs (gh's
+# own cwd-based fallback resolution). Never fails: a non-repo cwd or a
+# repo with no remotes yields no output.
+candidate_gh_hosts() {
+  if [[ -n "${GH_HOST:-}" ]]; then
+    printf '%s\n' "$GH_HOST"
+    return 0
+  fi
+  local line url host
+  git config --get-regexp '^remote\..*\.url$' 2>/dev/null | while IFS= read -r line; do
+    url="${line#* }"
+    # URL form: scheme://[user@]host[:port]/path (e.g. https://, ssh://).
+    if [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*://([^/@]*@)?([^/:]+) ]]; then
+      host="${BASH_REMATCH[2]}"
+    # scp-like form: user@host:path (e.g. git@host.ghe.com:owner/repo.git).
+    elif [[ "$url" =~ ^[^/@[:space:]]+@([^:/[:space:]]+): ]]; then
+      host="${BASH_REMATCH[1]}"
+    else
+      continue
+    fi
+    printf '%s\n' "$host"
+  done || true
+  return 0
+}
+
+# Withholds CI_CHECKS_GH_TOKEN when it did not resolve via direnv but a
+# *.ghe.com candidate host (candidate_gh_hosts above) is among the hosts
+# gh is actually about to target, since the stale token may otherwise
+# reach that host as GH_TOKEN. See docs/scripts.md's GH_HOST entry for the
+# full rationale.
+# A failed value_probe counts the same as "did not resolve via direnv" —
+# see CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK's own declaration comment above.
+# nocasematch scopes the glob match case-insensitively, since [[ ]] glob
+# matching is case-sensitive by default.
 CI_CHECKS_GH_TOKEN_WITHHELD=0
-shopt -s nocasematch
-if [[ "$GH_HOST_RESOLVED_VIA_DIRENV" -eq 1 ]] \
-    && { [[ "$CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV" -ne 1 ]] || [[ "$CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK" -ne 1 ]]; } \
-    && [[ -n "${CI_CHECKS_GH_TOKEN:-}" ]] \
-    && [[ "${GH_HOST:-}" == *.ghe.com ]]; then
-  echo "ci-watch: withholding CI_CHECKS_GH_TOKEN for $(pwd) — GH_HOST resolved via direnv to a *.ghe.com host but CI_CHECKS_GH_TOKEN's resolution did not, so a stale token is not being sent to it; see docs/scripts.md" >&3
-  unset CI_CHECKS_GH_TOKEN
-  CI_CHECKS_GH_TOKEN_WITHHELD=1
+if { [[ "$CI_CHECKS_GH_TOKEN_RESOLVED_VIA_DIRENV" -ne 1 ]] || [[ "$CI_CHECKS_GH_TOKEN_VALUE_PROBE_OK" -ne 1 ]]; } \
+    && [[ -n "${CI_CHECKS_GH_TOKEN:-}" ]]; then
+  shopt -s nocasematch
+  while IFS= read -r candidate_host; do
+    if [[ "$candidate_host" == *.ghe.com ]]; then
+      echo "ci-watch: withholding CI_CHECKS_GH_TOKEN for $(pwd) — the destination host (${candidate_host}) is a *.ghe.com candidate but CI_CHECKS_GH_TOKEN's resolution did not follow it, so a stale token is not being sent to it; see docs/scripts.md" >&3
+      unset CI_CHECKS_GH_TOKEN
+      CI_CHECKS_GH_TOKEN_WITHHELD=1
+      break
+    fi
+  done < <(candidate_gh_hosts)
+  shopt -u nocasematch
 fi
-shopt -u nocasematch
 
 # GH_TOKEN alone covers both github.com and *.ghe.com subdomains (gh help
 # environment, gh v2.97.0).
