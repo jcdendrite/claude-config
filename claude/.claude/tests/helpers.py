@@ -26,6 +26,7 @@ REPO_ROOT = CLAUDE_DIR.parent.parent
 HOOKS_DIR = CLAUDE_DIR / "hooks"
 SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
+SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
@@ -281,6 +282,87 @@ def run_hook_payload(
     return payload["hookSpecificOutput"]
 
 
+def run_hook_raw(
+    hook: Path,
+    tool_input: dict,
+    home: Path,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """Like `run_hook`, but returns the raw `subprocess.CompletedProcess`
+    instead of a decoded decision, for tests asserting on `systemMessage` —
+    a field neither `run_hook_advisory` (decision string only) nor
+    `run_hook_payload` (`hookSpecificOutput` only) exposes.
+
+    `home` is required and must not be None, so a caller can't inherit the
+    real ambient HOME. `cwd` is not settable: the subprocess inherits
+    pytest's cwd.
+    `extra_env` is merged on top of the base env after the HOME override, so
+    it can also override HOME.
+    """
+    if home is None:
+        raise TypeError("run_hook_raw requires a home path; None would inherit the ambient HOME")
+    env = _build_subprocess_env(home, extra_env)
+    return subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _registrations_of_hook(hook_path: Path, settings_path: Path) -> list[tuple[str, dict]]:
+    """Every `(event_name, group)` in `settings_path` with an entry whose
+    command's last shell word has the same basename as `hook_path` — exact
+    equality, not `endswith`, so `foo-bar.sh` never matches `bar.sh`."""
+    settings = json.loads(settings_path.read_text())
+    registrations: list[tuple[str, dict]] = []
+    for event_name, groups in settings["hooks"].items():
+        for group in groups:
+            for entry in group.get("hooks", []):
+                tokens = shlex.split(entry.get("command", ""))
+                if tokens and Path(tokens[-1]).name == hook_path.name:
+                    registrations.append((event_name, group))
+    return registrations
+
+
+def registered_hook_event_name(hook_path: Path, settings_path: Path = SETTINGS_PATH) -> str:
+    """Return the single hook event `hook_path` is registered under in
+    `settings_path`, derived from settings.json rather than hardcoded — a
+    divergence between the emitted and registered event name silently drops
+    hookSpecificOutput.additionalContext, per CLAUDE.md's discriminator-
+    literal rule.
+
+    Raises AssertionError when the hook is unregistered or registered under
+    more than one event.
+    """
+    event_names = sorted({event_name for event_name, _group in _registrations_of_hook(hook_path, settings_path)})
+    if not event_names:
+        raise AssertionError(f"{hook_path.name} not found in {settings_path}")
+    if len(event_names) > 1:
+        raise AssertionError(
+            f"{hook_path.name} is registered under multiple events {event_names} in {settings_path}"
+        )
+    return event_names[0]
+
+
+def registered_hook_matchers(hook_path: Path, settings_path: Path = SETTINGS_PATH) -> list[str]:
+    """Return the `matcher` string of every settings.json hook group that
+    runs `hook_path` (empty string when a group has no matcher)."""
+    return [group.get("matcher", "") for _event_name, group in _registrations_of_hook(hook_path, settings_path)]
+
+
+def matcher_admits_tool(matcher: str, tool_name: str) -> bool:
+    """Return whether a settings.json hook `matcher` fires for `tool_name`.
+    An empty matcher or `*` matches every tool (Claude Code semantics);
+    anything else is a regex that must match the whole tool name.
+    The whole-name regex semantics are this repo's assumption; no repo doc cites them."""
+    if matcher in ("", "*"):
+        return True
+    return re.fullmatch(matcher, tool_name) is not None
+
+
 def run_hook_stop(
     hook: Path,
     tool_input: dict,
@@ -505,6 +587,7 @@ def write_input(
     agent_type: str | None = None,
     cwd: str | None = None,
     content: str = "x",
+    session_id: str | None = None,
 ) -> dict:
     """`content` defaults to the prior hardcoded placeholder — existing call
     sites that don't care about content keep the same payload."""
@@ -513,6 +596,8 @@ def write_input(
         payload["agent_type"] = agent_type
     if cwd is not None:
         payload["cwd"] = cwd
+    if session_id is not None:
+        payload["session_id"] = session_id
     return payload
 
 

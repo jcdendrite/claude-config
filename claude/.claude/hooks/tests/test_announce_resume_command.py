@@ -16,47 +16,12 @@ from helpers import (
     edit_input,
     multiedit_input,
     read_input,
+    registered_hook_event_name,
+    run_hook_raw,
     write_input,
 )
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-resume-command.sh"
-_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
-
-
-def _registered_post_tool_use_event_name() -> str:
-    """The hookEventName this hook's emission must claim, derived from
-    settings.json rather than hardcoded — mirrors
-    test_consume_durable_continuity_file_on_read.py's helper of the same
-    name, since a divergence here silently drops
-    hookSpecificOutput.additionalContext the same way."""
-    settings = json.loads(_SETTINGS_PATH.read_text())
-    for event_name, groups in settings["hooks"].items():
-        for group in groups:
-            for entry in group.get("hooks", []):
-                if entry.get("command", "").endswith(ANNOUNCE_HOOK.name):
-                    return event_name
-    raise AssertionError(f"{ANNOUNCE_HOOK.name} not found in {_SETTINGS_PATH}")
-
-
-def _run_hook_raw(
-    hook: Path, tool_input: dict, home: Path, extra_env: dict | None = None
-) -> subprocess.CompletedProcess:
-    """Like helpers.run_hook, but returns the raw CompletedProcess instead of
-    the decoded permissionDecision — needed for tests asserting on the
-    `systemMessage` JSON this hook emits, which run_hook's decision-decoding
-    doesn't expose."""
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(
-        [str(hook)],
-        input=json.dumps(tool_input),
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
 
 
 def _write_fixture(base: Path, rel_path: str) -> Path:
@@ -91,7 +56,7 @@ class TestAnnounceResumeCommand:
         would still pass every $HOME/.claude case."""
         config_dir = tmp_path / "custom-profile"
         fixture = _write_fixture(config_dir, "handoffs/example-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture)),
             home=isolated_home,
@@ -107,7 +72,7 @@ class TestAnnounceResumeCommand:
         counterpart) is pinned directly, not merely assumed to work because
         the handoff arm does."""
         fixture = _write_fixture(isolated_home, ".claude/briefs/example-task.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert str(fixture) in payload["systemMessage"]
@@ -122,7 +87,7 @@ class TestAnnounceResumeCommand:
     )
     def test_fires_on_every_file_writing_tool(self, isolated_home, make_input):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, make_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, make_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert "resume-context" in payload["systemMessage"]
@@ -138,7 +103,7 @@ class TestAnnounceResumeCommand:
     )
     def test_non_matching_path_emits_nothing(self, isolated_home, rel_path):
         fixture = _write_fixture(isolated_home, rel_path)
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
 
@@ -146,7 +111,7 @@ class TestAnnounceResumeCommand:
         """Defense-in-depth: filters tool_name itself, independent of the
         settings.json matcher condition."""
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, read_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, read_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
 
@@ -158,7 +123,7 @@ class TestAnnounceResumeCommand:
         pins that this input shape is still handled without error."""
         payload = write_input(str(isolated_home / ".claude" / "handoffs" / "example-handoff.md"))
         del payload["tool_input"]["file_path"]
-        result = _run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
 
@@ -168,7 +133,7 @@ class TestAnnounceResumeCommand:
 
     def test_linked_worktree_cwd_includes_cwd_flag(self, isolated_home, linked_worktree):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(linked_worktree)),
             home=isolated_home,
@@ -180,7 +145,7 @@ class TestAnnounceResumeCommand:
 
     def test_main_tree_cwd_omits_cwd_flag(self, isolated_home, git_repo):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(git_repo)),
             home=isolated_home,
@@ -194,7 +159,7 @@ class TestAnnounceResumeCommand:
 
     def test_cwd_absent_omits_cwd_flag_but_still_announces(self, isolated_home):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert "--cwd" not in payload["systemMessage"]
@@ -214,7 +179,7 @@ class TestAnnounceResumeCommand:
         env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--git-dir" ]')
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         with assert_cap_engaged(tmp_path, production_cap=5):
-            result = _run_hook_raw(
+            result = run_hook_raw(
                 ANNOUNCE_HOOK,
                 write_input(str(fixture), cwd=str(linked_worktree)),
                 home=isolated_home,
@@ -231,7 +196,7 @@ class TestAnnounceResumeCommand:
         non_repo = tmp_path / "not-a-repo"
         non_repo.mkdir()
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(non_repo)),
             home=isolated_home,
@@ -255,7 +220,7 @@ class TestAnnounceResumeCommand:
         from letters, digits, and the allowed punctuation clears
         ^[A-Za-z0-9._/@+-]+$ and is included in the emitted command."""
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert f"resume-context {fixture}" in payload["systemMessage"]
@@ -265,7 +230,7 @@ class TestAnnounceResumeCommand:
         ^[A-Za-z0-9._/@+-]+$ allowlist must produce no output at all — assert
         on the absence of output, not on a sanitized string."""
         fixture = _write_fixture(isolated_home, ".claude/handoffs/my notes-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
 
@@ -279,7 +244,7 @@ class TestAnnounceResumeCommand:
         malicious_name = "notes\n\nSENTINEL-INJECT\n\nx-handoff.md"
         fixture = handoffs_dir / malicious_name
         fixture.write_text("fixture content\n")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         assert result.stdout == ""
         assert "SENTINEL-INJECT" not in result.stdout
@@ -298,7 +263,7 @@ class TestAnnounceResumeCommand:
             check=True,
         )
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(worktree)),
             home=isolated_home,
@@ -316,10 +281,10 @@ class TestAnnounceResumeCommand:
 
     def test_hook_event_name_matches_registration(self, isolated_home):
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)
-        assert payload["hookSpecificOutput"]["hookEventName"] == _registered_post_tool_use_event_name()
+        assert payload["hookSpecificOutput"]["hookEventName"] == registered_hook_event_name(ANNOUNCE_HOOK)
 
     # -----------------------------------------------------------------------
     # Fail-open paths
@@ -380,7 +345,7 @@ class TestAnnounceResumeCommand:
         fake_git.write_text(f"#!/bin/bash\ntouch {shlex.quote(str(marker))}\nexit 1\n")
         fake_git.chmod(0o755)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/notes.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(isolated_home)),
             home=isolated_home,
@@ -403,7 +368,7 @@ class TestAnnounceResumeCommand:
         fake_git.write_text(f"#!/bin/bash\ntouch {shlex.quote(str(marker))}\nexit 1\n")
         fake_git.chmod(0o755)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/my notes-handoff.md")
-        result = _run_hook_raw(
+        result = run_hook_raw(
             ANNOUNCE_HOOK,
             write_input(str(fixture), cwd=str(isolated_home)),
             home=isolated_home,

@@ -31,7 +31,10 @@ Subcommands:
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
              longer alive, or whose mtime has aged past the 60-minute idle
-             window. --dry-run reports without removing.
+             window. Also removes the declared-path siblings of a dead, idle,
+             or absent owner. The evicted count is files; the kept count is
+             owner markers. A symlinked *-active.d directory is skipped
+             silently. --dry-run reports without removing.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
@@ -657,6 +660,7 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.reviewed-plan-path"
         rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
         rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
         ;;
@@ -706,20 +710,37 @@ case "$SUBCOMMAND" in
     #   - revisit only if unbounded accumulation shows up in practice
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
+    # EVICTED counts evicted files, siblings included. KEPT counts kept owner
+    # markers only, since a live owner's siblings are never reported.
     EVICTED=0
     KEPT=0
+    # Removal is deferred to the end of the pass so a sibling still reads its
+    # owner marker, and gets the owner's verdict, in dry-run and real runs alike.
+    EVICT_QUEUE=()
     for active_dir in "$CONFIG_DIR"/.*-active.d; do
       [ -d "$active_dir" ] || continue
+      # A symlinked active dir would let removal leave CONFIG_DIR.
+      [ -L "$active_dir" ] && continue
       dir_name=$(basename "$active_dir")
       for entry in "$active_dir"/*; do
         [ -f "$entry" ] || continue
-        # Name-based exemption, not a PID-liveness question: this sibling
-        # holds a declared plan-mode path, never a PID, so the ^[0-9]+$ test
-        # below would always misread it as a dead marker and evict it.
+        # A declared-path sibling holds a path, never a PID, so its own
+        # content is not parsed as one: the ^[0-9]+$ test below would always
+        # misread it as dead. Its owning <sid> marker's liveness decides its
+        # fate instead, and the owner is written before either sibling.
+        liveness_entry="$entry"
+        sibling_of_owner=0
         case "$entry" in
-          *.planmode-path) continue ;;
+          *.planmode-path)
+            liveness_entry="${entry%.planmode-path}"
+            sibling_of_owner=1
+            ;;
+          *.reviewed-plan-path)
+            liveness_entry="${entry%.reviewed-plan-path}"
+            sibling_of_owner=1
+            ;;
         esac
-        stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
+        stored_pid=$(cat "$liveness_entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
         # Same two-part staleness definition _lib_active_bypass_marker_live
         # uses: PID alive AND mtime within the 60-minute idle window. Kept
@@ -728,18 +749,34 @@ case "$SUBCOMMAND" in
         # fired.
         pid_alive=0
         [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null && pid_alive=1
-        if [ "$pid_alive" -eq 1 ] && [ -n "$(find "$entry" -mmin -60 2>/dev/null)" ]; then
+        if [ "$pid_alive" -eq 1 ] && [ -n "$(find "$liveness_entry" -mmin -60 2>/dev/null)" ]; then
+          # A live owner's sibling is not a marker, so it is neither counted
+          # nor reported as kept.
+          [ "$sibling_of_owner" -eq 1 ] && continue
           KEPT=$((KEPT + 1))
           [ "$DRY_RUN" -eq 1 ] && printf '  keep: %s/%s (PID %s alive)\n' "$dir_name" "$entry_name" "$stored_pid"
         else
           EVICTED=$((EVICTED + 1))
-          if [ "$pid_alive" -eq 1 ]; then
+          if [ "$sibling_of_owner" -eq 1 ] && [ ! -f "$liveness_entry" ]; then
+            reason="no owner marker"
+          elif [ "$pid_alive" -eq 1 ]; then
+            # A live owner idle past the window also loses its declared-path
+            # siblings on a manual sweep.
+            # With .planmode-path gone, `write plan-review` hashes the
+            # repo-relative plan set, so ExitPlanMode is denied by the hash
+            # mismatch until the review's Step 0 re-declares it.
+            # .reviewed-plan-path has no reader.
+            # The queue widens the judge-to-remove window to the whole sweep.
+            # That is accepted: the subcommand is manual-only and fails closed.
             reason="idle timeout, PID ${stored_pid} alive"
           else
             reason="PID ${stored_pid:-empty} dead"
           fi
+          if [ "$sibling_of_owner" -eq 1 ] && [ -f "$liveness_entry" ]; then
+            reason="owner marker: ${reason}"
+          fi
           if [ "$DRY_RUN" -eq 0 ]; then
-            rm -f "$entry"
+            EVICT_QUEUE+=("$entry")
             printf '  evict: %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
           else
             printf '  evict (dry-run): %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
@@ -747,6 +784,12 @@ case "$SUBCOMMAND" in
         fi
       done
     done
+    # One rm per entry keeps a large queue clear of the single-exec argument limit.
+    if [ "${#EVICT_QUEUE[@]}" -gt 0 ]; then
+      for queued_entry in "${EVICT_QUEUE[@]}"; do
+        rm -f -- "$queued_entry"
+      done
+    fi
     if [ "$DRY_RUN" -eq 1 ]; then
       printf 'clear-stale: would evict %d orphan(s), keep %d active\n' "$EVICTED" "$KEPT"
     else

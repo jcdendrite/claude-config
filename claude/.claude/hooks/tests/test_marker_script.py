@@ -322,6 +322,10 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
 ]
 
 
+# A PID far above any pid_max, so `kill -0` never finds a live process.
+DEAD_PID = 99999999
+
+
 def _run(
     args: list[str], cwd, home, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -627,6 +631,117 @@ class TestMarkerScriptClearStale:
     def test_clear_stale_invalid_extra_arg_exits_2(self, isolated_home, git_repo):
         result = _run(["clear-stale", "--unknown-flag"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
+
+    def _seed_owner_and_sibling(self, home, suffix, owner_state, owner_age_seconds=0):
+        """Writes `<sid>.<suffix>` plus, unless `owner_state` is "absent", the
+        owning `<sid>` marker holding a live or dead PID, aged
+        `owner_age_seconds`. The sibling's own mtime stays fresh. Returns
+        (owner, sibling)."""
+        d = home / ".claude" / ".plan-review-active.d"
+        d.mkdir(parents=True, exist_ok=True)
+        owner = d / "owned-session"
+        sibling = d / f"owned-session.{suffix}"
+        sibling.write_text("/repo/.claude/plans/example-plan.md")
+        if owner_state != "absent":
+            owner.write_text(str(os.getpid()) if owner_state == "live" else str(DEAD_PID))
+            if owner_age_seconds:
+                aged = time.time() - owner_age_seconds
+                os.utime(owner, (aged, aged))
+        return owner, sibling
+
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+    @pytest.mark.parametrize(
+        ("owner_state", "expected_reason", "expected_evictions"),
+        [
+            ("absent", "no owner marker", 1),
+            ("dead", f"owner marker: PID {DEAD_PID} dead", 2),
+        ],
+    )
+    def test_clear_stale_reaps_declared_path_sibling_of_a_missing_or_dead_owner(
+        self, isolated_home, git_repo, suffix, dry_run, owner_state, expected_reason, expected_evictions
+    ):
+        """The sibling's reason is identical in dry-run and real runs, even
+        though a real run removes the owner marker in the same pass."""
+        _owner, sibling = self._seed_owner_and_sibling(isolated_home, suffix, owner_state)
+        result = _run(["clear-stale"] + (["--dry-run"] if dry_run else []), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        verb = "evict (dry-run)" if dry_run else "evict"
+        assert f"{verb}: .plan-review-active.d/{sibling.name} ({expected_reason})" in result.stdout
+        assert sibling.exists() is dry_run
+        expected_summary = (
+            f"would evict {expected_evictions} orphan(s), keep 0 active"
+            if dry_run
+            else f"evicted {expected_evictions} orphan(s), kept 0 active"
+        )
+        assert expected_summary in result.stdout
+
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    def test_clear_stale_keeps_declared_path_sibling_of_a_live_owner(self, isolated_home, git_repo, suffix):
+        owner, sibling = self._seed_owner_and_sibling(isolated_home, suffix, "live")
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert sibling.exists()
+        assert owner.exists()
+        assert "evicted 0 orphan(s), kept 1 active" in result.stdout
+
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    def test_clear_stale_dry_run_keeps_and_does_not_name_a_sibling_of_a_live_owner(
+        self, isolated_home, git_repo, suffix
+    ):
+        """`keep:` lines print only under --dry-run, so this is the run that
+        can catch a live owner's sibling being listed as a candidate."""
+        _owner, sibling = self._seed_owner_and_sibling(isolated_home, suffix, "live")
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert sibling.exists()
+        assert suffix not in result.stdout
+        assert "would evict 0 orphan(s), keep 1 active" in result.stdout
+
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    def test_clear_stale_dry_run_keeps_sibling_of_a_live_owner_inside_the_idle_window(
+        self, isolated_home, git_repo, suffix
+    ):
+        _owner, sibling = self._seed_owner_and_sibling(isolated_home, suffix, "live", owner_age_seconds=1800)
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert sibling.exists()
+        assert suffix not in result.stdout
+        assert "would evict 0 orphan(s), keep 1 active" in result.stdout
+
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+    def test_clear_stale_reaps_sibling_of_a_live_owner_past_the_idle_window(
+        self, isolated_home, git_repo, suffix, dry_run
+    ):
+        """The sibling inherits its owner's idle expiry although its own mtime
+        is fresh, and reports it identically in both modes."""
+        _owner, sibling = self._seed_owner_and_sibling(isolated_home, suffix, "live", owner_age_seconds=3700)
+        result = _run(["clear-stale"] + (["--dry-run"] if dry_run else []), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        verb = "evict (dry-run)" if dry_run else "evict"
+        expected_reason = f"owner marker: idle timeout, PID {os.getpid()} alive"
+        assert f"{verb}: .plan-review-active.d/{sibling.name} ({expected_reason})" in result.stdout
+        assert sibling.exists() is dry_run
+        expected_summary = "would evict 2 orphan(s), keep 0 active" if dry_run else "evicted 2 orphan(s), kept 0 active"
+        assert expected_summary in result.stdout
+
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+    def test_clear_stale_skips_a_symlinked_active_dir(self, isolated_home, git_repo, tmp_path, dry_run):
+        """Removal must stay inside CONFIG_DIR, so a symlinked `*-active.d`
+        entry is neither swept nor reported."""
+        outside_dir = tmp_path / "outside-config-dir"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "x.planmode-path"
+        outside_file.write_text("/repo/.claude/plans/example-plan.md")
+        (isolated_home / ".claude").mkdir(parents=True, exist_ok=True)
+        (isolated_home / ".claude" / ".plan-review-active.d").symlink_to(outside_dir)
+        result = _run(["clear-stale"] + (["--dry-run"] if dry_run else []), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert outside_file.exists()
+        assert "x.planmode-path" not in result.stdout
+        expected_summary = "would evict 0 orphan(s), keep 0 active" if dry_run else "evicted 0 orphan(s), kept 0 active"
+        assert expected_summary in result.stdout
 
 
 class TestMarkerScriptEmptyStagedGuard:
@@ -2153,6 +2268,37 @@ class TestMarkerScriptPlanModeSibling:
         stored_hash = (marker_dir / next(f.name for f in marker_dir.iterdir())).read_text().strip()
         assert re.fullmatch(r"[0-9a-f]{64}", stored_hash)
 
+    def test_reviewed_plan_path_sibling_alone_does_not_shift_write_off_repo_relative_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`write plan-review` ignores `.reviewed-plan-path`; only `.planmode-path` shifts its hash source."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+        assert not self._sibling_path(isolated_home, sid).exists()
+
+        baseline_result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert baseline_result.returncode == 0, baseline_result.stderr
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        marker = marker_dir / next(f.name for f in marker_dir.iterdir())
+        baseline_hash = marker.read_text().strip()
+
+        reviewed_plan_path_sibling = (
+            isolated_home / ".claude" / ".plan-review-active.d" / f"{sid}.reviewed-plan-path"
+        )
+        reviewed_plan_path_sibling.parent.mkdir(parents=True, exist_ok=True)
+        reviewed_plan_path_sibling.write_text(str(tmp_path / "reviewed-plan.md"))
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        stored_hash = marker.read_text().strip()
+        assert stored_hash == baseline_hash, (
+            "a .reviewed-plan-path sibling with no .planmode-path must not shift "
+            "`write plan-review` off the repo-relative _lib_active_plan_hash path"
+        )
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_sibling_present_but_target_unreadable_aborts_without_writing(
         self, isolated_home, git_repo, tmp_path
@@ -2236,34 +2382,16 @@ class TestMarkerScriptPlanModeSibling:
         assert result.returncode == 0, result.stderr
         assert not sibling.exists()
 
-    @pytest.mark.parametrize(
-        "adjacent_pid",
-        [
-            pytest.param(None, id="no_adjacent_pid_file"),
-            pytest.param("live", id="live_pid_adjacent"),
-            pytest.param("dead", id="dead_pid_adjacent"),
-        ],
-    )
-    def test_clear_stale_does_not_evict_a_live_sibling(
-        self, isolated_home, git_repo, tmp_path, adjacent_pid
-    ):
-        """The sibling holds a path, never a PID, so clear-stale's
-        ^[0-9]+$ liveness test would always misread it as a dead marker
-        without the name-based exemption. Runs regardless of the adjacent
-        PID file's liveness state -- the sibling's survival does not depend
-        on it."""
+    def test_deactivate_removes_the_reviewed_plan_path_sibling(self, isolated_home, git_repo):
         sid = self.SID
-        sibling = self._declare_sibling(isolated_home, tmp_path / "planmode.md", sid)
+        _seed_session(isolated_home, sid)
+        sibling = isolated_home / ".claude" / ".plan-review-active.d" / f"{sid}.reviewed-plan-path"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_text("/repo/.claude/plans/example-plan.md")
 
-        if adjacent_pid is not None:
-            active_dir = isolated_home / ".claude" / ".plan-review-active.d"
-            active_dir.mkdir(parents=True, exist_ok=True)
-            stored_pid = str(os.getpid()) if adjacent_pid == "live" else "99999999"
-            (active_dir / sid).write_text(stored_pid)
-
-        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        assert sibling.exists(), "clear-stale must not evict a live .planmode-path sibling"
+        assert not sibling.exists()
 
     def test_activate_does_not_create_a_sibling_file(self, isolated_home, git_repo):
         """The sibling is written by the skill's Step 0 declaration, not by
@@ -2506,6 +2634,27 @@ class TestMarkerScriptStatusCompletionMarkers:
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert "plan-review: live" in result.stdout
+
+    def test_plan_review_status_ignores_a_lone_reviewed_plan_path_sibling(
+        self, isolated_home, git_repo
+    ):
+        """`status` reads only `.planmode-path`, so a lone `.reviewed-plan-path` must not change its output."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+        assert _run(["write", "plan-review"], cwd=git_repo, home=isolated_home).returncode == 0
+        baseline = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert baseline.returncode == 0, baseline.stderr
+        assert "plan-review: live" in baseline.stdout
+
+        sibling = isolated_home / ".claude" / ".plan-review-active.d" / f"{self.SID}.reviewed-plan-path"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_text("/somewhere/else/plan.md")
+
+        with_sibling = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert with_sibling.returncode == 0, with_sibling.stderr
+        assert with_sibling.stdout == baseline.stdout
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_plan_review_reports_absent_when_sibling_target_unreadable(

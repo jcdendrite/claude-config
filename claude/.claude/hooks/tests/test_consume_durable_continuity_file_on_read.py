@@ -17,29 +17,16 @@ from helpers import (
     assert_cap_engaged,
     install_resume_context_script,
     read_input,
+    registered_hook_event_name,
     run_hook,
     run_hook_advisory,
+    run_hook_raw,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
-_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
-
-
-def _registered_post_tool_use_event_name() -> str:
-    """The hookEventName this hook's emission must claim, derived from
-    settings.json rather than hardcoded — a divergence between the emitted
-    and registered event name silently drops hookSpecificOutput.additionalContext,
-    per CLAUDE.md's discriminator-literal rule."""
-    settings = json.loads(_SETTINGS_PATH.read_text())
-    for event_name, groups in settings["hooks"].items():
-        for group in groups:
-            for entry in group.get("hooks", []):
-                if entry.get("command", "").endswith(CONSUME_HOOK.name):
-                    return event_name
-    raise AssertionError(f"{CONSUME_HOOK.name} not found in {_SETTINGS_PATH}")
 
 
 def _write_fixture(isolated_home: Path, rel_path: str) -> Path:
@@ -68,32 +55,11 @@ def _install_resume_context_script_at(config_dir: Path) -> Path:
     return link
 
 
-def _run_hook_raw(
-    hook: Path, tool_input: dict, home: Path, extra_env: dict | None = None
-) -> subprocess.CompletedProcess:
-    """Like helpers.run_hook, but returns the raw CompletedProcess instead of
-    the decoded permissionDecision — needed for tests asserting on the
-    `systemMessage` JSON this hook now emits on a successful consume, which
-    run_hook's decision-decoding doesn't expose."""
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(
-        [str(hook)],
-        input=json.dumps(tool_input),
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-
 class TestConsumeDurableContinuityFileOnRead:
     def test_read_handoff_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
 
     @pytest.mark.parametrize(
@@ -118,7 +84,7 @@ class TestConsumeDurableContinuityFileOnRead:
         # group-writable root (e.g. 0o775 under umask 0002) now trips
         # _lib_resume_context_index_dir's sticky-bit guard.
         tmpdir_root.mkdir(mode=0o700)
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -131,7 +97,7 @@ class TestConsumeDurableContinuityFileOnRead:
         dest = str(moved[0])
         payload = json.loads(result.stdout)
         assert dest in payload["systemMessage"]
-        assert payload["hookSpecificOutput"]["hookEventName"] == _registered_post_tool_use_event_name()
+        assert payload["hookSpecificOutput"]["hookEventName"] == registered_hook_event_name(CONSUME_HOOK)
         assert dest in payload["hookSpecificOutput"]["additionalContext"]
         if rel_path.startswith(".claude/briefs/"):
             assert "handoffs" not in payload["systemMessage"]
@@ -147,7 +113,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         tmpdir_root = tmp_path / "resume-tmpdir"
         tmpdir_root.mkdir(mode=0o700)
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -180,7 +146,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture.write_text("fixture content\n")
         tmpdir_root = tmp_path / "resume-tmpdir"
         tmpdir_root.mkdir(mode=0o700)
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -213,7 +179,7 @@ class TestConsumeDurableContinuityFileOnRead:
             if cmd_path:
                 (shadow_bin / cmd).symlink_to(cmd_path)
 
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -243,7 +209,7 @@ class TestConsumeDurableContinuityFileOnRead:
     def test_read_brief_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/briefs/example-task.md")
-        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
 
     def test_read_unrelated_directory_is_noop(self, isolated_home):
@@ -271,7 +237,7 @@ class TestConsumeDurableContinuityFileOnRead:
         # No install_resume_context_script call — script absent, hook must
         # fail open rather than error.
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert fixture.exists()
         assert result.stdout == "", "no destination to report — must emit no systemMessage"
 
@@ -279,7 +245,7 @@ class TestConsumeDurableContinuityFileOnRead:
         install_resume_context_script(isolated_home)
         (isolated_home / ".claude" / ".consume-durable-continuity-disabled").touch()
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        result = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        result = run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert fixture.exists()
         assert result.stdout == "", "kill-switch must suppress the systemMessage too"
 
@@ -288,11 +254,11 @@ class TestConsumeDurableContinuityFileOnRead:
         distinct failure mode from 'script binary entirely missing'."""
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
-        _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert not fixture.exists()
         # Second firing on the same (now-gone) path must not error out, and
         # must not report a destination that doesn't exist.
-        second = _run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
+        second = run_hook_raw(CONSUME_HOOK, read_input(str(fixture)), home=isolated_home)
         assert second.returncode == 0
         assert second.stdout == "", "already-gone source — must emit no systemMessage"
 
@@ -403,7 +369,7 @@ class TestConsumeDurableContinuityFileOnRead:
 
         tmpdir_root = tmp_path / "resume-tmpdir"
         tmpdir_root.mkdir(mode=0o700)
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -433,7 +399,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture.parent.mkdir(parents=True)
         fixture.write_text("fixture content\n")
 
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -453,7 +419,7 @@ class TestConsumeDurableContinuityFileOnRead:
         config_dir = tmp_path / "profile"
         config_dir.mkdir()
 
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,
@@ -474,7 +440,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture.parent.mkdir(parents=True)
         fixture.write_text("fixture content\n")
 
-        result = _run_hook_raw(
+        result = run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
             home=isolated_home,

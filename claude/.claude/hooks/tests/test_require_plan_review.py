@@ -28,6 +28,7 @@ from helpers import (
     plan_review_marker_path,
     push_conflicting_edit_to_origin,
     run_hook,
+    run_hook_raw,
     run_hook_reason,
     run_skill_command,
     scaled_shim_sleep,
@@ -41,6 +42,7 @@ from .conftest import _seed_session
 PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 
 REQUIRE_PLAN_REVIEW_HOOK = HOOKS_DIR / "require-plan-review.sh"
+ANNOUNCE_PLAN_REVIEW_PATH_HOOK = HOOKS_DIR / "announce-plan-review-path.sh"
 
 # Forces _lib_realpath_m's manual fallback branch by shadowing both native
 # `realpath -m` and `grealpath` on PATH -- mirrors test_lib.py's
@@ -2450,6 +2452,76 @@ class TestPlanReviewSkillPlanModeFixture:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+
+class TestPlanReviewSkillReviewedPlanPathFixture:
+    """Exercises the Step 1 declare-reviewed-plan-path fixture: the
+    recipe lands the sibling file at the path and content
+    announce-plan-review-path.sh expects. No chained gate-behavior test here
+    — unlike .planmode-path, this sibling has no gate semantics by design
+    (marker.sh write plan-review/status read neither one)."""
+
+    def _run_activate_then_declare(self, repo, home, monkeypatch, reviewed_plan_path):
+        run_skill_command(
+            extract_skill_command(PLAN_REVIEW_SKILL, "activate-gate"),
+            cwd=repo,
+            isolated_home=home,
+        )
+        monkeypatch.setenv("REVIEWED_PLAN_PATH", str(reviewed_plan_path))
+        run_skill_command(
+            extract_skill_command(PLAN_REVIEW_SKILL, "declare-reviewed-plan-path"),
+            cwd=repo,
+            isolated_home=home,
+        )
+
+    def test_declare_reviewed_plan_path_fixture_lands_sibling_file(
+        self, plan_review_repo, plan_review_home, tmp_path, monkeypatch
+    ):
+        sid = "session-declare-reviewed-plan-path"
+        _seed_session(plan_review_home, sid)
+        reviewed_plan_path = tmp_path / "reviewed-plan.md"
+        reviewed_plan_path.write_text("# Reviewed plan content\n")
+
+        self._run_activate_then_declare(plan_review_repo, plan_review_home, monkeypatch, reviewed_plan_path)
+
+        sibling = plan_review_home / ".claude" / ".plan-review-active.d" / f"{sid}.reviewed-plan-path"
+        assert sibling.exists(), (
+            "SKILL.md declare-reviewed-plan-path recipe ran but no sibling file "
+            "landed at the path announce-plan-review-path.sh expects — skill and "
+            "hook disagree on layout."
+        )
+        assert sibling.read_text() == str(reviewed_plan_path), (
+            "the sibling file must hold the declared plan path verbatim, with no "
+            "trailing newline"
+        )
+
+    def test_declared_reviewed_plan_path_chains_through_announce_hook(
+        self, plan_review_repo, plan_review_home, tmp_path, monkeypatch
+    ):
+        """The hook, fed the recipe's own on-disk sibling bytes as a Write tool_input, announces the declared path."""
+        sid = "session-declare-reviewed-plan-path-chain"
+        _seed_session(plan_review_home, sid)
+        reviewed_plan_path = tmp_path / "reviewed-plan-chain.md"
+        reviewed_plan_path.write_text("# Reviewed plan content for the chain test\n")
+
+        self._run_activate_then_declare(plan_review_repo, plan_review_home, monkeypatch, reviewed_plan_path)
+
+        sibling = plan_review_home / ".claude" / ".plan-review-active.d" / f"{sid}.reviewed-plan-path"
+        sibling_content = sibling.read_text()
+
+        result = run_hook_raw(
+            ANNOUNCE_PLAN_REVIEW_PATH_HOOK,
+            write_input(str(sibling), content=sibling_content, session_id=sid),
+            home=plan_review_home,
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert payload["systemMessage"] == f"Plan declared for review: {reviewed_plan_path}"
+        assert str(reviewed_plan_path) in payload["hookSpecificOutput"]["additionalContext"]
+        assert (
+            "State the plan path you are reviewing verbatim in the Output format closing line."
+            in payload["hookSpecificOutput"]["additionalContext"]
         )
 
 
