@@ -514,7 +514,7 @@ class TestSelectPytestTargets:
 
     def test_skill_routing_md_change_selects_skills_tests(self):
         """Same _is_skill_auxiliary_md_change rule as the REFERENCES.md case
-        above, for the other auxiliary filename it matches -- but this exact
+        above, for a filename in SKILL_AUXILIARY_MD_NAMES -- but this exact
         ROUTING.md is also PLAN_REVIEW_ROUTING_MD (GH-847): see
         test_plan_review_routing_md_change_also_selects_hooks_tests for that
         cross-domain exception's own coverage."""
@@ -532,10 +532,8 @@ class TestSelectPytestTargets:
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
     def test_skill_auxiliary_files_module_change_also_selects_skills_tests(self):
-        """test_skills.py (SKILLS_TESTS_DIR) imports SKILL_AUXILIARY_MD_NAMES
-        from this module. TestCrossDomainReadCompleteness resolves
-        path-constant reads, not imports, so this row is hand-declared;
-        without it SCRIPTS_DIR's domain rule claims the path alone."""
+        """The row is hand-declared; without it SCRIPTS_DIR's domain rule
+        claims the path alone and skips the test_skills.py importer."""
         result = _mod.select_pytest_targets([_mod.SKILL_AUXILIARY_FILES_MODULE])
         assert result.is_full_suite is False
         assert _mod.SKILLS_TESTS_DIR in result.target_paths

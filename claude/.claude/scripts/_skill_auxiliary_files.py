@@ -7,6 +7,9 @@ Two consumers import it, so a rename or addition here changes both:
 - claude-skills/skills/tests/test_skills.py's `_citation_sources_for_skill_md`
   citation-sibling expansion, which scans each of these files for `§`
   citations alongside its SKILL.md.
+
+Entries are bare filenames with no path separator, because select-tests.py
+matches `Path(path).name` against them.
 """
 
 SKILL_AUXILIARY_MD_NAMES: tuple[str, ...] = ("REFERENCES.md", "ROUTING.md", "DEFAULT_TEMPLATE.md")

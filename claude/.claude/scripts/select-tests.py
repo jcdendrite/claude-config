@@ -101,9 +101,7 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # this file's second target.
 HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
 
-# test_skills.py (SKILLS_TESTS_DIR) imports SKILL_AUXILIARY_MD_NAMES from this
-# module, an import dependency TestCrossDomainReadCompleteness cannot see.
-# SCRIPTS_DIR's own domain rule already selects SCRIPTS_TESTS_DIR for it.
+# Import dependency of test_skills.py; see _skill_auxiliary_files.py's docstring.
 SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
@@ -404,7 +402,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # scripts and reads SKILL.md files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
-# SKILL_AUXILIARY_FILES_MODULE: see its own comment above for citation.
+# SKILL_AUXILIARY_FILES_MODULE: see SKILL_AUXILIARY_FILES_MODULE's comment.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py

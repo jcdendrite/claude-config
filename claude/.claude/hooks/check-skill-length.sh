@@ -118,9 +118,9 @@ limit_for() {
 #   stow consumer that adopts it, not a claude-config-internal no-op.
 #   Anchored at line start so it cannot also match claude/.claude/skills/
 #   (the stowed source tree).
-# - the two hardcoded runtime auxiliary paths: plan-review/ROUTING.md (see
-#   limit_for() above) and pr-description/DEFAULT_TEMPLATE.md, which has no
-#   limit_for() entry and takes the 200-line default
+# - runtime auxiliary files, matched by exact path in the regex below:
+#   - plan-review/ROUTING.md (limit override in limit_for() above)
+#   - pr-description/DEFAULT_TEMPLATE.md (no override; 200-line default)
 #
 # A repo-root skill has no override path in limit_for() and resolves to the
 # 200-line default, same as plugins/*/skills/.

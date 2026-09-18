@@ -60,8 +60,9 @@ which is why the skill shapes it out rather than merely discouraging it.
 
 `DEFAULT_TEMPLATE.md` supplies the section skeleton when the repo ships no
 `.github/PULL_REQUEST_TEMPLATE.md`. Its five headings rest on a survey of 21
-sources, tallied per element with no pre-filtering. The sources that carry
-content, in survey order:
+sources, tallied per element with no pre-filtering. The tally covers the 16
+sources listed here plus the 5 under "Sources checked and set aside" (in its
+section-template survey list). The sources that carry content:
 
 - Google, "Writing good CL descriptions" (URL above): the one source that
   argues against rigid headings, for prose stating what and why with a
@@ -127,7 +128,7 @@ content, in survey order:
   genre, not GitHub PR: describe the underlying problem and the user-visible
   impact; back performance, memory, and size claims with numbers; why
   matters more than what.
-- arXiv 2602.14611 (MSR 2026), "The Value of Effective Pull Request
+- arXiv 2602.14611, "The Value of Effective Pull Request
   Description": mixed-methods, 80,000 PRs across 156 projects plus a
   64-developer survey. Purpose and rationale preserve change history, and
   stating the desired feedback type is the study's strongest predictor of
@@ -162,19 +163,19 @@ prose instead. The skill follows the majority convention.
   problem that motivated you to do this work,"* *"describe user-visible
   impact."*
 
-**Excluded from the default template despite citation** (each is cited by at
-least one source and left out by scope decision):
+**Not adopted in the default template despite citation** (each is cited by at
+least one source):
 
-- Pre-submit checklist (3 of 21): not part of the template's scope.
+- Pre-submit checklist (3 of 21): not adopted.
 - Changelog entry (3 of 21): most of the time not relevant.
 - AI-assistance disclosure (1 of 21, Kubernetes only): this repo's commit and
   PR attribution lines already disclose it.
 - Issue/ticket linkage (12 of 21) is not a heading either: the
   closing-keyword bullet in `SKILL.md` already owns it.
 
-**Deferred: reviewer-feedback-type.** The MSR 2026 paper's strongest
+**Deferred: reviewer-feedback-type.** The arXiv paper's strongest
 empirical finding, but only 3 of 21 sources mention the element. A mandated
-reader-facing question is out of scope, and an optional-aside framing (à la
+reader-facing question is not adopted, and an optional-aside framing (à la
 Kubernetes' "Special notes for your reviewer") needs its own source check on
 what feedback guidance an AI PR author should give, since a human author's
 judgment call does not transfer directly.
