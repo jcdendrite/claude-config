@@ -38,6 +38,13 @@ Checking logic for assertions 1 through 6 is factored into standalone
 DESIGN_DECISIONS_DIR directly, so TestFaultInjection below can exercise the
 same logic against a synthetic tmp_path corpus instead of only the real one.
 
+Assertion 7 is unrelated to the split described above: it pins
+code-review/SKILL.md's item 12a sub-bullet list count to
+comment-discipline-reviewer.md's core-review-angle count so the index
+can't silently drift stale when the agent's angle list changes. It lives
+here because this module already carries the REPO_ROOT/CLAUDE_DIR
+resolution and pure-function violations idiom the check needs.
+
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It
   lives in hooks/tests/ to match the co-location of test_doc_counts.py,
@@ -520,6 +527,72 @@ def test_no_live_citation_to_reassigned_legacy_numbers() -> None:
     assert not violations, "\n".join(violations)
 
 
+_ITEM_12A_HEADING = (
+    "12a. **Comment/prose discipline on added or modified text**"
+)
+_ITEM_12A_SECTION_RE = re.compile(re.escape(_ITEM_12A_HEADING) + r"[^\n]*\n((?:   - .+\n)+)")
+_ITEM_12A_BULLET_RE = re.compile(r"^   - (.+)$", re.MULTILINE)
+_CORE_REVIEW_ANGLES_SECTION_RE = re.compile(
+    r"## Core review angles\n(.*?)\n## How to work", re.DOTALL
+)
+_CORE_REVIEW_ANGLE_HEADER_RE = re.compile(r"^\*\*([^*]+)\*\*", re.MULTILINE)
+
+
+def _item_12a_bullets(skill_text: str) -> list[str]:
+    match = _ITEM_12A_SECTION_RE.search(skill_text)
+    if not match:
+        return []
+    return _ITEM_12A_BULLET_RE.findall(match.group(1))
+
+
+def _core_review_angle_headers(agent_text: str) -> list[str]:
+    match = _CORE_REVIEW_ANGLES_SECTION_RE.search(agent_text)
+    if not match:
+        return []
+    return _CORE_REVIEW_ANGLE_HEADER_RE.findall(match.group(1))
+
+
+def _item_12a_bullet_count_violations(skill_text: str, agent_text: str) -> list[str]:
+    bullets = _item_12a_bullets(skill_text)
+    headers = _core_review_angle_headers(agent_text)
+    if not bullets:
+        return [
+            "code-review/SKILL.md: item 12a's sub-bullet list not found or "
+            "reworded -- update _ITEM_12A_HEADING/_ITEM_12A_SECTION_RE to "
+            "match its current phrasing."
+        ]
+    if not headers:
+        return [
+            "comment-discipline-reviewer.md: 'Core review angles' section "
+            "not found or reworded -- update _CORE_REVIEW_ANGLES_SECTION_RE "
+            "to match its current heading."
+        ]
+    if len(bullets) != len(headers):
+        return [
+            f"code-review/SKILL.md's item 12a lists {len(bullets)} sub-bullets "
+            f"but comment-discipline-reviewer.md defines {len(headers)} core "
+            "review angles -- keep the index bullet list in lockstep with "
+            "the agent's angle list."
+        ]
+    return []
+
+
+def test_item_12a_bullet_count_matches_agent_angle_count() -> None:
+    """code-review/SKILL.md's item 12a sub-bullet list is a one-line index
+    of comment-discipline-reviewer's core review angles, not an independent
+    statement of them. Pins the two counts together so the index can't
+    silently go stale the moment the agent gains or loses an angle. Mirrors
+    test_rule_file_filename_grammar_matches_enforced_regex's drift-prevention
+    shape."""
+    skill_path = REPO_ROOT / "claude-skills" / "skills" / "code-review" / "SKILL.md"
+    agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
+    violations = _item_12a_bullet_count_violations(
+        skill_path.read_text(encoding="utf-8"),
+        agent_path.read_text(encoding="utf-8"),
+    )
+    assert not violations, "\n".join(violations)
+
+
 class TestFaultInjection:
     """Negative-fixture coverage: each test builds a synthetic
     design-decisions/-shaped directory in tmp_path containing exactly the
@@ -891,4 +964,68 @@ class TestFaultInjection:
         violations = _reassigned_citation_violations(
             [unrelated_hook], reassigned_numbers=(3,)
         )
+        assert violations == []
+
+    def test_item_12a_bullet_count_detects_stale_index(self) -> None:
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** -- "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity -- a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure -- several facts chained\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** -- a comment stating too much.\n\n"
+            "**Multi-fact comment structure** -- several facts chained.\n\n"
+            "**Restated canonical rule** -- a rule stated elsewhere.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "2 sub-bullets" in violations[0]
+        assert "3 core" in violations[0]
+
+    def test_item_12a_bullet_count_detects_bullet_added_without_matching_angle(
+        self,
+    ) -> None:
+        """The reverse drift direction from test_item_12a_bullet_count_detects_stale_index:
+        a bullet added to the SKILL.md index with no corresponding agent
+        angle, rather than an angle added with no corresponding bullet."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** -- "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity -- a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure -- several facts chained\n"
+            "   - Restated canonical rule -- a rule stated elsewhere\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** -- a comment stating too much.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "3 sub-bullets" in violations[0]
+        assert "1 core" in violations[0]
+
+    def test_item_12a_bullet_count_accepts_matched_index(self) -> None:
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** -- "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity -- a multi-paragraph rationale\n"
+            "   - Restated canonical rule -- a rule stated elsewhere\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** -- a comment stating too much.\n\n"
+            "**Restated canonical rule** -- a rule stated elsewhere.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
         assert violations == []

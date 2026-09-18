@@ -127,13 +127,14 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. A preference for minimal comments governs whether to *add* one; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
 
-12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose?
+12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose (the last sub-item instead derives from §Engineering Judgment)?
    - Comment verbosity — a multi-paragraph rationale where one line suffices
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
    - Prose at the wrong altitude for its reader
    - PR-defined terminology
    - "Used to be X" framing
    - Durable-doc content that fails the survives-the-PR-being-merged self-test
+   - A `docs/design-decisions/*.md` paragraph restating a rule already stated canonically elsewhere, instead of citing it
 
    Distinct from item 12, which covers comment *deletion*. Step 1.5's "Non-durable comment" tripwire runs this check inline on every review; `comment-discipline-reviewer` (Ripple effect triage) provides exhaustive enumeration when spawned.
 

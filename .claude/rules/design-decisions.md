@@ -33,3 +33,7 @@ one file per decision.
 - **No index.** Find a decision by its slug or by `git grep` across the
   directory. A hand-maintained index is another shared append surface that
   goes stale, as `docs/case-studies.md`'s index already has.
+- **Cite, don't restate.** When a decision's rationale rests on a rule
+  stated canonically in a skill, agent, rule, or CLAUDE.md file, cite that
+  file's canonical home per `.claude/rules/citation-grammar.md` and record
+  only why the rule exists here — never restate the rule itself.
