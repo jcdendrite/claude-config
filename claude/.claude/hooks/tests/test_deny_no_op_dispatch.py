@@ -80,8 +80,8 @@ GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with 
 # ("do nothing", "report back immediately") inside a legitimate
 # conditional clause -- pins that the length conjunct, not the idiom list,
 # is what makes a real task specification unreachable by this gate.
-# The length conjunct short-circuits before either regex arm runs, so one
-# fixture covers every idiom.
+# The length conjunct is a single early exit ahead of both regex arms, so
+# this fixture pins it without a per-alternative fixture.
 ADVERSARIAL_OVER_CEILING_PROMPT = (
     "Check the feature-flag rollout status before doing anything else. If "
     "the flag is still in the 'paused' state, do nothing further this "
@@ -270,34 +270,30 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
-    def test_referent_ambiguous_no_further_action_idiom_about_another_actor_denied(self, isolated_home):
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "Check whether the retry handler takes no further action after the third failed attempt.",
+                id="other-actor-no-further-action",
+            ),
+            pytest.param(
+                "Confirm the background worker correctly detects there is no work to do and exits cleanly.",
+                id="other-actor-no-work-to-do",
+            ),
+            pytest.param(
+                "Read src/a.py and report findings only. Take no further action.",
+                id="self-directed-scope-limiter",
+            ),
+        ],
+    )
+    def test_referent_ambiguous_idiom_denied(self, isolated_home, prompt):
         """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no further action` can describe another
-        actor's inaction, e.g. a status-check prompt about a retry
-        handler."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt="Check whether the retry handler takes no further action after the third failed attempt."),
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_referent_ambiguous_no_work_to_do_idiom_about_another_actor_denied(self, isolated_home):
-        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
-        Known gaps section): `no work to do` can describe another actor's
-        inaction, e.g. a status-check prompt about a background worker."""
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(
-                    prompt="Confirm the background worker correctly detects there is no work to do and exits cleanly."
-                ),
-                home=isolated_home,
-            )
-            == "deny"
-        )
+        Known gaps section): `no further action` and `no work to do` can
+        describe another actor's inaction, or appear in the scope-limiting
+        tail of a prompt that states real work, rather than instruct the
+        dispatched agent to do nothing."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "deny"
 
     @pytest.mark.parametrize(
         "prompt",
@@ -388,6 +384,25 @@ class TestDenyNoOpDispatch:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "Confirm no unpinned action remains in .github/workflows.",
+                id="other-word-between-no-and-action",
+            ),
+            pytest.param(
+                "Report your findings before taking any further action.",
+                id="further-action-without-no",
+            ),
+        ],
+    )
+    def test_no_further_action_boundary_allowed(self, isolated_home, prompt):
+        """Guards the `(further )?` group in `no (further )?action` against
+        generalizing to any one-word gap between `no` and `action`, or
+        dropping the leading `no`."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "allow"
+
     def test_no_work_without_the_full_idiom_allowed(self, isolated_home):
         """Guards against an implementation that truncates the "no work to
         do" alternative to bare "no work"."""
@@ -400,7 +415,7 @@ class TestDenyNoOpDispatch:
             == "allow"
         )
 
-    def test_no_further_work_to_do_widened_form_allowed(self, isolated_home):
+    def test_no_further_work_to_do_modified_form_allowed(self, isolated_home):
         """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
         Known gaps section): unlike `no (further )?action`, `no work to do`
         has no widening modifier, so "no further work to do" is not caught."""
