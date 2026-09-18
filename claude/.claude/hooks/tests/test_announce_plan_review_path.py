@@ -13,20 +13,44 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     edit_input,
+    matcher_admits_tool,
     multiedit_input,
     read_input,
     registered_hook_event_name,
+    registered_hook_matchers,
     run_hook_raw,
     write_input,
 )
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-plan-review-path.sh"
 
-EXPECTED_INSTRUCTIONAL_SUBSTRING = "state it verbatim in the Output format closing line"
+EXPECTED_INSTRUCTIONAL_SUBSTRING = "State the plan path you are reviewing verbatim in the Output format closing line."
+SESSION_ID = "test-session"
+PLAN_PATH = "/repo/.claude/plans/example-plan.md"
+# The hook rejects any path longer than this many characters.
+PATH_LIMIT = 4096
 
 
-def _sibling_path(config_dir: Path, session_id: str = "test-session") -> Path:
+def _sibling_path(config_dir: Path, session_id: str = SESSION_ID) -> Path:
     return config_dir / ".plan-review-active.d" / f"{session_id}.reviewed-plan-path"
+
+
+def _declaration(sibling: str | Path, content: str = PLAN_PATH, session_id: str | None = SESSION_ID) -> dict:
+    return write_input(str(sibling), content=content, session_id=session_id)
+
+
+def _assert_announces_exactly(result: subprocess.CompletedProcess, plan_path: str) -> None:
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["systemMessage"] == f"Plan declared for review: {plan_path}"
+    additional_context = payload["hookSpecificOutput"]["additionalContext"]
+    assert f"declaration file for /plan-review: {plan_path}. " in additional_context
+    assert EXPECTED_INSTRUCTIONAL_SUBSTRING in additional_context
+
+
+def _assert_silent(result: subprocess.CompletedProcess) -> None:
+    assert result.returncode == 0
+    assert result.stdout == ""
 
 
 class TestAnnouncePlanReviewPath:
@@ -39,52 +63,61 @@ class TestAnnouncePlanReviewPath:
         the matched sibling path — a hook that resolved the wrong config dir
         would still pass every $HOME/.claude case."""
         config_dir = tmp_path / "custom-profile"
-        sibling = _sibling_path(config_dir)
-        plan_path = "/repo/.claude/plans/example-plan.md"
         result = run_hook_raw(
             ANNOUNCE_HOOK,
-            write_input(str(sibling), content=plan_path),
+            _declaration(_sibling_path(config_dir)),
             home=isolated_home,
             extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
         )
-        assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        assert plan_path in payload["systemMessage"]
+        _assert_announces_exactly(result, PLAN_PATH)
 
     # -----------------------------------------------------------------------
-    # Happy path
+    # Happy path and trailing newlines
     # -----------------------------------------------------------------------
 
     def test_well_formed_write_announces_on_both_channels(self, isolated_home):
-        sibling = _sibling_path(isolated_home / ".claude")
-        plan_path = "/repo/.claude/plans/example-plan.md"
         result = run_hook_raw(
-            ANNOUNCE_HOOK, write_input(str(sibling), content=plan_path), home=isolated_home
+            ANNOUNCE_HOOK, _declaration(_sibling_path(isolated_home / ".claude")), home=isolated_home
         )
-        assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        assert plan_path in payload["systemMessage"]
-        additional_context = payload["hookSpecificOutput"]["additionalContext"]
-        assert plan_path in additional_context
-        # A future edit that keeps the path but weakens or drops the
-        # instruction must fail this assertion, not just a generic
-        # presence check on the path alone.
-        assert EXPECTED_INSTRUCTIONAL_SUBSTRING in additional_context
+        _assert_announces_exactly(result, PLAN_PATH)
+
+    @pytest.mark.parametrize("trailing_newlines", ["\n", "\n\n"], ids=["one", "two"])
+    def test_trailing_newlines_are_dropped_from_the_announced_path(self, isolated_home, trailing_newlines):
+        """Command substitution strips every trailing newline, so none reaches the output."""
+        result = run_hook_raw(
+            ANNOUNCE_HOOK,
+            _declaration(_sibling_path(isolated_home / ".claude"), content=PLAN_PATH + trailing_newlines),
+            home=isolated_home,
+        )
+        _assert_announces_exactly(result, PLAN_PATH)
+
+    def test_path_of_exactly_path_limit_characters_announces(self, isolated_home):
+        boundary_path = "/" + "a" * (PATH_LIMIT - 1)
+        result = run_hook_raw(
+            ANNOUNCE_HOOK,
+            _declaration(_sibling_path(isolated_home / ".claude"), content=boundary_path),
+            home=isolated_home,
+        )
+        _assert_announces_exactly(result, boundary_path)
 
     # -----------------------------------------------------------------------
-    # Emitted contract shape
+    # Emitted contract shape and registration
     # -----------------------------------------------------------------------
 
     def test_hook_event_name_matches_registration(self, isolated_home):
-        sibling = _sibling_path(isolated_home / ".claude")
         result = run_hook_raw(
-            ANNOUNCE_HOOK,
-            write_input(str(sibling), content="/repo/.claude/plans/example-plan.md"),
-            home=isolated_home,
+            ANNOUNCE_HOOK, _declaration(_sibling_path(isolated_home / ".claude")), home=isolated_home
         )
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["hookEventName"] == registered_hook_event_name(ANNOUNCE_HOOK)
+
+    def test_registered_matcher_admits_write(self):
+        """The hook is invoked directly in these tests, so only this check
+        catches a settings.json matcher that no longer admits Write."""
+        matchers = registered_hook_matchers(ANNOUNCE_HOOK)
+        assert matchers, f"{ANNOUNCE_HOOK.name} has no registered matcher"
+        assert all(matcher_admits_tool(matcher, "Write") for matcher in matchers)
 
     # -----------------------------------------------------------------------
     # Tool filtering (defense-in-depth)
@@ -94,63 +127,67 @@ class TestAnnouncePlanReviewPath:
         "make_input", [edit_input, multiedit_input, read_input], ids=["Edit", "MultiEdit", "Read"]
     )
     def test_non_write_tool_emits_nothing(self, isolated_home, make_input):
-        """Defense-in-depth: filters tool_name itself, independent of the
-        settings.json matcher condition, which registers Write only."""
-        sibling = _sibling_path(isolated_home / ".claude")
-        result = run_hook_raw(ANNOUNCE_HOOK, make_input(str(sibling)), home=isolated_home)
-        assert result.returncode == 0
-        assert result.stdout == ""
+        """The payload carries the matching sibling path and valid absolute
+        content, so only the hook's own tool_name filter can suppress it."""
+        payload = make_input(str(_sibling_path(isolated_home / ".claude")))
+        payload["session_id"] = SESSION_ID
+        payload["tool_input"]["content"] = PLAN_PATH
+        _assert_silent(run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home))
 
     # -----------------------------------------------------------------------
-    # Path filtering
+    # Path filtering: each case violates exactly one part of the exact path
     # -----------------------------------------------------------------------
 
     @pytest.mark.parametrize(
         "build_path",
         [
-            lambda config_dir: config_dir / ".plan-review-active.d" / "test-session",
-            lambda config_dir: config_dir / ".plan-review-active.d" / "test-session.planmode-path",
-            lambda config_dir: config_dir.parent / "elsewhere" / "test-session.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.plan-review-active.d/{SESSION_ID}",
+            lambda home: f"{home}/.claude/.plan-review-active.d/{SESSION_ID}.planmode-path",
+            lambda home: f"{home}/other-profile/.plan-review-active.d/{SESSION_ID}.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.respond-pr-active.d/{SESSION_ID}.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.plan-review-active.d/other-session.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.plan-review-active.d/nested/{SESSION_ID}.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.plan-review-active.d/../.plan-review-active.d/{SESSION_ID}.reviewed-plan-path",
+            lambda home: f"{home}/.claude/.plan-review-active.d/../../{SESSION_ID}.reviewed-plan-path",
         ],
         ids=[
-            "bare-session-id-pid-marker",
+            "bare-session-marker",
             "planmode-path-sibling",
-            "reviewed-plan-path-outside-config-dir",
+            "other-config-dir",
+            "other-active-dir",
+            "other-sessions-id",
+            "nested-segment",
+            "dotdot-back-into-same-dir",
+            "dotdot-out-of-config-dir",
         ],
     )
     def test_non_matching_path_emits_nothing(self, isolated_home, build_path):
-        """Three shapes that must not fire this hook: the plan-review
-        active-session PID marker itself (carries a PID, not a plan path);
-        the Step 0 .planmode-path sibling (a different sibling with a
-        different contract — this hook exists only for the Step 1
-        .reviewed-plan-path declaration); and a *.reviewed-plan-path suffix
-        match outside the resolved config dir's .plan-review-active.d/ (the
-        whole path, not just the suffix, is the glob)."""
-        config_dir = isolated_home / ".claude"
-        path = build_path(config_dir)
-        result = run_hook_raw(
-            ANNOUNCE_HOOK,
-            write_input(str(path), content="/repo/.claude/plans/example-plan.md"),
-            home=isolated_home,
+        _assert_silent(
+            run_hook_raw(ANNOUNCE_HOOK, _declaration(build_path(isolated_home)), home=isolated_home)
         )
-        assert result.returncode == 0
-        assert result.stdout == ""
 
-    def test_nested_path_under_active_dir_still_matches(self, isolated_home):
-        """Bash case patterns let `*` span `/` (unlike pathname expansion), so
-        the glob also matches a suffix hit with an extra path segment inserted
-        under .plan-review-active.d/ -- pins this permissive behavior rather
-        than leaving it unpinned. Content still passes through the same
-        allowlist gate as any other match, so this is not a new bypass."""
-        config_dir = isolated_home / ".claude"
-        path = config_dir / ".plan-review-active.d" / "subdir" / "test-session.reviewed-plan-path"
-        result = run_hook_raw(
-            ANNOUNCE_HOOK,
-            write_input(str(path), content="/repo/.claude/plans/example-plan.md"),
-            home=isolated_home,
+    def test_missing_file_path_key_emits_nothing(self, isolated_home):
+        payload = _declaration(_sibling_path(isolated_home / ".claude"))
+        del payload["tool_input"]["file_path"]
+        _assert_silent(run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home))
+
+    # -----------------------------------------------------------------------
+    # Session binding
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "session_id",
+        [None, "", "../escape", "dotted.id", "with space"],
+        ids=["missing", "empty", "traversal", "dotted", "space"],
+    )
+    def test_unusable_session_id_emits_nothing(self, isolated_home, session_id):
+        """The sibling path is built from the payload's own (here mismatching
+        or unvalidated) session id, so only the session-id check can reject it."""
+        sibling_name = session_id if session_id else SESSION_ID
+        sibling = isolated_home / ".claude" / ".plan-review-active.d" / f"{sibling_name}.reviewed-plan-path"
+        _assert_silent(
+            run_hook_raw(ANNOUNCE_HOOK, _declaration(sibling, session_id=session_id), home=isolated_home)
         )
-        assert result.returncode == 0
-        assert "/repo/.claude/plans/example-plan.md" in result.stdout
 
     # -----------------------------------------------------------------------
     # Content gate
@@ -158,50 +195,79 @@ class TestAnnouncePlanReviewPath:
 
     @pytest.mark.parametrize(
         "content",
-        ["relative/plan.md", "/repo/.claude/plans/my plan.md", "", None],
-        ids=["relative-path", "embedded-space", "empty-content", "missing-content-key"],
+        [
+            "relative/plan.md",
+            "",
+            "\n",
+            "/repo/.claude/plans/my plan.md",
+            "/repo/$(x).md",
+            "/repo/`x`.md",
+            "/repo/a;b.md",
+            "/repo/it's.md",
+            "/repo/a\x1bb.md",
+            "/repo/a\rb.md",
+            "/repo/a\tb.md",
+            "/repo/caf\u00e9.md",
+            "/repo/a\nb.md",
+            "/tmp/plan\n\nSENTINEL-INJECT\n\nx.md",
+            "/repo/pl\u0000an.md",
+            "/" + "a" * PATH_LIMIT,
+            # The bash-side cap alone rejects this; the case does not pin the jq-side guard.
+            "/" + "a" * 2_000_000,
+        ],
+        ids=[
+            "relative-path",
+            "empty",
+            "newline-only",
+            "space",
+            "command-substitution",
+            "backtick",
+            "semicolon",
+            "single-quote",
+            "escape-byte",
+            "carriage-return",
+            "tab",
+            "non-ascii",
+            "embedded-newline",
+            "newline-injection",
+            "nul-byte",
+            "over-path-limit",
+            "multi-megabyte",
+        ],
     )
     def test_content_gate_rejects(self, isolated_home, content):
-        sibling = _sibling_path(isolated_home / ".claude")
-        if content is None:
-            payload = write_input(str(sibling))
-            del payload["tool_input"]["content"]
-        else:
-            payload = write_input(str(sibling), content=content)
-        result = run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home)
-        assert result.returncode == 0
-        assert result.stdout == ""
-
-    def test_one_trailing_newline_still_announces(self, isolated_home):
-        """Exactly one trailing newline is stripped before the allowlist
-        check, so a Write tool_input.content carrying it still announces —
-        with the newline gone from the emitted path."""
-        sibling = _sibling_path(isolated_home / ".claude")
-        plan_path = "/repo/.claude/plans/example-plan.md"
         result = run_hook_raw(
-            ANNOUNCE_HOOK, write_input(str(sibling), content=plan_path + "\n"), home=isolated_home
+            ANNOUNCE_HOOK, _declaration(_sibling_path(isolated_home / ".claude"), content=content), home=isolated_home
         )
-        assert result.returncode == 0
-        payload = json.loads(result.stdout)
-        assert plan_path in payload["systemMessage"]
+        _assert_silent(result)
 
-    # -----------------------------------------------------------------------
-    # Injection
-    # -----------------------------------------------------------------------
-
-    def test_embedded_newline_injection_emits_nothing(self, isolated_home):
-        """Bash `case` globs match across embedded newlines, so this content
-        clears the case-glob-adjacent checks and must be caught by the
-        allowlist gate instead — the adversarial case that would otherwise
-        leak an injected sentinel into model-visible additionalContext."""
-        sibling = _sibling_path(isolated_home / ".claude")
-        malicious_content = "/tmp/plan\n\nSENTINEL-INJECT\n\nx.md"
-        result = run_hook_raw(
-            ANNOUNCE_HOOK, write_input(str(sibling), content=malicious_content), home=isolated_home
+    @pytest.mark.parametrize("content", ["/repo/caf\u00e9", "/repo/a\u00b2"], ids=["accented-letter", "superscript-digit"])
+    def test_allowlist_stays_ascii_under_collating_locale_without_globasciiranges(self, isolated_home, content):
+        """Bash < 5.0 defaults globasciiranges off, so bracket ranges follow the
+        locale's collation. Only the function-scoped `local LC_ALL=C` keeps
+        `[A-Za-z]` ASCII-only there; CI's bash 5.x reaches that state only via
+        `bash +O globasciiranges` under a collating locale."""
+        locale_name = "en_GB.utf8"
+        available_locales = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout
+        if locale_name not in available_locales.split():
+            pytest.skip(f"{locale_name} locale is not installed")
+        env = {**os.environ, "HOME": str(isolated_home), "LC_ALL": locale_name}
+        # An ambient CLAUDE_CONFIG_DIR would move the hook's config dir off the declared path and make the silence vacuous.
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            ["bash", "+O", "globasciiranges", str(ANNOUNCE_HOOK)],
+            input=json.dumps(_declaration(_sibling_path(isolated_home / ".claude"), content=content)),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        assert result.returncode == 0
-        assert result.stdout == ""
-        assert "SENTINEL-INJECT" not in result.stdout
+        _assert_silent(result)
+
+    def test_missing_content_key_emits_nothing(self, isolated_home):
+        payload = _declaration(_sibling_path(isolated_home / ".claude"))
+        del payload["tool_input"]["content"]
+        _assert_silent(run_hook_raw(ANNOUNCE_HOOK, payload, home=isolated_home))
 
     # -----------------------------------------------------------------------
     # No subprocess reach
@@ -220,7 +286,7 @@ class TestAnnouncePlanReviewPath:
         sibling = _sibling_path(isolated_home / ".claude")
         result = run_hook_raw(
             ANNOUNCE_HOOK,
-            write_input(str(sibling), content="/repo/.claude/plans/example-plan.md"),
+            _declaration(sibling),
             home=isolated_home,
             extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}"},
         )
@@ -265,7 +331,7 @@ class TestAnnouncePlanReviewPath:
             tmp_hook.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(tmp_hook)],
-                input=json.dumps(write_input(str(sibling), content="/repo/.claude/plans/example-plan.md")),
+                input=json.dumps(_declaration(sibling)),
                 cwd=str(tmp_path),
                 env={**os.environ, "HOME": str(isolated_home)},
                 capture_output=True,

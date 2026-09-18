@@ -656,7 +656,8 @@ fi
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
 # individually allowlisted (the 17 shapes in permissions.allow) or harmless
-# (clear-stale only evicts dead-PID bypass markers). No new capability is
+# (clear-stale only evicts dead-PID or idle-expired bypass markers, plus the
+# declared-path siblings of dead, idle-expired, or absent owners). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
 #

@@ -2456,7 +2456,7 @@ class TestPlanReviewSkillPlanModeFixture:
 
 
 class TestPlanReviewSkillReviewedPlanPathFixture:
-    """Exercises the new Step 1 declare-reviewed-plan-path fixture: the
+    """Exercises the Step 1 declare-reviewed-plan-path fixture: the
     recipe lands the sibling file at the path and content
     announce-plan-review-path.sh expects. No chained gate-behavior test here
     — unlike .planmode-path, this sibling has no gate semantics by design
@@ -2499,12 +2499,7 @@ class TestPlanReviewSkillReviewedPlanPathFixture:
     def test_declared_reviewed_plan_path_chains_through_announce_hook(
         self, plan_review_repo, plan_review_home, tmp_path, monkeypatch
     ):
-        """Chained integration: Step 1's recipe -> announce-plan-review-path.sh
-        (subprocess), fed the sibling's own on-disk bytes as a genuine Write
-        tool_input. Catches a trailing-newline or path-template disagreement
-        between the skill fixture and the hook that three independently-mocked
-        unit tests could each pass while the composed path fails, since both
-        sides must agree byte-for-byte on the same sibling-path literal."""
+        """The hook, fed the recipe's own on-disk sibling bytes as a Write tool_input, announces the declared path."""
         sid = "session-declare-reviewed-plan-path-chain"
         _seed_session(plan_review_home, sid)
         reviewed_plan_path = tmp_path / "reviewed-plan-chain.md"
@@ -2517,15 +2512,15 @@ class TestPlanReviewSkillReviewedPlanPathFixture:
 
         result = run_hook_raw(
             ANNOUNCE_PLAN_REVIEW_PATH_HOOK,
-            write_input(str(sibling), content=sibling_content),
+            write_input(str(sibling), content=sibling_content, session_id=sid),
             home=plan_review_home,
         )
         assert result.returncode == 0
         payload = json.loads(result.stdout)
-        assert str(reviewed_plan_path) in payload["systemMessage"]
+        assert payload["systemMessage"] == f"Plan declared for review: {reviewed_plan_path}"
         assert str(reviewed_plan_path) in payload["hookSpecificOutput"]["additionalContext"]
         assert (
-            "state it verbatim in the Output format closing line"
+            "State the plan path you are reviewing verbatim in the Output format closing line."
             in payload["hookSpecificOutput"]["additionalContext"]
         )
 

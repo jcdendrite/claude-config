@@ -1494,6 +1494,7 @@ class TestGateReleaseAuthorityFileWrites:
             ".claude/ready-for-review-markers/deadbeef.session",
             ".claude/.plan-review-active.d/session",
             ".claude/.plan-review-active.d/session.planmode-path",
+            ".claude/.plan-review-active.d/session.reviewed-plan-path",
         ],
     )
     def test_marker_path_write_denied(self, marker_home, agent_type, relative_path):
@@ -1506,16 +1507,15 @@ class TestGateReleaseAuthorityFileWrites:
             == "deny"
         )
 
-    def test_main_session_may_write_the_planmode_path_sibling(self, marker_home):
-        """The plan-review skill's Step 0 declares the plan-mode file's path
-        via a main-session Write to this sibling shape -- the specific claim
-        flagged for ciso-reviewer/staff-sdet sign-off: no `agent_type` key
-        passes through unconditionally, same as any other main-session Write
-        under this arm."""
+    @pytest.mark.parametrize("suffix", ["planmode-path", "reviewed-plan-path"])
+    def test_main_session_may_write_a_declared_path_sibling(self, marker_home, suffix):
+        """The plan-review skill declares paths via a main-session Write to
+        these sibling shapes; no `agent_type` key passes through, as for any
+        other main-session Write under this arm."""
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                write_input(str(marker_home / ".claude/.plan-review-active.d/session.planmode-path")),
+                write_input(str(marker_home / f".claude/.plan-review-active.d/session.{suffix}")),
                 home=marker_home,
             )
             == "allow"

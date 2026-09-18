@@ -476,7 +476,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/announce-plan-review-path.sh"
+            "command": "~/.claude/hooks/announce-plan-review-path.sh",
+            "timeout": 10
           }
         ]
       },

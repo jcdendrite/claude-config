@@ -53,13 +53,13 @@ Find the plan to review. Check, in order:
 
 Resolve the identified file to an absolute path now (`pwd`-join a relative match; use an argument path as-is if already absolute) and carry that exact string forward — Output format's closing line states it, not a value re-derived at write time.
 
-Then declare it, unconditional on plan mode:
+Then declare it, unconditional on plan mode. The announcement this triggers is best-effort, so Output format's closing-line path is still required:
 
 - Resolve this session's id via `~/.claude/scripts/marker.sh resolve-session-id`.
 - Write the resolved absolute path, with no trailing newline, to `<config-dir>/.plan-review-active.d/<the resolved id>.reviewed-plan-path`, using the Write tool and not Bash — see Step 0's "Why Write, not Bash" for the reason, which applies unchanged here.
-- If the session id does not resolve, or no absolute path could be resolved at all, skip the write and say so in the review output instead of writing a partial declaration.
+- If the session id does not resolve, or no absolute path could be resolved at all, skip the write and say so in the review output — unlike Step 0's abort, this declaration is informational and gates nothing.
 
-<!-- HOOK_TEST_FIXTURE: declare-reviewed-plan-path — the hook-alignment test suite executes this recipe (a bash equivalent of the Write tool call above) to verify the resulting sibling file lands at the path and content announce-plan-review-path.sh expects. Do not duplicate the recipe elsewhere; the test re-reads it from here. This fenced block is a pytest-executed simulation, never typed into an agent's Bash tool — test_skills.py's Trigger-A regression scan (see docs/worktree-bash-guard.md) excludes it by this same comment. -->
+<!-- HOOK_TEST_FIXTURE: declare-reviewed-plan-path — a pytest-executed simulation of the Write above, never typed into an agent's Bash tool. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_ID=$(~/.claude/scripts/marker.sh resolve-session-id) || exit 1
