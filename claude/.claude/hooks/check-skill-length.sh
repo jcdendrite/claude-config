@@ -13,6 +13,8 @@
 # plan-review/ROUTING.md gets the same 500-line cap: it holds the
 # item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
 # the same content class the cap was written for.
+# pr-description/DEFAULT_TEMPLATE.md has no override and falls to the
+# 200-line default.
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.

@@ -1193,9 +1193,10 @@ def _missing_bullet_lead_ins(names: Iterable[str], section_text: str) -> list[st
 class TestPrDescriptionDefaultTemplateWiring:
     """Wiring tripwire: SKILL.md points at DEFAULT_TEMPLATE.md through the
     harness-substituted skill-directory variable, and the file it points at
-    exists with the five section headings in their fixed order. Nothing else
-    reads that file at test time, so a deleted or reordered template would
-    otherwise ship silently."""
+    exists with the five section headings in their fixed order. The
+    citation-resolution, runtime-read URL-hygiene, and per-name auxiliary-file
+    tests also read the file, but none checks the pointer or the heading
+    order, so a reordered template would otherwise ship silently."""
 
     _EXPECTED_HEADINGS = [
         "Summary",

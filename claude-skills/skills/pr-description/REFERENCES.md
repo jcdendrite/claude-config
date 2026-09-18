@@ -64,9 +64,9 @@ sources, tallied per element with no pre-filtering. The tally covers the 16
 sources listed here plus the 5 in the "Section-template survey" list under
 "Sources checked and set aside". The sources that carry content:
 
-- Google, "Writing good CL descriptions" (URL above): the one source that
-  argues against rigid headings, for prose stating what and why with a
-  bug/issue reference line.
+- Google, "Writing good CL descriptions" (URL above): what and why, a
+  standalone first line, and bug/issue reference details. It gives no
+  guidance on headings or templates.
 - Microsoft, Code With Engineering Playbook:
   `https://microsoft.github.io/code-with-engineering-playbook/code-reviews/pull-request-template/`
   — an 8-part template: Work Item ID, Description (what/impact/solution),
@@ -92,7 +92,8 @@ sources listed here plus the 5 in the "Section-template survey" list under
   new behavior); a `Bug:` footer; an optional `Test:` footer.
 - Shopify Engineering, "On the Importance of Pull Request Discipline":
   `https://shopify.engineering/on-the-importance-of-pull-request-discipline`
-  — summaries answer what and "why this way"; write as though the reviewer
+  — summaries answer what the PR does and why it does it this way (a
+  paraphrase of the page's two questions); write as though the reviewer
   has little to no context; diagrams (mermaid.js) for complex changes;
   document alternatives considered and justify the chosen one; bug fixes
   detail background, how it was caught, and resolution.
@@ -117,8 +118,7 @@ sources listed here plus the 5 in the "Section-template survey" list under
 - opensource.guide (GitHub), `how-to-contribute.md`: explain the changes and
   why they are valuable; reference issues; before/after screenshots for
   HTML/CSS.
-- Gergely Orosz, The Pragmatic Engineer, "Pull Request (or Diff) Best
-  Practices":
+- Gergely Orosz, The Pragmatic Engineer, "Pull request best practices":
   `https://blog.pragmaticengineer.com/pull-request-or-diff-best-practices/`
   — opinion tier: a short expressive title; a clear "why" section; a link to
   the tracking task; before/after screenshots or gifs for client-side
@@ -146,12 +146,15 @@ context-for-unfamiliar-reviewer 2 (Shopify, Linux kernel); setup/repro steps
 flag 1; quantified performance numbers 1; AI-disclosure 1; diagrams 1;
 related-file grouping 1.
 
-**Heading-based structure, with Google's dissent on record.** Every source
-that ships a template (Microsoft, GitLab, Rails, Chromium, Kubernetes) uses
-labeled headings. Only Google's "Writing good CL descriptions" argues for
-prose instead. The skill follows the majority convention.
+**Heading-based structure.** Four of the five sources that ship a template
+(Microsoft, GitLab, Rails, Kubernetes) use labeled headings. The fifth,
+Chromium, prescribes a one-line summary, a free-prose body, and `Bug:` and
+`Test:` footers. No surveyed source argues for prose-only bodies, and
+Google's "Writing good CL descriptions" gives no guidance on headings or
+templates. The skill follows the majority convention.
 
-**Quotes the conditional headings rest on:**
+**Evidence the conditional headings rest on (quoted or paraphrased, as
+marked):**
 
 - `## Screenshots`: Atlassian — *"Add some screenshots for your front-end
   changes!"*; GitLab — the MR must include "Before" and "After" screenshots
@@ -164,13 +167,14 @@ prose instead. The skill follows the majority convention.
 - `## Context for the reviewer`: Shopify — PR summaries are written as
   though the reviewer has little to no context on the PR scope
   (paraphrase); Linux kernel — *"there must be an underlying
-  problem that motivated you to do this work,"* *"describe user-visible
+  problem that motivated you to do this work,"* *"Describe user-visible
   impact."*
 
 **Not adopted in the default template despite citation** (each is cited by at
 least one source):
 
-- Pre-submit checklist (3 of 21): not adopted.
+- Pre-submit checklist (3 of 21): the skill's `## Test plan` records
+  verification results, not a future-tense checklist.
 - Changelog entry (3 of 21): most of the time not relevant.
 - AI-assistance disclosure (1 of 21, Kubernetes only): this repo's commit and
   PR attribution lines already disclose it.
@@ -201,8 +205,8 @@ gap.
 
 - thoughtbot, `guides/code-review/README.md`: no PR-description-content
   guidance found.
-- Google Blockly, "Write a good PR"
-  (`https://docs.blockly.com/guides/modify/contribute/write_a_good_pr`): too
+- Google Blockly, "Write a good pull request"
+  (`https://docs.blockly.com/guides/contribute/get-started/write_a_good_pr/`): too
   thin to ground any specific element. It defers to the repo template and
   warns that AI-drafted descriptions run long.
 - GNOME Handbook, Commit Messages
