@@ -464,6 +464,10 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-resume-command.sh"
           }
         ]
       },
