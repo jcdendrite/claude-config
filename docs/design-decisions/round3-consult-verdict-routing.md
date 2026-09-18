@@ -25,17 +25,15 @@ consulted agent, so `plan-architect.md` itself is untouched.
 Rejected because either would function as a sixth DEFER criterion granted
 by a subagent's prose, which the enforcement-invariant DISPOSITION_RULE in
 `code-review/SKILL.md`'s *Finding disposition* section forecloses
-absolutely. The "stop escalating" verdict is scoped narrowly instead: it
-ends the round and feeds the existing gold-plating criterion per finding,
-never a standing exemption from the closed DEFER list.
+absolutely.
 
 ## Spawn-obligation invariant
 
-**No verdict discharges a matched Change-type row's spawn obligation.**
 See `code-review/SKILL.md` § "Round-cap architect consult" for the
-routing rule itself. Without it, "the architect consult covered it"
-would function as non-specialist scrutiny silently substituting for a
-near-mandatory `ciso-reviewer`/`staff-product-engineer` spawn.
+spawn-obligation invariant itself. Recorded here because without it,
+"the architect consult covered it" would function as non-specialist
+scrutiny silently substituting for a near-mandatory
+`ciso-reviewer`/`staff-product-engineer` spawn.
 
 ## Sources
 
