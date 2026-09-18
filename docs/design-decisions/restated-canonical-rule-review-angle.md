@@ -24,22 +24,25 @@ own single-source-of-truth bullet — so the prior rejection doesn't apply
 to it.
 
 Two supporting routes make the angle reachable without a dispatch of its
-own: `code-writer.md`'s self-review domain table now routes durable
-in-repo docs (including `docs/design-decisions/*.md`) to
-`comment-discipline-reviewer`, and `code-review/SKILL.md`'s item 12a
-gains a matching one-line index bullet, pinned to the agent's angle count
-by `claude/.claude/hooks/tests/test_design_decision_files.py`'s
-`test_item_12a_bullet_count_matches_agent_angle_count` so the index can't
-silently drift stale.
+own. Route 1: `code-writer.md`'s self-review domain table now routes
+durable in-repo docs, including `docs/design-decisions/*.md`, to
+`comment-discipline-reviewer`. Route 2: `code-review/SKILL.md`'s item
+12a gains a matching one-line index bullet, pinned to the agent's angle
+count by `claude/.claude/hooks/tests/test_design_decision_files.py`'s
+`test_item_12a_bullet_count_matches_agent_angle_count` so the index
+can't silently drift stale.
 `.claude/rules/design-decisions.md` § "Design-decision files" gains a matching authoring-time bullet; this entry doesn't restate its content
 either.
 
 A mechanical lexical-duplication test (shingle or n-gram overlap against
-the skill corpus) was rejected: the defect is semantic, so a paraphrase
-evades a lexical threshold while remaining the same defect; legitimate
-short quotation is already the corpus norm and would trip the same
-threshold; and no threshold could be grounded without a corpus
-measurement this decision had no tooling to run.
+the skill corpus) was rejected:
+
+- The defect is semantic, so a paraphrase evades a lexical threshold
+  while remaining the same defect.
+- Legitimate short quotation is already the corpus norm and would trip
+  the same threshold.
+- No threshold could be grounded without a corpus measurement this
+  decision had no tooling to run.
 
 ## Sources
 
