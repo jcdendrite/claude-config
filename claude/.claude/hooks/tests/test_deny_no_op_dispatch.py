@@ -326,6 +326,33 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
+    def test_no_action_bare_word_substring_residual_denied(self, isolated_home):
+        """Same missing-word-boundary residual as
+        test_actionable_word_substring_residual_denied, pinned for the
+        bare `no action` form instead of `no further action`."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There are no actionable items right now, but keep monitoring the dashboard."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_no_actions_plural_bare_word_substring_residual_denied(self, isolated_home):
+        """Same missing-word-boundary residual as
+        test_no_further_actions_plural_status_report_residual_denied,
+        pinned for the bare `no action` form instead of `no further
+        action`."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There are no actions required from you at this time."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     def test_no_work_to_document_word_substring_residual_denied(self, isolated_home):
         """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
         Known gaps section): `no work to do` has no trailing word boundary,
