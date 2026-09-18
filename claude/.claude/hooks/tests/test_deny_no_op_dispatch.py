@@ -461,11 +461,8 @@ class TestDenyNoOpDispatch:
         )
 
     def test_no_and_action_non_adjacent_allowed(self, isolated_home):
-        """Guards against two mistakes:
-        - matching the over-broad `no.*action` instead of the intended
-          `no (further )?action`
-        - dropping the required space between "no" and "action"
-        """
+        """Guards against matching the over-broad `no.*action` instead of
+        the intended `no (further )?action`."""
         assert (
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
