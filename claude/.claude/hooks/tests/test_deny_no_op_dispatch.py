@@ -486,6 +486,19 @@ class TestDenyNoOpDispatch:
             == "allow"
         )
 
+    def test_no_further_work_to_do_widened_form_allowed(self, isolated_home):
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): unlike `no (further )?action`, `no work to do`
+        has no widening modifier, so "no further work to do" is not caught."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There is no further work to do on this ticket."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
     def test_work_to_do_without_leading_no_allowed(self, isolated_home):
         """Guards against a dropped or optional leading "no" in `no work to
         do`, which would deny a large, ordinary class of legitimate
