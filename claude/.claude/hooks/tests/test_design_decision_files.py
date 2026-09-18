@@ -39,11 +39,12 @@ DESIGN_DECISIONS_DIR directly, so TestFaultInjection below can exercise the
 same logic against a synthetic tmp_path corpus instead of only the real one.
 
 Assertion 7 is unrelated to the split described above: it pins
-code-review/SKILL.md's item 12a sub-bullet list count to
-comment-discipline-reviewer.md's core-review-angle count so the index
-can't silently drift stale when the agent's angle list changes. It lives
-here because this module already carries the REPO_ROOT/CLAUDE_DIR
-resolution and pure-function violations idiom the check needs.
+code-review/SKILL.md's item 12a sub-bullet list to
+comment-discipline-reviewer.md's core-review-angle list, name-for-name and
+in order, so the index can't silently drift stale when the agent's angle
+list gains, loses, renames, or reorders an angle. It lives here because
+this module already carries the REPO_ROOT/CLAUDE_DIR resolution and
+pure-function violations idiom the check needs.
 
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It
@@ -535,7 +536,15 @@ _ITEM_12A_BULLET_RE = re.compile(r"^   - (.+)$", re.MULTILINE)
 _CORE_REVIEW_ANGLES_SECTION_RE = re.compile(
     r"## Core review angles\n(.*?)\n## How to work", re.DOTALL
 )
-_CORE_REVIEW_ANGLE_HEADER_RE = re.compile(r"^\*\*([^*]+)\*\*", re.MULTILINE)
+# The bold run must be followed by " — " on the same line -- the literal
+# separator every real angle header uses (e.g. "**Comment verbosity** — a
+# comment...").
+_CORE_REVIEW_ANGLE_HEADER_RE = re.compile(r"^\*\*([^*]+)\*\* — ", re.MULTILINE)
+_CORE_REVIEW_ANGLE_BOLD_LINE_RE = re.compile(r"^\*\*.*$", re.MULTILINE)
+# The one bold-leading line shape permitted in the section that is not an
+# angle header. Any other bold-leading line that fails the header shape is a
+# violation, so a header punctuated differently can't be dropped silently.
+_CORE_REVIEW_ANGLE_ASIDE_PREFIX = "**Note:**"
 
 
 def _item_12a_bullets(skill_text: str) -> list[str]:
@@ -552,7 +561,19 @@ def _core_review_angle_headers(agent_text: str) -> list[str]:
     return _CORE_REVIEW_ANGLE_HEADER_RE.findall(match.group(1))
 
 
-def _item_12a_bullet_count_violations(skill_text: str, agent_text: str) -> list[str]:
+def _core_review_angle_unparsed_bold_lines(agent_text: str) -> list[str]:
+    match = _CORE_REVIEW_ANGLES_SECTION_RE.search(agent_text)
+    if not match:
+        return []
+    return [
+        line
+        for line in _CORE_REVIEW_ANGLE_BOLD_LINE_RE.findall(match.group(1))
+        if not _CORE_REVIEW_ANGLE_HEADER_RE.match(line)
+        and not line.startswith(_CORE_REVIEW_ANGLE_ASIDE_PREFIX)
+    ]
+
+
+def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
     bullets = _item_12a_bullets(skill_text)
     headers = _core_review_angle_headers(agent_text)
     if not bullets:
@@ -567,26 +588,51 @@ def _item_12a_bullet_count_violations(skill_text: str, agent_text: str) -> list[
             "not found or reworded -- update _CORE_REVIEW_ANGLES_SECTION_RE "
             "to match its current heading."
         ]
-    if len(bullets) != len(headers):
-        return [
-            f"code-review/SKILL.md's item 12a lists {len(bullets)} sub-bullets "
-            f"but comment-discipline-reviewer.md defines {len(headers)} core "
-            "review angles -- keep the index bullet list in lockstep with "
-            "the agent's angle list."
-        ]
-    return []
+    violations: list[str] = [
+        "comment-discipline-reviewer.md's 'Core review angles' section has "
+        f"a bold-leading line that is not a '**Name** — ' angle header: {line!r} "
+        "-- fix its shape, or start it with '**Note:**' if it is an aside."
+        for line in _core_review_angle_unparsed_bold_lines(agent_text)
+    ]
+    # This guards an agent-side invariant, checked independently of the
+    # sequence-equality comparison below. Two identical headers paired with
+    # two identical, count-matching bullets would satisfy sequence equality
+    # trivially, so a duplicated header needs its own guard to be caught at
+    # all.
+    duplicated_headers = sorted({header for header in headers if headers.count(header) > 1})
+    if duplicated_headers:
+        violations.append(
+            "comment-discipline-reviewer.md's 'Core review angles' section "
+            f"repeats header(s) {duplicated_headers} -- a duplicated header "
+            "can hold the sequence steady while silently standing in for a "
+            "distinct angle."
+        )
+    bullet_names = [bullet.split(" — ", 1)[0].strip() for bullet in bullets]
+    if bullet_names != headers:
+        violations.append(
+            f"code-review/SKILL.md's item 12a bullet names {bullet_names} "
+            "don't match comment-discipline-reviewer.md's core review angle "
+            f"headers {headers}, in order -- keep the index bullet list in "
+            "lockstep with the agent's angle list, in the same order."
+        )
+    return violations
 
 
-def test_item_12a_bullet_count_matches_agent_angle_count() -> None:
+def test_item_12a_index_matches_agent_angle_headers() -> None:
     """code-review/SKILL.md's item 12a sub-bullet list is a one-line index
     of comment-discipline-reviewer's core review angles, not an independent
-    statement of them. Pins the two counts together so the index can't
-    silently go stale the moment the agent gains or loses an angle. Mirrors
-    test_rule_file_filename_grammar_matches_enforced_regex's drift-prevention
-    shape."""
+    statement of them. Pins each bullet's leading name, in order, to the
+    matching angle header, and rejects a header repeated verbatim on the
+    agent side, so the index can't silently go stale by the agent gaining,
+    losing, renaming, or reordering an angle, or by two angles sharing one
+    header. Order is enforced because the index is meant to read as a
+    mirror of the agent's angle list, so a reader can diff the two
+    side by side. Mirrors
+    test_rule_file_filename_grammar_matches_enforced_regex's
+    drift-prevention shape."""
     skill_path = REPO_ROOT / "claude-skills" / "skills" / "code-review" / "SKILL.md"
     agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
-    violations = _item_12a_bullet_count_violations(
+    violations = _item_12a_index_violations(
         skill_path.read_text(encoding="utf-8"),
         agent_path.read_text(encoding="utf-8"),
     )
@@ -598,7 +644,10 @@ class TestFaultInjection:
     design-decisions/-shaped directory in tmp_path containing exactly the
     fault its paired assertion exists to catch, and asserts the checking
     function itself flags it -- proving the check's own logic, not just
-    today's clean corpus, would catch a regression."""
+    today's clean corpus, would catch a regression. The item-12a-index
+    cross-file-index-consistency checks below deviate from that shape: they
+    parse two unrelated doc files' text directly, so their fixtures are
+    plain strings with no tmp_path directory built."""
 
     def test_filename_grammar_rejects_leading_digit(self, tmp_path: Path) -> None:
         (tmp_path / "1-leading-digit.md").write_text(
@@ -966,66 +1015,244 @@ class TestFaultInjection:
         )
         assert violations == []
 
-    def test_item_12a_bullet_count_detects_stale_index(self) -> None:
+    def test_item_12a_index_detects_shorter_bullet_list(self) -> None:
+        """A bullet list one entry shorter than the header list -- an angle
+        added to the agent with no corresponding bullet authored."""
         skill_text = (
-            "12a. **Comment/prose discipline on added or modified text** -- "
+            "12a. **Comment/prose discipline on added or modified text** — "
             "Does a new or modified comment or durable-doc paragraph violate "
             "CLAUDE.md?\n"
-            "   - Comment verbosity -- a multi-paragraph rationale\n"
-            "   - Multi-fact comment structure -- several facts chained\n\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure — several facts chained\n\n"
             "   Distinct from item 12, which covers comment deletion.\n"
         )
         agent_text = (
             "## Core review angles\n\n"
-            "**Comment verbosity** -- a comment stating too much.\n\n"
-            "**Multi-fact comment structure** -- several facts chained.\n\n"
-            "**Restated canonical rule** -- a rule stated elsewhere.\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Multi-fact comment structure** — several facts chained.\n\n"
+            "**Restated canonical rule** — a rule stated elsewhere.\n\n"
             "## How to work\n"
         )
-        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
+        violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "2 sub-bullets" in violations[0]
-        assert "3 core" in violations[0]
+        assert "don't match" in violations[0]
+        assert "Restated canonical rule" in violations[0]
 
-    def test_item_12a_bullet_count_detects_bullet_added_without_matching_angle(
-        self,
-    ) -> None:
-        """The reverse drift direction from test_item_12a_bullet_count_detects_stale_index:
-        a bullet added to the SKILL.md index with no corresponding agent
-        angle, rather than an angle added with no corresponding bullet."""
+    def test_item_12a_index_detects_longer_bullet_list(self) -> None:
+        """The reverse drift direction from
+        test_item_12a_index_detects_shorter_bullet_list: a bullet added to
+        the SKILL.md index with no corresponding agent angle."""
         skill_text = (
-            "12a. **Comment/prose discipline on added or modified text** -- "
+            "12a. **Comment/prose discipline on added or modified text** — "
             "Does a new or modified comment or durable-doc paragraph violate "
             "CLAUDE.md?\n"
-            "   - Comment verbosity -- a multi-paragraph rationale\n"
-            "   - Multi-fact comment structure -- several facts chained\n"
-            "   - Restated canonical rule -- a rule stated elsewhere\n\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure — several facts chained\n"
+            "   - Restated canonical rule — a rule stated elsewhere\n\n"
             "   Distinct from item 12, which covers comment deletion.\n"
         )
         agent_text = (
             "## Core review angles\n\n"
-            "**Comment verbosity** -- a comment stating too much.\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
             "## How to work\n"
         )
-        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
+        violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "3 sub-bullets" in violations[0]
-        assert "1 core" in violations[0]
+        assert "don't match" in violations[0]
+        assert "Multi-fact comment structure" in violations[0]
 
-    def test_item_12a_bullet_count_accepts_matched_index(self) -> None:
+    def test_item_12a_index_detects_duplicated_bullet(self) -> None:
+        """A future edit could copy-paste an existing sub-bullet instead of
+        authoring a new one for a newly added angle, holding the list
+        length steady. The duplicated name still diverges from the header
+        at that position, which the sequence-equality check catches."""
         skill_text = (
-            "12a. **Comment/prose discipline on added or modified text** -- "
+            "12a. **Comment/prose discipline on added or modified text** — "
             "Does a new or modified comment or durable-doc paragraph violate "
             "CLAUDE.md?\n"
-            "   - Comment verbosity -- a multi-paragraph rationale\n"
-            "   - Restated canonical rule -- a rule stated elsewhere\n\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure — several facts chained\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n\n"
             "   Distinct from item 12, which covers comment deletion.\n"
         )
         agent_text = (
             "## Core review angles\n\n"
-            "**Comment verbosity** -- a comment stating too much.\n\n"
-            "**Restated canonical rule** -- a rule stated elsewhere.\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Multi-fact comment structure** — several facts chained.\n\n"
+            "**Restated canonical rule** — a rule stated elsewhere.\n\n"
             "## How to work\n"
         )
-        violations = _item_12a_bullet_count_violations(skill_text, agent_text)
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "Comment verbosity" in violations[0]
+        assert "Restated canonical rule" in violations[0]
+
+    def test_item_12a_index_detects_renamed_angle_with_stale_bullet(self) -> None:
+        """A header renamed on the agent side leaves the SKILL.md bullet
+        pointed at the old name. Both lists stay the same length, so only a
+        position-by-position name comparison -- not a count check -- catches
+        it."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure — several facts chained\n"
+            "   - Restated canonical rule — a rule stated elsewhere\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Multi-fact prose structure** — several facts chained.\n\n"
+            "**Restated canonical rule** — a rule stated elsewhere.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "Multi-fact comment structure" in violations[0]
+        assert "Multi-fact prose structure" in violations[0]
+
+    def test_item_12a_index_detects_reordered_bullets(self) -> None:
+        """The same bullets and the same headers, in different relative
+        order -- a length- or set-equality check would pass this fixture.
+        Ordered sequence equality is what catches it."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Multi-fact comment structure — several facts chained\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Restated canonical rule — a rule stated elsewhere\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Multi-fact comment structure** — several facts chained.\n\n"
+            "**Restated canonical rule** — a rule stated elsewhere.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "don't match" in violations[0]
+
+    def test_item_12a_index_detects_duplicated_header(self) -> None:
+        """Exercises the agent-side duplicate-name guard independently of
+        sequence equality: the bullet sequence matches the header sequence
+        position-for-position, since both repeat 'Comment verbosity' at the
+        same non-adjacent spots. The agent's own angle headers must still
+        stay distinct, even though a naive sequence-equality check alone
+        would pass this fixture."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Multi-fact comment structure — several facts chained\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Multi-fact comment structure** — several facts chained.\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "repeats header" in violations[0]
+        assert "Comment verbosity" in violations[0]
+
+    def test_item_12a_index_rejects_missing_skill_section(self) -> None:
+        """A future rewording of the item 12a heading in SKILL.md must fail
+        loud through this guard, instead of _item_12a_bullets silently
+        returning []."""
+        skill_text = "12a. This heading no longer matches _ITEM_12A_SECTION_RE.\n"
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "item 12a's sub-bullet list not found or reworded" in violations[0]
+
+    def test_item_12a_index_rejects_missing_agent_section(self) -> None:
+        """A future rewording of the 'Core review angles' heading in the
+        agent file must fail loud through this guard, instead of
+        _core_review_angle_headers silently returning []."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = "## Review angles, renamed\n\n**Comment verbosity** — a comment.\n\n## How to work\n"
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "'Core review angles' section not found or reworded" in violations[0]
+
+    def test_item_12a_index_accepts_matched_sequence(self) -> None:
+        """Mixes an annotated bullet with a bare one (no ' — '), as the real
+        SKILL.md does."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Restated canonical rule\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Restated canonical rule** — a rule stated elsewhere.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert violations == []
+
+    def test_item_12a_index_flags_non_conforming_angle_header(self) -> None:
+        """An angle header punctuated differently from '**Name** — ' would
+        otherwise be dropped from the parsed headers with no signal, leaving
+        the index stale while the sequence check still passes."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**New angle** -- a header with the wrong separator.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
+        assert len(violations) == 1
+        assert "not a '**Name** — ' angle header" in violations[0]
+        assert "**New angle** -- a header" in violations[0]
+
+    def test_item_12a_index_accepts_note_aside_in_angles_section(self) -> None:
+        """A '**Note:**' aside is the one permitted bold-leading line that is
+        not an angle header. Kills a header regex that drops the ' — '
+        requirement, which would count the aside as an angle."""
+        skill_text = (
+            "12a. **Comment/prose discipline on added or modified text** — "
+            "Does a new or modified comment or durable-doc paragraph violate "
+            "CLAUDE.md?\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n\n"
+            "   Distinct from item 12, which covers comment deletion.\n"
+        )
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Note:** an aside that is not an angle.\n\n"
+            "## How to work\n"
+        )
+        violations = _item_12a_index_violations(skill_text, agent_text)
         assert violations == []

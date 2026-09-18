@@ -127,14 +127,14 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 12. **Stripped WHY comments** — In modified files, were comments documenting a non-obvious constraint, subtle invariant, bug workaround, or surprising behavior deleted? Stripping these regresses documentation that the original author judged worth keeping. A preference for minimal comments governs whether to *add* one; it does not authorize bulk removal during unrelated edits. Apply the same WHY test to existing comments: keep if it meets the standard, remove only if it restates WHAT the code does. Check `git diff` for deleted comment lines in changed hunks.
 
-12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose (the last sub-item instead derives from §Engineering Judgment)?
+12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose?
    - Comment verbosity — a multi-paragraph rationale where one line suffices
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
-   - Prose at the wrong altitude for its reader
+   - Prose at the wrong altitude — content whose detail level doesn't match its reader, e.g. implementation detail inside an agent spec meant to stay lazy-loaded and terse
    - PR-defined terminology
    - "Used to be X" framing
-   - Durable-doc content that fails the survives-the-PR-being-merged self-test
-   - A `docs/design-decisions/*.md` paragraph restating a rule already stated canonically elsewhere, instead of citing it
+   - Survives-the-PR self-test on durable-doc content — a paragraph that depends on context outside the file (the PR description, commit message, or planning doc) to parse
+   - Restated canonical rule — a `docs/design-decisions/*.md` paragraph restating a rule stated canonically elsewhere instead of citing it; this sub-item derives from CLAUDE.md §Engineering Judgment rather than §Code Comments, Documentation, and Prose
 
    Distinct from item 12, which covers comment *deletion*. Step 1.5's "Non-durable comment" tripwire runs this check inline on every review; `comment-discipline-reviewer` (Ripple effect triage) provides exhaustive enumeration when spawned.
 

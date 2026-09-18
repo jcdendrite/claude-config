@@ -27,10 +27,11 @@ Two supporting routes make the angle reachable without a dispatch of its
 own. Route 1: `code-writer.md`'s self-review domain table now routes
 durable in-repo docs, including `docs/design-decisions/*.md`, to
 `comment-discipline-reviewer`. Route 2: `code-review/SKILL.md`'s item
-12a gains a matching one-line index bullet, pinned to the agent's angle
-count by `claude/.claude/hooks/tests/test_design_decision_files.py`'s
-`test_item_12a_bullet_count_matches_agent_angle_count` so the index
-can't silently drift stale.
+12a gains a matching one-line index bullet, pinned to the agent's ordered
+angle headers by `claude/.claude/hooks/tests/test_design_decision_files.py`'s
+`test_item_12a_index_matches_agent_angle_headers`, which compares each
+bullet's leading name against the corresponding header in sequence, so
+the index can't silently drift stale.
 `.claude/rules/design-decisions.md` § "Design-decision files" gains a matching authoring-time bullet; this entry doesn't restate its content
 either.
 
