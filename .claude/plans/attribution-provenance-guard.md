@@ -91,9 +91,17 @@ Row 2 [assumption]: every custom agent, plan-architect included, receives the
 full CLAUDE.md hierarchy [verified:
 docs/design-decisions/declined-sessionstart-additionalcontext-injection.md:27,
 quoting the sub-agents docs at :41] — anchors: row1
-Row 3 [assumption]: claude/.claude/CLAUDE.md is 183 lines, writes each bullet
-as one line, and check-claude-md-length.sh blocks only past 200 lines plus
-growth [verified: line count this session; docs/hooks.md:51] — anchors: row1
+Row 3 [assumption, corrected]: claude/.claude/CLAUDE.md is 183 lines, and
+the new bullet itself is one physical line — but the file also carries a
+separate 25,600-byte cap, already exceeded pre-session (31,598 bytes at
+commit time), and not every existing bullet is a single physical line (some
+are hard-wrapped across multiple lines). check-claude-md-length.sh blocks
+past 200 lines OR past the byte cap, each dimension gated on growth vs HEAD
+independently [verified: claude/.claude/hooks/check-claude-md-length.sh;
+docs/hooks.md:51, corrected same session] — anchors: row1. The byte cap
+being already exceeded meant the CLAUDE.md edit had to land
+byte-non-increasing against HEAD in the same commit; see the trim list on
+the CLAUDE.md bullet below.
 Row 4 [assumption]: the plan ships both a general attribution rule and a
 plan-it tag change [engineer-verified: "Both (Recommended)"] — anchors: root
 Row 5 [mechanism]: narrow the plan-it tag definition (SKILL.md:92, :97) to
@@ -164,7 +172,7 @@ claude-skills/skills/handoff/SKILL.md:63] — anchors: row18
 ## Critical files
 
 **Phase 1: prose.** One `code-writer` dispatch. All five files share the rule's wording, so splitting would mean restating it in every dispatch prompt.
-- `claude/.claude/CLAUDE.md`: add the Working Style bullet after line 61 (text in Approach).
+- `claude/.claude/CLAUDE.md`: add the Working Style bullet after line 61 (text in Approach). The file was already over its 25,600-byte cap before this change (31,598 bytes at HEAD), so the edit must be byte-non-increasing against HEAD in the same commit (Row 3). Offsetting trims applied: tightened the new bullet's own wording; dropped the timeout-literal example sentence and the discriminator-literals closing sentence from "Ground every choice"; trimmed the "Single source of truth," "Place prose where its reader and altitude match," "Walk through your proposed approach," and PR-body-conciseness (Code Comments) sentences; dropped the inline-suppression "No rationale = no suppression" sentence; dropped the "Start," not "commence" example; dropped the Self-test bullet's "move the rationale to the commit message" sentence as redundant with the neighboring "No 'used to be X'" bullet's same point.
 - `claude-skills/skills/plan-it/SKILL.md`:
   - `:53`: an addition, not a replacement. Keep "The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim." and append: "Relay each answer as the selected label or the engineer's typed text; mark any option description you relay as your own proposal (CLAUDE.md §Working Style)."
   - `:92`: the tag name becomes the quoted form.

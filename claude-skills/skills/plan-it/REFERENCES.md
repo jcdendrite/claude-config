@@ -105,7 +105,7 @@ Givens: <condition treated as fixed> — beyond reach: <one-line reason>
 Row 1 [mechanism]: <name> — anchors: root — <one-line justification>
 Row 2 [assumption]: <claim> [verified: <source>] — anchors: row1
 Row 3 [assumption]: <claim> [unverified] — anchors: row1
-Row 4 [assumption]: <claim> [engineer-verified] — anchors: root
+Row 4 [assumption]: <claim> [engineer-verified: "<quote>"] — anchors: root
 ```
 
 Every row's `anchors:` value is either `root` or an already-numbered row —
@@ -132,7 +132,9 @@ Row 3 [assumption]: no other repo mechanism relies on
 plan-review-markers/ existence-only semantics [unverified] — anchors: row1
 Row 4 [assumption]: the structural-completeness hook and Stop-hook +
 cross-check subagent are deferred until this hypothesis validates on live
-plans [engineer-verified] — anchors: root
+plans [engineer-verified: "Let's hold off on the structural-completeness
+hook and the Stop-hook cross-check subagent until we've seen this work on
+live plans"] — anchors: root
 ```
 
 ### Why three tags, not two
@@ -145,6 +147,16 @@ the human instead of overriding them.
 
 File-sourced facts are always `[verified: <file>]`; the tag exists only for
 utterances a grep can't re-derive.
+
+### Why the tag carries a quote
+
+- A menu answer returns only the label, while the asking session's
+  description sits beside it.
+- Without a quote, a relay can restate that description under the tag, and
+  the tag's protection then shields the restatement.
+- The quote limits protection to text a reviewer can compare the claim
+  against.
+- A quote cannot catch a fabricated quote; only a transcript check could.
 
 ## Anti-patterns confirmed across sources
 

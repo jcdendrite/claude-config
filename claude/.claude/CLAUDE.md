@@ -27,7 +27,7 @@
 
 - Before proposing changes, understand the intent of the existing code or configuration.
 - When making recommendations, evaluate them not just against generic best practices but also against this project's actual stack, tooling, and constraints.
-- **Single source of truth.** Every piece of knowledge has one authoritative home; other sites reference it, not restate it — this is DRY applied to prose and docs, not just code, since duplicated copies drift and a reader can't tell which is stale. Before writing something a second time, pick the canonical home and make the other site defer. Named exceptions: (1) DAMP test code, (2) instructional prose that must stand alone, (3) a small duplicated value that beats a bad abstraction. Absent a named exception, duplication is a defect.
+- **Single source of truth.** Every piece of knowledge has one authoritative home; other sites reference it, not restate it — this is DRY applied to prose and docs, not just code. Before writing something a second time, pick the canonical home and make the other site defer. Named exceptions: (1) DAMP test code, (2) instructional prose that must stand alone, (3) a small duplicated value that beats a bad abstraction. Absent a named exception, duplication is a defect.
 - Before taking any action that is destructive, irreversible, or has blast radius beyond the immediate change (data loss, breaking API changes, infrastructure modifications), flag the risk and confirm the approach.
 - When uncertain about a CLI flag, tool behavior, or API detail, verify rather than guessing.
 - **Worktree/repo scope constrains writes, not reads.** A worktree (or a repo boundary generally) only fixes where git operations and file writes land — it says nothing about what you may read. Check the filesystem (`ls`/`find`/`grep`/`Read`) before calling a claim unverifiable just because its source is outside this tree — a sibling checkout or a nearby directory is often reachable even when it isn't part of the current git tree. Defer to a human only once that check has come up empty.
@@ -42,16 +42,16 @@
 - **Prove your change caused a failing check before treating it as in-scope.** Reproduce a failing check at the merge-base (`git worktree add <tmp> $(git merge-base HEAD origin/main)`) before claiming it. Failing there too means pre-existing drift — sync the branch if the base already fixed it, but never hand-reimplement a merged fix or edit an unrelated file. Failing only on your branch means it's in scope, even in files you never touched, since a change breaks dependents through their imports.
 - **Extract functions when you need to explain what a fragment does.** When writing a function, if any internal fragment requires effort to understand *what* (not *how*) it's doing, extract it and name the new function after that "what." The signal is comprehension effort, not line count — a large function that expresses one nameable thing without inner confusion is fine.
 - **Ground every choice.** Six categories of decision require a primary-source citation before implementation or publication, not after:
-  - **Numeric literals in network/timeout/retry contexts** — cite the vendor or protocol documentation that specifies the value. A timeout of `10000` is a silent assumption; a value traceable to vendor docs or a protocol specification is grounded.
-  - **Inline lint/type-check suppressions** — add a one-line comment naming the alternative considered and why it does not apply. No rationale = no suppression.
-  - **Discriminator literals where a canonical symbol exists** — never embed a raw value (string or integer) that represents an enum, status, or code defined elsewhere. Reach for the language or framework's named constant first; if the discriminator is project-defined and the project ships a registry or named-type module, use that. Literals diverge silently from the canonical set; named symbols don't.
+  - **Numeric literals in network/timeout/retry contexts** — cite the vendor or protocol documentation that specifies the value.
+  - **Inline lint/type-check suppressions** — add a one-line comment naming the alternative considered and why it does not apply.
+  - **Discriminator literals where a canonical symbol exists** — never embed a raw value (string or integer) that represents an enum, status, or code defined elsewhere. Reach for the language or framework's named constant first; if the discriminator is project-defined and the project ships a registry or named-type module, use that.
   - **New third-party dependencies** — research the package's vulnerability history, maintenance health, and pinning strategy before adding; record the source-of-choice rationale in the PR description. Popularity is not provenance.
   - **Hand-rolled logic in non-trivial domains** (cryptography, auth, date/time, network protocol parsing) — search the standard library and first-party SDK before implementing. If hand-rolling is warranted, justify the absence of a standard alternative in the commit message.
   - **Quantitative or causal claims in prose** — re-derive each number and each cause-and-effect claim from the code, config, or query that produces it at the moment you write it, and name that source alongside the claim. A number verified in one artifact is not thereby verified in another. This bullet covers ticket prose directly; PR-body and handoff-prose claims carry the same discipline via `pr-description`'s and `handoff`'s own claim-verification steps.
 
 ## Working Style
 
-- Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment. Ordering matters as well as evaluation: open with the one sentence naming why it's a genuine decision, then the options. Genuine-decision shapes include:
+- Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment. Open with the one sentence naming why it's a genuine decision, then the options. Genuine-decision shapes include:
   - Competing consumers.
   - Incompatible invariants.
   - A false premise.
@@ -59,6 +59,7 @@
 
   If that sentence cannot be written, pick the sensible default and say so instead of escalating.
 - Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do. When you don't know, say so and name what would resolve it, rather than offering a plausible answer at hedged confidence.
+- **Attribute to the engineer only what they said.** That is text they typed or a label they selected, read against the question it answers — never prose you or a subagent wrote (an `AskUserQuestion` option description, an inference from options they didn't pick, a subagent's report, or your own earlier turn) recast as their words or decision. In every relay — a dispatch prompt, a plan, a reply — quote their words and mark your own content as yours.
 - **Compounding defensive layers are a wrong-foundation tell.** Each new defensive layer closing a gap the prior layer created — or a review that starts citing its own prior findings — is a wrong-foundation signal; fix the foundation instead of adding another layer.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
@@ -153,23 +154,23 @@ These rules govern every text surface you author — chat replies, PR bodies, co
   Match a code block's language tag to what is actually inside it. In terminal output, avoid markdown tables where width-wrapping would break them.
 - **Cut every sentence that adds no information.** Keep the why when it is non-obvious. Never drop or flatten a fact, number, decision, hedge, or conditional to shorten a sentence — keep the content and accept the longer sentence.
 - **One idea per sentence, one term per concept.** Split a compound claim instead of chaining it into a run-on. Hold the chosen term for the whole document — elegant variation reads as a second thing, not a second word for the same thing.
-- **Active voice, plain verbs, no noun stacks.** Passive only when the actor is unknown or irrelevant to the reader. "Start," not "commence." A verb or prepositional phrase in place of a stacked-noun phrase.
+- **Active voice, plain verbs, no noun stacks.** Passive only when the actor is unknown or irrelevant to the reader. A verb or prepositional phrase in place of a stacked-noun phrase.
 - If `<config-dir>/output-preferences.md` exists, read it at session start and apply it. That file layers personal tone and style calibration on the rules above; it is not a place to restate them.
 
 ## Code Comments, Documentation, and Prose
 
 ### Where to put it
 
-- **Place prose where its reader and altitude match.** Match each paragraph's altitude to its reader (not a README deep-dive, agent-spec FYI, or skill-body doc back-reference) — the fix is relocation, not deletion.
+- **Place prose where its reader and altitude match.** Not a README deep-dive, an agent-spec FYI, or a skill-body doc back-reference — the fix is relocation, not deletion.
 
 ### When to write it and what to include
 
-Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. This section governs comments and durable docs only — PR body and commit-message conciseness is `pr-description`'s concern, not this section's. In particular:
+Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. This section governs comments and durable docs only — PR body and commit-message conciseness is `pr-description`'s concern. In particular:
 
 - **No PR-defined terminology** (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code or named explicitly — not in a comment or doc that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **No auto-memory citations.** Auto-memory is per-user and per-machine, so a `feedback_*.md` reference resolves for no other reader. Cite the `CLAUDE.md` line, skill body, or doc that states the rule instead. If none does and the rule is general, put it there first.
-- **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
+- **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it.
 - **One line, not a paragraph.** State the non-obvious constraint in one sentence — a multi-paragraph rationale block means the comment is doing the PR description's job; trim narration, never the fact.
 - **Split multi-fact comments.** State each non-obvious fact as its own sentence rather than chaining several into one run-on via semicolons, dashes, and parentheticals — a reader shouldn't have to parse a whole sentence-cluster to find where one fact ends and the next begins. When the facts are genuinely parallel (a set of gaps, conditions, or exclusions of the same kind), use an explicit list, one item per fact, instead of nesting them as asides in unrelated prose. Facts that are tightly coupled — a cause and its direct effect — may still share a sentence.
 
