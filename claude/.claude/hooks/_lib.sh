@@ -2514,6 +2514,89 @@ _lib_strip_shell_quotes() {
   return 0
 }
 
+# Masks each quoted span's interior while leaving its own delimiter pair
+# intact (e.g. `"..."` becomes `""`), so a commit message that merely
+# mentions the words of a commit command as literal text is not miscounted as
+# a real invocation. A quote left open at end of string is left unmasked,
+# erring toward denying rather than silently swallowing a real second commit
+# fragment. See docs/hooks.md's deny-invisible-commit-content.sh entry for the
+# single-pass quote-state-tracking design and how it contrasts with
+# `_lib_strip_shell_quotes`, which removes quote characters instead.
+# Runs under a 5s `_lib_capped_for` cap because the per-character scan is
+# O(n^2) on command length. `_lib_capped_for` runs the command uncapped when
+# neither `timeout` nor `gtimeout` is on PATH.
+# Call-site contract (load-bearing): awk can be missing, killed, or time out,
+# and no caller runs under `set -e`, so every call site must capture and check
+# the exit status immediately and fail closed on non-zero.
+#
+# Blanking: a quoted span blanks to its delimiter pair by default, whether it
+# is multi-word or contains whitespace or an operator. A quoted message
+# containing `&&` therefore masks the operator inside it.
+#
+# Exceptions to blanking:
+# - A quoted span whose entire interior is a single safe word
+#   (`^[A-Za-z0-9._/-]+$`) is emitted unquoted, so a quoted command word
+#   survives masking and stays visible to a fragment-count loop.
+#
+# A `$` directly before an opening delimiter is dropped whenever the span
+# closes, whether the span is emitted unquoted or blanked, mirroring
+# `_lib_strip_shell_quotes`'s own `$'`/`$"` opener rule. The `$` is kept when
+# the quote is left open.
+#
+# Limits:
+# - Backslash escapes are not modeled: `\"` and `\'` are ordinary characters
+#   that open or close spans.
+# - The scan reads the whole command as one awk record via `RS = "\0"`. An awk
+#   that treats that value as paragraph mode (BSD/macOS awk) splits the record
+#   at a blank line, which resets quote state inside a span.
+_lib_mask_shell_quotes() {
+  # False positive: shellcheck's no-warn heuristic for a bare `awk '...'`
+  # pipe stage doesn't recognize awk once it's preceded by the
+  # _lib_capped_for wrapper; the single-quoted script below is an awk
+  # program, not a shell string, and is not meant to expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
+    BEGIN { RS = "\0" }
+    {
+      n = length($0)
+      quote = ""
+      quote_start = 0
+      quote_dollar_prefix = 0
+      span = ""
+      result = ""
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (quote == "") {
+          if (c == dq || c == sq) {
+            quote = c
+            quote_start = i
+            span = ""
+            quote_dollar_prefix = (length(result) > 0 && substr(result, length(result), 1) == "$")
+          } else {
+            result = result c
+          }
+        } else if (c == quote) {
+          if (quote_dollar_prefix) {
+            result = substr(result, 1, length(result) - 1)
+          }
+          if (span ~ /^[A-Za-z0-9._\/-]+$/) {
+            result = result span
+          } else {
+            result = result quote c
+          }
+          quote = ""
+        } else {
+          span = span c
+        }
+      }
+      if (quote != "") {
+        result = result substr($0, quote_start)
+      }
+      printf "%s", result
+    }
+  '
+}
+
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
 # Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
 _LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'

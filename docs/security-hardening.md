@@ -777,7 +777,7 @@ to hold PII/PHI or live credentials:
 - `deny-invisible-commit-content.sh`'s whole-word quote closure:
   - Arm 1 strips quotes before splitting (`COMMAND_UNQUOTED`), the same
     treatment as the fragment-matcher family above.
-  - Arm 2's masker (`_mask_shell_quotes`) emits a quoted span unquoted, not
+  - Arm 2's masker (`_lib_mask_shell_quotes`) emits a quoted span unquoted, not
     blanked, only when its interior is a single word matching
     `^[A-Za-z0-9._/-]+$`, so a quoted `git`/`commit` word (`"git" commit`)
     stays visible to both arms.
@@ -790,7 +790,7 @@ to hold PII/PHI or live credentials:
     words (`g"it commit"`, whose masked span contains whitespace and so
     stays blanked) — the same surface every other commit gate already has.
 - `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:
-  `_mask_shell_quotes` blanks any quoted span whose interior contains
+  `_lib_mask_shell_quotes` blanks any quoted span whose interior contains
   whitespace or a shell operator, so a real `git commit` invoked inside a
   code-executing wrapper's quoted argument (`bash -c "git commit ..."`,
   `eval "git commit ..."`) is invisible to arm 2's count — a two-commit

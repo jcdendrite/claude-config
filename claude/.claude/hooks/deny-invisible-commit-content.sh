@@ -106,7 +106,7 @@
 #    `_lib_fragment_invokes_git` ever recognizes as invoking `bash`/`git`.
 #    Every other enumerated wrapper token is defeated the same way.
 #  - None of this hook's own forks carries an internal timeout, except
-#    `_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see below) — a
+#    `_lib_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see `_lib.sh`) — a
 #    wedged or replaced grep/sed/tr/awk/xargs binary is unbounded, so it
 #    just means this gate silently did not run (per the harness's
 #    PreToolUse contract, code.claude.com/docs/en/hooks, fetched
@@ -133,7 +133,7 @@
 #    xargs), with no filesystem or network access.
 #  - Every fork's exit status is checked and fails closed on a non-zero
 #    result, matching `_lib_parse_tool_input_or_deny`'s jq discipline.
-#  - The `_mask_shell_quotes` per-character awk scan is O(n²) on command
+#  - The `_lib_mask_shell_quotes` per-character awk scan is O(n²) on command
 #    length, so it runs under the same 5s `_lib_capped_for` cap
 #    `_lib_jq`/`_lib_capped` use elsewhere (every other fork in this file
 #    stays unbounded). A pathological input denies fast instead of
@@ -222,77 +222,6 @@ if [ "$WRAPPER_TOKEN_EXIT" -ne 1 ]; then
   exit 0
 fi
 
-# Local to this hook, not _lib.sh: single-consumer masking, below the
-# two-consumer promotion threshold CLAUDE.md sets for a shared helper.
-# Masks each quoted span's interior while leaving its own delimiter pair
-# intact (e.g. `"..."` becomes `""`), so a commit message that merely
-# mentions "git commit" as literal text is not miscounted as a real
-# invocation by arm 2 below. A quote left open at end of string is left
-# unmasked, erring toward denying rather than silently swallowing a real
-# second commit fragment. See docs/hooks.md's entry for this hook for the
-# single-pass quote-state-tracking design and how it contrasts with arm
-# 1's `_lib_strip_shell_quotes`. Runs under a 5s `_lib_capped_for` cap —
-# the per-character scan is O(n²) on command length.
-#
-# Exception:
-# - A quoted span whose entire interior is a single safe word
-#   (`^[A-Za-z0-9._/-]+$`) is emitted unquoted, not blanked, so a quoted
-#   `git`/`commit` word (`"git" commit`) survives quoting and stays
-#   visible to arm 2's fragment-count loop below.
-# - A leading `$` immediately before the opening delimiter is dropped too,
-#   mirroring `_lib_strip_shell_quotes`'s own `$'`/`$"` opener rule
-#   (`_lib.sh`).
-# - Every other quoted span — multi-word, containing whitespace or an
-#   operator — still blanks to its delimiter pair unchanged, so
-#   `-m "fix && git commit"` still masks the operator inside the message.
-_mask_shell_quotes() {
-  # False positive: shellcheck's no-warn heuristic for a bare `awk '...'`
-  # pipe stage doesn't recognize awk once it's preceded by the
-  # _lib_capped_for wrapper; the single-quoted script below is an awk
-  # program, not a shell string, and is not meant to expand.
-  # shellcheck disable=SC2016
-  printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
-    BEGIN { RS = "\0" }
-    {
-      n = length($0)
-      quote = ""
-      quote_start = 0
-      quote_dollar_prefix = 0
-      span = ""
-      result = ""
-      for (i = 1; i <= n; i++) {
-        c = substr($0, i, 1)
-        if (quote == "") {
-          if (c == dq || c == sq) {
-            quote = c
-            quote_start = i
-            span = ""
-            quote_dollar_prefix = (length(result) > 0 && substr(result, length(result), 1) == "$")
-          } else {
-            result = result c
-          }
-        } else if (c == quote) {
-          if (quote_dollar_prefix) {
-            result = substr(result, 1, length(result) - 1)
-          }
-          if (span ~ /^[A-Za-z0-9._\/-]+$/) {
-            result = result span
-          } else {
-            result = result quote c
-          }
-          quote = ""
-        } else {
-          span = span c
-        }
-      }
-      if (quote != "") {
-        result = result substr($0, quote_start)
-      }
-      printf "%s", result
-    }
-  '
-}
-
 # Built once, from the single source of truth in _lib.sh, mirroring
 # deny-reviewer-tree-mutation.sh's and require-worktree-for-git-writes.sh's
 # own read-only-subcommand alternation pattern. Built ahead of arm 2 below
@@ -324,7 +253,7 @@ _trim_fragment() {
 # content instead, so this ordered walk over masked text still reaches #
 # the real mutation.                                                   #
 # ------------------------------------------------------------------ #
-MASKED_COMMAND=$(_mask_shell_quotes "$COMMAND")
+MASKED_COMMAND=$(_lib_mask_shell_quotes "$COMMAND")
 MASK_EXIT=$?
 if [ "$MASK_EXIT" -ne 0 ]; then
   emit_deny "could not mask quoted command text within the timeout (exit ${MASK_EXIT}) — awk may be missing, killed, have timed out on an unusually large command, or errored. Failing closed rather than allowing an unscanned git commit chain."
