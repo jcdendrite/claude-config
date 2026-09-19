@@ -2529,19 +2529,18 @@ _lib_strip_shell_quotes() {
 # and no caller runs under `set -e`, so every call site must capture and check
 # the exit status immediately and fail closed on non-zero.
 #
-# Limits:
+# Limits (illustrative, not exhaustive):
 # - This is a character-level quote-state scanner, not a bash tokenizer.
 # - It does not model backslash escapes (`\"` and `\'` are ordinary quote
 #   characters), an empty quote pair glued to a word, a multi-word mid-word
 #   split, or an ANSI-C escape.
 # - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
-#   command into records at each blank line, with two effects.
-# - An unquoted blank line is deleted and its neighbouring tokens fuse.
-# - A blank line inside a quoted span resets quote state at the record
-#   boundary, so the span's closing quote acts as an opener and quote parity
-#   stays inverted for the rest of the command, blanking a later real commit
-#   any distance away.
-# - That list is illustrative, not exhaustive.
+#   command into records at each blank line, with two effects:
+#   - An unquoted blank line is deleted and its neighbouring tokens fuse.
+#   - A blank line inside a quoted span resets quote state at the record
+#     boundary, so the span's closing quote acts as an opener and quote parity
+#     stays inverted for the rest of the command, blanking a later real commit
+#     any distance away.
 # - A gap in this class can drop a command word from a caller's fragment
 #   count, and the effect then fails open.
 _lib_mask_shell_quotes() {

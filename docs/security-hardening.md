@@ -797,10 +797,10 @@ to hold PII/PHI or live credentials:
     shell never sees. `git commit -m x && echo \" && git commit -m y && echo \"`
     is allowed: bash runs both commits, but the masker treats the `\"` pair as
     a span and blanks the second commit.
-  - BSD/macOS awk treats `RS` set to NUL as paragraph mode, so a blank line
-    splits the command into records, with two effects. Only awk 20200816 was
-    checked. Neither effect needs deliberate obfuscation, only a blank line,
-    which is routine in multi-paragraph command text.
+  - BSD/macOS awk splits the command into records at each blank line (see the
+    `_lib.sh` header), with two effects. Neither effect needs deliberate
+    obfuscation, only a blank line, which is routine in multi-paragraph
+    command text.
     - An unquoted blank line is deleted and the tokens on each side fuse,
       hiding command words from arm 2's count. `true<blank line>git commit -m
       x && git commit -m y` is allowed, while the same command with a single
@@ -812,6 +812,7 @@ to hold PII/PHI or live credentials:
       -m "y"` is allowed (the masked text becomes `git commit -m
       "para1para2""y"`), while the same command with a single newline is
       denied.
+  - Only awk 20200816 was checked for the BSD/macOS-awk cases.
 - `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:
   `_lib_mask_shell_quotes` blanks any quoted span whose interior contains
   whitespace or a shell operator, so a real `git commit` invoked inside a

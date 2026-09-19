@@ -80,10 +80,9 @@
 #    stays blanked, invisible to arm 2's fragment count — see
 #    docs/security-hardening.md for the mechanism.
 #  - `_lib_mask_shell_quotes` is a character-level quote scanner, not a bash
-#    tokenizer, so a shape it mis-scans (a backslash-escaped quote, or any
-#    blank line on BSD/macOS awk) can drop a real second commit fragment from
-#    arm 2's count and fails open. `_lib.sh` states the full class of limits
-#    at that function's header.
+#    tokenizer, so a shape it mis-scans can drop a real second commit
+#    fragment from arm 2's count and fails open. Its limits are listed in its
+#    `_lib.sh` header.
 #  - An execution mechanism outside the wrapper/commit co-occurrence
 #    check's enumerated token list — an `awk` `system()` call, a `make`
 #    recipe, `find -exec`, a remote `ssh host <cmd>` — still hides a real
