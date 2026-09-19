@@ -49,11 +49,12 @@ DENY_GATE_LABEL="no-op-dispatch"
 # into it.
 NOOP_MAX_PROMPT_LEN=600
 
-# Every idiom below traces to one of two sources: it appears verbatim in a
-# confirmed no-op dispatch from this repo's own transcript history, or it
-# is named verbatim in claude/.claude/CLAUDE.md's Agent Briefing bullet as
-# a prohibited shape. An idiom grounded in neither does not go in either
-# list -- see docs/design-decisions/no-op-dispatch-hook-gate.md.
+# Every idiom below traces to one of three sources:
+# 1. verbatim in a confirmed no-op dispatch from this repo's transcript history
+# 2. named verbatim in claude/.claude/CLAUDE.md's Agent Briefing bullet as a prohibited shape
+# 3. quoted verbatim in a public issue against this repo, maintainer-confirmed as real
+# An idiom grounded in none of the three does not go in either list -- see
+# docs/design-decisions/no-op-dispatch-hook-gate.md.
 #
 # Anchored against the whole (whitespace-collapsed) prompt: the entire
 # prompt is one no-op token, optionally with trailing punctuation. Two
@@ -61,11 +62,11 @@ NOOP_MAX_PROMPT_LEN=600
 # remaining tokens name the same "do nothing" shape.
 NOOP_STUB_TOKEN_RE='^(noop|no-op|placeholder|wait|nothing|standby|stand by|ack)[[:punct:]]*$'
 
-# Unanchored against the prompt alone, per the same two-source grounding
-# rule as NOOP_STUB_TOKEN_RE above. A read-scoping instruction ("do not
-# read any files") is deliberately excluded -- see the decision doc for
-# why.
-NOOP_PHRASE_RE='do(ing|es)? nothing|just wait|report back immediately|exists only (so|to)|no action|occupy the turn|hold while'
+# Unanchored against the prompt alone, per the same three-source grounding
+# rule as NOOP_STUB_TOKEN_RE above. A tool-scoping instruction (e.g. "do
+# not read any files") is deliberately excluded -- see the decision doc
+# for why.
+NOOP_PHRASE_RE='do(ing|es)? nothing|just wait|report back immediately|exists only (so|to)|no (further )?action|no work to do|occupy the turn|hold while'
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
