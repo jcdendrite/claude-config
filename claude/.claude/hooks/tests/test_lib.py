@@ -1251,6 +1251,33 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
+def _reviewer_persona_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
+    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
+
+    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
+    this literal. A new harness built-in added to the review-only roster with
+    the exclusion left untouched passes, since the name lands on both sides.
+    """
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied
