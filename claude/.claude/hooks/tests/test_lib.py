@@ -1278,6 +1278,37 @@ def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> 
     assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
 
 
+def _is_reviewer_persona(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_is_reviewer_persona_accepts_a_real_reviewer_persona() -> None:
+    assert _is_reviewer_persona("staff-sdet")
+
+
+@pytest.mark.parametrize(
+    "agent_type", ["Explore", "Plan", "code-writer", "plan-architect", "general-purpose", ""]
+)
+def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
+    agent_type: str,
+) -> None:
+    """Every agent outside the reviewer-persona array is rejected.
+
+    Explore and Plan are review-only roster members but harness built-ins.
+    code-writer is an implementer. plan-architect is a design consultant that a
+    caller branches on separately. general-purpose is a harness built-in outside
+    the review-only roster. The empty case is a dispatch payload with no
+    subagent_type.
+    """
+    assert not _is_reviewer_persona(agent_type)
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied

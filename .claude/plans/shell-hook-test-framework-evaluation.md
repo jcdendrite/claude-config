@@ -5,7 +5,7 @@
 The engineer asked whether this repo should adopt bats-core alongside its
 pure-pytest suite, motivated by the repo's heavy reliance on complex Bash hook
 logic and a hypothesis that bats-core might yield better coverage and/or test
-performance. Why now: the shell surface has grown to 25,440 tracked lines across
+performance. Why now: the shell surface has grown to 25,445 tracked lines across
 110 files, including two large shared libraries (`claude/.claude/hooks/_lib.sh`
 at 3,385 lines, `claude/.claude/hooks/_config.sh` at 1,258), and the engineer
 wants to know if the testing approach has outgrown its foundation before more
@@ -39,7 +39,7 @@ rows 10–15 and in M2's scope paragraph.
 
 ### Assumption ledger
 
-**Root:** The repo's shell surface (25,440 lines, 110 files, two shared
+**Root:** The repo's shell surface (25,445 lines, 110 files, two shared
 libraries) is tested entirely through a Python harness, and no one has checked
 whether that harness still reaches the shell surface adequately — so a framework
 change is being weighed without a grounded picture of what it would fix.
@@ -66,7 +66,7 @@ change is being weighed without a grounded picture of what it would fix.
   JSON, stdout JSON, exit code. That cost is language-independent and is imposed
   by the subject matter. (b) The larger function-level share execs `bash -c`
   because the functions are written in Bash; that share would shrink under a
-  Python rewrite. (b) is out of reach on two independent grounds: rewriting 41
+  Python rewrite. (b) is out of reach on two independent grounds: rewriting 49
   hooks is disproportionate to a test-framework question, and hooks fire
   synchronously on every tool call, so a Python interpreter's cold start is an
   operational cost a shell script avoids — very likely why the hooks are Bash.
@@ -75,9 +75,11 @@ change is being weighed without a grounded picture of what it would fix.
 **Rows:**
 
 1. The white-box capability bats is proposed to add already exists in this repo,
-   as `subprocess.run(["bash","-c", f". {_LIB_SH}; {call}"])`. `[verified: 183
-   sourced-lib occurrences across 18 test files;
-   claude/.claude/hooks/tests/test_lib.py:141-150 centralizes it as
+   as `subprocess.run(["bash","-c", f". {_LIB_SH}; {call}"])`. `[verified: 151
+   single-line matches of "bash", "-c" across 19 test files under
+   claude/.claude/hooks/tests/ (a lower bound on sites, since some sites put the
+   two strings on separate lines), not all of which source the lib;
+   claude/.claude/hooks/tests/test_lib.py:141-150 wraps it as
    _run_lib_call(call, env), and :95-113 as _HARNESS_TEMPLATE/_run_harness for
    the emit_deny-predefining variant]`
 2. There is no black-box coverage deficit for bats to close. 109 of 110 tracked
@@ -146,8 +148,9 @@ change is being weighed without a grounded picture of what it would fix.
    bats' subshell-per-`run` (`lib/bats-core/test_functions.bash`) adds forks
    rather than removing them. The repo already runs `-n auto` with a CI
    `timing`/`-n0` serial split. The secondary source's "incredibly slow on large
-   suites" claim appears in no primary source. `[verified: evidence pack
-   sections D and F; pyproject.toml:24 addopts]`
+   suites" claim appears in no primary source. `[verified: pyproject.toml:24
+   addopts; the 85–90% ratio is a local measurement from the evidence pack
+   (sections D and F), which is not in the tree (row 19)]`
 10. `install.sh`'s 18 `INSTALL_TEST_FIXTURE` marker pairs exist because the
     file's top-level logic mutates `$HOME` and tracked repo settings, so it can
     never be sourced — not because pytest lacks a seam. bats would hit the
@@ -157,7 +160,7 @@ change is being weighed without a grounded picture of what it would fix.
     presence-check block read this session; 18 marker pairs counted by grep]`
 11. Decomposing `install.sh` is the largest and highest-blast-radius item in the
     finding set: ~995 lines rewritten into functions behind a
-    `[[ "${BASH_SOURCE[0]}" == "$0" ]]` guard, plus 13 `test_install_sh_*.py`
+    `[[ "${BASH_SOURCE[0]}" == "$0" ]]` guard, plus 15 `test_install_sh_*.py`
     files rewritten from text-slicing to direct function calls. A sourcing-guard
     bug means a test run mutates the developer's real `$HOME`. Every stow
     consumer runs this file. `[verified: install.sh header, marker grep,
@@ -166,19 +169,22 @@ change is being weighed without a grounded picture of what it would fix.
     `~/.claude/CLAUDE.md` Scope discipline Axis 1 and Axis 4. Repo `CLAUDE.md`'s
     "plans in this repo affect all stow users" rule raises the review bar
     further rather than lowering it. `[verified: both CLAUDE.md files]`
-13. The shared-white-box-helper duplication is real but narrower than the raw
-    call-site count suggests, and its correct signature is underdetermined.
-    `test_lib.py` holds 97 of the 183 sourced-lib occurrences and already
-    centralizes them locally; the other 17 files carry 1–6 each. At least four
-    distinct invocation shapes exist: bare source-then-call with env
+13. The shared-white-box-helper duplication is real, and its correct signature
+    is underdetermined. `test_lib.py` holds 84 of the 151 single-line
+    `"bash", "-c"` matches. Nearly all are raw inline sites: only `_run_harness`
+    and `_run_lib_call` (18 callers each) route through a helper. The other 18
+    files carry 1–21 matches each. The same shape matches on 30 more lines in 9
+    files outside `claude/.claude/hooks/tests/`, including
+    `claude/.claude/tests/helpers.py`. At least four distinct invocation shapes
+    exist: bare source-then-call with env
     (`test_lib.py:141`), prelude-before-source (`test_lib.py:95-101`),
     positional-args-after-`bash -c` (`test_require_skill_review.py:1289`), and
     symlinked-lib-directory isolation (`test_lib.py:64-85`). A helper covering
     all four needs roughly seven optional parameters. `[verified: greps and
     reads this session]`
 14. A helper landed without migrating its call sites makes matters worse — it
-    becomes a 19th pattern alongside the 18. So the helper and the ~75-site
-    migration are one unit of work, and that unit exceeds Axis 4 for this PR.
+    becomes one more pattern alongside the existing per-file copies. So the
+    helper and the migration of every site row 13 counts are one unit of work, and that unit exceeds Axis 4 for this PR.
     `[verified: ~/.claude/CLAUDE.md Scope discipline Axis 4; repo CLAUDE.md
     single-source-of-truth carve-out "a small duplicated value that beats a bad
     abstraction"]`
@@ -211,8 +217,9 @@ change is being weighed without a grounded picture of what it would fix.
     `docs/design-decisions/fixture-setup-caching-declined.md:5-7` records the
     repo's own precedent that local `-n auto` timings diverge sharply from the
     4-vCPU CI runner and produced contradictory readings there. `[verified: that
-    file read this session and reconfirmed by two reviewers; evidence pack
-    section D]`
+    file read this session and reconfirmed by two reviewers. The evidence pack
+    (section D) is a session artifact absent from the tree, so the absolutes are
+    unverified and the decision doc omits them]`
 20. `TestCrossDomainReadCompleteness` cannot adjudicate M3's corpus reads, so
     the cross-domain question is settled by direct analysis instead. Its
     resolver handles only module-level `Path(__file__)` chains and names "a
@@ -495,8 +502,14 @@ None) -> subprocess.CompletedProcess`, reusing `_build_subprocess_env`
 asserts the failure mode when `emit_deny` is absent). The issue's **first** task
 is to confirm one signature genuinely covers the four shapes in row 13 before
 any migration; if it does not, the right answer is two helpers or none.
-Migration of all ~75 sites lands in the same PR as the helper (row 14), which is
-why it is not in this one.
+Migration lands in the same PR as the helper (row 14), which is why it is not
+in this one. The first task also fixes the site set and a count predicate that survives
+argument-per-line formatting, and it counts the helper-routed callers
+separately. A single-line grep is only a lower bound: it matches 151 lines in 19
+files under `claude/.claude/hooks/tests/`, and 181 lines in 28 files tree-wide.
+The tree-wide set adds the 30 lines in 9 files that row 13 names, including
+`claude/.claude/tests/helpers.py` (the proposed home, with three inline
+sourced-lib calls of its own).
 
 **Issue B — evaluate decomposing `install.sh` behind a sourcing guard**
 (`anchors: row10, row11, row12`). Frame it as evaluate-then-do, not a foregone
@@ -505,9 +518,9 @@ file header. Acceptance criterion is that the markers collapse into direct
 function calls, with the `$HOME`-mutation hazard closed by the guard.
 
 **Order A before B, if both are done.** This is the one genuine output→input
-coupling among the issues: B rewrites 13 test files' extraction helpers into
+coupling among the issues: B rewrites 15 test files' extraction helpers into
 source-then-call invocations, which is exactly Issue A's helper shape. Doing B
-first invents a 14th local `_run_block`; doing A first means B consumes the
+first invents another local `_run_block`; doing A first means B consumes the
 shared one.
 
 **Issue C — `select-tests.py` second-runner representation** (`anchors: row15`).
@@ -540,8 +553,8 @@ three must hold:**
 
 **Performance axis — independent, one condition:** a profile of the CI
 `-m "not timing"` pass attributes the majority of its time to pytest's own
-per-test overhead rather than to subprocess fork+exec. Today `sys` is 85–90% of
-`user`, which says the opposite. A wall-clock threshold is deliberately *not*
+per-test overhead rather than to subprocess fork+exec. A local, unreproduced observation puts `sys` at
+85–90% of `user` (row 9), which says the opposite. A wall-clock threshold is deliberately *not*
 the trigger: absolute wall time grows with test count and would fire for a cause
 bats cannot address (row 9, G5).
 
@@ -558,9 +571,9 @@ interdependent (M3's real-tree assertion fails without M2; M1 cites both).
   blank line, then `*2026-09-18.*` — a date-only provenance line with **no**
   `Formerly §N` clause (that phrase is reserved for pre-split content). No index
   to update; `docs/design-decisions.md` is a pointer file, not a list. Three
-  content constraints: cite the CI-runner figures or explicitly label the local
-  878.11s/584.97s pair as directional with the concurrent-worktree contention
-  named, following `docs/design-decisions/fixture-setup-caching-declined.md:5-7`
+  content constraints: state the `sys`/`user` ratio, not the local
+  878.11s/584.97s absolutes, since concurrent-worktree contention makes them
+  unreliable, following `docs/design-decisions/fixture-setup-caching-declined.md:5-7`
   (row 19); state the dependency objection as repo precedent — tests exercise
   `stow`/`direnv` as real binaries, a test runner would be a vehicle — rather
   than as a `CLAUDE.md` prohibition (row 8); and do not cite M3's
@@ -690,7 +703,7 @@ committed text names the function.
 - **Decomposing `install.sh`** — Issue B. Orthogonal to the framework choice
   (row 10), largest blast radius in the finding set (row 11), excluded by Axis 1
   and Axis 4 (row 12).
-- **The shared white-box helper and its ~75-site migration** — Issue A.
+- **The shared white-box helper and its multi-site migration** — Issue A.
   Signature underdetermined (row 13); helper-without-migration is a net
   regression (row 14).
 - **`select-tests.py` second-runner support** — Issue C. No live defect; gated
@@ -728,8 +741,8 @@ committed text names the function.
 - **Automating `scripts/dev/fork-topology-probe.sh`** — G4; a person must read
   live fork output, which no framework changes.
 - **Publishing the contended local wall-clock figures as a headline
-  measurement** — row 19. Either re-measure on the CI runner or label them
-  directional with the contention named.
+  measurement** — row 19. State the `sys`/`user` ratio and omit the local
+  absolutes, since concurrent-worktree contention makes them unreliable.
 - **Removing or rewriting the 20 fixture-marker pairs** (18 in `install.sh`, one
   each in `marker.sh` and `register-marketplace.sh`). They work, they are
   tested, and their fate belongs to Issue B.
