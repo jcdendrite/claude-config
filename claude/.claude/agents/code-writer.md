@@ -127,7 +127,7 @@ more focused task than writing it — use that asymmetry deliberately.
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
-| Durable in-repo docs (doc files, `docs/design-decisions/*.md`, README sections, `REFERENCES.md`) | `comment-discipline-reviewer` |
+| Durable in-repo docs (any markdown file) | `comment-discipline-reviewer` |
 
 ## Return format
 

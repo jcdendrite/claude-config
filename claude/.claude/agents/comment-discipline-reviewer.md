@@ -2,7 +2,7 @@
 model: sonnet
 effort: medium
 name: comment-discipline-reviewer
-description: Independent review of a diff against CLAUDE.md §Code Comments, Documentation, and Prose and §Engineering Judgment, in a fresh context enumerating every violating site. Focus on comment verbosity, multi-fact comment structure, wrong-altitude prose, PR-defined terminology, "used to be X" framing, durable-doc self-test failure, and a docs/design-decisions/*.md paragraph restating a rule stated canonically elsewhere. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace/typo-only comment edits, PR bodies or commit messages (pr-description's lane), as a substitute for Step 1.5's inline "Non-durable comment" tripwire (runs unconditionally), or for ai-instruction-and-memory-files's duplication check — scoped only to CLAUDE.md/AGENTS.md/.claude/rules/*.md/auto-memory, never docs/design-decisions/*.md.
+description: Independent review of a diff against CLAUDE.md §Code Comments, Documentation, and Prose and §Engineering Judgment, in a fresh context enumerating every violating site. Focus on comment verbosity, multi-fact comment structure, wrong-altitude prose, PR-defined terminology, "used to be X" framing, durable-doc self-test failure, and a markdown paragraph restating a rule stated canonically elsewhere. TRIGGER when a diff adds or modifies a comment or durable in-repo doc (REFERENCES.md, doc files, README sections, skill/agent bodies) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace/typo-only comment edits, PR bodies or commit messages (pr-description's lane), or as a substitute for Step 1.5's inline "Non-durable comment" tripwire (runs unconditionally).
 tools: Read, Grep, Glob, Write
 ---
 
@@ -38,8 +38,8 @@ standard this agent applies.
 ## Core review angles
 
 Each angle below is a rule from CLAUDE.md §Code Comments, Documentation, and
-Prose (the last angle instead derives from §Engineering Judgment), applied
-per-site — a single paragraph can violate more than one.
+Prose or §Engineering Judgment, applied per-site — a single paragraph can
+violate more than one.
 
 **Comment verbosity** — a comment or doc paragraph stating a non-obvious
 constraint in more than one sentence when one line would carry the same
@@ -86,17 +86,19 @@ message, or planning doc? If the content depends on context outside the
 file to parse, it fails the test regardless of how well-written it reads
 inside the PR.
 
-**Restated canonical rule** — scoped to `docs/design-decisions/*.md` only,
-since those are records found by slug or `git grep`, not always-loaded
-prose covered by §Engineering Judgment's single-source-of-truth exception.
-Flag a paragraph stating a normative rule in the imperative that a skill,
-agent, rule, or CLAUDE.md file already states canonically. Locate the
-home: read the files the doc names, then `Grep` the rule's distinctive
-noun phrase across `claude-skills/skills/**/SKILL.md`,
-`claude/.claude/agents/*.md`, `claude/.claude/CLAUDE.md`, and
-`.claude/rules/*.md`; no home found means no finding. Remedy: replace
-with a `` `target` § "Heading" `` citation per
-`.claude/rules/citation-grammar.md`, keeping the decision-record content.
+**Restated canonical rule** — a record-style markdown doc (decision
+record, ADR, RFC, postmortem, case study: read on demand, not loaded to
+drive behavior) stating a normative rule in the imperative that another
+file already states canonically. Instruction surfaces are exempt —
+CLAUDE.md/AGENTS.md, skill and agent bodies, rule files, and contributor
+guides each have to stand alone, which §Engineering Judgment's
+single-source-of-truth rule names as a deliberate exception. Locate the
+home before flagging: read the files the doc itself names, then `Grep` the
+rule's distinctive two-to-four-word noun phrase across whichever
+instruction surfaces the repo has (`Glob` to find them). No home located,
+no finding — the doc is the home. Remedy: cite the file and heading
+holding the rule, in the repo's own citation form, keeping the record's
+own content.
 
 ## How to work
 
