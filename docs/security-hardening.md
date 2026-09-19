@@ -793,24 +793,20 @@ to hold PII/PHI or live credentials:
     not a bash tokenizer, so a shape it mis-scans can drop a real second commit
     fragment from arm 2's count. `_lib_mask_shell_quotes`'s header in `_lib.sh`
     lists the limits once as a class; two worked cases follow.
-  - Backslash escapes are not modeled, so `\"` outside quotes opens a span the
-    shell never sees. `git commit -m x && echo \" && git commit -m y && echo \"`
-    is allowed: bash runs both commits, but the masker treats the `\"` pair as
-    a span and blanks the second commit.
-  - BSD/macOS awk splits the command into records at each blank line (see the
-    `_lib.sh` header), with two effects. Neither effect needs deliberate
-    obfuscation, only a blank line, which is routine in multi-paragraph
-    command text.
-    - An unquoted blank line is deleted and the tokens on each side fuse,
-      hiding command words from arm 2's count. `true<blank line>git commit -m
-      x && git commit -m y` is allowed, while the same command with a single
-      newline is denied.
-    - A blank line inside a quoted span resets quote state at the record
-      boundary, so the span's closing quote acts as an opener and quote parity
-      stays inverted for the rest of the command, blanking a later real commit
-      any distance away. `git commit -m "para1<blank line>para2" && git commit
-      -m "y"` is allowed (the masked text becomes `git commit -m
-      "para1para2""y"`), while the same command with a single newline is
+  - `git commit -m x && echo \" && git commit -m y && echo \"` is allowed
+    (backslash escapes are not modeled): bash runs both commits, but the masker
+    treats the `\"` pair as a span the shell never sees and blanks the second
+    commit.
+  - BSD/macOS awk splits the command at each blank line, which breaks the
+    masker's quote tracking (mechanism in the `_lib.sh` header). Neither case
+    below needs deliberate obfuscation, only a blank line, which is routine in
+    multi-paragraph command text.
+    - `true<blank line>git commit -m x && git commit -m y` is allowed, because
+      the blank line is deleted and the tokens on each side fuse, while the
+      same command with a single newline is denied.
+    - `git commit -m "para1<blank line>para2" && git commit -m "y"` is
+      allowed, because the masked text becomes `git commit -m
+      "para1para2""y"`, while the same command with a single newline is
       denied.
   - Only awk 20200816 was checked for the BSD/macOS-awk cases.
 - `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:

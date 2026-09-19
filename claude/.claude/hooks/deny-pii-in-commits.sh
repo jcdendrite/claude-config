@@ -65,7 +65,7 @@
 # content that is not in the index when this hook fires.
 #
 # Commit-message-source files: `-F <path>` / `--file <path>` are read and
-# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` pseudo-files are rejected
+# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` / `/proc/*/fd/*` pseudo-files are rejected
 # fail-closed — the hook cannot statically verify what git will read.
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from

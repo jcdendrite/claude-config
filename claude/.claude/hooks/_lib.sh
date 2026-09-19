@@ -1010,6 +1010,7 @@ _lib_is_repo_plan_file() {
 }
 
 # Succeeds for pseudo-file paths (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`).
+# Takes exactly one argument (`$1`: the path).
 # A hook cannot meaningfully scan their contents: they may resolve differently
 # at hook time than when the guarded command runs, or point into the hook's own stdin.
 _lib_is_pseudo_file_path() {
@@ -2518,6 +2519,8 @@ _lib_strip_shell_quotes() {
 # intact (e.g. `"..."` becomes `""`), so a commit message that merely
 # mentions the words of a commit command as literal text is not miscounted as
 # a real invocation.
+# Takes exactly one argument (`$1`: the command string) and writes the masked
+# text to stdout.
 # A span whose entire interior is a single safe word (`^[A-Za-z0-9._/-]+$`)
 # is emitted unquoted instead, so a quoted command word stays visible.
 # A `$` directly before an opening delimiter is dropped whenever the span
@@ -2531,9 +2534,11 @@ _lib_strip_shell_quotes() {
 #
 # Limits (illustrative, not exhaustive):
 # - This is a character-level quote-state scanner, not a bash tokenizer.
-# - It does not model backslash escapes (`\"` and `\'` are ordinary quote
-#   characters), an empty quote pair glued to a word, a multi-word mid-word
-#   split, or an ANSI-C escape.
+# - It does not model any of these:
+#   - Backslash escapes (`\"` and `\'` are ordinary quote characters).
+#   - An empty quote pair glued to a word.
+#   - A multi-word mid-word split.
+#   - An ANSI-C escape.
 # - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
 #   command into records at each blank line, with two effects:
 #   - An unquoted blank line is deleted and its neighbouring tokens fuse.
