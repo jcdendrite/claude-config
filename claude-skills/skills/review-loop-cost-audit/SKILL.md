@@ -1,6 +1,6 @@
 ---
 name: review-loop-cost-audit
-description: Decompose why a branch's review loop cost what it did and ran as many rounds as it did, by where the dollars concentrated and what triggered each expensive round, via a corpus-wide sweep or a single-branch deep audit. Reports shares, causes, and cheaper levers; a code-freeze thrash test is one flag among several. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
+description: Decompose why a branch's review loop cost what it did and ran as many rounds as it did, by where the dollars concentrated and what triggered each expensive round, via a corpus-wide sweep or a single-branch deep audit. Reports shares, causes, and cheaper levers; the post-freeze flags (stuck loop, plan-grinding, gate-denial churn) are among several. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
 argument-hint: "[branch-name | sweep] [output-path]"
 ---
 
@@ -16,7 +16,7 @@ Caveats beyond what is stated below are not restated here — see `transcript-an
 
 ## Step 1 — Mode select
 
-No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → deep audit (Step 3). Deep audit never infers its subject from the current branch, except when the caller's handoff or request names this skill with no target and the branch it is handing off is unambiguous. The session running the audit is otherwise usually anchored in the audit's own worktree, not the branch under investigation.
+No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → deep audit (Step 3). Deep audit never infers its subject from the current branch, unless the caller's handoff or request names this skill with no target and exactly one branch is being handed off. The session running the audit is usually anchored in the audit's own worktree, not the branch under investigation.
 
 ## Step 2 — Sweep: rank candidates, never a verdict
 
@@ -24,7 +24,7 @@ No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → dee
 python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo
 ```
 
-Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total. Also note each branch's top-round share of `X`, computed from its round table — a branch whose spend sits in one round and a branch whose spend is spread across many need different audits. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size. When the caller instead gives an absolute minimum, use that.
+Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total, which is already a complete per-branch dollar ranking, so no session/turn-count screening is needed. Also note each branch's top-round share of `X`, computed from its round table — a branch whose spend sits in one round and a branch whose spend is spread across many need different audits. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size. When the caller instead gives an absolute minimum, use that.
 
 Cross-check completeness:
 
@@ -63,19 +63,19 @@ python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --bran
 ```
 A round is one skill invocation, not one review pass: its window runs from its invocation to the session's next skill invocation. A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
 
-**(c) Cost decomposition.** Pure arithmetic on the Step (b) table, plus one check.
+**(c) Cost decomposition.** Arithmetic on the Step (b) table, then the checks below.
 
 - **Concentration:** the top round's share of round dollars and of branch dollars. Also the fewest rounds that cover 60% of round dollars.
 - **Main vs fan-out:** for each concentrated round, the split between `main $` and `agent $`, and its `agents` count. Main-heavy means the orchestrator did the work; agent-heavy means fan-out width. The remedies differ.
 - **Window check:** a concentrated round's window may contain more than review work. Confirm from Step (b)'s timeline that the window holds reviewer waves, and name what else it spans (consults, code-writer dispatches, hook denials, gaps over an hour). A round whose main-thread cost is unexplained by its timeline is reported as a window artifact, not as an expensive orchestrator.
-- **Round mix:** `ready-for-review` rounds typically dispatch no agents and are cheap. Report review rounds separately from gate re-runs; "N rounds" alone overstates the review effort when most are gate re-runs.
+- **Round mix:** `ready-for-review` rounds typically dispatch no agents and are cheap. Report review rounds separately from gate re-runs.
 - **Non-round share:** `review-round-cost` prices only a round's own window. The fix a round causes lands outside that window, so the residual includes implementation. State that on every line that reports the residual. The toolkit yields one reconciliation number, not a split, so name the residual's components by count only:
   - code-writer dispatches
   - architect consults
   - resyncs with the default branch
   - session-startup burn, from the branch's row in `workstream-cost --this-repo`
 
-**(d) Resolve code-churn dates, tiered.**
+**(d) Resolve code-churn dates, classify commits, and check tip drift.**
 - **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
 
   `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day. Compare the two clocks as instants, never as date strings. `%ad` is the author instant; use it for every ordering test below.
@@ -89,7 +89,7 @@ Record the tip SHA and re-read it after this step. A changed SHA means the corpu
 **(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and the session's next round, and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
 - A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health.
-- Neither outcome is an audit verdict. The audit always continues to (f) and (g).
+- Neither the zero-by-construction outcome nor the zero-after-checking outcome ends the audit, which always continues to (f) and (g).
 
 **(f) Descriptive context.** Run and report:
 ```bash
@@ -99,7 +99,7 @@ python3 ~/.claude/scripts/transcript-analysis.py fail-seq --this-repo --branches
 ```
 For `subagent-mix`, read the aggregate run's `Top subagent types` column as the skew signal, since `--per-session` is refused under a multi-root `--this-repo` scope. Report skew and dispatches per round without using them as criteria, since neither tracks the freeze partition.
 
-For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. A gate that denies a benign command shape repeatedly is a retry cost inside the review budget. This census feeds Step 4's Denial-retry waste flag.
+For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. This census feeds Step 4's Denial-retry waste flag.
 
 For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
@@ -131,23 +131,22 @@ Causes carry no judgment. `human-scope-expansion` and `new-finding` are often th
 Emit the six parts below. Carry no dollar total, no per-branch cost share, and no corpus figure into text that leaves the artifact; this is a repo-wide publication rule. Within the artifact, quote shares and counts, and quote dollars only in the round table.
 
 1. **Headline** — rounds split by type, with the review-round versus gate-re-run split and the concentration fact. Name the waves-per-round finding when a round held more than one wave.
-2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds. State the non-round caveat from Step (c).
+2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds.
 3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source.
 4. **Flags** — each raised or not raised, with its evidence:
    - **Concentration** — one round or few rounds carry most of the round dollars, after the Step (c) window check.
-   - **Stuck loop** — rounds that started after the freeze keep re-surfacing findings already raised.
-   - **Plan-grinding** — rounds that started after the freeze iterate a plan whose feature is unimplemented, with post-freeze commits touching only artifact paths.
-   - **Gate-denial churn** — rounds that started after the freeze re-ran an identical denial with the command shape unadapted. Nothing is being re-reviewed.
+   - **Stuck loop** — rounds keep re-surfacing findings already raised.
+   - **Plan-grinding** — rounds iterate a plan whose feature is unimplemented, with post-freeze commits touching only artifact paths.
+   - **Gate-denial churn** — rounds re-ran an identical denial with the command shape unadapted. Nothing is being re-reviewed.
    - **Denial-retry waste** — one gate's benign-command denials recurring across reviewer spawns.
    - **Mandatory-round inflation** — gate re-runs make up most of the round count.
    - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range with no early freeze.
 
    Rules for the freeze-based flags:
-   - Stuck loop, Plan-grinding, and Gate-denial churn are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped. Only rounds that started after the freeze can carry these three flags.
+   - Stuck loop, Plan-grinding, and Gate-denial churn are evaluated only over rounds that started after the freeze. They are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped.
    - Legitimate large-diff work is not-evaluable when the commit joins were skipped.
    - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
    - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
-   - Never decide from the outside-review-window share. A stuck loop and ordinary large-diff work can land in the same band.
 5. **What would have been cheaper** — one to three levers tied to the top cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
 6. **Caveats** — which of the Step 0 caveats applied, the tip SHA, and the roots the branch's sessions live in.
 
@@ -157,7 +156,7 @@ Write one file: to the caller-supplied output-path argument, or under `mktemp -d
 
 The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
 
-Return only these four items: the path, the headline, the top cause, and the one or two levers. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no quoted prompt text and no tables inline.
+Return only these four items: the path, the headline, the top cause, and the levers from Step 4 part 5. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no tables inline.
 
 A subagent that invokes this skill by name returns the same four items. It keeps every table in its own context and in the artifact file.
 
