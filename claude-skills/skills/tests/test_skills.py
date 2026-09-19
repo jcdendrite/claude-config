@@ -3148,9 +3148,7 @@ def _resolve_citation_target(
 
 
 def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
-    """A SKILL.md plus its co-located auxiliary siblings, if present — the
-    files `.claude/rules/skill-and-agent-self-review.md` names, listed in
-    SKILL_AUXILIARY_MD_NAMES."""
+    """A SKILL.md plus its co-located auxiliary siblings (SKILL_AUXILIARY_MD_NAMES), if present."""
     sources = [skill_md_path]
     for sibling_name in SKILL_AUXILIARY_MD_NAMES:
         sibling = skill_md_path.parent / sibling_name
