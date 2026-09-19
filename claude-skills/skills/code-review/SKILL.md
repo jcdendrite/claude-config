@@ -130,10 +130,10 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 12a. **Comment/prose discipline on added or modified text** — Does a new or modified comment or durable-doc paragraph violate CLAUDE.md §Code Comments, Documentation, and Prose or §Engineering Judgment?
    - Comment verbosity — a multi-paragraph rationale where one line suffices
    - Multi-fact comment structure — several independent facts chained into one run-on instead of split or listed
-   - Prose at the wrong altitude — content whose detail level doesn't match its reader, e.g. implementation detail inside an agent spec meant to stay lazy-loaded and terse
+   - Prose at the wrong altitude
    - PR-defined terminology
    - "Used to be X" framing
-   - Survives-the-PR self-test on durable-doc content — a paragraph that depends on context outside the file (the PR description, commit message, or planning doc) to parse
+   - Survives-the-PR self-test on durable-doc content
    - Restated canonical rule — a record-style doc paragraph restating a rule stated canonically elsewhere instead of citing it
 
    Distinct from item 12, which covers comment *deletion*. Step 1.5's "Non-durable comment" tripwire runs this check inline on every review; `comment-discipline-reviewer` (Ripple effect triage) provides exhaustive enumeration when spawned.

@@ -538,13 +538,9 @@ _CORE_REVIEW_ANGLES_SECTION_RE = re.compile(
 )
 # The bold run must be followed by " — " on the same line -- the literal
 # separator every real angle header uses (e.g. "**Comment verbosity** — a
-# comment...").
-_CORE_REVIEW_ANGLE_HEADER_RE = re.compile(r"^\*\*([^*]+)\*\* — ", re.MULTILINE)
-_CORE_REVIEW_ANGLE_BOLD_LINE_RE = re.compile(r"^\*\*.*$", re.MULTILINE)
-# The one bold-leading line shape permitted in the section that is not an
-# angle header. Any other bold-leading line that fails the header shape is a
-# violation, so a header punctuated differently can't be dropped silently.
-_CORE_REVIEW_ANGLE_ASIDE_PREFIX = "**Note:**"
+# comment..."). The name excludes "—" so it splits identically to the bullet
+# side, which takes the text before the first " — ".
+_CORE_REVIEW_ANGLE_HEADER_RE = re.compile(r"^\*\*([^*—]+)\*\* — ", re.MULTILINE)
 
 
 def _item_12a_bullets(skill_text: str) -> list[str]:
@@ -559,18 +555,6 @@ def _core_review_angle_headers(agent_text: str) -> list[str]:
     if not match:
         return []
     return _CORE_REVIEW_ANGLE_HEADER_RE.findall(match.group(1))
-
-
-def _core_review_angle_unparsed_bold_lines(agent_text: str) -> list[str]:
-    match = _CORE_REVIEW_ANGLES_SECTION_RE.search(agent_text)
-    if not match:
-        return []
-    return [
-        line
-        for line in _CORE_REVIEW_ANGLE_BOLD_LINE_RE.findall(match.group(1))
-        if not _CORE_REVIEW_ANGLE_HEADER_RE.match(line)
-        and not line.startswith(_CORE_REVIEW_ANGLE_ASIDE_PREFIX)
-    ]
 
 
 def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
@@ -588,17 +572,8 @@ def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
             "not found or reworded -- update _CORE_REVIEW_ANGLES_SECTION_RE "
             "to match its current heading."
         ]
-    violations: list[str] = [
-        "comment-discipline-reviewer.md's 'Core review angles' section has "
-        f"a bold-leading line that is not a '**Name** — ' angle header: {line!r} "
-        "-- fix its shape, or start it with '**Note:**' if it is an aside."
-        for line in _core_review_angle_unparsed_bold_lines(agent_text)
-    ]
-    # This guards an agent-side invariant, checked independently of the
-    # sequence-equality comparison below. Two identical headers paired with
-    # two identical, count-matching bullets would satisfy sequence equality
-    # trivially, so a duplicated header needs its own guard to be caught at
-    # all.
+    violations: list[str] = []
+    # Checked independently because duplicate headers plus matching duplicate bullets satisfy sequence equality.
     duplicated_headers = sorted({header for header in headers if headers.count(header) > 1})
     if duplicated_headers:
         violations.append(
@@ -619,17 +594,10 @@ def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
 
 
 def test_item_12a_index_matches_agent_angle_headers() -> None:
-    """code-review/SKILL.md's item 12a sub-bullet list is a one-line index
-    of comment-discipline-reviewer's core review angles, not an independent
-    statement of them. Pins each bullet's leading name, in order, to the
-    matching angle header, and rejects a header repeated verbatim on the
-    agent side, so the index can't silently go stale by the agent gaining,
-    losing, renaming, or reordering an angle, or by two angles sharing one
-    header. Order is enforced because the index is meant to read as a
-    mirror of the agent's angle list, so a reader can diff the two
-    side by side. Mirrors
-    test_rule_file_filename_grammar_matches_enforced_regex's
-    drift-prevention shape."""
+    """Pins each item 12a bullet name, in order, to the agent's angle headers; rejects duplicate headers.
+
+    A bold run followed by ' — ' at the start of a wrapped body line parses
+    as a header (accepted limit; the mismatch violation fails closed)."""
     skill_path = REPO_ROOT / "claude-skills" / "skills" / "code-review" / "SKILL.md"
     agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
     violations = _item_12a_index_violations(
@@ -637,6 +605,16 @@ def test_item_12a_index_matches_agent_angle_headers() -> None:
         agent_path.read_text(encoding="utf-8"),
     )
     assert not violations, "\n".join(violations)
+
+
+def _index_mismatch_message(bullet_names: list[str], headers: list[str]) -> str:
+    """The mismatch fragment naming which list holds which names, so a test
+    asserting on it fails if the bullet and header lists are swapped."""
+    return (
+        f"item 12a bullet names {bullet_names} "
+        "don't match comment-discipline-reviewer.md's core review angle "
+        f"headers {headers}, in order"
+    )
 
 
 class TestFaultInjection:
@@ -1035,8 +1013,14 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "don't match" in violations[0]
-        assert "Restated canonical rule" in violations[0]
+        assert _index_mismatch_message(
+            bullet_names=["Comment verbosity", "Multi-fact comment structure"],
+            headers=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Restated canonical rule",
+            ],
+        ) in violations[0]
 
     def test_item_12a_index_detects_longer_bullet_list(self) -> None:
         """The reverse drift direction from
@@ -1058,8 +1042,14 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "don't match" in violations[0]
-        assert "Multi-fact comment structure" in violations[0]
+        assert _index_mismatch_message(
+            bullet_names=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Restated canonical rule",
+            ],
+            headers=["Comment verbosity"],
+        ) in violations[0]
 
     def test_item_12a_index_detects_duplicated_bullet(self) -> None:
         """A future edit could copy-paste an existing sub-bullet instead of
@@ -1084,8 +1074,18 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "Comment verbosity" in violations[0]
-        assert "Restated canonical rule" in violations[0]
+        assert _index_mismatch_message(
+            bullet_names=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Comment verbosity",
+            ],
+            headers=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Restated canonical rule",
+            ],
+        ) in violations[0]
 
     def test_item_12a_index_detects_renamed_angle_with_stale_bullet(self) -> None:
         """A header renamed on the agent side leaves the SKILL.md bullet
@@ -1110,8 +1110,18 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "Multi-fact comment structure" in violations[0]
-        assert "Multi-fact prose structure" in violations[0]
+        assert _index_mismatch_message(
+            bullet_names=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Restated canonical rule",
+            ],
+            headers=[
+                "Comment verbosity",
+                "Multi-fact prose structure",
+                "Restated canonical rule",
+            ],
+        ) in violations[0]
 
     def test_item_12a_index_detects_reordered_bullets(self) -> None:
         """The same bullets and the same headers, in different relative
@@ -1135,7 +1145,18 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "don't match" in violations[0]
+        assert _index_mismatch_message(
+            bullet_names=[
+                "Multi-fact comment structure",
+                "Comment verbosity",
+                "Restated canonical rule",
+            ],
+            headers=[
+                "Comment verbosity",
+                "Multi-fact comment structure",
+                "Restated canonical rule",
+            ],
+        ) in violations[0]
 
     def test_item_12a_index_detects_duplicated_header(self) -> None:
         """Exercises the agent-side duplicate-name guard independently of
@@ -1162,8 +1183,7 @@ class TestFaultInjection:
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "repeats header" in violations[0]
-        assert "Comment verbosity" in violations[0]
+        assert "repeats header(s) ['Comment verbosity']" in violations[0]
 
     def test_item_12a_index_rejects_missing_skill_section(self) -> None:
         """A future rewording of the item 12a heading in SKILL.md must fail
@@ -1215,44 +1235,28 @@ class TestFaultInjection:
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert violations == []
 
-    def test_item_12a_index_flags_non_conforming_angle_header(self) -> None:
-        """An angle header punctuated differently from '**Name** — ' would
-        otherwise be dropped from the parsed headers with no signal, leaving
-        the index stale while the sequence check still passes."""
+    def test_item_12a_index_rejects_header_name_containing_em_dash(self) -> None:
+        """A header name containing ' — ' can't be matched by a bullet, whose
+        name is the text before the first ' — '. The header fails the
+        '**Name** — ' shape and drops out of the parsed list, so the bullet
+        and header lists differ and the mismatch violation fails closed."""
         skill_text = (
             "12a. **Comment/prose discipline on added or modified text** — "
             "Does a new or modified comment or durable-doc paragraph violate "
             "CLAUDE.md?\n"
-            "   - Comment verbosity — a multi-paragraph rationale\n\n"
+            "   - Comment verbosity — a multi-paragraph rationale\n"
+            "   - Restated canonical rule — a rule stated elsewhere\n\n"
             "   Distinct from item 12, which covers comment deletion.\n"
         )
         agent_text = (
             "## Core review angles\n\n"
             "**Comment verbosity** — a comment stating too much.\n\n"
-            "**New angle** -- a header with the wrong separator.\n\n"
+            "**Restated canonical rule — dupes** — a rule stated elsewhere.\n\n"
             "## How to work\n"
         )
         violations = _item_12a_index_violations(skill_text, agent_text)
         assert len(violations) == 1
-        assert "not a '**Name** — ' angle header" in violations[0]
-        assert "**New angle** -- a header" in violations[0]
-
-    def test_item_12a_index_accepts_note_aside_in_angles_section(self) -> None:
-        """A '**Note:**' aside is the one permitted bold-leading line that is
-        not an angle header. Kills a header regex that drops the ' — '
-        requirement, which would count the aside as an angle."""
-        skill_text = (
-            "12a. **Comment/prose discipline on added or modified text** — "
-            "Does a new or modified comment or durable-doc paragraph violate "
-            "CLAUDE.md?\n"
-            "   - Comment verbosity — a multi-paragraph rationale\n\n"
-            "   Distinct from item 12, which covers comment deletion.\n"
-        )
-        agent_text = (
-            "## Core review angles\n\n"
-            "**Comment verbosity** — a comment stating too much.\n\n"
-            "**Note:** an aside that is not an angle.\n\n"
-            "## How to work\n"
-        )
-        violations = _item_12a_index_violations(skill_text, agent_text)
-        assert violations == []
+        assert _index_mismatch_message(
+            bullet_names=["Comment verbosity", "Restated canonical rule"],
+            headers=["Comment verbosity"],
+        ) in violations[0]

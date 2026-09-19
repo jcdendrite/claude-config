@@ -1,17 +1,19 @@
-# A `comment-discipline-reviewer` angle catches design-decision docs restating a canonical rule
+# A `comment-discipline-reviewer` angle catches record-style docs restating a canonical rule
 
 *2026-09-18.*
 
+A record-style doc (a decision record, ADR, RFC, or postmortem) that
+restates a rule stated canonically in another file, instead of citing it,
+is invisible to the ordinary review loop. The motivating case:
 `docs/design-decisions/round3-consult-verdict-routing.md` restated
 `code-review/SKILL.md`'s verdict-routing and spawn-obligation rules
 near-verbatim, across two separate commits months apart on the same file,
-and the duplication itself was caught only by an Opus-level
-`plan-architect` consult — never by the ordinary review loop.
-`comment-discipline-reviewer.md` gains a seventh review angle,
-`Restated canonical rule`, to catch this pattern at ordinary review cost
-instead.
-`claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles" states the angle's predicate, its canonical-home location
-procedure, and its remedy directly; this entry doesn't restate them.
+and only an Opus-level `plan-architect` consult caught the duplication.
+`comment-discipline-reviewer.md` gains a new angle, `Restated canonical
+rule`, to catch this pattern at ordinary review cost instead.
+`claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles"
+states the angle's predicate, its canonical-home location procedure, and its
+remedy directly; this entry doesn't restate them.
 
 This operationalizes rather than supersedes
 [single-source-of-truth-rule.md](single-source-of-truth-rule.md), which
@@ -24,14 +26,12 @@ own single-source-of-truth bullet — so the prior rejection doesn't apply
 to it.
 
 Two supporting routes make the angle reachable without a dispatch of its
-own. Route 1: `code-writer.md`'s self-review domain table now routes
-durable in-repo docs (any markdown file) to
-`comment-discipline-reviewer`. Route 2: `code-review/SKILL.md`'s item
-12a gains a matching one-line index bullet, pinned to the agent's ordered
-angle headers by `claude/.claude/hooks/tests/test_design_decision_files.py`'s
-`test_item_12a_index_matches_agent_angle_headers`, which compares each
-bullet's leading name against the corresponding header in sequence, so
-the index can't silently drift stale.
+own. Route 1: `code-writer.md`'s self-review domain table gains a row routing
+durable in-repo docs to `comment-discipline-reviewer`. Route 2:
+`code-review/SKILL.md`'s item 12a gains a matching one-line index bullet,
+pinned to the agent's angle headers by
+`test_item_12a_index_matches_agent_angle_headers` in
+`claude/.claude/hooks/tests/test_design_decision_files.py`.
 `.claude/rules/design-decisions.md` § "Design-decision files" gains a matching authoring-time bullet; this entry doesn't restate its content
 either.
 
