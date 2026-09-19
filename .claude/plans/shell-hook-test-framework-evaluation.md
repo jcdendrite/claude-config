@@ -46,10 +46,12 @@ change is being weighed without a grounded picture of what it would fix.
 
 **Givens** (conditions beyond this plan's reach):
 
-- **G1 — bats-core ships no PyPI wheel; its documented installs are distro
+- **G1 — bats-core ships no PyPI wheel; its installation reference lists distro
   package, Homebrew, npm, source clone, or Docker.** Upstream bats-core owns its
-  distribution; this repo cannot make a wheel exist. Git-submodule and vendored
-  installs are not documented as supported.
+  distribution; this repo cannot make a wheel exist. Its tutorial also presents a
+  git submodule as the quick installation, and an action named
+  `bats-core/bats-action` exists in the bats-core organization. As of 2026-09-19; see the Sources line of
+  `docs/design-decisions/bats-core-adoption-declined.md` (the decision doc).
 - **G2 — ShellCheck's `.bats` support is undocumented in `--shell`'s help output
   and carries at least seven open false-positive issues** (#2041, #3222, #2873,
   #3263, #3229, #3247, #3509). Upstream ShellCheck owns both the help text and
@@ -66,11 +68,11 @@ change is being weighed without a grounded picture of what it would fix.
   JSON, stdout JSON, exit code. That cost is language-independent and is imposed
   by the subject matter. (b) The larger function-level share execs `bash -c`
   because the functions are written in Bash; that share would shrink under a
-  Python rewrite. (b) is out of reach on two independent grounds: rewriting 49
-  hooks is disproportionate to a test-framework question, and hooks fire
-  synchronously on every tool call, so a Python interpreter's cold start is an
-  operational cost a shell script avoids — very likely why the hooks are Bash.
-  Neither share shrinks under bats, which execs the same Bash artifacts (row 9).
+  Python rewrite. (b) is out of reach because rewriting 49 hooks is disproportionate to a
+  test-framework question. Hooks also fire synchronously on every tool call, so a
+  Python interpreter's cold start may be why the hooks are Bash, but that cost is
+  unmeasured (see the decision doc). Neither share shrinks under bats, which
+  execs the same Bash artifacts (row 9).
 
 **Rows:**
 
@@ -124,27 +126,34 @@ change is being weighed without a grounded picture of what it would fix.
    never against the derived roster as a whole. `[verified: _lib.sh:3030-3056
    and both hook call sites read this session; ciso-reviewer independently
    confirmed the two production callers]`
-7. Adopting bats means a new non-pip system dependency. `requirements-dev.txt`
+7. Adopting bats through the system-package route means a new non-pip system
+   dependency. `requirements-dev.txt`
    holds five pinned wheels and nothing else; ShellCheck itself arrives as the
    `shellcheck-py` wheel; the only non-pip CI install is
    `apt-get install -y stow direnv`. bats would be a third apt package, plus GNU
    parallel (G3) for parallelism. `[verified: evidence pack section E;
    .github/workflows/tests.yml:150-156; staff-platform-engineer reconfirmed the
    five-wheel count and the single apt line]`
-8. The bar against that dependency is repo precedent, not a `CLAUDE.md`
-   prohibition. Line 43 says two things — `claude-config` depends on no other
-   *repository*, and *optional* integrations with public tools are permitted
-   only when absent-tool behavior degrades gracefully. Neither sentence bars a
-   mandatory non-pip system package, and the repo already installs two. The
+8. The bar against the system-package route is repo precedent, not a `CLAUDE.md`
+   prohibition. The decision doc's Dependency section
+   (`docs/design-decisions/bats-core-adoption-declined.md`) covers the
+   git-submodule and `bats-core/bats-action` routes (G1) as facts. Root
+   `CLAUDE.md`'s "Working in this repo" section says two things — `claude-config`
+   depends on no other *repository*, and *optional* integrations with public
+   tools are permitted only when absent-tool behavior degrades gracefully.
+   Neither sentence bars a mandatory non-pip system package, and the repo already
+   installs two. The
    load-bearing distinction is the one `tests.yml` draws for itself: stow and
    direnv are installed because tests exercise the real binaries rather than a
    stub ("test_relocate_claude_config.py exercises real stow/stow -D (not a
    stub)… test_ci_watch.py's real-direnv tests exercise actual direnv hook
    output"). bats would be the first apt package that is a test *vehicle* rather
-   than a subject under test. `[verified: root CLAUDE.md line 43 read in full;
-   .github/workflows/tests.yml:144-156 read this session]`
+   than a subject under test. `[verified: root CLAUDE.md "Working in this repo" section read in full;
+   .github/workflows/tests.yml:144-156 read this session. The submodule and
+   bats-action routes are stated in G1 and the decision doc as facts only, with
+   no rule analysis]`
 9. The performance hypothesis points the wrong way. `sys` time is 85–90% of
-   `user` time across both full runs, so the suite is fork+exec bound (G5), and
+   `user` time in the local observation, so the suite is fork+exec bound (G5), and
    bats' subshell-per-`run` (`lib/bats-core/test_functions.bash`) adds forks
    rather than removing them. The repo already runs `-n auto` with a CI
    `timing`/`-n0` serial split. The secondary source's "incredibly slow on large
@@ -230,13 +239,19 @@ change is being weighed without a grounded picture of what it would fix.
     reads production shell files) is already covered — any tracked shell file
     edit selects `HOOKS_TESTS_DIR` via `:371`, `:480`, `:492`, or falls open to
     the full suite as an unmatched path; **reverse** (the guard reads `.py`
-    files outside `HOOKS_TESTS_DIR`) has a genuine gap — no row maps
-    `SCRIPTS_TESTS_DIR` back to `HOOKS_TESTS_DIR`, so removing a function's last
-    reference from e.g. `test_config_get.py` yields a false-clean local signal.
-    CI's unconditional full suite (`tests.yml:165,172`) is the backstop.
+    files outside `claude/.claude/hooks/`) has a gap: scoped runs select tests
+    through `select-tests.py`'s rule table, and some `.py` edits outside
+    `claude/.claude/hooks/` do not select the guard. The rule table is canonical
+    for which ones. Closing the gap is a `select-tests.py` rule-table edit outside
+    this diff. CI's unconditional full suite (`tests.yml:165,172`) is the
+    backstop. Issue #1045 tracks the scoped-selection gap.
     `[verified: test_select_tests.py:67-113 and :341-363 read this session;
-    select-tests.py:370-503 read this session; reverse-direction gap first
-    identified by staff-sdet and reconfirmed here]`
+    select-tests.py:370-503 read this session; tests.yml:165,172 read by
+    staff-sdet (both full-suite runs are gated by the detect step, so
+    "unconditional" means "not scope-selected"); non-selection of the guard for
+    some `.py` edits outside hooks/ probed by staff-sdet via
+    select_pytest_targets, on the paths it probed only; reverse-direction gap
+    first identified by staff-sdet and reconfirmed here]`
 21. `scripts/list-shell-files.sh` is the repo's single definition of the
     tracked-shell-file set, `git ls-files -z`-based and already consumed by both
     the CI shellcheck step and `test_shellcheck.py`, which re-derives the set
@@ -276,9 +291,10 @@ change is being weighed without a grounded picture of what it would fix.
 **M1 — Decline bats-core; record it as
 `docs/design-decisions/bats-core-adoption-declined.md`.** `anchors: root`. Rows
 1, 2, and 9 remove the three motivations (white-box access, coverage,
-performance); rows 7 and 8 supply the dependency bar, which is repo precedent
-rather than a textual prohibition. The repo already has the `*-declined.md`
-genre for exactly this shape.
+performance); rows 7 and 8 supply the dependency facts: repo precedent for the
+system-package route, and the submodule and action routes as facts only. The
+decision does not rest on the dependency ground. The repo already has the
+`*-declined.md` genre for exactly this shape.
 
 **M2 — Add the missing roster-sync test for `_LIB_REVIEWER_PERSONA_AGENTS`, in
 `test_lib.py`.** `anchors: row3, row4, row5, row6`.
@@ -536,15 +552,16 @@ three must hold:**
 1. A specific named function in `_lib.sh` or `_config.sh` cannot be exercised
    from Python via `bash -c '. lib; fn'`, with the reason the sourcing pattern
    cannot reach it stated concretely. Today the count is zero.
-2. bats-core becomes installable from `requirements-dev.txt` alone — a
-   maintained PyPI wheel exists, on the `shellcheck-py` precedent — **or** a
+2. bats-core becomes installable from `requirements-dev.txt` alone — the
+   decision doc's trigger condition 2 is canonical, including its provenance
+   requirement — **or** a
    maintainer opens a new design-decision file proposing to widen the repo's
    apt-get precedent to cover a dependency that is a test *vehicle* rather than
    a binary the tests exercise directly, and that file is reviewed and merged
    (G1, rows 7 and 8). The first disjunct is a fact about the world; the second
    names a concrete, checkable artifact rather than restating that the
-   decision has already been made. No `CLAUDE.md` rule forbids widening that
-   precedent — see row 8 — it is a choice the repo would be making
+   decision has already been made. No `CLAUDE.md` rule forbids widening the
+   system-package precedent — see row 8 — it is a choice the repo would be making
    deliberately, through that artifact.
 3. ShellCheck documents `.bats` in `--shell`'s help output **and** the open
    `.bats` false-positive issues close (G2). Otherwise adoption means either
@@ -574,9 +591,10 @@ interdependent (M3's real-tree assertion fails without M2; M1 cites both).
   content constraints: state the `sys`/`user` ratio, not the local
   878.11s/584.97s absolutes, since concurrent-worktree contention makes them
   unreliable, following `docs/design-decisions/fixture-setup-caching-declined.md:5-7`
-  (row 19); state the dependency objection as repo precedent — tests exercise
-  `stow`/`direnv` as real binaries, a test runner would be a vehicle — rather
-  than as a `CLAUDE.md` prohibition (row 8); and do not cite M3's
+  (row 19); state the dependency facts per row 8 — repo
+  precedent for the system-package route (tests exercise `stow`/`direnv` as real
+  binaries, a test runner would be a vehicle), and the submodule and action routes
+  as facts only; and do not cite M3's
   unconsumed-seam guard as evidence for the function-level-coverage claim — M3
   is a dead-code tripwire, not a coverage guard, and row 2 already establishes
   there is no coverage deficit for it to close (restated from M3's mechanism
@@ -639,7 +657,10 @@ interdependent (M3's real-tree assertion fails without M2; M1 cites both).
   precedent for fixture-pinning a scanner's grammar.
 
 **Non-file deliverables:** Issues A, B, and C per the sequencing above, filed
-regardless of PR content (row 17).
+regardless of PR content (row 17). Issue A is #1041 (shared white-box helper),
+Issue B is #1042 (`install.sh` sourcing-guard evaluation), and Issue C is #1043
+(gated `select-tests.py` second runner). Issue #1045, which tracks the
+scoped-selection gap in row 20, is also filed; the decision doc names all four.
 
 ## Verification
 
@@ -708,19 +729,18 @@ committed text names the function.
   regression (row 14).
 - **`select-tests.py` second-runner support** — Issue C. No live defect; gated
   on the reconsideration trigger (row 15).
-- **Closing the `SCRIPTS_TESTS_DIR` → `HOOKS_TESTS_DIR` reverse-direction gap in
-  `CROSS_DOMAIN_EXCEPTIONS`** (row 20). Real, and declined deliberately rather
-  than overlooked. The only closing move available is a blanket row selecting
-  all of `HOOKS_TESTS_DIR` on every scripts-test edit — a recurring
-  over-selection cost on a common edit shape, to close a rare case (a
-  contributor removing a `_lib.sh`/`_config.sh` function's last reference from a
-  scripts-side test) that CI's unconditional full suite already catches.
+- **Closing the reverse-direction gap in `CROSS_DOMAIN_EXCEPTIONS`** (row 20):
+  scoped runs select tests through `select-tests.py`'s rule table, and some `.py`
+  edits outside `claude/.claude/hooks/` do not select the guard. The rule table is
+  canonical for which ones. The gap is real, and deferred rather than
+  overlooked: closing it is a `select-tests.py` rule-table edit outside this diff,
+  CI's unconditional full suite catches it, and issue #1045 tracks it.
   `select-tests.py`'s own header concedes it "verifies precision, not recall";
-  this is that documented limitation, not a new hole. Revisit if a scripts-side
-  test ever becomes the sole reference for a library function.
-- **Adopting bats as an optional, degrades-gracefully integration.** `CLAUDE.md`
-  line 43 permits optional public-tool integrations, so this is a real option,
-  and the strongest shape of it is not the naive one: bats installed
+  this is that documented limitation, not a new hole.
+- **Adopting bats as an optional, degrades-gracefully integration.** Root
+  `CLAUDE.md`'s "Working in this repo" section permits optional public-tool
+  integrations, so this is a real option, and the strongest shape of it is not
+  the naive one: bats installed
   unconditionally in CI via the existing apt step so the merge-gating signal
   stays uniform, with only local pre-push runs varying by machine — the same
   asymmetry the repo already accepts for `stow` and `direnv`. Declined on

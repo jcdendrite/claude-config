@@ -44,6 +44,9 @@ only in a workflow `run:` block, a JSON hook command string, or a fenced block
 in a markdown skill body is invisible to the scan, so its function reads as
 unreferenced.
 
+A new function whose only consumer is a file not yet `git add`ed fails locally,
+since the shell and Python corpus comes from `git ls-files`. It passes once the file is staged.
+
 The two lib-path constants are built from `HOOKS_DIR`, imported by bare name so
 `TestCrossDomainReadCompleteness` can resolve them. Corpus enumeration is
 invisible to that resolver, so the real-tree test selection is covered only by
@@ -179,9 +182,7 @@ def test_every_shell_lib_function_is_referenced_outside_its_definition() -> None
         "A function whose only consumer lives outside the scanned corpus (a workflow `run:` block, "
         "a JSON hook command, a markdown skill body) cannot be exempted, because no allowlist exists. "
         "For that case, add a tracked test in the scanned corpus that exercises the function and names it; "
-        "the module docstring lists which mentions count. "
-        "These do not count as a reference: a comment-only mention, a mention in this guard file, "
-        "and a mention in any path with a `plugins` segment."
+        "the module docstring lists which mentions count."
     )
 
 
