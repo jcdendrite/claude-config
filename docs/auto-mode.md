@@ -45,6 +45,15 @@ Claude apps gateway), the built-in starting mode is still Manual; see the
 [permission modes reference](https://code.claude.com/docs/en/permission-modes)
 for the full starting-mode precedence table.
 
+Anthropic [announced](https://claude.com/blog/auto-mode-default-in-claude-code)
+in Aug 2026 plans to make auto mode the built-in default on Enterprise, the
+Claude API, and the cloud-provider surfaces listed above. It also plans to
+stop charging for classifier calls on those surfaces. The announcement gives
+no confirmed date. The [permission modes reference](https://code.claude.com/docs/en/permission-modes)
+still documented the Manual starting mode on these surfaces as of 2026-09-18.
+Until that reference changes, the `defaultMode` setting shown below remains
+how those accounts start in auto mode.
+
 To pick a specific model in one step, or to start auto mode explicitly where
 it isn't the built-in default, use the `claude-auto` wrapper shipped by this
 repo:
