@@ -75,7 +75,7 @@ A round is one skill invocation, not one review pass: its window runs from its i
   - resyncs with the default branch
   - session-startup burn, from the branch's row in `workstream-cost --this-repo`
 
-**(d) Resolve code-churn dates, classify commits, and check tip drift.**
+**(d) Resolve code-churn dates, classify commits, and record the tip SHA.**
 - **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
 
   `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day. Compare the two clocks as instants, never as date strings. `%ad` is the author instant; use it for every ordering test below.
@@ -84,7 +84,7 @@ A round is one skill invocation, not one review pass: its window runs from its i
 
 Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. A branch whose commits are one squashed WIP commit carries no usable per-commit date series; skip the joins in (e) and say why. Never read a single commit as an immediate freeze.
 
-Record the tip SHA and re-read it after this step. A changed SHA means the corpus was read mid-flight; report it with the results so a later re-run can tell whether the branch moved. Committer time alone moving (a resync or rebase) is not new work and does not make the branch active.
+Record the tip SHA when Tier 1 or Tier 2 resolves the branch. Tier 3 has no tip SHA to record, so part 6 reports it as unavailable. Re-read the SHA after Step (g), just before writing the artifact. A changed SHA means the corpus was read mid-flight; report it with the results so a later re-run can tell whether the branch moved. Committer time alone moving (a resync or rebase) is not new work and does not make the branch active.
 
 **(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and the session's next round, and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
@@ -103,7 +103,7 @@ For `review-trace --deny-summary`, the census names which gate produced the deni
 
 For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
-**(g) Attribute a trigger to each sampled round.** The sample is the rounds Step (c) needs to cover 60% of round dollars, plus every round Step (e) found with no following commit. Do not read all rounds.
+**(g) Attribute a trigger to each sampled round.** The sample is the rounds Step (c) needs to cover 60% of round dollars, plus every round Step (e) found with no following commit. When Step (e)'s joins were skipped, the sample is the 60% set only. Do not read all rounds.
 
 Extract the human decision points:
 ```bash
@@ -132,7 +132,7 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
 
 1. **Headline** — rounds split by type, with the review-round versus gate-re-run split and the concentration fact. Name the waves-per-round finding when a round held more than one wave.
 2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds.
-3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source.
+3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source. The top cause is the trigger class holding the most sampled-round dollars, named as `unattributed` when that class leads.
 4. **Flags** — each raised or not raised, with its evidence:
    - **Concentration** — one round or few rounds carry most of the round dollars, after the Step (c) window check.
    - **Stuck loop** — rounds keep re-surfacing findings already raised.
@@ -148,9 +148,11 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
    - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
    - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
 5. **What would have been cheaper** — one to three levers tied to the top cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
-6. **Caveats** — which of the Step 0 caveats applied, the tip SHA, and the roots the branch's sessions live in.
+6. **Caveats** — which of these applied: account scope (`--this-repo` versus `cost --summary`), same-named branch pooling across roots, and anything from `transcript-analysis/SKILL.md` § "Caveats". Also the tip SHA and the roots the branch's sessions live in.
 
 ## Step 5 — Artifact and return
+
+This step is the deep audit's. A sweep writes no artifact file and has no headline, top cause or levers. Its output is Step 2's ranked candidate list, stated as candidates and reasons with no dollar figures or cost shares, per Step 4's publication rule.
 
 Write one file: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm it does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it, matching `transcript-narrative/SKILL.md`'s own guard.
 
