@@ -16,14 +16,7 @@ states the angle's predicate, its canonical-home location procedure, and its
 remedy directly; this entry doesn't restate them.
 
 This operationalizes rather than supersedes
-[single-source-of-truth-rule.md](single-source-of-truth-rule.md), which
-rejected a `/code-review` checklist item that would have been "a second
-copy of an always-loaded rule on a surface that can drift from it," while
-accepting item 9 (repeated logic) as an operationalization of the same
-principle for code. The new angle takes item 9's route — a named surface,
-a named predicate, and a named remedy, none of which appear in CLAUDE.md's
-own single-source-of-truth bullet — so the prior rejection doesn't apply
-to it.
+[single-source-of-truth-rule.md](single-source-of-truth-rule.md) § "Single source of truth elevated to a canonical CLAUDE.md rule".
 
 Three supporting routes make the angle reachable without a dispatch of its
 own:
@@ -41,14 +34,8 @@ rejected: that skill audits instruction and memory files, and these docs
 are records, so the genre does not match.
 
 A mechanical lexical-duplication test (shingle or n-gram overlap against
-the skill corpus) was rejected:
-
-- The defect is semantic, so a paraphrase evades a lexical threshold
-  while remaining the same defect.
-- Legitimate short quotation is already the corpus norm and would trip
-  the same threshold.
-- No threshold could be grounded without a corpus measurement this
-  decision had no tooling to run.
+the skill corpus) was rejected. The reasons are in
+`.claude/plans/design-decision-ssot-duplication-check.md` § "Assumption ledger".
 
 ## Sources
 
@@ -56,7 +43,7 @@ the skill corpus) was rejected:
   rule this angle operationalizes; not superseded.
 - `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles" — the angle's predicate, location procedure, and remedy.
 - `claude-skills/skills/code-review/SKILL.md`'s item 12a — the index
-  bullet that dispatches the angle.
+  bullet listing the angle.
 - `.claude/rules/design-decisions.md` § "Design-decision files" — the authoring-time cite-don't-restate convention.
 - `.claude/plans/design-decision-ssot-duplication-check.md` — full
   assumption ledger, mechanism-by-mechanism reasoning, and verification
