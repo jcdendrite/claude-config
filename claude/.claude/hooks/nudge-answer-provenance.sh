@@ -7,12 +7,10 @@
 # Reads only tool_name, so tool_response's shape is not load-bearing.
 # Never denies, keeps no state, and has no kill switch other than its
 # settings.json entry.
-# Filters tool_name itself, not relying solely on the settings.json matcher.
+# Filters tool_name itself.
 # Fires on every AskUserQuestion call with no per-session dedup; if
 # repetition proves noisy, add a fired-marker like
 # nudge-long-turn-subagent.sh's.
-# Known gaps: none beyond unmeasured adherence, since it fires
-# unconditionally.
 set -uo pipefail
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then

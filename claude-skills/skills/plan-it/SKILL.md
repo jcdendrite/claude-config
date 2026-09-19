@@ -94,7 +94,12 @@ other's.
 - **Every material assumption gets its own row, tagged:**
   - `[verified: <source>]` — checked against code/docs this session, source citable — and prose describing a restriction is not evidence about behavior, so when the claim is what a tool or path can reach, run it and cite the result.
   - `[unverified]` — asserted, load-bearing, not checked; anything downstream inherits the flag.
-  - `[engineer-verified: "<quote>"]` — the quote is the engineer's own words from this session or the literal option label they selected, verbatim or a verbatim excerpt; never a file the human wrote (that is `[verified: <file>]`, which carries no override protection). The tag covers only what the quote states, read against the question it answered — an option description you wrote, or an inference from options they didn't pick, goes on its own `[unverified]` row (CLAUDE.md §Working Style). Never silently revise or override the quoted content from your own investigation — a contradiction pauses and asks instead. A bare `[engineer-verified]` in an already-committed plan is legacy; use the quoted form on every row you add or change.
+  - `[engineer-verified: "<quote>"]` — the quote is the engineer's own words from this session or the literal option label they selected, verbatim or a verbatim excerpt.
+    - Never quote a file the human wrote; that is `[verified: <file>]`, which carries no override protection.
+    - The tag covers only what the quote states, read against the question it answered.
+    - An option description you wrote, or an inference from options they didn't pick, goes on its own `[unverified]` row (CLAUDE.md §Working Style).
+    - Never silently revise or override the quoted content from your own investigation; a contradiction pauses and asks instead.
+    - Use the quoted form on every row you add or change. Bare `[engineer-verified]` tags already in committed plans remain valid; treat the whole claim of such a row as protected, as `plan-review` does.
 
 See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 

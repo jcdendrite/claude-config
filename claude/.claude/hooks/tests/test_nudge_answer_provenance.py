@@ -2,16 +2,17 @@
 
 PostToolUse AskUserQuestion hook that reports via `additionalContext` a
 static reminder separating the engineer's selected label/typed text from
-the model's own option descriptions -- see
-`.claude/plans/attribution-provenance-guard.md` for the incident this
-backstops.
+the model's own option descriptions. A menu answer carries only the label,
+so the model can restate its own option prose as the engineer's decision.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 
+import pytest
 from helpers import HOOKS_DIR, REPO_ROOT, _build_subprocess_env, build_path_without, run_hook_context
 
 HOOK = HOOKS_DIR / "nudge-answer-provenance.sh"
@@ -19,6 +20,7 @@ CLAUDE_MD = REPO_ROOT / "claude" / ".claude" / "CLAUDE.md"
 SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
 
 DRIFT_PHRASE = "Attribute to the engineer only what they said"
+DRIFT_BULLET_LEAD = re.compile(r"^- \*\*" + re.escape(DRIFT_PHRASE), re.MULTILINE)
 
 # tool_response's shape here is illustrative, not verified against a real
 # AskUserQuestion harness capture -- the hook only reads tool_name, so the
@@ -44,15 +46,27 @@ def _run_hook(stdin_text: str, extra_env: dict | None = None) -> subprocess.Comp
 
 
 def _assert_fires(payload: dict) -> None:
-    """Shared assertion for every "fires" case: hookEventName pins the
-    payload as a PostToolUse advisory (not, say, a PreToolUse decision
-    shape), and additionalContext is what actually reaches the model."""
+    """Asserts a PostToolUse advisory with non-empty additionalContext."""
     result = _run_hook(json.dumps(payload))
     assert result.returncode == 0
     parsed = json.loads(result.stdout)
     assert parsed["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
     assert parsed["hookSpecificOutput"]["additionalContext"]
-    assert run_hook_context(HOOK, payload)
+
+
+def _assert_silent(stdin_text: str) -> None:
+    result = _run_hook(stdin_text)
+    assert result.returncode == 0
+    assert not result.stdout.strip()
+
+
+def _section_body(markdown: str, heading: str) -> str:
+    """Returns the text between `## <heading>` and the next `## ` heading (or end of file)."""
+    match = re.search(
+        r"^## " + re.escape(heading) + r"\n(.*?)(?=^## |\Z)", markdown, re.MULTILINE | re.DOTALL
+    )
+    assert match, f"no `## {heading}` section"
+    return match.group(1)
 
 
 class TestFiresOnAskUserQuestion:
@@ -62,11 +76,38 @@ class TestFiresOnAskUserQuestion:
     def test_fires_with_tool_response_absent(self):
         _assert_fires({"tool_name": "AskUserQuestion"})
 
+    def test_fires_on_full_posttooluse_envelope_with_string_tool_response(self):
+        _assert_fires(
+            {
+                "session_id": "00000000-0000-0000-0000-000000000000",
+                "transcript_path": "/tmp/example-session/transcript.jsonl",
+                "cwd": "/tmp/example-project",
+                "hook_event_name": "PostToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {
+                    "questions": [
+                        {
+                            "question": "Which approach?",
+                            "options": [{"label": "Option A", "description": "Do A."}],
+                        }
+                    ]
+                },
+                "tool_response": 'User has answered your questions: "Which approach?"="Option A".',
+                "tool_use_id": "toolu_00000000000000000000",
+            }
+        )
+
 
 class TestSilentOnOtherTools:
     def test_silent_on_bash(self):
-        payload = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
-        assert run_hook_context(HOOK, payload) is None
+        _assert_silent(json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo hi"}}))
+
+    @pytest.mark.parametrize(
+        "near_miss_tool_name",
+        ["mcp__x__AskUserQuestion", "askuserquestion", "AskUserQuestion "],
+    )
+    def test_silent_on_near_miss_tool_name(self, near_miss_tool_name):
+        _assert_silent(json.dumps({"tool_name": near_miss_tool_name}))
 
 
 class TestFailsOpen:
@@ -88,13 +129,16 @@ class TestFailsOpen:
         assert result.returncode == 0
         assert not result.stdout.strip()
 
+    @pytest.mark.parametrize(
+        "wrong_shape_stdin",
+        ["[]", "123", "null", "{}", '{"tool_name": null}', "  \n"],
+        ids=["array", "number", "null", "empty-object", "null-tool-name", "whitespace-only"],
+    )
+    def test_valid_json_of_wrong_shape_stays_silent(self, wrong_shape_stdin):
+        _assert_silent(wrong_shape_stdin)
+
     def test_missing_lib_sh_stays_silent(self, tmp_path):
-        """Hook copied to a directory with no _lib.sh alongside it, so
-        `${0%/*}/_lib.sh` fails to source -- proves the informational
-        hook-class's documented fail-open contract (exit 0, no output)
-        rather than a crash, mirroring test_hook_alignment.py's gate-hook
-        missing-lib-sh test but for this hook's silent-allow shape instead
-        of a deny."""
+        """Missing `_lib.sh` next to the hook fails open (exit 0, no output)."""
         tmp_hook = tmp_path / HOOK.name
         shutil.copy2(HOOK, tmp_hook)
         tmp_hook.chmod(0o755)
@@ -111,14 +155,12 @@ class TestFailsOpen:
 
 
 class TestDriftGuard:
-    def test_drift_phrase_appears_in_runtime_output_and_claude_md(self):
-        """The hook's additionalContext restates CLAUDE.md's Working Style
-        bullet's bold lead for salience at the moment the answer arrives --
-        pinned against the parsed runtime output, not the .sh source text,
-        so a future edit that breaks the quoted match still shows up here."""
+    def test_drift_phrase_appears_in_runtime_output_and_as_claude_md_bullet_lead(self):
+        """The quoted CLAUDE.md phrase must appear in the parsed runtime output, not just the .sh source."""
         ctx = run_hook_context(HOOK, ASK_USER_QUESTION_INPUT)
         assert DRIFT_PHRASE in ctx
-        assert DRIFT_PHRASE in CLAUDE_MD.read_text()
+        working_style_section = _section_body(CLAUDE_MD.read_text(), "Working Style")
+        assert DRIFT_BULLET_LEAD.search(working_style_section)
 
 
 class TestWiring:
@@ -127,8 +169,15 @@ class TestWiring:
         post_tool_use = settings["hooks"]["PostToolUse"]
         matching_groups = [g for g in post_tool_use if g.get("matcher") == "AskUserQuestion"]
         assert matching_groups, "no PostToolUse group with matcher \"AskUserQuestion\""
-        commands = [h["command"] for g in matching_groups for h in g["hooks"]]
+        commands = [h.get("command", "") for g in matching_groups for h in g["hooks"]]
         assert "~/.claude/hooks/nudge-answer-provenance.sh" in commands
 
-    def test_hook_file_exists(self):
-        assert HOOK.is_file()
+    def test_exactly_one_posttooluse_hook_entry_references_the_script(self):
+        settings = json.loads(SETTINGS_PATH.read_text())
+        referencing_entries = [
+            h
+            for g in settings["hooks"]["PostToolUse"]
+            for h in g["hooks"]
+            if HOOK.name in h.get("command", "")
+        ]
+        assert len(referencing_entries) == 1

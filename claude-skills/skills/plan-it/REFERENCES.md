@@ -132,9 +132,7 @@ Row 3 [assumption]: no other repo mechanism relies on
 plan-review-markers/ existence-only semantics [unverified] — anchors: row1
 Row 4 [assumption]: the structural-completeness hook and Stop-hook +
 cross-check subagent are deferred until this hypothesis validates on live
-plans [engineer-verified: "Let's hold off on the structural-completeness
-hook and the Stop-hook cross-check subagent until we've seen this work on
-live plans"] — anchors: root
+plans [engineer-verified: "Let's hold off on the structural-completeness hook and the Stop-hook cross-check subagent until we've seen this work on live plans"] — anchors: root
 ```
 
 ### Why three tags, not two
@@ -150,8 +148,9 @@ utterances a grep can't re-derive.
 
 ### Why the tag carries a quote
 
-- A menu answer returns only the label, while the asking session's
-  description sits beside it.
+- An `AskUserQuestion` answer returns only the selected label. The option
+  description the assistant wrote is not part of the answer, but sits beside
+  it in the transcript.
 - Without a quote, a relay can restate that description under the tag, and
   the tag's protection then shields the restatement.
 - The quote limits protection to text a reviewer can compare the claim
