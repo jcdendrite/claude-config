@@ -16,8 +16,8 @@ runtime-read file. A new edit-time auxiliary name would need that rule
 revisited.
 
 check-skill-length.sh keeps a hand-written exact-path regex for the
-runtime-read subset of this tuple (ROUTING.md and DEFAULT_TEMPLATE.md), so a
-new runtime-read name needs a matching entry there.
+runtime-read subset of this tuple, so a new runtime-read name needs a matching
+entry there.
 
 Entries are bare filenames with no path separator, because select-tests.py
 matches `Path(path).name` against them.

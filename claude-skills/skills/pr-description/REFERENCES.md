@@ -175,7 +175,8 @@ least one source):
 
 - Pre-submit checklist (3 of 21): the skill's `## Test plan` records
   verification results, not a future-tense checklist.
-- Changelog entry (3 of 21): most of the time not relevant.
+- Changelog entry (3 of 21): whether a change needs one depends on the
+  target repo's release process, which a default template cannot know.
 - AI-assistance disclosure (1 of 21, Kubernetes only): this repo's commit and
   PR attribution lines already disclose it.
 - Issue/ticket linkage (12 of 21) is not a heading either: the
