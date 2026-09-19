@@ -88,18 +88,18 @@ Record the tip SHA and re-read it after this step. A changed SHA means the corpu
 
 **(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and the session's next round, and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
-- A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health. Only rounds that started after the freeze can carry the Stuck loop, Plan-grinding, and Gate-denial churn flags in Step 4.
+- A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health.
 - Neither outcome is an audit verdict. The audit always continues to (f) and (g).
 
-**(f) Descriptive context.** Report, without using as criteria:
+**(f) Descriptive context.** Run and report:
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --branches <branch>
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch> --deny-summary
 python3 ~/.claude/scripts/transcript-analysis.py fail-seq --this-repo --branches <branch>
 ```
-For `subagent-mix`, read the aggregate run's `Top subagent types` column as the skew signal, since `--per-session` is refused under a multi-root `--this-repo` scope. Skew and dispatches per round do not track the freeze partition, which is why they are not criteria.
+For `subagent-mix`, read the aggregate run's `Top subagent types` column as the skew signal, since `--per-session` is refused under a multi-root `--this-repo` scope. Report skew and dispatches per round without using them as criteria, since neither tracks the freeze partition.
 
-For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. A gate that denies a benign command shape repeatedly is a retry cost inside the review budget.
+For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. A gate that denies a benign command shape repeatedly is a retry cost inside the review budget. This census feeds Step 4's Denial-retry waste flag.
 
 For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
@@ -120,7 +120,7 @@ Assign each sampled round one trigger class:
 - **pipeline-mandatory** — the pipeline required the round regardless of findings (a gate re-run after a push).
 - **unattributed** — no primary source settles it.
 
-A class is assigned only from a primary source: the round's own findings text or a human turn, cited by session and turn or by findings-file path. Commit titles may corroborate a class and never establish one. Default to `unattributed` and print the count; a table that is mostly `unattributed` is a useful audit, and one that is confidently mislabeled is not. Where the read cannot tell fix-induced from new-finding, use `unattributed`.
+A class is assigned only from a primary source: the round's own findings text or a human turn, cited by session and turn or by findings-file path. Commit titles may corroborate a class and never establish one. Default to `unattributed` and print the count, including where the read cannot tell fix-induced from new-finding. A table that is mostly `unattributed` is a useful audit, and one that is confidently mislabeled is not.
 
 Also note whether rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review. That is session churn, not loop churn, and it does not support a stuck-loop flag.
 
@@ -143,7 +143,7 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
    - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range with no early freeze.
 
    Rules for the freeze-based flags:
-   - Stuck loop, Plan-grinding, and Gate-denial churn are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped (Tier 3, or a single squashed commit).
+   - Stuck loop, Plan-grinding, and Gate-denial churn are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped. Only rounds that started after the freeze can carry these three flags.
    - Legitimate large-diff work is not-evaluable when the commit joins were skipped.
    - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
    - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
@@ -157,7 +157,7 @@ Write one file: to the caller-supplied output-path argument, or under `mktemp -d
 
 The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
 
-Return only these four items: the path, the headline, the top cause, and the one or two levers. Give them as shares and counts under Step 4's publication rule, with no quoted prompt text and no tables inline.
+Return only these four items: the path, the headline, the top cause, and the one or two levers. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no quoted prompt text and no tables inline.
 
 A subagent that invokes this skill by name returns the same four items. It keeps every table in its own context and in the artifact file.
 
