@@ -45,6 +45,20 @@ Claude apps gateway), the built-in starting mode is still Manual; see the
 [permission modes reference](https://code.claude.com/docs/en/permission-modes)
 for the full starting-mode precedence table.
 
+Anthropic has announced plans to extend the built-in auto-mode default to
+Enterprise, the Claude API, Claude Platform on AWS, Amazon Bedrock, Google
+Cloud's Agent Platform, and Microsoft Foundry, and to stop charging for
+classifier calls on those surfaces once it lands: "Auto mode remains opt-in
+for now on Claude Enterprise, the Claude API, Claude Platform on AWS, Amazon
+Bedrock, Google Cloud's Agent Platform, and Microsoft Foundry, giving admins
+time to review the change. In the coming month, working with our cloud
+partners, we plan to make it the default across all of these and no longer
+charge for classifier overhead." ([Anthropic, Aug
+2026](https://claude.com/blog/auto-mode-default-in-claude-code)) As of
+2026-09-18, the [permission modes reference](https://code.claude.com/docs/en/permission-modes)
+still describes the pre-rollout behavior for those surfaces — re-check it
+before assuming the fallback below no longer applies.
+
 To pick a specific model in one step, or to start auto mode explicitly where
 it isn't the built-in default, use the `claude-auto` wrapper shipped by this
 repo:
