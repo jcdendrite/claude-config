@@ -4761,12 +4761,27 @@ _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
     "later reviews otherwise read it only as context."
 )
 
+# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
+# gate, then the Overview's fix-loop rule returns the loop to a full pass of
+# step 3 over the fixed bytes, bounded by the Cap.
+_PINNED_STEP3_LOOP_BACK_CLAUSE = (
+    "Its fix commit goes through the standard staged-diff `/code-review` + "
+    "marker gate, and the Overview's fix-loop rule then brings the loop back "
+    "through step 2 to a full pass of this step over the fixed bytes, within "
+    "the cap below."
+)
+
+# The retired limitation that step 3 must not re-run `/code-review` on a fix's
+# own output; the loop-back sentence above replaced it.
+_RETIRED_STEP3_LOOP_RISK_PHRASE = "on its own output (loop risk)"
+
 
 class TestReadyForReviewStep3LoopCapPins:
-    """Pin step 3's Cap paragraph and its clean/dirty definition, so dropping
-    the unparseable-record-counts-as-dirty rule, the cap consult, or the
-    statement that a record grants no review skip fails a test instead of
-    drifting silently.
+    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
+    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
+    rule, the cap consult, the statement that a record grants no review skip,
+    or the fix-loop return to a full pass fails a test instead of drifting
+    silently. Also guard against the retired "loop risk" limitation returning.
     """
 
     @pytest.mark.parametrize(
@@ -4777,6 +4792,11 @@ class TestReadyForReviewStep3LoopCapPins:
                 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
                 "step 3's clean/dirty definition",
                 id="clean-dirty-definition",
+            ),
+            pytest.param(
+                _PINNED_STEP3_LOOP_BACK_CLAUSE,
+                "step 3's fix loop-back sentence",
+                id="loop-back",
             ),
         ],
     )
@@ -4789,6 +4809,15 @@ class TestReadyForReviewStep3LoopCapPins:
             pinned_text,
             raw_section,
             context=f"ready-for-review/SKILL.md: {site} no longer matches.",
+        )
+
+    def test_step3_does_not_restore_retired_loop_risk_limitation(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        assert _RETIRED_STEP3_LOOP_RISK_PHRASE not in " ".join(raw_section.split()), (
+            "ready-for-review/SKILL.md: step 3 restores the retired "
+            f"{_RETIRED_STEP3_LOOP_RISK_PHRASE!r} limitation."
         )
 
 
@@ -4853,6 +4882,59 @@ class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
             pinned_text,
             raw_section,
             context="code-review/SKILL.md: clean-definition clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradiction-route"
+
+# The whole contradiction-route region: the consult route, the settled-site and
+# two-rewrites human stop, the three verdicts, the enforcement-invariant
+# carve-out on *keep current text*, and the no-explicit-verdict blocking stop.
+# It is pinned whole so removing or weakening any sentence fails a test. The
+# whole region is compared by exact equality, so any added, removed, or
+# reworded text inside the anchors fails.
+_PINNED_CONTRADICTION_ROUTE_CLAUSE = (
+    "**A finding whose fix would undo a fix an earlier round applied is also "
+    "a design question, in every round, staged commit-gate rounds included.** "
+    "Write `plan-architect — consult` for it on the `Fix route:` line. "
+    "Dispatch, verbatim relay, and the disagreement stop-and-ask follow the "
+    "heavier-mechanism rule directly above, and the consult also carries the "
+    "earlier finding and its fix. A finding against a site an earlier verdict "
+    "already settled, or that two earlier rounds' fixes already rewrote, goes "
+    "straight to the human as a blocking stop-and-ask, with no consult. The "
+    "consult's judgment standard is that the current text wins unless the "
+    "finding names a defect, under a stated rule, that the current text "
+    "actually has. One consult carries every such finding in the round and "
+    "returns exactly one of the three verdicts per finding. *Keep current "
+    "text* resolves it with nothing dispatched, logged as `--disposition "
+    "ADDRESS` with the verdict in `--rationale`, and is never available to a "
+    "finding the enforcement-invariant rule below covers. *Apply this "
+    "round's fix* is an ordinary ADDRESS row on the `code-writer` route. "
+    "*Cannot choose* is a blocking stop-and-ask to the human. A finding with "
+    "no explicit per-finding verdict from the consult (failed dispatch, "
+    "empty, hedged, or partial coverage) is likewise a blocking stop-and-ask, "
+    "never *keep current text*."
+)
+
+
+class TestCodeReviewContradictionRouteRegionPin:
+    """Pin code-review/SKILL.md's contradiction-route region whole, so dropping
+    the enforcement-invariant carve-out on *keep current text*, the
+    settled-site / two-rewrites human stop, or the no-explicit-verdict
+    blocking stop-and-ask fails a test instead of drifting silently.
+    """
+
+    def test_contradiction_route_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_CONTRADICTION_ROUTE_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
         )
 
 

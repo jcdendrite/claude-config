@@ -30,7 +30,7 @@ Any review-only agent can `Write` a path under `agent-reviews/`, because the rev
 
 A record with no rows counts as unparseable, so a truncated write counts as dirty and fails toward more consults.
 
-The branch-scoping key is the slug after its first hyphen, and `findings-path-suffix.sh` truncates the slug to 20 characters. Two branches sharing a prefix that long could therefore count each other's records. That fails toward more consults, and it is an accepted residual.
+The branch-scoping key is the slug after its first hyphen, and `findings-path-suffix.sh` truncates the slug to 20 characters. Two branches sharing a prefix that long could therefore count each other's records. That fails in both directions, and it is an accepted residual. A sibling branch's dirty records inflate the count, which means more consults. A sibling's clean record newer than this branch's dirty ones becomes the newest clean record and resets the count, which means fewer consults.
 
 Step 3's Disposition-record paragraph is pinned only from its clean/dirty definition onward. Its record-path, branch-scoping, and Outcome-column sentences are deliberately unpinned, following the neighboring pins' selective pinning, so a rewording of them is caught in review rather than by a test.
 
