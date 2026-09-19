@@ -472,6 +472,15 @@
         ]
       },
       {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-answer-provenance.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Skill",
         "hooks": [
           {
