@@ -410,8 +410,8 @@ chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pii-patterns.md"
 **Pattern tiers.**
 
 - **Credential-value patterns** (always on, no config file needed): the
-  same GitHub-token-prefix / PEM-private-key-header regex
-  `redact-credential-values.sh` uses. Fires whether or not
+  shared `_LIB_CREDENTIAL_VALUE_REGEX` in `claude/.claude/hooks/_lib.sh`,
+  the same regex `redact-credential-values.sh` uses. Fires whether or not
   `<config-dir>/pii-patterns.md` exists.
 - **Built-in generic PII patterns** (once armed): US Social Security
   numbers (`NNN-NN-NNNN`) and credit-card-shaped 13–19 digit runs that pass
@@ -443,15 +443,10 @@ A non-comment line the hook cannot parse — no `:`, an empty label or value,
 or an uncompilable regex — fails the commit closed and names the line
 number. A silently-skipped pattern would be an unscanned leak vector.
 
-**Known gaps.** The editor-flow commit (`git commit` with no `-m`/`-F`)
-populates the message after the hook fires. A chained `git add … &&
-git commit` stages content after the hook fires; the commit message is
-still scanned. A `-F <path>` message-source file has the same class of gap:
-the hook reads whatever is on disk at `<path>` when it fires, so a command
-that overwrites that path with sensitive content immediately before `git
-commit -F` runs in the same chain (`generate-secret > /tmp/msg.txt &&
-git commit -F /tmp/msg.txt`) is scanned against stale, not final, content.
-Credit-card detection matches contiguous digit runs only.
+**Known gaps.** The "Known gaps" list in the header of
+`claude/.claude/hooks/deny-pii-in-commits.sh` records the routes found
+so far, and because the gate predicts the commit by parsing the Bash command
+string, the set of unscanned routes is open by construction.
 
 ## Arming the data-file read hook
 
