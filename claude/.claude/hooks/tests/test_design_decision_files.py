@@ -598,7 +598,7 @@ def test_item_12a_index_matches_agent_angle_headers() -> None:
     """Pins each item 12a bullet name, in order, to the agent's angle headers; rejects duplicate headers.
 
     A bold run followed by ' — ' at the start of a wrapped body line parses
-    as a header (accepted limit; the mismatch violation fails closed).
+    as a header (known limitation; the mismatch violation fails closed).
     Angle headers placed under a new '## ' heading inside the agent file fall
     outside the parsed section, and so outside the index."""
     skill_path = REPO_ROOT / "claude-skills" / "skills" / "code-review" / "SKILL.md"
