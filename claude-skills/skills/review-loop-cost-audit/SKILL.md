@@ -69,7 +69,11 @@ A round is one skill invocation, not one review pass: its window runs from its i
 - **Main vs fan-out:** for each concentrated round, the split between `main $` and `agent $`, and its `agents` count. Main-heavy means the orchestrator did the work; agent-heavy means fan-out width. The remedies differ.
 - **Window check:** a concentrated round's window may contain more than review work. Confirm from Step (b)'s timeline that the window holds reviewer waves, and name what else it spans (consults, code-writer dispatches, hook denials, gaps over an hour). A round whose main-thread cost is unexplained by its timeline is reported as a window artifact, not as an expensive orchestrator.
 - **Round mix:** `ready-for-review` rounds typically dispatch no agents and are cheap. Report review rounds separately from gate re-runs; "N rounds" alone overstates the review effort when most are gate re-runs.
-- **Non-round share:** `review-round-cost` prices only a round's own window, so the fix a round causes lands outside it and the residual includes implementation. State that on every line that reports the residual. Name its components by count only — code-writer dispatches, architect consults, resyncs with the default branch, session-startup burn from the branch's row in `workstream-cost --this-repo` — since the toolkit yields one reconciliation number, not a split.
+- **Non-round share:** `review-round-cost` prices only a round's own window. The fix a round causes lands outside that window, so the residual includes implementation. State that on every line that reports the residual. The toolkit yields one reconciliation number, not a split, so name the residual's components by count only:
+  - code-writer dispatches
+  - architect consults
+  - resyncs with the default branch
+  - session-startup burn, from the branch's row in `workstream-cost --this-repo`
 
 **(d) Resolve code-churn dates, tiered.**
 - **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
@@ -84,7 +88,7 @@ Record the tip SHA and re-read it after this step. A changed SHA means the corpu
 
 **(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and the session's next round, and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
-- A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health. Only rounds that started after the freeze can carry the thrash flags in Step 4.
+- A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health. Only rounds that started after the freeze can carry the Stuck loop, Plan-grinding, and Gate-denial churn flags in Step 4.
 - Neither outcome is an audit verdict. The audit always continues to (f) and (g).
 
 **(f) Descriptive context.** Report, without using as criteria:
@@ -93,7 +97,11 @@ python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --bran
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch> --deny-summary
 python3 ~/.claude/scripts/transcript-analysis.py fail-seq --this-repo --branches <branch>
 ```
-`--per-session` on `subagent-mix` is refused under a multi-root `--this-repo` scope, so use the aggregate run's `Top subagent types` column as the skew signal. The denial census names which gate produced the denials and which command shapes recur; a gate that denies a benign command shape repeatedly is a retry cost inside the review budget. Read `fail-seq` as a one-line check on whether debugging drove cost.
+For `subagent-mix`, read the aggregate run's `Top subagent types` column as the skew signal, since `--per-session` is refused under a multi-root `--this-repo` scope. Skew and dispatches per round do not track the freeze partition, which is why they are not criteria.
+
+For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. A gate that denies a benign command shape repeatedly is a retry cost inside the review budget.
+
+For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
 **(g) Attribute a trigger to each sampled round.** The sample is the rounds Step (c) needs to cover 60% of round dollars, plus every round Step (e) found with no following commit. Do not read all rounds.
 
@@ -120,7 +128,7 @@ Causes carry no judgment. `human-scope-expansion` and `new-finding` are often th
 
 ## Step 4 — Report
 
-Emit the six parts below. Carry no dollar total, no per-branch cost share, and no figure from either corpus into text that leaves the artifact — this is a repo-wide publication rule, not a per-branch choice. Within the artifact, quote shares and counts, and quote dollars only in the round table.
+Emit the six parts below. Carry no dollar total, no per-branch cost share, and no corpus figure into text that leaves the artifact; this is a repo-wide publication rule. Within the artifact, quote shares and counts, and quote dollars only in the round table.
 
 1. **Headline** — rounds split by type, with the review-round versus gate-re-run split and the concentration fact. Name the waves-per-round finding when a round held more than one wave.
 2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds. State the non-round caveat from Step (c).
@@ -134,12 +142,23 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
    - **Mandatory-round inflation** — gate re-runs make up most of the round count.
    - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range with no early freeze.
 
-   The four thrash flags need rounds that started after the freeze, so they are not-evaluable when Step (e) printed that none did. The post-freeze round share only nominates a candidate: raise a thrash flag on the Step (g) read of those rounds' findings, never on the share alone, and name the round type it applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch. Never decide from the outside-review-window share: a stuck loop and ordinary large-diff work can land in the same band. Reviewer skew and dispatches-per-round stay descriptive, not criteria, because neither tracks the freeze partition.
-5. **What would have been cheaper** — one to three levers tied to the top cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever. This part is what answers why the branch cost what it did.
+   Rules for the freeze-based flags:
+   - Stuck loop, Plan-grinding, and Gate-denial churn are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped (Tier 3, or a single squashed commit).
+   - Legitimate large-diff work is not-evaluable when the commit joins were skipped.
+   - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
+   - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
+   - Never decide from the outside-review-window share. A stuck loop and ordinary large-diff work can land in the same band.
+5. **What would have been cheaper** — one to three levers tied to the top cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
 6. **Caveats** — which of the Step 0 caveats applied, the tip SHA, and the roots the branch's sessions live in.
 
 ## Step 5 — Artifact and return
 
 Write one file: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm it does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it, matching `transcript-narrative/SKILL.md`'s own guard.
 
-The file opens with a not-for-publication line, then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied. Return only the path, the headline, the top cause, and the one or two levers — as shares and counts, with no dollars and no quoted prompt text, never the tables inline. A subagent that invokes this skill by name returns the same items, keeping every table in the subagent's own context and the artifact file. For a publish-ready aggregate, use `cost-counts --this-repo --branches <branch>` rather than figures from this artifact.
+The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
+
+Return only these four items: the path, the headline, the top cause, and the one or two levers. Give them as shares and counts under Step 4's publication rule, with no quoted prompt text and no tables inline.
+
+A subagent that invokes this skill by name returns the same four items. It keeps every table in its own context and in the artifact file.
+
+For a publish-ready aggregate, use `cost-counts --this-repo --branches <branch>` rather than figures from this artifact.
