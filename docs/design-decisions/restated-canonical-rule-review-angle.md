@@ -25,15 +25,16 @@ a named predicate, and a named remedy, none of which appear in CLAUDE.md's
 own single-source-of-truth bullet — so the prior rejection doesn't apply
 to it.
 
-Two supporting routes make the angle reachable without a dispatch of its
-own. Route 1: `code-writer.md`'s self-review domain table gains a row routing
-durable in-repo docs to `comment-discipline-reviewer`. Route 2:
-`code-review/SKILL.md`'s item 12a gains a matching one-line index bullet,
-pinned to the agent's angle headers by
-`test_item_12a_index_matches_agent_angle_headers` in
-`claude/.claude/hooks/tests/test_design_decision_files.py`.
-`.claude/rules/design-decisions.md` § "Design-decision files" gains a matching authoring-time bullet; this entry doesn't restate its content
-either.
+Three supporting routes make the angle reachable without a dispatch of its
+own:
+
+- `code-writer.md`'s self-review domain table gains a row routing durable
+  in-repo docs to `comment-discipline-reviewer`.
+- `code-review/SKILL.md`'s item 12a gains a matching one-line index
+  bullet, pinned to the agent's angle headers by
+  `test_item_12a_index_matches_agent_angle_headers` in
+  `claude/.claude/hooks/tests/test_design_decision_files.py`.
+- `.claude/rules/design-decisions.md` § "Design-decision files" gains an authoring-time bullet. This entry doesn't restate its content.
 
 Routing design-decision docs to `ai-instruction-and-memory-files` was
 rejected: that skill audits instruction and memory files, and these docs

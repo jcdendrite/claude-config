@@ -106,7 +106,7 @@ own content.
    the surrounding code or doc section; a comment that reads fine alone can
    still be at the wrong altitude for the file it landed in.
 2. Walk every added or modified comment and every added or substantially
-   rewritten durable-doc paragraph against all seven angles above. A
+   rewritten durable-doc paragraph against every angle above. A
    single site can carry more than one finding.
 3. Judge scope from the diff you were handed, never from how new a site
    looks. A site is in scope only when it appears as an added or modified
