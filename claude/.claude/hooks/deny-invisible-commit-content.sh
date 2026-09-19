@@ -79,6 +79,11 @@
 #    backslash, so it fails the masker's single-safe-word exception and
 #    stays blanked, invisible to arm 2's fragment count — see
 #    docs/security-hardening.md for the mechanism.
+#  - `_lib_mask_shell_quotes` is a character-level quote scanner, not a bash
+#    tokenizer, so a shape it mis-scans (a backslash-escaped quote, or any
+#    blank line on BSD/macOS awk) can drop a real second commit fragment from
+#    arm 2's count and fails open. `_lib.sh` states the full class of limits
+#    at that function's header.
 #  - An execution mechanism outside the wrapper/commit co-occurrence
 #    check's enumerated token list — an `awk` `system()` call, a `make`
 #    recipe, `find -exec`, a remote `ssh host <cmd>` — still hides a real
@@ -133,11 +138,7 @@
 #    xargs), with no filesystem or network access.
 #  - Every fork's exit status is checked and fails closed on a non-zero
 #    result, matching `_lib_parse_tool_input_or_deny`'s jq discipline.
-#  - The `_lib_mask_shell_quotes` per-character awk scan is O(n²) on command
-#    length, so it runs under the same 5s `_lib_capped_for` cap
-#    `_lib_jq`/`_lib_capped` use elsewhere (every other fork in this file
-#    stays unbounded). A pathological input denies fast instead of
-#    stalling the gate.
+#  - `_lib_mask_shell_quotes` runs under a 5s cap; see its header in `_lib.sh`.
 #
 # Fail-closed on unparseable hook input.
 

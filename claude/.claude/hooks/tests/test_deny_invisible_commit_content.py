@@ -138,6 +138,17 @@ class TestDenyInvisibleCommitContent:
             bash_input('"git" commit -m a && git commit -m b'),
         ) == "deny"
 
+    def test_mid_word_quoted_git_word_two_chained_commits_denied(self):
+        """A single-safe-word span glued to adjacent text (`g"it"`) must
+        still unquote to `git` in the masked text, so this first commit
+        counts toward arm 2's total. The fast-reject passes on the bare
+        second commit, so only the masker's mid-word unquoting separates
+        allow from deny here."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('g"it" commit -m a && git commit -m b'),
+        ) == "deny"
+
     def test_ansi_c_quoted_git_word_two_chained_commits_denied(self):
         """GH-783: the ANSI-C-quote form of the git word (`$'git'`) must
         normalize the same way `_lib_strip_shell_quotes` already
@@ -161,6 +172,16 @@ class TestDenyInvisibleCommitContent:
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("$'\\x67it' commit -m x && git commit -m y"),
+        ) == "allow"
+
+    def test_backslash_escaped_quote_second_commit_allowed(self):
+        """Documented known gap (docs/security-hardening.md): the masker does
+        not model backslash escapes, so the `\\"` pair opens a span that
+        blanks the second commit while bash runs both. Arm 2 never counts the
+        second commit, so this allows."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m x && echo \\" && git commit -m y && echo \\"'),
         ) == "allow"
 
     def test_multi_commit_deny_message_names_invariant(self):
@@ -645,16 +666,20 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_masking_awk_failure_denies_with_masking_reason(self, tmp_path):
-        """The mask step's own exit status is what fails closed here: awk
-        fails only for the masking program, so the deny reason must name the
-        masking step rather than a later fork's failure."""
+        """The mask step's own exit status is what fails closed here: the
+        first awk fork fails, and it is the mask step (the hook's earliest
+        awk use), so the deny reason must name the masking step rather than
+        a later fork's failure."""
         real_awk = shutil.which("awk")
         assert real_awk is not None
         shim_dir = tmp_path / "shim-bin"
         shim_dir.mkdir()
+        fired_marker = shim_dir / "shim-fired"
         shim = shim_dir / "awk"
         shim.write_text(
-            f'#!/bin/bash\ncase "$*" in *quote_dollar_prefix*) exit 3 ;; esac\nexec "{real_awk}" "$@"\n'
+            "#!/bin/bash\n"
+            f'if [ ! -e "{fired_marker}" ]; then : > "{fired_marker}"; exit 3; fi\n'
+            f'exec "{real_awk}" "$@"\n'
         )
         shim.chmod(0o755)
         reason = run_hook_reason(
@@ -662,6 +687,7 @@ class TestDenyInvisibleCommitContent:
             bash_input("git commit -m x"),
             extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
         )
+        assert fired_marker.exists(), "awk shim never ran: the hook forked no awk on PATH"
         assert reason is not None
         assert "could not mask quoted command text" in reason
 

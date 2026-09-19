@@ -55,7 +55,9 @@ class TestDenyEscapedBackticksInPrBody:
 
     def test_body_file_pseudo_path_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /dev/stdin"
-        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "pseudo-file path" in reason
 
     def test_missing_body_file_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /nonexistent/path.md"

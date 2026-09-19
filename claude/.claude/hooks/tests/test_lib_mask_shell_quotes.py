@@ -1,6 +1,6 @@
 """Unit tests for _lib.sh's _lib_mask_shell_quotes, the single-pass quote
-masker deny-invisible-commit-content.sh runs ahead of its arm 2 fragment
-count.
+masker deny-invisible-commit-content.sh runs ahead of its count of
+git-commit-invoking fragments.
 
 These source _lib.sh directly and call the function -- no hook invocation,
 no JSON payload -- mirroring test_lib_pseudo_file_path.py. The hook's own
@@ -9,6 +9,7 @@ drives the right verdict.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -21,7 +22,7 @@ def _mask_shell_quotes(
     text: str, env: dict[str, str] | None = None, expect_success: bool = True
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_mask_shell_quotes "$1"', "_", text],
+        ["/bin/bash", "-c", f'. "{LIB_SH}"; _lib_mask_shell_quotes "$1"', "_", text],
         capture_output=True,
         text=True,
         check=False,
@@ -45,6 +46,19 @@ class TestLibMaskShellQuotes:
         """A span whose whole interior matches `^[A-Za-z0-9._/-]+$` loses its
         delimiters so a quoted command word stays visible to a fragment
         count."""
+        assert _mask_shell_quotes(text).stdout == expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ('g"it" commit', "git commit"),
+            ('"gi"t commit', "git commit"),
+        ],
+    )
+    def test_safe_word_span_glued_to_adjacent_text_re_forms_the_word(self, text, expected):
+        """A single-safe-word span is unquoted wherever it sits in a word, not
+        only at a word boundary, so a mid-word quote split of one safe word
+        cannot hide a command word from a fragment count."""
         assert _mask_shell_quotes(text).stdout == expected
 
     @pytest.mark.parametrize(
@@ -115,13 +129,17 @@ class TestLibMaskShellQuotes:
     def test_multi_word_or_operator_span_blanks_to_its_delimiter_pair(self, text, expected):
         assert _mask_shell_quotes(text).stdout == expected
 
+    def test_backslash_escaped_quote_opens_a_span_known_gap(self):
+        """Pinned known gap: the masker does not model backslash escapes, so
+        the `\\"` pair below opens and closes a span the shell never sees and
+        the second commit is blanked. Changing this output changes which
+        commands arm 2 of deny-invisible-commit-content.sh can see."""
+        text = 'git commit -m x && echo \\" && git commit -m y && echo \\"'
+        assert _mask_shell_quotes(text).stdout == 'git commit -m x && echo \\""'
+
     def test_ansi_c_multi_word_span_has_no_stray_dollar(self):
-        """A multi-word ANSI-C-quoted span ($'fix && bar') falls into the
-        blanking branch (its interior isn't a single safe word), which must
-        trim the leading `$` the same way the single-safe-word unquoting
-        branch already does — a `$` before an opening delimiter is dropped
-        whenever the span closes — otherwise the blanked output is `$''`
-        instead of `''`."""
+        """A `$` before an opening delimiter is dropped whenever the span
+        closes, so `$'fix && bar'` masks to `''`, not `$''`."""
         assert _mask_shell_quotes("$'fix && bar'").stdout == "''"
 
     @pytest.mark.parametrize(
@@ -162,3 +180,18 @@ class TestLibMaskShellQuotes:
             '"git" commit', env={"PATH": build_path_without("awk", farm_dir)}, expect_success=False
         )
         assert result.returncode != 0
+
+    def test_timeout_exit_status_propagates_so_callers_can_fail_closed(self, tmp_path):
+        """A `timeout` that kills the scan exits 124, and that status must
+        reach the caller. A shim stands in for the real 5s wait."""
+        shim_dir = tmp_path / "timeout-shim-bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "timeout"
+        shim.write_text("#!/bin/bash\nexit 124\n")
+        shim.chmod(0o755)
+        result = _mask_shell_quotes(
+            '"git" commit',
+            env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            expect_success=False,
+        )
+        assert result.returncode == 124

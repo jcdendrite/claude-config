@@ -19,7 +19,7 @@ LIB_SH = HOOKS_DIR / "_lib.sh"
 
 def _is_pseudo_file_path(path: str) -> int:
     return subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_is_pseudo_file_path "$1"', "_", path],
+        ["/bin/bash", "-c", f'. "{LIB_SH}"; _lib_is_pseudo_file_path "$1"', "_", path],
         capture_output=True,
         text=True,
         check=False,

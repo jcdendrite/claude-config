@@ -45,6 +45,8 @@
 #   "..."`, `--title "..."`), any `--body-file`/`--template` file
 #   contents, and — if `--fill`/`-f`/`--fill-first`/`--fill-verbose` is
 #   used — the commit messages on the branch since `main`.
+# - A body source `_lib_is_pseudo_file_path` matches is skipped, not read, so
+#   a marker behind one does not satisfy the gate.
 #
 # Known gaps (documented, not closed):
 # - `gh pr create --body "$(cat file)"` or backtick command substitution

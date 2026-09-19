@@ -240,6 +240,8 @@ class TestRequireStowReminder:
                 pass_fds=(fd,),
                 check=False,
             )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "hook allowed: the pseudo-file body source was read"
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         # The stow-marker deny, not an unrelated fail-closed deny.

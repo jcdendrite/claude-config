@@ -2517,38 +2517,33 @@ _lib_strip_shell_quotes() {
 # Masks each quoted span's interior while leaving its own delimiter pair
 # intact (e.g. `"..."` becomes `""`), so a commit message that merely
 # mentions the words of a commit command as literal text is not miscounted as
-# a real invocation. A quote left open at end of string is left unmasked,
-# erring toward denying rather than silently swallowing a real second commit
-# fragment. See docs/hooks.md's deny-invisible-commit-content.sh entry for the
-# single-pass quote-state-tracking design and how it contrasts with
-# `_lib_strip_shell_quotes`, which removes quote characters instead.
-# Runs under a 5s `_lib_capped_for` cap because the per-character scan is
-# O(n^2) on command length. `_lib_capped_for` runs the command uncapped when
-# neither `timeout` nor `gtimeout` is on PATH.
+# a real invocation.
+# A span whose entire interior is a single safe word (`^[A-Za-z0-9._/-]+$`)
+# is emitted unquoted instead, so a quoted command word stays visible.
+# A `$` directly before an opening delimiter is dropped whenever the span
+# closes, and kept when the quote is left open.
+# A quote left open at end of string is left unmasked, erring toward denying.
+# See docs/hooks.md's deny-invisible-commit-content.sh entry for the design.
+# Runs under a 5s `_lib_capped_for` cap because the scan is O(n^2).
 # Call-site contract (load-bearing): awk can be missing, killed, or time out,
 # and no caller runs under `set -e`, so every call site must capture and check
 # the exit status immediately and fail closed on non-zero.
 #
-# Blanking: a quoted span blanks to its delimiter pair by default, whether it
-# is multi-word or contains whitespace or an operator. A quoted message
-# containing `&&` therefore masks the operator inside it.
-#
-# Exceptions to blanking:
-# - A quoted span whose entire interior is a single safe word
-#   (`^[A-Za-z0-9._/-]+$`) is emitted unquoted, so a quoted command word
-#   survives masking and stays visible to a fragment-count loop.
-#
-# A `$` directly before an opening delimiter is dropped whenever the span
-# closes, whether the span is emitted unquoted or blanked, mirroring
-# `_lib_strip_shell_quotes`'s own `$'`/`$"` opener rule. The `$` is kept when
-# the quote is left open.
-#
 # Limits:
-# - Backslash escapes are not modeled: `\"` and `\'` are ordinary characters
-#   that open or close spans.
-# - The scan reads the whole command as one awk record via `RS = "\0"`. An awk
-#   that treats that value as paragraph mode (BSD/macOS awk) splits the record
-#   at a blank line, which resets quote state inside a span.
+# - This is a character-level quote-state scanner, not a bash tokenizer.
+# - It does not model backslash escapes (`\"` and `\'` are ordinary quote
+#   characters), an empty quote pair glued to a word, a multi-word mid-word
+#   split, or an ANSI-C escape.
+# - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
+#   command into records at each blank line, with two effects.
+# - An unquoted blank line is deleted and its neighbouring tokens fuse.
+# - A blank line inside a quoted span resets quote state at the record
+#   boundary, so the span's closing quote acts as an opener and quote parity
+#   stays inverted for the rest of the command, blanking a later real commit
+#   any distance away.
+# - That list is illustrative, not exhaustive.
+# - A gap in this class can drop a command word from a caller's fragment
+#   count, and the effect then fails open.
 _lib_mask_shell_quotes() {
   # False positive: shellcheck's no-warn heuristic for a bare `awk '...'`
   # pipe stage doesn't recognize awk once it's preceded by the
