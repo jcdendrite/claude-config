@@ -13,6 +13,8 @@
 # plan-review/ROUTING.md gets the same 500-line cap: it holds the
 # item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
 # the same content class the cap was written for.
+# pr-description/DEFAULT_TEMPLATE.md has no override and falls to the
+# 200-line default.
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
@@ -118,8 +120,10 @@ limit_for() {
 #   stow consumer that adopts it, not a claude-config-internal no-op.
 #   Anchored at line start so it cannot also match claude/.claude/skills/
 #   (the stowed source tree).
-# - the single hardcoded plan-review/ROUTING.md exception (see limit_for() above)
+# - runtime auxiliary files, matched by exact path in the regex below:
+#   - plan-review/ROUTING.md (limit override in limit_for() above)
+#   - pr-description/DEFAULT_TEMPLATE.md (no override; 200-line default)
 #
 # A repo-root skill has no override path in limit_for() and resolves to the
 # 200-line default, same as plugins/*/skills/.
-_lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^\.claude/skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."
+_lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^\.claude/skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$|^claude-skills/skills/pr-description/DEFAULT_TEMPLATE\.md$' "one or more SKILL.md files grew past their per-skill limit."
