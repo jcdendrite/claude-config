@@ -14,7 +14,7 @@ argument-hint: "[optional PR context]"
 
 Run steps in order. Halt on failures unless the step is marked **warn only**. After a fix produced by step 2, 3, or 4, return to step 2 and continue in order. Step 3 then re-reviews the fixed cumulative diff in full, because its cache marker misses on the changed bytes. Step 4 does not re-run on its own output.
 
-A halt on step 2, 3, or 4 triggers the normal fix loop first (dispatch `code-writer`, apply the fix, re-run step 2); only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 7 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
+A halt on step 2, 3, or 4 triggers the fix loop above first; only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 7 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
 ## 0. Activate gate session
 
@@ -25,7 +25,7 @@ Write the active-session marker so this skill's own pushes (step 7, reached afte
 ~/.claude/scripts/marker.sh activate ready-for-review
 ```
 
-If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block iteration pushes without this marker.
+If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block step 7's push without this marker.
 
 ## 1. Preconditions (halt on fail)
 
@@ -81,9 +81,9 @@ This pass reviews the cumulative diff with no responsibility-boundary narrowing 
 
 Run `/code-review` against that diff, passing it the path the `DIFF_FILE:` line named. If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes, within the cap below.
 
-**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table, even an empty one, to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, or DEFER criterion, and amend a cell if the landed fix departs from that row's suggested fix. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it, and dirty otherwise. The record authorizes nothing: the `cumulative-review` marker stays the only authorization, and later reviews read the record only as context.
+**Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned; a pass with no findings records one row whose finding cell reads `none`. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, or DEFER criterion, and amend a cell if the landed fix departs from that row's suggested fix. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it (a `none` row counts as resolved), and dirty otherwise. No record grants a review skip and the `cumulative-review` marker stays the sole authorization, but the Cap counts records, so a record's clean or dirty status can relax the Cap; later reviews otherwise read it only as context.
 
-**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict. A *stop*, a return that reads as neither verdict, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human.
+**Cap.** Before dispatching a dirty pass's fix, list this branch's records newer than its newest clean one, in suffix-timestamp order, counting any record you cannot parse, or that has no rows, as dirty. If one of them already carries a cap row, stop and ask the human, blocking. Otherwise, if they number two or more, first dispatch `plan-architect` with `MODE=consult`, carrying the records' paths and the plan path if one exists, to judge whether the loop is converging (*proceed*) or its foundation is wrong (*stop*). Add its answer to this pass's record as a table row whose finding cell reads `cap` and whose Outcome is the verdict. A *stop*, a return that reads as neither verdict, or an orchestrator disagreement with the return, is a blocking stop-and-ask to the human.
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -152,8 +152,8 @@ Removes only this session's file. If the skill errors before reaching this step,
 
 **Do NOT write the completion marker if:**
 
-- Any halt-on-fail step (1, 2, 3, 4, 7) produced findings that weren't
-  fixed in this session.
+- Any halt-on-fail step (1, 2, 3, 4, 7) left a finding unresolved this session
+  (a DEFERred or *keep current text* finding counts as resolved).
 - The user asked you to present findings without finishing the gate.
 - This session deferred via step 1's context-budget check.
 - You are not in a git repository, or the branch has no PR and no remote tracking (nothing to gate).

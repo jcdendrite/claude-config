@@ -4659,9 +4659,8 @@ _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 # (pushing commits is cheap enough to finish before any deferral
 # consideration).
 _PINNED_HALT_DEFERS_CLAUSE = (
-    "A halt on step 2, 3, or 4 triggers the normal fix loop first "
-    "(dispatch `code-writer`, apply the fix, re-run step 2); only once "
-    "that round's fix commit has landed does a context-budget re-check "
+    "A halt on step 2, 3, or 4 triggers the fix loop above first; only "
+    "once that round's fix commit has landed does a context-budget re-check "
     "run, and only then does an over-threshold/already-fired result "
     "route to step 1's deferral. A halt on step 7 stays outside this "
     "routing — pushing the commits is cheap enough to finish before any "
@@ -4686,6 +4685,23 @@ class TestReadyForReviewHaltRoutesToContextBudgetDeferral:
             pinned_text,
             raw_section,
             context="ready-for-review/SKILL.md: Overview's halt-deferral sentence no longer matches.",
+        )
+        # The halt clause says "the fix loop above", so the fix-loop paragraph
+        # must precede it.
+        # _assert_pinned_clause_right_bounded returns no match position, so the
+        # start offsets are rebuilt here with the same whitespace-tolerant pattern.
+        fix_loop_pattern = r"\s+".join(re.escape(word) for word in _PINNED_FIX_LOOP_CLAUSE.split())
+        halt_pattern = r"\s+".join(re.escape(word) for word in pinned_text.split())
+        fix_loop_match = re.search(fix_loop_pattern, raw_section)
+        halt_match = re.search(halt_pattern, raw_section)
+        assert fix_loop_match is not None and halt_match is not None, (
+            "ready-for-review/SKILL.md: Overview's fix-loop or halt-deferral clause not found "
+            "for the ordering check; if the fix-loop clause drifted, see "
+            "TestReadyForReviewFixLoopRule."
+        )
+        assert fix_loop_match.start() < halt_match.start(), (
+            "ready-for-review/SKILL.md: Overview's fix-loop paragraph must precede the "
+            "halt-deferral paragraph that refers to it as 'the fix loop above'."
         )
 
 
@@ -4717,15 +4733,11 @@ class TestReadyForReviewFixLoopRule:
         )
 
 
-# Step 3's loop cap: it bounds consecutive dirty passes, and its clauses bind
-# conditions to outcomes (an unparseable record counts as dirty; an existing
-# cap row stops for the human; two or more dirty records trigger the consult;
-# a stop verdict, a return that reads as neither verdict, or disagreement
-# stops for the human).
+# Step 3's loop cap: each clause binds a condition to its outcome.
 _PINNED_STEP3_CAP_CLAUSE = (
     "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
     "records newer than its newest clean one, in suffix-timestamp order, "
-    "counting any record you cannot parse as dirty. If one of them already "
+    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
     "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
     "number two or more, first dispatch `plan-architect` with "
     "`MODE=consult`, carrying the records' paths and the plan path if one "
@@ -4739,20 +4751,22 @@ _PINNED_STEP3_CAP_CLAUSE = (
 
 # Step 3's clean/dirty definition for a disposition record: the Cap counts
 # records newer than the newest clean one, and the closing sentence keeps the
-# record from authorizing anything.
+# record from granting a review skip while disclosing that it can relax the Cap.
 _PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
     "The pass is clean when every row is resolved as `code-review/SKILL.md` "
-    '§ "Step — Record review completion" counts it, and dirty otherwise. The '
-    "record authorizes nothing: the `cumulative-review` marker stays the "
-    "only authorization, and later reviews read the record only as context."
+    '§ "Step — Record review completion" counts it (a `none` row counts as '
+    "resolved), and dirty otherwise. No record grants a review skip and the "
+    "`cumulative-review` marker stays the sole authorization, but the Cap "
+    "counts records, so a record's clean or dirty status can relax the Cap; "
+    "later reviews otherwise read it only as context."
 )
 
 
 class TestReadyForReviewStep3LoopCapPins:
     """Pin step 3's Cap paragraph and its clean/dirty definition, so dropping
     the unparseable-record-counts-as-dirty rule, the cap consult, or the
-    statement that the disposition record authorizes nothing fails a test
-    instead of drifting silently.
+    statement that a record grants no review skip fails a test instead of
+    drifting silently.
     """
 
     @pytest.mark.parametrize(
@@ -4839,6 +4853,51 @@ class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
             pinned_text,
             raw_section,
             context="code-review/SKILL.md: clean-definition clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
+
+# The re-review carry-forward paragraph: the disposition records reach each
+# spawn prompt, a record never narrows a review or suppresses a finding the
+# current text supports, and a missing or partial earlier fix is a new finding
+# for any reviewer. It is pinned whole because the right-bound check needs a
+# structural boundary at the pinned text's end.
+_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
+    "On a re-review, prior decisions are this session's context plus every "
+    "disposition record `ready-for-review/SKILL.md` § \"3. Code review (halt "
+    "on findings)\" wrote for this branch; put those record paths and these "
+    "three rules in each spawn prompt (a reviewer sees only its prompt). The "
+    "spawn finishes its own review before opening the records — a record "
+    "never narrows what it reviews or suppresses a finding the current text "
+    "supports, and it names in its findings any record it cannot parse, or "
+    "whose claim the current text contradicts. For each earlier ADDRESS row "
+    "the same agent raised, it confirms the fix landed as the finding "
+    "required; a missing or partial fix is a new finding for any reviewer "
+    "that sees it, whichever agent raised the row. It re-flags a site an "
+    "earlier fix or verdict rewrote only under a different rule than the one "
+    "behind the rewrite, or for a fact the rewrite dropped, and when its fix "
+    "would move a site back toward its earlier wording it names the finding "
+    "it contradicts."
+)
+
+
+class TestCodeReviewRippleCarryForwardPin:
+    """Pin code-review/SKILL.md's re-review carry-forward paragraph, so
+    inverting the record-never-suppresses trust rule, dropping the hand-off
+    of record paths to every spawn prompt, or dropping the any-reviewer
+    partial-fix rule fails a test instead of drifting silently.
+    """
+
+    def test_carry_forward_paragraph_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RIPPLE_HEADING
+        )
+        pinned_text = " ".join(_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
         )
 
 
