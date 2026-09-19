@@ -27,6 +27,7 @@ TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/nul
 
 ADDITIONAL_CONTEXT="Answer provenance: the engineer selected only the option label(s) in this result, plus any text they typed. The option descriptions, and anything inferred from options they did not pick, are yours — relay them as your proposal, never as the engineer's decision or under a tag like [engineer-verified] (CLAUDE.md §Working Style, \"Attribute to the engineer only what they said\")."
 
+# shellcheck disable=SC2016 # single-quoted on purpose: $ctx is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
 _lib_jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
   '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}' \
   2>/dev/null || true
