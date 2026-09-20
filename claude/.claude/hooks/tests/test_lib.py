@@ -1288,12 +1288,26 @@ def _is_reviewer_persona(agent_type: str) -> bool:
     return result.returncode == 0
 
 
-def test_is_reviewer_persona_accepts_a_real_reviewer_persona() -> None:
-    assert _is_reviewer_persona("staff-sdet")
+def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
+    roster = _reviewer_persona_agents()
+    assert roster, "reviewer-persona roster must not be empty"
+    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
+    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
 
 
 @pytest.mark.parametrize(
-    "agent_type", ["Explore", "Plan", "code-writer", "plan-architect", "general-purpose", ""]
+    "agent_type",
+    [
+        "Explore",
+        "Plan",
+        "code-writer",
+        "plan-architect",
+        "general-purpose",
+        "",
+        "staff-sdet-x",
+        "staff-sde",
+        "STAFF-SDET",
+    ],
 )
 def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
     agent_type: str,
@@ -1304,7 +1318,8 @@ def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_a
     code-writer is an implementer. plan-architect is a design consultant that a
     caller branches on separately. general-purpose is a harness built-in outside
     the review-only roster. The empty case is a dispatch payload with no
-    subagent_type.
+    subagent_type. The staff-sdet variants pin that the predicate is not doing
+    prefix, glob, or case-insensitive matching.
     """
     assert not _is_reviewer_persona(agent_type)
 

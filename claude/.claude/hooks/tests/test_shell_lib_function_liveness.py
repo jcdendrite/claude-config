@@ -48,9 +48,8 @@ A new function whose only consumer is a file not yet `git add`ed fails locally,
 since the shell and Python corpus comes from `git ls-files`. It passes once the file is staged.
 
 The two lib-path constants are built from `HOOKS_DIR`, imported by bare name so
-`TestCrossDomainReadCompleteness` can resolve them. Corpus enumeration is
-invisible to that resolver, so the real-tree test selection is covered only by
-this file living under `HOOKS_DIR`.
+`TestCrossDomainReadCompleteness` can resolve them. That resolver cannot see
+corpus enumeration. This file is selected because it lives under `HOOKS_DIR`.
 """
 from __future__ import annotations
 

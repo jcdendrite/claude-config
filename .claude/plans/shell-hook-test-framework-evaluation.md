@@ -5,16 +5,15 @@
 The engineer asked whether this repo should adopt bats-core alongside its
 pure-pytest suite, motivated by the repo's heavy reliance on complex Bash hook
 logic and a hypothesis that bats-core might yield better coverage and/or test
-performance. Why now: the shell surface has grown to 25,445 tracked lines across
-110 files, including two large shared libraries (`claude/.claude/hooks/_lib.sh`
+performance. Why now: the shell surface has grown to 110 tracked files,
+including two large shared libraries (`claude/.claude/hooks/_lib.sh`
 at 3,385 lines, `claude/.claude/hooks/_config.sh` at 1,258), and the engineer
 wants to know if the testing approach has outgrown its foundation before more
 shell logic accretes. Intended outcome: a grounded verdict on bats-core
 adoption, plus whatever concrete remediation the investigation justifies. The
 engineer supplied a secondary-source analysis arguing bats-core wins on
 white-box mocking and loses on assertions/performance; that analysis has been
-verified against primary sources and is substantially wrong about this repo's
-situation.
+verified against primary sources.
 
 ## Approach
 
@@ -25,11 +24,9 @@ findings (`install.sh` decomposition, shared white-box helper) ship as filed
 issues, not as PR work: neither is caused by the framework choice, and both
 would be the same refactor under any runner.
 
-**One reversal from the reviewed draft:** that version deleted
-`_lib_reviewer_persona_agents` as dead code. It is instead the unconsumed half
-of a three-member test-seam family whose other two members are both consumed
-(rows 4–5), so M2 now adds the missing consumer. That removes the deletion, its
-preserved-record hazard, and the manual post-deletion grep along with it.
+**`_lib_reviewer_persona_agents` is kept, not deleted.** It is the unconsumed
+half of a three-member test-seam family whose other two members are both
+consumed (rows 4–5), so M2 adds the missing consumer.
 
 **Scope call (delegated to plan-architect):** neither "full remediation" nor
 "cheap ones only" as framed — one step past cheap-ones, and short of full. It
@@ -39,8 +36,7 @@ rows 10–15 and in M2's scope paragraph.
 
 ### Assumption ledger
 
-**Root:** The repo's shell surface (25,445 lines, 110 files, two shared
-libraries) is tested entirely through a Python harness, and no one has checked
+**Root:** The repo's shell surface (110 files, two shared libraries) is tested entirely through a Python harness, and no one has checked
 whether that harness still reaches the shell surface adequately — so a framework
 change is being weighed without a grounded picture of what it would fix.
 
@@ -56,25 +52,19 @@ change is being weighed without a grounded picture of what it would fix.
   and carries at least seven open false-positive issues** (#2041, #3222, #2873,
   #3263, #3229, #3247, #3509). Upstream ShellCheck owns both the help text and
   the issue backlog.
-- **G3 — bats parallelism requires GNU parallel or shenwei356/rush, and does not
-  guarantee test ordering.** That is bats-core's documented design, not a
+- **G3 — bats parallelism requires GNU parallel or a compatible replacement, and
+  does not guarantee test ordering.** That is bats-core's documented design, not a
   configuration this repo can change.
 - **G4 — `scripts/dev/fork-topology-probe.sh` requires a human reading live
   Claude Code fork output.** The harness's fork behavior is observable only at
   runtime by a person; no test framework changes that.
-- **G5 — fork+exec dominates the suite, from two separable causes, neither
-  reachable from here.** (a) Contract-boundary tests exec a real process because
-  the contract under test *is* the process boundary Claude Code invokes — stdin
-  JSON, stdout JSON, exit code. That cost is language-independent and is imposed
-  by the subject matter. (b) The larger function-level share execs `bash -c`
-  because the functions are written in Bash; that share would shrink under a
-  Python rewrite. (b) is out of reach because rewriting 49 hooks is disproportionate to a
-  test-framework question. Hooks also fire synchronously on every tool call, so a
-  Python interpreter's cold start may be why the hooks are Bash, but that cost is
-  unmeasured (see the decision doc). Neither share shrinks under bats, which
-  execs the same Bash artifacts (row 9).
+- **G5 — fork+exec is the likely dominant cost of the suite, from two separable
+  causes, neither reachable from here.** The causes are in the decision doc's
+  performance section (`docs/design-decisions/bats-core-adoption-declined.md`).
+  Neither cause shrinks under bats, which execs the same Bash artifacts.
 
-**Rows:**
+**Rows** (each describes the tree as it stood when the plan was written, before
+M2 lands):
 
 1. The white-box capability bats is proposed to add already exists in this repo,
    as `subprocess.run(["bash","-c", f". {_LIB_SH}; {call}"])`. `[verified: 151
@@ -84,11 +74,9 @@ change is being weighed without a grounded picture of what it would fix.
    claude/.claude/hooks/tests/test_lib.py:141-150 wraps it as
    _run_lib_call(call, env), and :95-113 as _HARNESS_TEMPLATE/_run_harness for
    the emit_deny-predefining variant]`
-2. There is no black-box coverage deficit for bats to close. 109 of 110 tracked
-   shell files carry ≥1 test reference; the single exception is G4's manual
-   probe. Zero `xfail` tree-wide, and no skip is annotated as a black-box
-   limitation. `[verified: discovery evidence pack sections B and D; staff-sdet
-   reproduced the 110-file basename scan independently]`
+2. Every function in the two shared libraries but one has a reference (row 3).
+   That establishes reference completeness only: a reference is not execution,
+   so it is not a coverage claim. `[verified: row 3's evidence]`
 3. Of 103 functions in `_lib.sh` + `_config.sh`, exactly one has no reference
    anywhere in the repo: `_lib_reviewer_persona_agents`
    (`claude/.claude/hooks/_lib.sh:3044-3046`). The six other functions the
@@ -128,7 +116,7 @@ change is being weighed without a grounded picture of what it would fix.
    confirmed the two production callers]`
 7. Adopting bats through the system-package route means a new non-pip system
    dependency. `requirements-dev.txt`
-   holds five pinned wheels and nothing else; ShellCheck itself arrives as the
+   holds five wheels and nothing else; ShellCheck itself arrives as the
    `shellcheck-py` wheel; the only non-pip CI install is
    `apt-get install -y stow direnv`. bats would be a third apt package, plus GNU
    parallel (G3) for parallelism. `[verified: evidence pack section E;
@@ -137,28 +125,19 @@ change is being weighed without a grounded picture of what it would fix.
 8. The bar against the system-package route is repo precedent, not a `CLAUDE.md`
    prohibition. The decision doc's Dependency section
    (`docs/design-decisions/bats-core-adoption-declined.md`) covers the
-   git-submodule and `bats-core/bats-action` routes (G1) as facts. Root
-   `CLAUDE.md`'s "Working in this repo" section says two things — `claude-config`
-   depends on no other *repository*, and *optional* integrations with public
-   tools are permitted only when absent-tool behavior degrades gracefully.
-   Neither sentence bars a mandatory non-pip system package, and the repo already
-   installs two. The
-   load-bearing distinction is the one `tests.yml` draws for itself: stow and
-   direnv are installed because tests exercise the real binaries rather than a
-   stub ("test_relocate_claude_config.py exercises real stow/stow -D (not a
-   stub)… test_ci_watch.py's real-direnv tests exercise actual direnv hook
-   output"). bats would be the first apt package that is a test *vehicle* rather
-   than a subject under test. `[verified: root CLAUDE.md "Working in this repo" section read in full;
+   git-submodule and `bats-core/bats-action` routes (G1) as facts, and the
+   `tests.yml` stow/direnv precedent. `CLAUDE.md` § "Working in this repo" does
+   not bar a mandatory non-pip system package, and the repo already installs two.
+   `[verified: root CLAUDE.md "Working in this repo" section read in full;
    .github/workflows/tests.yml:144-156 read this session. The submodule and
    bats-action routes are stated in G1 and the decision doc as facts only, with
    no rule analysis]`
-9. The performance hypothesis points the wrong way. `sys` time is 85–90% of
-   `user` time in the local observation, so the suite is fork+exec bound (G5), and
-   bats' subshell-per-`run` (`lib/bats-core/test_functions.bash`) adds forks
+9. The performance hypothesis points the wrong way. A large share of CPU time is
+   `sys` in the local observation, which points to a fork+exec-bound suite (G5),
+   and bats' subshell-per-`run` (`lib/bats-core/test_functions.bash`) adds forks
    rather than removing them. The repo already runs `-n auto` with a CI
-   `timing`/`-n0` serial split. The secondary source's "incredibly slow on large
-   suites" claim appears in no primary source. `[verified: pyproject.toml:24
-   addopts; the 85–90% ratio is a local measurement from the evidence pack
+   `timing`/`-n0` serial split. `[verified: pyproject.toml:24
+   addopts; the `sys` share is a local measurement from the evidence pack
    (sections D and F), which is not in the tree (row 19)]`
 10. `install.sh`'s 18 `INSTALL_TEST_FIXTURE` marker pairs exist because the
     file's top-level logic mutates `$HOME` and tracked repo settings, so it can
@@ -198,15 +177,15 @@ change is being weighed without a grounded picture of what it would fix.
     single-source-of-truth carve-out "a small duplicated value that beats a bad
     abstraction"]`
 15. `select-tests.py` has no representation of a second test runner:
-    `select_pytest_targets` (`:516-550`) and `build_pytest_argv` only ever
+    `select_pytest_targets` and `build_pytest_argv` only ever
     construct a pytest argv, and an unmatched path falls open to
     `FULL_SUITE_TARGETS` with reason `"unmatched-path"`. A `.bats` file would
     trigger a full pytest run that never executes it. This describes no live
     defect — no `.bats` file exists and this plan decides none will — so it is
     the first implementation task of a decision being declined, tracked against
     the reconsideration trigger rather than as standing backlog. `[verified:
-    claude/.claude/scripts/select-tests.py:516-550 read this session;
-    ciso-reviewer reconfirmed the unmatched-path fall-open]`
+    `select_pytest_targets` in claude/.claude/scripts/select-tests.py read this
+    session; ciso-reviewer reconfirmed the unmatched-path fall-open]`
 16. Full remediation was the engineer's leaning, with cheap-ones-only explicitly
     left open and the call delegated to plan-architect. `[engineer-verified]`
 17. All four findings are to be captured as tracked follow-ups regardless of
@@ -221,37 +200,29 @@ change is being weighed without a grounded picture of what it would fix.
     dead/unused/uncalled/liveness across claude/.claude/hooks/tests/;
     staff-platform-engineer reconfirmed test_shellcheck.py is the only
     shell-lint test there]`
-19. The local wall-clock figures (878.11s, 584.97s) came from a contended
+19. Local wall-clock timings are not cited: they come from a contended
     machine with other worktrees' pytest running concurrently.
     `docs/design-decisions/fixture-setup-caching-declined.md:5-7` records the
     repo's own precedent that local `-n auto` timings diverge sharply from the
     4-vCPU CI runner and produced contradictory readings there. `[verified: that
     file read this session and reconfirmed by two reviewers. The evidence pack
-    (section D) is a session artifact absent from the tree, so the absolutes are
+    (section D) is a session artifact absent from the tree, so timings are
     unverified and the decision doc omits them]`
-20. `TestCrossDomainReadCompleteness` cannot adjudicate M3's corpus reads, so
-    the cross-domain question is settled by direct analysis instead. Its
-    resolver handles only module-level `Path(__file__)` chains and names "a
-    `List` of glob results" unresolvable by design
-    (`test_select_tests.py:75,77`); `select-tests.py:394-397` states it verifies
-    precision, not recall. Direct analysis of `DOMAIN_RULES` and
-    `CROSS_DOMAIN_EXCEPTIONS` gives both directions: **forward** (the guard
-    reads production shell files) is already covered — any tracked shell file
-    edit selects `HOOKS_TESTS_DIR` via `:371`, `:480`, `:492`, or falls open to
-    the full suite as an unmatched path; **reverse** (the guard reads `.py`
-    files outside `claude/.claude/hooks/`) has a gap: scoped runs select tests
-    through `select-tests.py`'s rule table, and some `.py` edits outside
-    `claude/.claude/hooks/` do not select the guard. The rule table is canonical
-    for which ones. Closing the gap is a `select-tests.py` rule-table edit outside
-    this diff. CI's unconditional full suite (`tests.yml:165,172`) is the
-    backstop. Issue #1045 tracks the scoped-selection gap.
+20. `TestCrossDomainReadCompleteness` cannot see M3's corpus enumeration, so the
+    cross-domain question is settled by direct analysis of `DOMAIN_RULES` and
+    `CROSS_DOMAIN_EXCEPTIONS`. **Forward** (the guard reads production shell
+    files): any tracked shell file edit selects `HOOKS_TESTS_DIR` or falls open to
+    the full suite as an unmatched path. **Reverse** (the guard reads `.py` files
+    outside `claude/.claude/hooks/`): some such edits do not select the guard. The
+    rule table is canonical for which ones, and issue #1045 tracks the gap. CI's
+    full suite (`tests.yml:165,172`) is the backstop.
     `[verified: test_select_tests.py:67-113 and :341-363 read this session;
-    select-tests.py:370-503 read this session; tests.yml:165,172 read by
-    staff-sdet (both full-suite runs are gated by the detect step, so
-    "unconditional" means "not scope-selected"); non-selection of the guard for
-    some `.py` edits outside hooks/ probed by staff-sdet via
-    select_pytest_targets, on the paths it probed only; reverse-direction gap
-    first identified by staff-sdet and reconfirmed here]`
+    select-tests.py `DOMAIN_RULES` read this session; tests.yml:165,172 read by
+    staff-sdet (both full-suite runs are gated by the detect step, so "CI's full
+    suite" means "not scope-selected"); non-selection of the guard for some `.py`
+    edits outside hooks/ probed by staff-sdet via select_pytest_targets, on the
+    paths it probed only; reverse-direction gap first identified by staff-sdet and
+    reconfirmed here]`
 21. `scripts/list-shell-files.sh` is the repo's single definition of the
     tracked-shell-file set, `git ls-files -z`-based and already consumed by both
     the CI shellcheck step and `test_shellcheck.py`, which re-derives the set
@@ -313,19 +284,16 @@ The test mirrors `test_no_gate_release_set_covers_every_review_only_agent`
 the derivation rather than a copy — `set(reviewer_persona) == set(review_only) -
 {"Explore", "Plan"}`. Pinning the excluded pair as a literal is the same
 closed-set discipline `HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS`
-(`test_agent_roster.py:649`) uses. What the test actually verifies is narrower
-than that pattern might suggest: it catches divergence between the shell-side
-`case` exclusion (`_lib.sh:3039`) and the Python-side literal — for example the
-`Explore | Plan) continue` line being deleted or edited without the literal
-following it. It does not force a deliberate call when a new harness built-in
-is added to `_LIB_REVIEW_ONLY_AGENTS` and the exclusion case is left untouched:
-the new name flows into both sides of the equality identically, so it is
-silently admitted to the reviewer-persona set with no failure. Forcing that
-call would need a different test — for example one asserting the
-reviewer-persona roster's size tracks the review-only roster's size by a fixed
-delta, or one deriving both rosters from a single canonical "harness built-ins"
-list rather than two independently-typed literals — and adding that test is not
-part of this plan's scope.
+(`test_agent_roster.py:649`) uses. It catches the shell-side `case` exclusion
+(`_lib.sh:3039`) drifting from the Python-side literal. A new harness built-in
+added to `_LIB_REVIEW_ONLY_AGENTS` with the exclusion left untouched passes,
+since the name lands on both sides.
+
+Row 6's gap (the predicate is never exercised against the derived roster) is
+closed by a second pair of tests on `_lib_is_reviewer_persona`: one accepts every
+member of the derived roster, and one rejects non-members and near-miss, prefix
+and case variants. The roster is derived inside the test body, so a broken
+accessor fails one named test rather than interrupting collection.
 
 Over-powered-primitive check, two lighter primitives from this repo's own
 toolkit: (a) *the prose comment already at `_lib.sh:3030-3035`*, which documents
@@ -349,10 +317,10 @@ row2, row3, row18, row20, row21, row22, row23, row24`.
 
 Name it for what it is. This is a **dead-code / unconsumed-seam tripwire**, not
 a coverage guard: a function referenced only from production code with no test
-at all passes it. Row 2 already establishes there is no coverage deficit; row 3
+at all passes it. Row 2 establishes reference completeness, not coverage; row 3
 establishes the separate fact that a seam sat unconsumed and nothing flagged it.
 M3 addresses the second only, and M1's design-decision file must say so rather
-than citing M3 as evidence for the first.
+than citing M3 as coverage evidence.
 
 It is earned by a demonstrated instance, not a hypothesis: the repo did accrete
 an orphaned accessor, it survived at least one full PR cycle, and it surfaced
@@ -419,13 +387,13 @@ here.
 test in `~/.claude/CLAUDE.md` is whether each layer closes a gap the previous
 layer created. None of these does. A textual scan has exactly these free
 parameters — which definitions, which files, which of those count, which lines
-within them, and how a name is matched — and the reviewed draft left all of them
-blank. Filling them in completes a specification rather than stacking defenses:
+within them, and how a name is matched — and all are fixed here. Fixing them
+completes a specification rather than stacking defenses:
 remove any one and the predicate is not weaker, it is undefined. The
 compounding-layers tell would fire if the comment filter forced a heredoc filter
 which forced a string-literal filter; this stops at the first and names the
 residual instead of adding the second. Two
-further properties hold as before: the guard needs **no allowlist at landing**
+further properties hold: the guard needs **no allowlist at landing**
 (zero violations once M2 lands, so the exception list stays empty and stays a
 real signal), and it is a **name-reference scan, not a call-graph analysis** —
 conservative in the safe direction, since indirect invocation via `"$fn_name"`,
@@ -501,7 +469,7 @@ written order but with M3's file authored and run before M2's test (see M3's
 one-shot proof). Grouped, not merely co-located: M3's real-tree assertion fails
 without M2, since `_lib_reviewer_persona_agents` would still have zero
 references; and M3 is the mechanism that keeps M1's dead-seam claim durable
-rather than a prose assurance dated 2026-09-18. One dispatch, because the three
+rather than a prose assurance dated 2026-09-19. One dispatch, because the three
 share the same `_lib.sh` reading and splitting would restate it (plan-it's
 do-not-split rule).
 
@@ -564,14 +532,13 @@ three must hold:**
    system-package precedent — see row 8 — it is a choice the repo would be making
    deliberately, through that artifact.
 3. ShellCheck documents `.bats` in `--shell`'s help output **and** the open
-   `.bats` false-positive issues close (G2). Otherwise adoption means either
-   unlinted test files or a growing per-file suppression list, and bats' own
-   docs currently steer external-tool users to the `.bash` alternative.
+   `.bats` false-positive issues close (G2). The decision doc's trigger section
+   is canonical.
 
 **Performance axis — independent, one condition:** a profile of the CI
 `-m "not timing"` pass attributes the majority of its time to pytest's own
-per-test overhead rather than to subprocess fork+exec. A local, unreproduced observation puts `sys` at
-85–90% of `user` (row 9), which says the opposite. A wall-clock threshold is deliberately *not*
+per-test overhead rather than to subprocess fork+exec. A local, unreproduced observation finds a large share
+of CPU time in `sys` (row 9), which says the opposite. A wall-clock threshold is deliberately *not*
 the trigger: absolute wall time grows with test count and would fire for a cause
 bats cannot address (row 9, G5).
 
@@ -585,25 +552,24 @@ interdependent (M3's real-tree assertion fails without M2; M1 cites both).
 - `docs/design-decisions/bats-core-adoption-declined.md` — the verdict, its
   grounds, and the reconsideration trigger. Slug satisfies
   `^[a-z][a-z0-9-]*\.md$` per `.claude/rules/design-decisions.md`. Format: H1,
-  blank line, then `*2026-09-18.*` — a date-only provenance line with **no**
+  blank line, then `*2026-09-19.*` — a date-only provenance line with **no**
   `Formerly §N` clause (that phrase is reserved for pre-split content). No index
   to update; `docs/design-decisions.md` is a pointer file, not a list. Three
-  content constraints: state the `sys`/`user` ratio, not the local
-  878.11s/584.97s absolutes, since concurrent-worktree contention makes them
+  content constraints: state that a large share of CPU time is `sys`,
+  not local wall-clock absolutes, since concurrent-worktree contention makes them
   unreliable, following `docs/design-decisions/fixture-setup-caching-declined.md:5-7`
   (row 19); state the dependency facts per row 8 — repo
   precedent for the system-package route (tests exercise `stow`/`direnv` as real
   binaries, a test runner would be a vehicle), and the submodule and action routes
   as facts only; and do not cite M3's
   unconsumed-seam guard as evidence for the function-level-coverage claim — M3
-  is a dead-code tripwire, not a coverage guard, and row 2 already establishes
-  there is no coverage deficit for it to close (restated from M3's mechanism
-  justification, so an implementer working from this list alone still sees
-  it).
+  is a dead-code tripwire, not a coverage guard, and row 2 establishes only
+  reference completeness (restated from M3's mechanism justification, so an
+  implementer working from this list alone still sees it).
 - `claude/.claude/hooks/tests/test_shell_lib_function_liveness.py` — M3's guard,
   plus its fixture unit tests. Structure it as a pure
   `unreferenced_functions(lib_paths, corpus_paths)` scanner, the fixture cases
-  listed under "Proving the predicate," and one assertion over the real tree.
+  listed under "Proving the predicate," and the real-tree tests.
   Declare the two lib paths as **module-level** constants imported by bare
   name — `from helpers import HOOKS_DIR` (matching `test_lib.py:30,61`'s own
   convention), never `import helpers` followed by dotted `helpers.HOOKS_DIR`
@@ -671,19 +637,16 @@ suite, per repo `CLAUDE.md`:
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
 ```
 
-Expected selection, derived from `DOMAIN_RULES` and `CROSS_DOMAIN_EXCEPTIONS`
-directly: the `docs/` file selects `HOOKS_TESTS_DIR` + `SKILLS_TESTS_DIR`
-(`:490`); the two `.py` files select `HOOKS_TESTS_DIR` (`:371`),
-`CLAUDE_TESTS_DIR` + the ticket-reference test (`:501`), and
-`test_select_tests.py` (`:502`); the plan file selects nothing (`:377`).
-`SCRIPTS_TESTS_DIR` is *not* selected, because no shell file changes in this PR.
-That breadth is the tool's call — do not widen by hand.
+The selection is the tool's call — do not widen by hand. Read the tool's own
+output for what it selected; `SCRIPTS_TESTS_DIR` is not expected, because no
+shell file changes in this PR.
 
 Confirm these four by name rather than reading only the aggregate count:
 
-- `claude/.claude/hooks/tests/test_lib.py` — M2's new roster-sync test.
+- `claude/.claude/hooks/tests/test_lib.py` — M2's new roster-sync test and the
+  `_lib_is_reviewer_persona` accept and reject tests.
 - `claude/.claude/hooks/tests/test_shell_lib_function_liveness.py` — M3's
-  fixtures and its real-tree assertion.
+  fixtures and its real-tree tests.
 - `claude/.claude/hooks/tests/test_design_decision_files.py` — the new decision
   file's slug grammar and provenance-line format.
 - `claude/.claude/scripts/tests/test_select_tests.py::TestCrossDomainReadCompleteness`
@@ -711,13 +674,11 @@ ShellCheck is not run standalone for this diff — no shell file changes, and
 already includes, so the whole tracked-script set is linted as part of the suite
 run regardless.
 
-No manual grep step. The reviewed draft carried one to police a deletion that no
-longer happens; it was also factually wrong, since this plan file's own
-committed text names the function.
+No manual grep step: nothing is deleted.
 
 ## Out of scope
 
-- **Deleting `_lib_reviewer_persona_agents`.** Considered and reversed. It is an
+- **Deleting `_lib_reviewer_persona_agents`.** It is an
   unconsumed test seam, not dead code (rows 4–5); deleting it would foreclose
   the roster-sync test M2 adds and leave a gate-feeding derivation with no drift
   regression (row 6).
@@ -729,26 +690,12 @@ committed text names the function.
   regression (row 14).
 - **`select-tests.py` second-runner support** — Issue C. No live defect; gated
   on the reconsideration trigger (row 15).
-- **Closing the reverse-direction gap in `CROSS_DOMAIN_EXCEPTIONS`** (row 20):
-  scoped runs select tests through `select-tests.py`'s rule table, and some `.py`
-  edits outside `claude/.claude/hooks/` do not select the guard. The rule table is
-  canonical for which ones. The gap is real, and deferred rather than
-  overlooked: closing it is a `select-tests.py` rule-table edit outside this diff,
-  CI's unconditional full suite catches it, and issue #1045 tracks it.
-  `select-tests.py`'s own header concedes it "verifies precision, not recall";
-  this is that documented limitation, not a new hole.
-- **Adopting bats as an optional, degrades-gracefully integration.** Root
-  `CLAUDE.md`'s "Working in this repo" section permits optional public-tool
-  integrations, so this is a real option, and the strongest shape of it is not
-  the naive one: bats installed
-  unconditionally in CI via the existing apt step so the merge-gating signal
-  stays uniform, with only local pre-push runs varying by machine — the same
-  asymmetry the repo already accepts for `stow` and `direnv`. Declined on
-  cost-versus-benefit rather than on rule: that shape still buys nothing,
-  because the white-box capability already exists (row 1), the coverage gap it
-  would close does not exist (row 2), and the performance case is negative (row
-  9, G3). Optionality removes an objection to adoption; it does not supply a
-  reason for it.
+- **Closing the reverse-direction gap in `CROSS_DOMAIN_EXCEPTIONS`** — see row 20
+  and issue #1045. Closing it is a `select-tests.py` rule-table edit outside this
+  diff.
+- **Adopting bats as an optional, degrades-gracefully integration.** Declined on
+  cost-versus-benefit rather than on rule; see the decision doc's "Optional,
+  degrades-gracefully adoption is declined too" section.
 - **Requiring a test name-reference for every shell function.** M3's predicate
   deliberately accepts a production caller alone; the stricter rule would force
   six fake unit tests where outcome-through-caller coverage is already correct
@@ -760,9 +707,9 @@ committed text names the function.
   tripwire does not need.
 - **Automating `scripts/dev/fork-topology-probe.sh`** — G4; a person must read
   live fork output, which no framework changes.
-- **Publishing the contended local wall-clock figures as a headline
-  measurement** — row 19. State the `sys`/`user` ratio and omit the local
-  absolutes, since concurrent-worktree contention makes them unreliable.
+- **Publishing local wall-clock timings as a headline measurement** — row 19.
+  State that a large share of CPU time is `sys` and omit the timings, since
+  concurrent-worktree contention makes them unreliable.
 - **Removing or rewriting the 20 fixture-marker pairs** (18 in `install.sh`, one
   each in `marker.sh` and `register-marketplace.sh`). They work, they are
   tested, and their fate belongs to Issue B.
