@@ -3276,16 +3276,44 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         print(f"{bin_str:<10} {lead:>5} {main:>5} {side:>5} {pair_pct:>6.1f}%")
 
 
+def _pr_link_gh_failure_kind(exc: Exception) -> str:
+    """This module's own label for why a pr-link gh call failed -- never gh's
+    raw stderr, which can echo the queried repo verbatim."""
+    if isinstance(exc, FileNotFoundError):
+        return "gh not found"
+    if isinstance(exc, json.JSONDecodeError):
+        return "unparseable gh output"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    kind = _classify_gh_error(getattr(exc, "stderr", None) or "")
+    # _classify_gh_error falls through to "network" for any stderr it does
+    # not recognize, a wrong repo slug included.
+    return "network or unrecognized" if kind == _GH_ERROR_KIND_NETWORK else kind
+
+
+def _pr_link_report_gh_failure(branch: str, step: str, exc: Exception) -> None:
+    print(f"pr-link: {step} failed for branch {branch} ({_pr_link_gh_failure_kind(exc)})", file=sys.stderr)
+
+
 def cmd_pr_link(args: argparse.Namespace) -> None:
-    if not getattr(args, "repo", None):
-        print("--repo is required for pr-link", file=sys.stderr)
-        sys.exit(1)
     if not getattr(args, "branches", None):
         print("--branches is required for pr-link", file=sys.stderr)
         sys.exit(1)
 
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
-    repo: str = args.repo
+    supplied_repo: str | None = getattr(args, "repo", None)
+    if supplied_repo:
+        repo = pr_list_repo = supplied_repo
+        api_host_args: list[str] = []
+    else:
+        # Host-qualified for `gh pr list --repo`, and `--hostname` for `gh api`
+        # (its path takes no host), so a GHE origin reaches the right host
+        # regardless of the ambient GH_HOST.
+        origin_host, repo = _git_remote_origin_host_and_owner_repo(
+            subcommand="pr-link", failure_hint="pass --repo OWNER/REPO",
+        )
+        pr_list_repo = _gh_host_qualified_repo(origin_host, repo)
+        api_host_args = ["--hostname", origin_host]
     author: str = getattr(args, "author", None) or ""
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "pr-link", roots=roots)
@@ -3310,11 +3338,17 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             pr_result = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--repo", repo, "--state", "all", "--json", "number", "--limit", "1"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "pr", "list", "--head", branch, "--repo", pr_list_repo,
+                    "--state", "all", "--json", "number", "--limit", "1",
+                ],
+                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
             )
             prs = json.loads(pr_result.stdout or "[]")
-        except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        except (
+            subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError, subprocess.TimeoutExpired,
+        ) as exc:
+            _pr_link_report_gh_failure(branch, "gh pr list", exc)
             print(f"{branch:<35} {'?':>5} {opus_n:>6} {sonnet_n:>7} {'gh-err':>9} {'':>10}")
             continue
 
@@ -3327,19 +3361,26 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             ic = subprocess.run(
-                ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/issues/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
             )
             issue_logins = [ln.strip() for ln in ic.stdout.splitlines() if ln.strip()]
             issue_comments = sum(1 for ln in issue_logins if not author or ln == author)
 
             rc = subprocess.run(
-                ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/pulls/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
             )
             review_logins = [ln.strip() for ln in rc.stdout.splitlines() if ln.strip()]
             review_comments = sum(1 for ln in review_logins if not author or ln == author)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _pr_link_report_gh_failure(branch, "gh api comments", exc)
             issue_comments = review_comments = -1
 
         print(f"{branch:<35} {pr_number:>5} {opus_n:>6} {sonnet_n:>7} {issue_comments:>9} {review_comments:>10}")
@@ -8467,7 +8508,7 @@ def _acquire_pr_cost_ledger_lock(lock_f) -> None:
             time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
 
 
-def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
+def _git_remote_origin_host_and_owner_repo(subcommand: str = "pr-cost", failure_hint: str = "") -> tuple[str, str]:
     """Case-folded (host, owner/name) parsed from this invocation's own
     `git remote get-url origin` -- the corpus-root side of _resolve_pinned_gh_repo's
     identity comparison, run from cwd (this subcommand's own worktree) rather
@@ -8475,7 +8516,10 @@ def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
     a git repository itself. Accepts any host (github.com, a GitHub
     Enterprise host, ...); whether gh actually holds credentials for that
     host is left to the caller and to gh itself, not decided by this parse.
+    `subcommand` prefixes the failure messages; a non-empty `failure_hint`
+    is appended to them as the caller's escape hatch.
     """
+    hint_suffix = f" -- {failure_hint}" if failure_hint else ""
     try:
         proc = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -8483,11 +8527,17 @@ def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
             encoding="utf-8", errors="replace",
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        print("pr-cost: could not resolve this repo's own remote (git remote get-url origin failed)", file=sys.stderr)
+        print(
+            f"{subcommand}: could not resolve this repo's own remote (git remote get-url origin failed){hint_suffix}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     m = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(proc.stdout.strip())
     if not m:
-        print("pr-cost: this repo's origin remote is not a recognizable host/owner/repo URL", file=sys.stderr)
+        print(
+            f"{subcommand}: this repo's origin remote is not a recognizable host/owner/repo URL{hint_suffix}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return m.group("host").lower(), f"{m.group('owner')}/{m.group('repo')}".lower()
 
@@ -12691,7 +12741,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)
 
     p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
-    p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")
+    p_pr.add_argument(
+        "--repo", metavar="OWNER/REPO",
+        help="GitHub repo to query (default: parsed from this checkout's origin remote, host-qualified)",
+    )
     p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
     p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
     _add_project_scope_args(p_pr)

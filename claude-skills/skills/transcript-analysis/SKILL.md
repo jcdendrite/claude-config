@@ -32,7 +32,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Did the user express frustration more with one model? | `struggle --branches <branch>` |
 | How much logged time was active vs idle gaps? | `duration --branches <branch>` |
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
-| Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
+| Map branches to PRs; count per-author review comments | `pr-link --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
 | Which denial/friction shapes recur across sessions — a corpus-wide census, not per-session? | `review-trace --deny-summary` |
 | Which skills did a branch invoke, by source (auto-trigger / routing / `/slash`)? | `skill-invocation --branches <branch>` |
@@ -127,7 +127,7 @@ python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET
 
 # Link branches to PRs and count one author's review comments
 python3 ~/.claude/scripts/transcript-analysis.py pr-link \
-  --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
+  --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only

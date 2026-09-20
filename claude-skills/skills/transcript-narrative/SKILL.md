@@ -71,7 +71,7 @@ python3 ~/.claude/scripts/transcript-analysis.py duration --branches <branch>
 python3 ~/.claude/scripts/transcript-analysis.py subagents --branches <branch>
 
 # Branch → PR mapping
-python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py pr-link --branches <branch>
 
 # Review-skill invocations, hook denials, reviewer-spawn timeline
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo
