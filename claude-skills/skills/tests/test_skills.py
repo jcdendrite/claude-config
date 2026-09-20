@@ -1204,6 +1204,77 @@ def _bullet_text(section_text: str, lead_in: str) -> str:
     return " ".join(" ".join(lines[start:end]).split())
 
 
+class TestBulletHelpers:
+    """Fixture tests for the `_bullet_lead_in` and `_bullet_text` helpers."""
+
+    def test_bullet_lead_in_strips_one_terminal_period_and_accepts_none(self):
+        """Allow fixture: the bold span is returned with a single terminal
+        period removed, or unchanged when it has none."""
+        assert _bullet_lead_in("- **Name.** body") == "Name"
+        assert _bullet_lead_in("- **Name** body") == "Name"
+
+    def test_bullet_lead_in_removes_only_one_terminal_period(self):
+        """Allow fixture: a span ending in two periods keeps one."""
+        assert _bullet_lead_in("- **Name..** body") == "Name."
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "  - **Name.** body",
+            "- Name. body",
+            "- text **Name.** body",
+        ],
+        ids=["indented-bullet", "non-bold-bullet", "bold-not-at-bullet-opening"],
+    )
+    def test_bullet_lead_in_returns_none_for_a_line_that_does_not_open_a_bold_bullet(self, line):
+        """Deny fixture: only a column-0 bullet whose bold span opens it
+        yields a lead-in."""
+        assert _bullet_lead_in(line) is None
+
+    def test_bullet_lead_in_stops_at_the_first_bold_span(self):
+        """Allow fixture: the bold span is non-greedy, so a second bold span
+        later in the line is not swallowed into the lead-in."""
+        assert _bullet_lead_in("- **A.** **B** rest") == "A"
+
+    def test_bullet_text_excludes_the_following_bullet(self):
+        """Deny fixture: text present only in the next bullet must not appear
+        in the first bullet's result."""
+        section_text = "- **First.** Alpha text.\n- **Second.** Beta text.\n"
+        assert "Alpha text." in _bullet_text(section_text, "First")
+        assert "Beta text." not in _bullet_text(section_text, "First")
+
+    def test_bullet_text_stops_at_a_blank_line_and_at_a_heading(self):
+        """Deny fixture: prose after a blank line, or after a markdown heading
+        with no blank line before it, is not part of the bullet."""
+        after_blank = "- **First.** Alpha text.\n\nStray paragraph.\n"
+        assert _bullet_text(after_blank, "First") == "- **First.** Alpha text."
+        after_heading = "- **First.** Alpha text.\n## Next section\nHeading body.\n"
+        assert _bullet_text(after_heading, "First") == "- **First.** Alpha text."
+
+    def test_bullet_text_treats_a_hash_that_is_not_a_heading_as_continuation(self):
+        """Allow fixture: a column-0 `#` not followed by a space is wrapped
+        prose, so it stays in the bullet."""
+        section_text = "- **First.** Alpha text\n#123 continues here.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text #123 continues here."
+
+    def test_bullet_text_includes_an_indented_nested_bullet(self):
+        """Allow fixture: an indented nested bullet is continuation text."""
+        section_text = "- **First.** Alpha text.\n  - Nested detail.\n- **Second.** Beta text.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text. - Nested detail."
+
+    def test_bullet_text_is_independent_of_hard_wrap_position(self):
+        """Allow fixture: a hard-wrapped bullet equals its unwrapped form."""
+        wrapped = "- **First.** Alpha\n  text that\nwraps.\n"
+        unwrapped = "- **First.** Alpha text that wraps.\n"
+        assert _bullet_text(wrapped, "First") == _bullet_text(unwrapped, "First")
+
+    def test_bullet_text_raises_when_the_lead_in_is_missing(self):
+        """Deny fixture: a renamed lead-in fails loudly instead of returning an
+        empty string that every negative assertion would pass against."""
+        with pytest.raises(AssertionError, match="no bullet opens with bold lead-in"):
+            _bullet_text("- **Other.** Body.\n", "First")
+
+
 class TestPrDescriptionBranchHistoryCheck:
     """Pin the rules that keep review-round and reviewer-attribution narration
     out of a PR body.
@@ -1211,10 +1282,11 @@ class TestPrDescriptionBranchHistoryCheck:
     The neighboring per-commit-narrative check only catches prose that cites
     commits, so prose narrating by review round or by named reviewer passes it
     untouched. The Check bullet owns detection (it names the tells) and the
-    authoring bullet owns the rule, so each test pins one bullet's content
-    within its own section, over whitespace-collapsed text. The SKILL.md prose
-    is the shipped behavior and no eval covers pr-description, so these are
-    presence tripwires, not proof that an agent follows the rules.
+    authoring bullets own the rules (the history-excluding rule and the Test
+    plan scoping), so each test pins one bullet's content within its own
+    section, over whitespace-collapsed text. The SKILL.md prose is the shipped
+    behavior and no eval covers pr-description, so these are presence
+    tripwires, not proof that an agent follows the rules.
     """
 
     _AUTHORING_LEAD_IN = "Current state, not branch history"
@@ -1228,6 +1300,9 @@ class TestPrDescriptionBranchHistoryCheck:
     def _check_bullet(self):
         section = _raw_heading_section_text(_skill_file("pr-description"), "## Checks")
         return _bullet_text(section, "Branch-history narration")
+
+    def _test_plan_bullet(self):
+        return _bullet_text(self._authoring_section(), "A `## Test plan` of results, not a checklist")
 
     def test_authoring_bullet_excludes_history_and_routes_rejected_designs(self):
         """The drafting-side rule: history stays out, a mechanism visible only in
@@ -1254,12 +1329,12 @@ class TestPrDescriptionBranchHistoryCheck:
         )
         assert pointer_names == [self._AUTHORING_LEAD_IN]
 
-    def test_check_scopes_test_plan_to_final_review_result(self):
-        """The Test plan legitimately reports review outcomes; the Check bullet
-        distinguishes the final result from round-by-round history."""
+    def test_test_plan_bullet_scopes_review_result_to_the_final_pass(self):
+        """The Test plan legitimately reports review outcomes; its authoring
+        bullet distinguishes the final result from round-by-round history."""
         assert (
             "state what the final review pass returned, not how many rounds ran or what earlier ones found"
-            in self._check_bullet()
+            in self._test_plan_bullet()
         )
 
 
@@ -1342,44 +1417,6 @@ class TestPrDescriptionDefaultTemplateWiring:
         assert _bullet_pointer_names(both_pointers) == ["What and why", "A test plan"]
         one_reworded = "use its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
         assert _bullet_pointer_names(one_reworded) == ["A test plan"]
-
-    def test_bullet_text_excludes_the_following_bullet(self):
-        """Deny fixture: text present only in the next bullet must not appear
-        in the first bullet's result."""
-        section_text = "- **First.** Alpha text.\n- **Second.** Beta text.\n"
-        assert "Alpha text." in _bullet_text(section_text, "First")
-        assert "Beta text." not in _bullet_text(section_text, "First")
-
-    def test_bullet_text_stops_at_a_blank_line_and_at_a_heading(self):
-        """Deny fixture: prose after a blank line, or after a markdown heading
-        with no blank line before it, is not part of the bullet."""
-        after_blank = "- **First.** Alpha text.\n\nStray paragraph.\n"
-        assert _bullet_text(after_blank, "First") == "- **First.** Alpha text."
-        after_heading = "- **First.** Alpha text.\n## Next section\nHeading body.\n"
-        assert _bullet_text(after_heading, "First") == "- **First.** Alpha text."
-
-    def test_bullet_text_treats_a_hash_that_is_not_a_heading_as_continuation(self):
-        """Allow fixture: a column-0 `#` not followed by a space is wrapped
-        prose, so it stays in the bullet."""
-        section_text = "- **First.** Alpha text\n#123 continues here.\n"
-        assert _bullet_text(section_text, "First") == "- **First.** Alpha text #123 continues here."
-
-    def test_bullet_text_includes_an_indented_nested_bullet(self):
-        """Allow fixture: an indented nested bullet is continuation text."""
-        section_text = "- **First.** Alpha text.\n  - Nested detail.\n- **Second.** Beta text.\n"
-        assert _bullet_text(section_text, "First") == "- **First.** Alpha text. - Nested detail."
-
-    def test_bullet_text_is_independent_of_hard_wrap_position(self):
-        """Allow fixture: a hard-wrapped bullet equals its unwrapped form."""
-        wrapped = "- **First.** Alpha\n  text that\nwraps.\n"
-        unwrapped = "- **First.** Alpha text that wraps.\n"
-        assert _bullet_text(wrapped, "First") == _bullet_text(unwrapped, "First")
-
-    def test_bullet_text_raises_when_the_lead_in_is_missing(self):
-        """Deny fixture: a renamed lead-in fails loudly instead of returning an
-        empty string that every negative assertion would pass against."""
-        with pytest.raises(AssertionError, match="no bullet opens with bold lead-in"):
-            _bullet_text("- **Other.** Body.\n", "First")
 
 
 class TestPrDescriptionCostSectionWiring:
