@@ -773,14 +773,14 @@ sidechain         240          500,000              0      1,000,000          25
 
 ## cost-trend
 
-**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `handoff-ratio`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
+**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `spend-over-threshold`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), on top of the default corpus already described in "Corpus scope: the declared-roots file" above. Each extra must contain its own `projects/` subdirectory or the run is rejected. Composes with `--this-repo` the same way `cost`'s own `--config-dir` does. Roots resolve via the same `_resolve_cost_roots` funnel `cost` uses (not the generic single-root resolver every other subcommand uses), so the same per-root scan-summary and zero-scope `WARNING` lines `cost` prints also print here. `--config-dir` sums every declared root into the same single weekly table, rather than producing a per-account-per-week matrix.
 
-No `--redact` flag: like `handoff-ratio`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
+No `--redact` flag: like `spend-over-threshold`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
 
 **Sample output.**
 ```
@@ -1165,28 +1165,29 @@ Counts main-thread dispatches only; an agent spawned from inside another agent i
 
 ---
 
-## handoff-ratio
+## spend-over-threshold
 
-**Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
+**Purpose.** Per-ISO-week share of session dollars spent above `nudge-handoff-near-context-cap.sh`'s own effective fire threshold — how much of the week's spend happened in context deep enough for the nudge to have fired.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
-- `--debug-detector` — print candidate compaction records for schema-drift inspection
 
-**Sample output.**
+**Sample output** (synthetic, illustrative counts only).
 ```
-Week        Handoffs  Compactions   Ratio
--------------------------------------------
-2026-W19           5           39   11.4%
-2026-W20          10           50   16.7%
-2026-W21           5           16   23.8%
--------------------------------------------
-Total             22          141   13.5%
+Week       Sessions       AboveUSD       TotalUSD   Share
+---------------------------------------------------------
+2026-W19         40         100.00         200.00   50.0%
+2026-W20         60         300.00         500.00   60.0%
+2026-W21         50         140.00         200.00   70.0%
+---------------------------------------------------------
+Total           150         540.00         900.00   60.0%
 ```
 
-**When to reach for it.** Check whether context-cap management is proactive (handoffs) or reactive (compaction). A low ratio means most context resets are happening automatically rather than at deliberate checkpoints.
+A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` holds schema-drift lines: a usage block with every token field zero or null. When it appears, the subcommand's field paths may need updating.
+
+**When to reach for it.** Measure how much spend sits in the band the handoff nudge governs, as a standing regression tripwire on nudge policy changes.
 
 ---
 
@@ -1243,7 +1244,7 @@ A `nudged` log line whose session id has no match in the resolved scope (a since
 - how many main-thread turns and priced dollars elapsed after it
 - whether a live `ready-for-review` active-bypass marker applied at signal time
 
-It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`/`handoff-ratio`: neither of those keys on an *observed* signal, so neither can separate "the session was deep" from "the agent was told and continued anyway."
+It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`: that subcommand does not key on an *observed* signal, so it cannot separate "the session was deep" from "the agent was told and continued anyway."
 
 A `--check` result is invisible in `<config-dir>/.handoff-nudge.log` (it writes no log line — see "Querying the current estimate" in `docs/handoff-nudge.md`), so this subcommand detects all three signal kinds directly from each session's own transcript records, never from the log. Cross-checked against `.handoff-nudge.log`'s `nudged` lines as a corroborating diagnostic only; no per-session row depends on it.
 
