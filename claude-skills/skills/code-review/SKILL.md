@@ -408,8 +408,7 @@ Row format: `Finding | Source | DEFER criterion | Rationale` (four columns, same
 
 **If a PR is already open** (`gh pr view --json number,body` succeeds): update the PR description idempotently with `gh pr edit --body`. Delimit the section with HTML comment markers so it can be mechanically replaced on re-runs:
 
-Opening delimiter: `<!-- code-review:deferred:start -->`
-Closing delimiter: `<!-- code-review:deferred:end -->`
+Delimiters: `<!-- code-review:deferred:start -->` (opening) and `<!-- code-review:deferred:end -->` (closing).
 
 Append the delimited block if absent; replace the existing delimited block if present (idempotent across repeated `/code-review` runs as fix commits collapse DEFERs into ADDRESSes or introduce new ones). Preserve all PR description content outside the delimiters.
 
