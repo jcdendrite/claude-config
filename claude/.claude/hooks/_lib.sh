@@ -575,11 +575,24 @@ _lib_active_plan_files() {
     }
   fi
 
+  # A plain `local enum_output=$(...)` would report `local`'s own exit
+  # status (always 0) instead of the pipeline's -- see the top-level
+  # assignment note in require-plan-review.sh's hash block for the same
+  # rule. Splitting the declaration from the assignment, and capturing via
+  # command substitution rather than process substitution (whose subshell
+  # exit status a consuming `read` loop can't see), lets a failed `sort`
+  # fail this function closed like every other enumeration failure above.
+  local enum_output
+  enum_output=$(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u) || {
+    printf '%s' "$plans_dir"
+    return 1
+  }
+
   local plan_file
   while IFS= read -r plan_file; do
     [ -n "$plan_file" ] || continue
     printf '%s\n' "$plan_file"
-  done < <(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u)
+  done <<< "$enum_output"
   return 0
 }
 
@@ -595,16 +608,12 @@ _lib_active_plan_files() {
 # _lib_active_plan_files -- see that function's own docstring for why this
 # is a required parameter rather than a self-contained resolution.
 #
-# Three-outcome contract -- exit status disambiguates stdout, because
-# "nothing to gate" and "could not compute" must never collapse onto the
-# same caller-visible signal:
-#   - exit 0, non-empty stdout: the active plan set's hash. When BASE is
-#     non-empty and no plan file differs from it, this binds to BASE's own
-#     identity instead of empty stdout -- see _lib_gate_diff_base's docstring
-#     and _lib_code_review_marker_value above for why a forged base must not
-#     collapse to the same value.
-#   - exit 0, empty stdout: no plan is active AND no trusted in-progress
-#     state was detected (BASE empty) -- the gate is disarmed.
+# Exit status disambiguates stdout, because "nothing to gate" and "could not
+# compute" must never collapse onto the same caller-visible signal:
+#   - exit 0, non-empty stdout: the active plan set's hash.
+#   - exit 0, empty stdout: no plan is active -- the gate is disarmed,
+#     whether or not a trusted in-progress state was detected (BASE
+#     non-empty).
 #   - exit 1, stdout = the path of the plan file that could not be hashed
 #     (unreadable, vanished mid-enumeration, sha256sum failed), or of
 #     .claude/plans/ itself when _lib_active_plan_files' own enumeration
@@ -648,18 +657,7 @@ _lib_active_plan_hash() {
     printf '%s' "$active_files"
     return 1
   fi
-  if [ -z "$active_files" ]; then
-    if [ -n "$base" ]; then
-      # A trusted in-progress state was detected but no plan file differs
-      # from BASE. Binding to BASE's own identity rather than returning
-      # empty stdout keeps a forged base's degenerate empty-active-set
-      # result from silently disarming the gate the way an honestly-empty
-      # result (no trusted state at all) safely does.
-      _lib_hash_diff_text "plan-review-empty-base:$base"
-      return $?
-    fi
-    return 0
-  fi
+  [ -z "$active_files" ] && return 0
 
   local file file_hash combined=""
   while IFS= read -r file; do

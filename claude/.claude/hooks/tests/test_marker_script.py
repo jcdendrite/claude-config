@@ -1605,6 +1605,33 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
             == "allow"
         )
 
+    def test_write_plan_review_marker_round_trips_mid_merge_with_upstream_only_plan(
+        self, isolated_home, tmp_path
+    ):
+        """The plan file differs from HEAD only by upstream's edit, so it is
+        excluded relative to the merge-tree base and no plan is active.
+        marker.sh resolves that base in its own process, separate from the
+        hook's read-time call; both must land on the empty-active-set result
+        rather than bind a value to the base's identity."""
+        repo = _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-upstream-only-roundtrip"
+        _seed_session(isolated_home, sid)
+
+        result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        marker = plan_review_marker_path(isolated_home, repo, sid)
+        held_value = marker.read_text().strip() if marker.exists() else ""
+        assert held_value == "", (
+            "an empty active set must leave no non-empty or base-bound marker "
+            f"value for this session/repo, got {held_value!r}"
+        )
+        # No run_hook allow-check here: with an empty active set the hook
+        # exits before reading any marker (require-plan-review.sh ~:241), so
+        # such a check observes nothing about this test's write side and is
+        # redundant with test_merge_of_upstream_plan_allows_unrelated_write
+        # in test_require_plan_review.py.
+
     def test_status_reports_live_mid_merge_for_base_relative_plan_marker(
         self, isolated_home, tmp_path
     ):
@@ -1622,7 +1649,10 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
     ):
         """A marker holding the plain HEAD-relative preimage must not read
         as live mid-merge -- it covers upstream's whole contribution to the
-        plan file, not just the local resolution."""
+        plan file, not just the local resolution. The current value is empty
+        here (upstream's plan edit is excluded relative to the base), and
+        status reports any existing marker as historical when the current
+        value is empty."""
         repo = _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path)
         sid = "test-session-merge-plan-status-stale"
         _seed_session(isolated_home, sid)

@@ -2746,14 +2746,6 @@ class TestActivePlanFilesMergeAwareBase:
         assert "fell back to the full HEAD-relative plan-file diff" in status_2_reason
 
 
-def _plan_review_empty_base_marker_value(base: str) -> str:
-    """Independent oracle for _lib_active_plan_hash's empty-base-relative-
-    active-set binding: sha256("plan-review-empty-base:<base>"), computed
-    directly in Python rather than by calling the shell function under
-    test."""
-    return hashlib.sha256(f"plan-review-empty-base:{base}".encode()).hexdigest()
-
-
 def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo") -> Path:
     """The same forged-anchor + clean-merge technique
     test_require_code_review.py's _build_forged_anchor_clean_merge
@@ -2800,45 +2792,66 @@ def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo")
     return repo
 
 
-def _merge_head_tree_base(repo) -> str:
-    """Independently computes the same reference tree _lib_gate_diff_base's
-    merge row computes -- local copy of test_require_code_review.py's
-    _merge_tree_base (DAMP test code, per the neither-test-tree-imports-
-    the-other convention)."""
-    merge_head_oid = (repo / ".git" / "MERGE_HEAD").read_text().strip()
-    out = subprocess.run(
-        ["git", "merge-tree", "--write-tree", "HEAD", merge_head_oid],
-        cwd=repo, capture_output=True, text=True, check=False,
-    ).stdout
-    return out.strip().splitlines()[0]
+def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") -> Path:
+    """The Write-only reproduction of the forged-anchor residual (ciso-reviewer
+    finding against this branch): no `git merge` and no `commit-tree` at all,
+    and no object the actor did not already have. `MERGE_HEAD` and
+    `refs/remotes/origin/main` are hand-written straight to an existing
+    sibling-branch commit's OID -- the way another worktree's own WIP plan
+    draft already sits in this repo's object store -- and the tracked plan
+    is edited to that commit's own version of the same path. Complements
+    _build_forged_anchor_invisible_plan_edit, whose `git merge --no-ff
+    --no-commit` construction this fixture pins as not the only route to the
+    same accepted residual. See
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    plans_dir = repo / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "plan.md").write_text("# plan\n\nv1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+
+    # An ordinary sibling branch, forked from the seed commit -- an object
+    # already sitting in this repo's own store, not fabricated for the
+    # attack. Only the two refs below are forged.
+    subprocess.run(["git", "checkout", "-q", "-b", "sibling"], cwd=repo, check=True)
+    sibling_content = "# plan\n\nforged-content-nobody-reviewed\n"
+    (plans_dir / "plan.md").write_text(sibling_content)
+    subprocess.run(["git", "commit", "-qam", "sibling edits the plan"], cwd=repo, check=True)
+    sibling_oid = subprocess.run(
+        ["git", "rev-parse", "sibling"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+    # Hand-forge both refs _lib_gate_diff_base's admissibility check reads --
+    # pointed at the SAME commit, so "is $state_oid an ancestor of
+    # origin/main" holds trivially (a commit is its own ancestor) with no
+    # real merge, push, or fetch involved.
+    (repo / ".git" / "MERGE_HEAD").write_text(sibling_oid + "\n")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", sibling_oid], cwd=repo, check=True
+    )
+
+    (plans_dir / "plan.md").write_text(sibling_content)
+    return repo
 
 
-class TestRequirePlanReviewForgedAnchorInvisiblePlanEdit:
-    """Adversarial coverage for _lib_active_plan_files' base substitution,
-    the sibling exposure ciso-reviewer flagged as likely-but-unconfirmed
-    against require-code-review.sh's forged-anchor finding: a plan file
-    edited to match a forged base's content disappears from the active set,
-    and this must not silently disarm the gate for an unrelated Write."""
+class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
+    """Pins the accepted residual for _lib_active_plan_files' base
+    substitution: a plan file edited to match a forged base's content
+    disappears from the active set, and the gate allows an unrelated Write."""
 
-    def test_no_marker_denies_rather_than_silently_allowing(self, isolated_home, tmp_path):
+    def test_forged_anchor_plan_edit_allows_unrelated_write(self, isolated_home, tmp_path):
+        """Allows because the forged-anchor path is dominated by the
+        clean-apply zero-gate bypass (residual 1 of
+        .claude/plans/merge-aware-review-gates.md), so a deny here would buy
+        no security. See
+        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
         repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
-        assert (
-            run_hook(
-                REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_marker_bound_to_this_forged_base_allows(self, plan_review_home, tmp_path):
-        """An honest /plan-review run against this exact (forged) base still
-        authorizes the write -- the fix denies by default, not
-        unconditionally."""
-        repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
-        base = _merge_head_tree_base(repo)
-        marker = plan_review_marker_path(plan_review_home, repo, "s1")
-        marker.write_text(_plan_review_empty_base_marker_value(base))
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
@@ -2846,4 +2859,228 @@ class TestRequirePlanReviewForgedAnchorInvisiblePlanEdit:
                 cwd=repo,
             )
             == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_allows_unrelated_write(
+        self, isolated_home, tmp_path
+    ):
+        """A Write/Edit-only actor never needs a real `git merge` to reach
+        this residual: hand-writing MERGE_HEAD and refs/remotes/origin/main
+        to an existing sibling-branch commit is enough. Pins the Write-only,
+        existing-commit route the decision doc names as the accepted
+        residual, distinct from the Bash-capable, clean-merge-dominated
+        route the sibling test above pins."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+
+_FIXTURE_PLAN_REL = ".claude/plans/upstream-plan.md"
+
+
+def _git(repo, *args, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Run git in `repo` without raising, so a fixture can assert on the exact
+    return code a state-building step is expected to produce."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def _push_upstream_plan_addition(tmp_path: Path, bare: Path) -> None:
+    """Push a commit that adds `_FIXTURE_PLAN_REL` to `bare`'s default
+    branch from a throwaway clone -- the plan file a branch sync brings in
+    without the branch ever having touched it. Local to this file because
+    push_conflicting_edit_to_origin only rewrites a file whose parent
+    directory already exists in the seed commit."""
+    push_clone = tmp_path / "_push_upstream_plan_addition"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    plan_path = push_clone / _FIXTURE_PLAN_REL
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# upstream plan\n\nauthored and reviewed on main\n")
+    subprocess.run(["git", "add", _FIXTURE_PLAN_REL], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin adds a plan"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+
+def _assert_trusted_state_with_empty_active_plan_set(repo: Path, ref_file: str) -> None:
+    """Asserts a fixture's own preconditions by invoking the same primitives
+    the hook does, rather than inferring them from git's exit codes. A
+    fixture that reaches no admissible anchor leaves the base empty, and the
+    unrelated no-trusted-state disarm would then make every verdict assertion
+    below pass vacuously."""
+    assert (repo / ".git" / ref_file).exists(), (
+        f"fixture setup never left {ref_file} in place"
+    )
+    assert (repo / _FIXTURE_PLAN_REL).exists(), (
+        f"fixture setup never left the plan file at {_FIXTURE_PLAN_REL} in the worktree"
+    )
+    base_result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_gate_diff_base "$1"', "_gate_diff_base", str(repo)],
+        capture_output=True,
+        text=True,
+    )
+    assert base_result.stdout.strip(), (
+        "fixture setup never reached an admissible anchor: _lib_gate_diff_base "
+        "returned an empty base, so the verdict assertion would pass vacuously"
+    )
+    active_result = _active_plan_files(repo)
+    assert active_result.returncode == 0, active_result.stderr
+    assert active_result.stdout.strip() == "", (
+        "fixture setup left a plan file active relative to the base: "
+        f"{active_result.stdout!r}"
+    )
+
+
+def _build_clean_merge_with_untouched_upstream_plan(tmp_path: Path) -> Path:
+    """Mid-`git merge --no-ff --no-commit origin/main` where origin added a
+    plan file the branch never touched, and the merge itself is clean."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "local.txt").write_text("ours\n")
+    subprocess.run(["git", "add", "local.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours adds local.txt"], cwd=clone, check=True)
+    _push_upstream_plan_addition(tmp_path, bare)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    merge_result = _git(clone, "merge", "--no-ff", "--no-commit", "-q", "origin/main")
+    assert merge_result.returncode == 0, merge_result.stdout + merge_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD")
+    return clone
+
+
+def _build_cherry_pick_of_untouched_upstream_plan(tmp_path: Path) -> Path:
+    """Mid-`git cherry-pick origin/main` where origin's tip adds a plan file
+    the branch never touched. `-e` with a failing editor stops the pick after
+    it stages the change, leaving CHERRY_PICK_HEAD in place the way an
+    interrupted pick does."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "local.txt").write_text("ours\n")
+    subprocess.run(["git", "add", "local.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours adds local.txt"], cwd=clone, check=True)
+    _push_upstream_plan_addition(tmp_path, bare)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    pick_result = _git(
+        clone, "cherry-pick", "-e", "origin/main", env_overrides={"GIT_EDITOR": "false"}
+    )
+    assert pick_result.returncode != 0, pick_result.stdout + pick_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "CHERRY_PICK_HEAD")
+    return clone
+
+
+def _build_conflicted_merge_with_historical_plan(tmp_path: Path) -> Path:
+    """Mid-merge that conflicts in a non-plan file only. The plan file is
+    committed and pushed before the divergence, so it is identical in HEAD
+    and in the merge-tree base -- historical, not something newly arriving
+    from upstream. It stays unconflicted while MERGE_HEAD persists. This
+    pins the general conflicted-window friction loss (the accepted residual
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    names), not a conflicted sync that carries a genuinely new upstream
+    plan."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    plan_path = clone / _FIXTURE_PLAN_REL
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# shared plan\n\nunchanged on both sides\n")
+    subprocess.run(["git", "add", _FIXTURE_PLAN_REL], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed plan"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    merge_result = _git(clone, "merge", "-q", "origin/main")
+    assert merge_result.returncode != 0, merge_result.stdout + merge_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD")
+    return clone
+
+
+class TestRequirePlanReviewEmptyActiveSetDisarms:
+    """An empty active plan set disarms the gate whether or not a trusted
+    in-progress state is detected. Asserts the hook's verdict, not just
+    _lib_active_plan_files' output: TestActivePlanFilesMergeAwareBase covers
+    the primitive and stayed green while the gate still denied here."""
+
+    def test_merge_of_upstream_plan_allows_unrelated_write(self, plan_review_home, tmp_path):
+        repo = _build_clean_merge_with_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_cherry_pick_of_upstream_plan_allows_unrelated_write(
+        self, plan_review_home, tmp_path
+    ):
+        repo = _build_cherry_pick_of_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_conflicted_merge_with_historical_plan_allows_unrelated_write(
+        self, plan_review_home, tmp_path
+    ):
+        """MERGE_HEAD persists across every Write/Edit of the conflict-
+        resolution window, so the gate stays disarmed for all of them --
+        the accepted friction residual recorded in
+        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
+        repo = _build_conflicted_merge_with_historical_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "build_fixture",
+        [
+            _build_clean_merge_with_untouched_upstream_plan,
+            _build_conflicted_merge_with_historical_plan,
+            _build_cherry_pick_of_untouched_upstream_plan,
+        ],
+        ids=["clean-merge", "conflicted-merge", "cherry-pick"],
+    )
+    def test_local_plan_edit_during_merge_still_denies(
+        self, build_fixture, plan_review_home, tmp_path
+    ):
+        """Guards against the allow tests above passing only because the gate
+        is simply off mid-merge: a plan file the branch itself edited stays
+        active relative to the base and still demands a review. The
+        cherry-pick arm closes an asymmetry the allow-only cherry-pick test
+        above can't: run_hook maps any silent non-2 exit to "allow", so
+        without this arm a hook crash mid-cherry-pick would be
+        indistinguishable from the gate correctly disarming."""
+        repo = build_fixture(tmp_path)
+        plan_path = repo / _FIXTURE_PLAN_REL
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
         )
