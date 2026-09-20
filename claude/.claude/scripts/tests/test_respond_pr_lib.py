@@ -176,3 +176,14 @@ class TestBodyIsClaudeMarked:
         contains such a character, so it matches the glob reading but not
         the literal marker."""
         assert _predicate_result("respond_pr_body_is_claude_marked", glob_shaped_body) is False
+
+    def test_empty_marker_fails_closed_instead_of_marking_every_body(self):
+        """An empty marker is a prefix of every body, so the predicate must
+        abort rather than report a human comment as Claude-authored."""
+        result = _run_bash(
+            "RESPOND_PR_OWNERSHIP_MARKER=''\nrespond_pr_body_is_claude_marked \"$1\" && echo marked",
+            "Please fix this typo.",
+        )
+        assert result.returncode != 0
+        assert "marked" not in result.stdout
+        assert "RESPOND_PR_OWNERSHIP_MARKER" in result.stderr

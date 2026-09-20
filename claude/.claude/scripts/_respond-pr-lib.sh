@@ -1,8 +1,7 @@
 #!/bin/bash
 # _respond-pr-lib.sh — shared pure checks for respond-pr-safe-patch.sh.
 #
-# Sourced by respond-pr-safe-patch.sh.
-# Not executable on its own; source it, do not invoke it directly.
+# Sourced by respond-pr-safe-patch.sh; not executable on its own.
 #
 # Provides:
 #   RESPOND_PR_OWNERSHIP_MARKER          — prefix marking a Claude-authored comment
@@ -17,7 +16,8 @@
 RESPOND_PR_OWNERSHIP_MARKER='**[Claude Code]**'
 
 # Succeeds only for exactly two `/`-separated segments drawn from [A-Za-z0-9._-].
-# Extra path segments therefore cannot reach the gh api URL.
+# A slug must be exactly owner/repo so it cannot add path components to the
+# `repos/<slug>/pulls/comments/<id>` gh api URL.
 # A segment made only of dots is not rejected.
 respond_pr_valid_repo_slug() {
   [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
@@ -34,5 +34,6 @@ respond_pr_body_is_blank() {
 respond_pr_body_is_claude_marked() {
   # Quoted expansion, not bare -- unquoted, [Claude Code] is a glob
   # bracket-expression (matches any one char), not the literal string.
-  [[ "$1" == "${RESPOND_PR_OWNERSHIP_MARKER}"* ]]
+  # `:?` aborts on an empty marker, since an empty prefix would match every body.
+  [[ "$1" == "${RESPOND_PR_OWNERSHIP_MARKER:?}"* ]]
 }

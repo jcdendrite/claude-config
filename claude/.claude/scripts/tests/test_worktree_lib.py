@@ -513,13 +513,49 @@ class TestWorktreeCanonPath:
         assert result.returncode == 0, result.stderr
         assert result.stdout == f"{real_dir.resolve()}\n"
 
-    def test_non_path_string_falls_back_to_raw_input_silently(self):
+    def test_non_path_string_falls_back_to_raw_input_silently(self, tmp_path):
         result = _run_bash(
-            "printf '%s\\n' \"$(worktree_canon_path 'feat/some-branch')\"", env=_ENV_WITHOUT_CDPATH
+            f"cd \"{tmp_path}\"\nprintf '%s\\n' \"$(worktree_canon_path 'feat/some-branch')\"",
+            env=_ENV_WITHOUT_CDPATH,
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == "feat/some-branch\n"
         assert result.stderr == ""
+
+    def test_option_shaped_input_is_returned_raw_not_read_as_a_cd_option(self, tmp_path):
+        """`-P` names no directory, so it comes back verbatim with no stderr;
+        without `--`, cd would take it as an option and land in HOME."""
+        home_dir = tmp_path / "home-dir"
+        home_dir.mkdir()
+        env = {**_ENV_WITHOUT_CDPATH, "HOME": str(home_dir)}
+        result = _run_bash(f'cd "{tmp_path}"\nprintf "%s\\n" "$(worktree_canon_path -P)"', env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "-P\n"
+        assert result.stderr == ""
+
+    def test_lone_dash_is_returned_raw_not_read_as_oldpwd(self, tmp_path):
+        """A bare `-` is cd's OLDPWD shorthand, which would print the previous
+        directory and resolve to it; it must come back as the literal `-`."""
+        previous_dir = tmp_path / "previous-dir"
+        previous_dir.mkdir()
+        result = _run_bash(
+            f'cd "{previous_dir}"\ncd "{tmp_path}"\nprintf "%s\\n" "$(worktree_canon_path -)"',
+            env=_ENV_WITHOUT_CDPATH,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "-\n"
+
+    def test_empty_input_is_returned_empty_not_resolved_to_cwd(self, tmp_path):
+        """Only a bash 3.2 shell exercises the guard: bash 3.2's `cd ""`
+        succeeds in the current directory, while bash 5's fails. `_run_bash`
+        runs whichever `bash` is first on PATH, so the test is vacuous under any
+        PATH bash 4+ (Homebrew bash, the CI runner) and discriminates only where
+        bash 3.2 is first on PATH (stock macOS)."""
+        result = _run_bash(
+            f'cd "{tmp_path}"\nprintf "[%s]\\n" "$(worktree_canon_path "")"', env=_ENV_WITHOUT_CDPATH
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "[]\n"
 
     def test_inherited_cdpath_does_not_resolve_a_relative_name(self, tmp_path):
         """A relative name absent from cwd but present under an inherited
@@ -599,6 +635,7 @@ echo "exit:$RC"
 
     def test_branch_name_match(self, tmp_path):
         result = _run_bash(f'''
+cd "{tmp_path}"
 FILTER_ARGS=("feat/target")
 RC=0
 worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
@@ -636,6 +673,7 @@ echo "exit:$RC"
 
     def test_any_matching_arg_among_several_matches(self, tmp_path):
         result = _run_bash(f'''
+cd "{tmp_path}"
 FILTER_ARGS=("feat/other" "feat/target")
 RC=0
 worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
@@ -648,6 +686,7 @@ echo "exit:$RC"
         other_dir = tmp_path / "other-dir"
         other_dir.mkdir()
         result = _run_bash(f'''
+cd "{tmp_path}"
 FILTER_ARGS=("feat/other" "{other_dir}")
 RC=0
 worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
@@ -704,3 +743,15 @@ echo "exit:$RC"
 ''', env=_ENV_WITHOUT_CDPATH)
         assert result.returncode == 0, result.stderr
         assert result.stdout.splitlines() == ["exit:1"]
+
+    def test_unassigned_filter_args_aborts_under_set_u(self, tmp_path):
+        """FILTER_ARGS is a caller-assigned global: calling the function
+        without assigning it aborts rather than matching everything."""
+        result = _run_bash(f'''
+cd "{tmp_path}"
+worktree_matches_filter "feat/target" "{tmp_path}"
+echo "reached"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode != 0
+        assert "FILTER_ARGS" in result.stderr
+        assert "reached" not in result.stdout

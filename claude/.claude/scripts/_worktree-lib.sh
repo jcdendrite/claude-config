@@ -1,7 +1,8 @@
 #!/bin/bash
 # _worktree-lib.sh — shared helpers for worktree-cleanup scripts.
 #
-# Sourced by cleanup-merged-branches.sh and cleanup-idle-open-pr-worktrees.sh.
+# Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh, and
+# worktree-removal-status.sh.
 # Not executable on its own; source it, do not invoke it directly.
 #
 # Provides:
@@ -12,16 +13,15 @@
 #   worktree_canon_path                  — symlink-resolved path, raw on failure
 #   worktree_matches_filter              — branch/path match against FILTER_ARGS
 #
-# FILTER_ARGS is a caller-populated global: the sourcing script assigns it (an
-# array of branch names or paths, empty for "match everything") before calling
-# worktree_matches_filter, which only reads it. FILTER_ARGS must be assigned
-# (even to an empty array) before that call, because reading it unset aborts
-# under `set -u`.
+# FILTER_ARGS is a caller-assigned array (may be empty) that worktree_matches_filter
+# reads; assign it before the call, or `set -u` aborts.
 #
-# Every function here is pure / side-effect-free with respect to the caller's
-# script state (aside from the documented globals each one populates), so a
-# behavior regression traced back to this file can be fixed by editing this
-# file alone — neither consumer script needs a parallel change.
+# Every function here is side-effect-free with respect to the caller's script
+# state, aside from the documented globals each one reads or populates.
+# collect_process_cwds is the one exception: its lsof branch installs an EXIT trap.
+# That trap replaces any EXIT trap the caller already set, and the reset does not restore it.
+# A behavior regression traced back to this file can therefore be fixed by
+# editing this file alone — neither consumer script needs a parallel change.
 
 # ---------------------------------------------------------------------------
 # Progress helpers (stderr-only, no-op when stderr is not a TTY)
@@ -44,13 +44,18 @@ clear_progress() {
 
 # worktree_canon_path <path> — prints <path> with symlinks resolved.
 # Falls back to the raw input when <path> can't be cd'd into (e.g. a prunable
-# worktree whose directory is gone, or a branch name), so a comparison against
-# the result simply never matches rather than erroring. An inherited CDPATH is
-# cleared for the cd, since it would otherwise resolve a relative name (and
+# worktree whose directory is gone, or a branch name).
+# A comparison against a raw fallback therefore never matches rather than erroring.
+# An inherited CDPATH is cleared so it cannot resolve a relative name (and
 # print the hit) against an unrelated directory.
+# An empty input or a lone `-` (cd's OLDPWD shorthand) also falls back to raw,
+# and `--` stops an input like `-P` from being read as a cd option.
 worktree_canon_path() {
   local p="$1"
-  (CDPATH='' cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+  case "$p" in
+    '' | -) printf '%s' "$p"; return 0 ;;
+  esac
+  (CDPATH='' cd -- "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
 }
 
 # worktree_matches_filter <branch> <canonical-path> — does the worktree with

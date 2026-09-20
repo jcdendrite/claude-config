@@ -165,11 +165,14 @@ class TestEmptyStdin:
     """A caller that omits the body (e.g. drops the heredoc) must not fall
     through to a PATCH with an empty body -- exit 2, same class as the argv
     usage errors, with no gh call at all. The blank-body matrix lives in
-    test_respond_pr_lib.py; this case proves the script's wiring to it."""
+    test_respond_pr_lib.py; this case proves the script's wiring to it. The
+    whitespace-only input also proves the script treats a blank body, not
+    merely a zero-length one, as empty."""
 
-    def test_empty_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh):
+    @pytest.mark.parametrize("blank_stdin", [None, "  \n\t"], ids=["no-stdin", "whitespace-only"])
+    def test_blank_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh, blank_stdin):
         env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=None)
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=blank_stdin)
         assert result.returncode == 2
         assert "empty" in result.stderr.lower()
         assert _read_calls(call_log) == []
