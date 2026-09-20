@@ -9,6 +9,14 @@
 #   collect_process_cwds / worktree_in_use — live-process detection
 #   resolve_worktree_for_branch          — branch -> worktree path/lock lookup
 #   collect_all_worktrees                — full `worktree list --porcelain` scan
+#   worktree_canon_path                  — symlink-resolved path, raw on failure
+#   worktree_matches_filter              — branch/path match against FILTER_ARGS
+#
+# FILTER_ARGS is a caller-populated global: the sourcing script assigns it (an
+# array of branch names or paths, empty for "match everything") before calling
+# worktree_matches_filter, which only reads it. FILTER_ARGS must be assigned
+# (even to an empty array) before that call, because reading it unset aborts
+# under `set -u`.
 #
 # Every function here is pure / side-effect-free with respect to the caller's
 # script state (aside from the documented globals each one populates), so a
@@ -28,6 +36,39 @@ progress() {
 clear_progress() {
   [ -t 2 ] || return 0
   printf '\r%-80s\r' '' >&2
+}
+
+# ---------------------------------------------------------------------------
+# Path canonicalization and filter matching
+# ---------------------------------------------------------------------------
+
+# worktree_canon_path <path> — prints <path> with symlinks resolved.
+# Falls back to the raw input when <path> can't be cd'd into (e.g. a prunable
+# worktree whose directory is gone, or a branch name), so a comparison against
+# the result simply never matches rather than erroring. An inherited CDPATH is
+# cleared for the cd, since it would otherwise resolve a relative name (and
+# print the hit) against an unrelated directory.
+worktree_canon_path() {
+  local p="$1"
+  (CDPATH='' cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+}
+
+# worktree_matches_filter <branch> <canonical-path> — does the worktree with
+# this branch and canonical path survive the FILTER_ARGS filter?
+#   0 = matches (always, when FILTER_ARGS is empty)   1 = no match
+# Each filter argument matches by exact branch name or by canonicalized path,
+# so a relative path or a symlinked component still matches the canonical
+# form git reports. A branch-name argument is compared raw, since
+# worktree_canon_path only ever resolves an actual path.
+worktree_matches_filter() {
+  local branch="$1" canon_path="$2" _f
+  [ "${#FILTER_ARGS[@]}" -eq 0 ] && return 0
+  for _f in "${FILTER_ARGS[@]}"; do
+    if [ "$_f" = "$branch" ] || [ "$(worktree_canon_path "$_f")" = "$canon_path" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -103,7 +144,7 @@ worktree_in_use() {
   local target="$1" resolved cwd
   # Canonicalize so symlinked path components match the kernel-canonical
   # cwd strings reported by /proc and lsof.
-  resolved=$(cd "$target" 2>/dev/null && pwd -P) || resolved="$target"
+  resolved=$(worktree_canon_path "$target")
   for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
     if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
       return 0

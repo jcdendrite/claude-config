@@ -45,19 +45,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # Canonicalize, main-worktree/current-worktree identification
-#
-# _canon falls back to the raw path when it can't be cd'd into (e.g. a
-# prunable worktree whose directory is gone), so a comparison against it
-# simply never matches rather than erroring.
 # ---------------------------------------------------------------------------
 
-_canon() {
-  local p="$1"
-  (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
-}
-
-MAIN_WORKTREE_PATH=$(_canon "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
-CURRENT_WORKTREE_PATH=$(_canon "$(git rev-parse --show-toplevel)")
+MAIN_WORKTREE_PATH=$(worktree_canon_path "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
+CURRENT_WORKTREE_PATH=$(worktree_canon_path "$(git rev-parse --show-toplevel)")
 
 # Canonicalize every reported worktree path once, up front, so every
 # identity comparison below (main-worktree exclusion, filter matching,
@@ -65,38 +56,25 @@ CURRENT_WORKTREE_PATH=$(_canon "$(git rev-parse --show-toplevel)")
 # than mixing raw porcelain paths with canonicalized ones.
 declare -a ALL_WT_CANON_PATHS=()
 for _i in "${!ALL_WT_PATHS[@]}"; do
-  ALL_WT_CANON_PATHS+=("$(_canon "${ALL_WT_PATHS[$_i]}")")
+  ALL_WT_CANON_PATHS+=("$(worktree_canon_path "${ALL_WT_PATHS[$_i]}")")
 done
 
 # ---------------------------------------------------------------------------
 # Optional filter (positional args) -- each argument matches a worktree by
 # exact branch name or exact path, narrowing the report instead of covering
-# every linked worktree. A path argument is canonicalized before comparison
-# so a relative path or a symlinked component still matches the canonical
-# form git reports. A branch-name argument is compared raw, since _canon's
-# cd-into-it fallback only ever resolves an actual path.
+# every linked worktree. worktree_matches_filter (in _worktree-lib.sh) reads
+# FILTER_ARGS, populated here from the positional args.
 # ---------------------------------------------------------------------------
 
 FILTER_ARGS=()
 [ "$#" -gt 0 ] && FILTER_ARGS=("$@")
-
-_matches_filter() {
-  local branch="$1" canon_path="$2" _f
-  [ "${#FILTER_ARGS[@]}" -eq 0 ] && return 0
-  for _f in "${FILTER_ARGS[@]}"; do
-    if [ "$_f" = "$branch" ] || [ "$(_canon "$_f")" = "$canon_path" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
 
 # Build the linked-worktree index list (main excluded) that survives the
 # filter, and separately track which filter args matched nothing.
 declare -a REPORT_INDICES=()
 for _i in "${!ALL_WT_PATHS[@]}"; do
   [ "${ALL_WT_CANON_PATHS[$_i]}" = "$MAIN_WORKTREE_PATH" ] && continue
-  if _matches_filter "${ALL_WT_BRANCHES[$_i]}" "${ALL_WT_CANON_PATHS[$_i]}"; then
+  if worktree_matches_filter "${ALL_WT_BRANCHES[$_i]}" "${ALL_WT_CANON_PATHS[$_i]}"; then
     REPORT_INDICES+=("$_i")
   fi
 done
@@ -104,7 +82,7 @@ done
 declare -a UNMATCHED_FILTER_ARGS=()
 if [ "${#FILTER_ARGS[@]}" -gt 0 ]; then
   for _f in "${FILTER_ARGS[@]}"; do
-    _canon_f=$(_canon "$_f")
+    _canon_f=$(worktree_canon_path "$_f")
     _found=0
     for _i in "${!ALL_WT_PATHS[@]}"; do
       [ "${ALL_WT_CANON_PATHS[$_i]}" = "$MAIN_WORKTREE_PATH" ] && continue
