@@ -501,10 +501,10 @@ class TestCheckSkillLength:
             == "allow"
         )
 
-    def test_pr_description_over_default_under_override_allows(
+    def test_pr_description_at_override_cap_allows(
         self, isolated_home, tmp_path
     ):
-        """pr-description/SKILL.md gets a 210-line cap; 205 lines (over 200, under 210) → allow."""
+        """pr-description/SKILL.md gets a 250-line cap; exactly 250 lines (over 200) → allow."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -515,7 +515,7 @@ class TestCheckSkillLength:
         (repo / pr_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / pr_path).write_text(make_skill_content(205))
+        (repo / pr_path).write_text(make_skill_content(250))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         assert (
             run_hook(
@@ -527,7 +527,7 @@ class TestCheckSkillLength:
         )
 
     def test_pr_description_over_override_denies(self, isolated_home, tmp_path):
-        """pr-description/SKILL.md over the 210-line override and growing → deny."""
+        """pr-description/SKILL.md over the 250-line override and growing → deny."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -535,10 +535,10 @@ class TestCheckSkillLength:
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         pr_path = "claude-skills/skills/pr-description/SKILL.md"
         (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
-        (repo / pr_path).write_text(make_skill_content(205))
+        (repo / pr_path).write_text(make_skill_content(245))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / pr_path).write_text(make_skill_content(211))
+        (repo / pr_path).write_text(make_skill_content(251))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         assert (
             run_hook(
