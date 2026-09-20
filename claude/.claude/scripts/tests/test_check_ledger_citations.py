@@ -439,6 +439,20 @@ class TestCollectDefinedLabels:
     def test_plan_without_an_anchors_line_defines_nothing(self):
         assert _mod.collect_defined_labels("## Approach\nRow 1 [mechanism]: x\n") == set()
 
+    def test_definition_line_inside_an_html_comment_still_counts_as_defined(self):
+        """Residual: `_DEFINITION_LINE_RE` has no HTML-comment awareness, so a
+        definition line with no comment delimiters on it is collected even
+        though it sits between an HTML comment's open and close tags, which
+        Markdown does not render."""
+        text = (
+            "## Approach\n"
+            "Row 1 [mechanism]: x — anchors: root\n"
+            "<!--\n"
+            "G9 — a given, commented out\n"
+            "-->\n"
+        )
+        assert "g9" in _mod.collect_defined_labels(text)
+
 
 class TestFindCitations:
     def test_all_three_sites_resolve_to_a_normalized_token(self):
@@ -526,6 +540,41 @@ class TestFindCitations:
     def test_anchors_value_truncated_by_label_end_yields_no_shorter_label(self):
         text = "## Approach\nEvery claim — anchors: row1foo, row12ab — y\n"
         assert _mod.find_citations(text) == []
+
+    def test_spaced_letter_label_in_an_anchors_value_is_not_a_citation(self):
+        """Residual: a spaced letter label (`G 9`) is only read at the
+        bracketed-citation site, not in an `anchors:` value."""
+        text = "## Approach\nEvery claim — anchors: G 9 — y\n"
+        assert _mod.find_citations(text) == []
+
+    @pytest.mark.parametrize(
+        "anchors_clause",
+        ["**anchors:** G9", "anchors : G9"],
+        ids=["bolded-key", "space-before-colon"],
+    )
+    def test_anchors_key_not_spelled_anchors_colon_yields_no_citation(self, anchors_clause):
+        """Residual: only `anchors:` directly before the value is read as the
+        key -- a bolded key or a space before the colon yields no citation."""
+        text = f"## Approach\nEvery claim — {anchors_clause} — y\n"
+        assert _mod.find_citations(text) == []
+
+    def test_anchors_value_wrapped_onto_the_next_line_is_not_a_citation(self):
+        """Residual: the value must follow the key on the same line -- a
+        wrapped continuation is never read."""
+        text = "## Approach\nEvery claim — anchors:\nG9\n"
+        assert _mod.find_citations(text) == []
+
+    @pytest.mark.parametrize(
+        "citation_text",
+        ["[G 7]", "[А7]"],
+        ids=["non-breaking-space-between-letter-and-digit", "cyrillic-homoglyph-letter-prefix"],
+    )
+    def test_non_ascii_character_inside_a_bracketed_citation_is_not_read(self, citation_text):
+        """Residual: non-ASCII whitespace (here NBSP, not the ASCII space the
+        bracketed-citation site tolerates) or a homoglyph letter inside a
+        citation is not recognized, so the citation itself is not checked."""
+        text = _CLEAN_LEDGER + f"The invalidation path is covered by {citation_text} as well.\n"
+        assert all(token != "g7" for token, _ in _mod.find_citations(text))
 
     def test_plural_row_word_with_bare_numbers_yields_each_label(self):
         text = "## Approach\nRow 3 [mechanism]: x — anchors: rows 1, 2]\n"
@@ -619,6 +668,16 @@ class TestBoundedRuntime:
     def test_a_line_of_distinct_length_backtick_runs_is_checked_in_linear_time(self, tmp_path):
         distinct_backtick_runs = "".join("`" * length + "x" for length in range(1, self._DISTINCT_RUN_COUNT))
         result = self._run_within_bound(tmp_path, _CLEAN_LEDGER + distinct_backtick_runs + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_anchors_value_with_many_separators_is_checked_in_linear_time(self, tmp_path):
+        """`_anchor_targets`'s own while loop runs once per token in an
+        `anchors:` value, distinct from the line-prefix and backtick-run
+        cases above, whose iteration count scales with the line length
+        rather than the value's own separator count. `root` keeps every
+        token resolving, so this pins runtime rather than a citation count."""
+        many_tokens = ", ".join(["root"] * self._DISTINCT_RUN_COUNT)
+        result = self._run_within_bound(tmp_path, _CLEAN_LEDGER + f"anchors: {many_tokens}\n")
         assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -917,6 +976,19 @@ class TestCli:
         assert result.returncode == 2
         assert "no such file" in result.stderr.lower()
         assert str(plan) in result.stderr
+
+    def test_exits_2_for_a_symlink_loop(self, tmp_path):
+        """A symlink cycle (a -> b -> a) is another non-regular target
+        is_file()/is_dir() must reject before read_bytes() ever runs, rather
+        than propagating the OSError that resolving the cycle would raise."""
+        loop_a = tmp_path / "loop-a"
+        loop_b = tmp_path / "loop-b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        result = _run_cli(str(loop_a))
+        assert result.returncode == 2
+        assert "no such file" in result.stderr.lower()
+        assert str(loop_a) in result.stderr
 
     def test_symlink_to_a_regular_file_is_read_normally(self, tmp_path):
         """The guard must reject by target type, not by is_symlink() alone:
