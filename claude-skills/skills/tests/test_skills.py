@@ -1294,23 +1294,39 @@ class TestPrDescriptionBranchHistoryCheck:
     def _test_plan_bullet(self):
         return _bullet_text(self._authoring_section(), "A `## Test plan` of results, not a checklist")
 
-    def test_authoring_bullet_excludes_history_and_routes_rejected_designs(self):
-        """The drafting-side rule: history stays out, a mechanism visible only in
-        branch history is not context, and a rejected approach a reviewer would
-        propose is relocated to Alternatives, not to Context. A finding still true
-        at HEAD survives as a present-tense fact, and the machine-managed blocks
-        exemption keeps the history-excluding rule off byte-identical blocks."""
+    def test_authoring_bullet_excludes_review_history_and_attribution(self):
+        """Dropping this sentence lets review rounds, superseded designs, and
+        reviewer attribution into the body."""
+        assert "Review rounds, superseded designs, and who found what stay out" in self._authoring_bullet()
+
+    def test_authoring_bullet_keeps_still_true_findings_as_present_tense_facts(self):
+        """Dropping this sentence lets the history rule strip a finding,
+        limitation, or accepted risk that is still true at HEAD."""
+        assert (
+            "A finding, limitation, or accepted risk that is still true at HEAD stays as a present-tense fact"
+            in self._authoring_bullet()
+        )
+
+    def test_authoring_bullet_rejects_branch_only_mechanism_as_context(self):
+        """Dropping this sentence lets a mechanism visible only in the branch's
+        own history pass as reviewer context."""
+        assert "A mechanism that exists only in the branch's own history is not context" in self._authoring_bullet()
+
+    def test_authoring_bullet_routes_rejected_designs_to_alternatives_not_context(self):
+        """Dropping either half lets a rejected approach a reviewer would
+        propose land in Context, or leaves it with no home."""
         bullet = self._authoring_bullet()
-        assert "Review rounds, superseded designs, and who found what stay out" in bullet
-        assert "A finding, limitation, or accepted risk that is still true at HEAD stays as a present-tense fact" in bullet
-        assert "A mechanism that exists only in the branch's own history is not context" in bullet
         assert "belongs in `## Alternatives considered`" in bullet
         assert "not in Context" in bullet
-        assert "The machine-managed blocks under Checks below are exempt" in bullet
+
+    def test_authoring_bullet_exempts_machine_managed_blocks(self):
+        """Dropping this sentence applies the history rule to the deferred
+        review findings block, which the coherence pass reinserts verbatim."""
+        assert "The machine-managed blocks under Checks below are exempt" in self._authoring_bullet()
 
     def test_check_names_both_narration_tells(self):
-        """The Check bullet lists the tells it flags, so dropping one silently
-        stops that tell being flagged."""
+        """One tell per narration category (round-based and reviewer-based), so
+        a category dropped entirely fails here."""
         bullet = self._check_bullet()
         assert "earlier rounds" in bullet
         assert "reviewer or agent name" in bullet
