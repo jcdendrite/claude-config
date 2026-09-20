@@ -100,6 +100,7 @@ other's.
     - An option description you wrote, or an inference from options they didn't pick, goes on its own `[unverified]` row (CLAUDE.md §Working Style).
     - Never silently revise or override the quoted content from your own investigation; a contradiction pauses and asks instead.
     - Use the quoted form on every row you add or change. Bare `[engineer-verified]` tags already in committed plans remain valid; treat the whole claim of such a row as protected, as `plan-review` does.
+  - `[author-inferred]` — a conclusion you derived yourself, stated by no code, doc, or engineer utterance, that a reviewer can re-derive from the same repo evidence. A claim only the engineer can supply is not an inference; surface it as an open decision.
 
 See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 

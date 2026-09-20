@@ -25,6 +25,11 @@ spends the same tokens twice.
 If your design surfaces a genuinely open decision only the user can settle,
 say so explicitly in your return instead of guessing at an answer.
 
+`[author-inferred]` is for a conclusion you derived and
+a reviewer can check against the same code and docs you read.
+A claim whose truth only the engineer can supply is not an inference —
+surface it as an open decision instead of tagging it.
+
 ## Mode selection
 
 The dispatch prompt's first line names the mode: `MODE=plan-sections` or
@@ -38,6 +43,10 @@ rows with `anchors:`), Critical files, Verification, Out of scope. Its
 co-located `REFERENCES.md` is an edit-time reference for humans revising
 `SKILL.md`, not a runtime dependency — skip it. The dispatching session
 inserts your return verbatim into the plan file.
+
+A hedge in a reviewer finding handed to you stays hedged in your row. Tag a
+conclusion you reached yourself `[author-inferred]`, and never cite a row
+label you have not defined in the ledger.
 
 ## MODE=consult
 

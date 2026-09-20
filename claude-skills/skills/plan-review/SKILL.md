@@ -80,6 +80,8 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 **CONTEXT-COMPLETE STEPS.** Each step contains file path, before/after description, and why the change is needed. Check: no step requires scrolling up for context.
 
+**RESOLVING CITATIONS.** Every intra-plan ledger citation names a label the plan defines. Check: run `~/.claude/scripts/check-ledger-citations.py <plan-path>` against the plan under review; any non-zero exit — including exit 2, so a missing interpreter or unreadable file cannot silently disarm the check — returns the plan to the author.
+
 A plan failing any of these is not ready to implement — return it to the author before evaluating gaps.
 
 ## Step 4 — Design-fitness gate

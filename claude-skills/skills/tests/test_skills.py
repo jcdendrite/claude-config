@@ -5759,3 +5759,165 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
                 "present — call findings-path-suffix.sh instead of restating the "
                 "derivation inline"
             )
+
+
+_LEDGER_TAG_OPENERS = ("[verified:", "[unverified]", "[engineer-verified:", "[author-inferred]")
+_LEDGER_CITATION_SCRIPT = "check-ledger-citations.py"
+
+
+def _first_index(lines: list[str], predicate: Callable[[str], bool]) -> int | None:
+    """Index of the first line satisfying `predicate`, or None."""
+    return next((i for i, line in enumerate(lines) if predicate(line)), None)
+
+
+def _markdown_paragraphs(text: str) -> list[str]:
+    """Paragraphs of `text`, split on blank or whitespace-only lines, each with
+    its whitespace collapsed so a re-wrap of the prose does not change it."""
+    return [" ".join(paragraph.split()) for paragraph in re.split(r"\n[ \t]*\n", text) if paragraph.strip()]
+
+
+def _tag_list_bullet_index(lines: list[str], tag_opener: str) -> int | None:
+    """Index of the top-level tag-list bullet opening with `tag_opener`.
+
+    Matches the bullet's own opening delimiter, not a closing bracket, since
+    two of the four tags carry an inline argument. Anchoring to the two-space
+    bullet prefix excludes the same tag literals quoted in prose elsewhere.
+    """
+    prefix = f"  - `{tag_opener}"
+    return _first_index(lines, lambda line: line.startswith(prefix))
+
+
+def test_author_inferred_tag_and_citation_check_placement() -> None:
+    """The fourth ledger tag's definition, its reviewer handling, its two
+    architect constraints, and Step 3's citation check must each sit where
+    the sentence they qualify or the line that governs them lives — a bare
+    substring check passes wherever the text lands. Guards a reviewer
+    defaulting to a settled row and an inference laundered as
+    engineer-confirmed.
+    """
+    # 1. plan-review Step 3: the citation check names a real script, carries
+    # the fail-closed exit clause, and precedes the terminator so that
+    # closing line governs it.
+    assert (SCRIPTS_DIR / _LEDGER_CITATION_SCRIPT).is_file(), (
+        f"{SCRIPTS_DIR}: {_LEDGER_CITATION_SCRIPT} does not exist, so plan-review Step 3 invokes nothing."
+    )
+    review_path = _skill_file("plan-review")
+    review_lines = review_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    step3_start, step3_end = _section_between(review_lines, "## Step 3 — Plan structure requirements", review_path)
+    step3_paragraphs = _markdown_paragraphs("".join(review_lines[step3_start + 1 : step3_end]))
+    invocation = f"Check: run `~/.claude/scripts/{_LEDGER_CITATION_SCRIPT} <plan-path>`"
+    check_idx = _first_index(step3_paragraphs, lambda paragraph: invocation in paragraph)
+    terminator_idx = _first_index(step3_paragraphs, lambda paragraph: paragraph.startswith("A plan failing any of these"))
+    assert check_idx is not None, f"{review_path}: Step 3 no longer says {invocation!r}."
+    assert terminator_idx is not None, f"{review_path}: Step 3 no longer closes with 'A plan failing any of these'."
+    assert check_idx < terminator_idx, (
+        f"{review_path}: the citation check must precede Step 3's closing line, "
+        "or that line's fail-closed terminator no longer governs it."
+    )
+    for fail_closed_clause in ("any non-zero exit", "exit 2", "returns the plan to the author"):
+        assert fail_closed_clause in step3_paragraphs[check_idx], (
+            f"{review_path}: Step 3's citation check no longer says {fail_closed_clause!r}, "
+            "so a broken interpreter or unreadable file no longer fails closed."
+        )
+
+    # 2. plan-review ROUTING.md: the tag's handling is its own paragraph,
+    # outside the re-review condition, so it fires on round 1.
+    routing_lines = _ROUTING_MD_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+    routing_start, routing_end = _section_between(routing_lines, "## Ledger cross-check", _ROUTING_MD_PATH)
+    routing_paragraphs = _markdown_paragraphs("".join(routing_lines[routing_start + 1 : routing_end]))
+    re_review_anchor = "re-review of a prior round"
+    assert any(re_review_anchor in paragraph for paragraph in routing_paragraphs), (
+        f"{_ROUTING_MD_PATH}: '## Ledger cross-check' no longer has a paragraph containing {re_review_anchor!r}, "
+        "the anchor this check distinguishes the [author-inferred] paragraph from."
+    )
+    tag_paragraphs = [paragraph for paragraph in routing_paragraphs if "[author-inferred]" in paragraph]
+    assert tag_paragraphs, f"{_ROUTING_MD_PATH}: '## Ledger cross-check' no longer handles [author-inferred]."
+    assert all(re_review_anchor not in paragraph for paragraph in tag_paragraphs), (
+        f"{_ROUTING_MD_PATH}: the [author-inferred] handling sits inside the re-review-only paragraph, "
+        "so it would not fire on round 1."
+    )
+
+    # 3. plan-it Step 5: all four tags are items of one bulleted list, with
+    # [author-inferred] the last item, a sibling after the others, and
+    # [engineer-verified:] keeping its own sub-bullets.
+    plan_it_path = _skill_file("plan-it")
+    plan_it_lines = plan_it_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    step5_start, step5_end = _section_between(plan_it_lines, "## Step 5 — Architecture design", plan_it_path)
+    step5_lines = plan_it_lines[step5_start:step5_end]
+    tag_indices = {opener: _tag_list_bullet_index(step5_lines, opener) for opener in _LEDGER_TAG_OPENERS}
+    missing = [opener for opener, idx in tag_indices.items() if idx is None]
+    assert not missing, f"{plan_it_path}: Step 5 tag list no longer has a top-level bullet for {missing}."
+    first_idx = min(tag_indices.values())
+    author_inferred_idx = tag_indices["[author-inferred]"]
+    assert author_inferred_idx == max(tag_indices.values()), (
+        f"{plan_it_path}: the [author-inferred] bullet must follow the other three tag bullets."
+    )
+    loose_lines = [
+        line for line in step5_lines[first_idx : author_inferred_idx + 1] if line.strip() and not line.startswith("  ")
+    ]
+    assert not loose_lines, (
+        f"{plan_it_path}: prose interrupts the Step 5 tag list between its first and fourth bullet: {loose_lines[0]!r}"
+    )
+    engineer_verified_idx = tag_indices["[engineer-verified:"]
+    sub_bullet_lines = [line for line in step5_lines[engineer_verified_idx + 1 : author_inferred_idx] if line.strip()]
+    assert sub_bullet_lines and all(line.startswith("    ") for line in sub_bullet_lines), (
+        f"{plan_it_path}: the [engineer-verified:] sub-bullets must sit between that bullet "
+        "and the [author-inferred] bullet, or they qualify the wrong tag."
+    )
+    list_tail = step5_lines[author_inferred_idx + 1 :]
+    list_tail = list_tail[: next((i for i, line in enumerate(list_tail) if not line.strip()), len(list_tail))]
+    assert not any(line.startswith("  - ") for line in list_tail), (
+        f"{plan_it_path}: a tag bullet follows [author-inferred], which must be the last item of the tag list."
+    )
+    assert not any(line.startswith("    ") for line in list_tail), (
+        f"{plan_it_path}: an indented line follows the [author-inferred] bullet, so it would re-parent under that tag. "
+        "This also rejects a deliberate sub-bullet on [author-inferred]; if that is intended, relax this check."
+    )
+
+    # 4. plan-architect: the provenance carve-out is in MODE=plan-sections;
+    # the boundary clause and its escalation half, located by their own
+    # phrases (both new paragraphs contain the tag literal), sit between the
+    # open-decision sentence they qualify and the mode-selection heading.
+    # Matched against whitespace-collapsed preamble text so a re-wrap of the
+    # prose does not break the check.
+    architect_lines = _agent_body("plan-architect").splitlines(keepends=True)
+    architect_path = _AGENTS_DIR / "plan-architect.md"
+    plan_sections_start, plan_sections_end = _section_between(architect_lines, "## MODE=plan-sections", architect_path)
+    assert any("[author-inferred]" in line for line in architect_lines[plan_sections_start:plan_sections_end]), (
+        f"{architect_path}: '## MODE=plan-sections' no longer carries the [author-inferred] provenance carve-out."
+    )
+    mode_selection_idx = _first_index(architect_lines, lambda line: line.rstrip("\n") == "## Mode selection")
+    assert mode_selection_idx is not None, f"{architect_path}: '## Mode selection' heading not found."
+    preamble = " ".join("".join(architect_lines[:mode_selection_idx]).split())
+    anchor_positions = {
+        "open-decision sentence 'genuinely open decision'": preamble.find("genuinely open decision"),
+        "boundary clause 'a reviewer can check against the same code and docs you read'": preamble.find(
+            "a reviewer can check against the same code and docs you read"
+        ),
+        "escalation clause 'surface it as an open decision'": preamble.find("surface it as an open decision"),
+    }
+    absent_anchors = [name for name, position in anchor_positions.items() if position == -1]
+    assert not absent_anchors, (
+        f"{architect_path}: not found in the preamble before '## Mode selection': {absent_anchors}."
+    )
+    assert list(anchor_positions.values()) == sorted(anchor_positions.values()), (
+        f"{architect_path}: the boundary and escalation clauses must follow the open-decision sentence they qualify, "
+        "in the preamble both modes read."
+    )
+
+    # 5. plan-it REFERENCES.md: the Grammar block names all four tags and
+    # the retired three-tag rationale heading is gone.
+    references_path = plan_it_path.parent / "REFERENCES.md"
+    references_text = references_path.read_text(encoding="utf-8")
+    grammar_start = references_text.find("### Grammar")
+    assert grammar_start != -1, f"{references_path}: '### Grammar' heading not found."
+    grammar_end = references_text.find("### Worked example", grammar_start)
+    assert grammar_end != -1, f"{references_path}: '### Worked example' heading not found after '### Grammar'."
+    grammar_block = references_text[grammar_start:grammar_end]
+    missing_from_grammar = [opener for opener in _LEDGER_TAG_OPENERS if opener not in grammar_block]
+    assert not missing_from_grammar, (
+        f"plan-it/REFERENCES.md: the Grammar block no longer names {missing_from_grammar}."
+    )
+    assert "Why three tags, not two" not in references_text, (
+        "plan-it/REFERENCES.md: the 'Why three tags, not two' heading is stale beside a fourth tag."
+    )

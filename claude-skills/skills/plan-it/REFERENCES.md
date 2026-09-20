@@ -106,6 +106,7 @@ Row 1 [mechanism]: <name> — anchors: root — <one-line justification>
 Row 2 [assumption]: <claim> [verified: <source>] — anchors: row1
 Row 3 [assumption]: <claim> [unverified] — anchors: row1
 Row 4 [assumption]: <claim> [engineer-verified: "<quote>"] — anchors: root
+Row 5 [assumption]: <claim> [author-inferred] — anchors: row1
 ```
 
 Every row's `anchors:` value is either `root` or an already-numbered row —
@@ -133,9 +134,11 @@ plan-review-markers/ existence-only semantics [unverified] — anchors: row1
 Row 4 [assumption]: the structural-completeness hook and Stop-hook +
 cross-check subagent are deferred until this hypothesis validates on live
 plans [engineer-verified: "Let's hold off on the structural-completeness hook and the Stop-hook cross-check subagent until we've seen this work on live plans"] — anchors: root
+Row 5 [assumption]: the marker needs no expiry, because a plan edit
+already changes its content hash [author-inferred] — anchors: row1
 ```
 
-### Why three tags, not two
+### Why four tags, not two
 
 A binary verified/unverified split can't represent a human-stated fact
 that can't be re-derived by grep yet must never be silently overridden —
@@ -145,6 +148,14 @@ the human instead of overriding them.
 
 File-sourced facts are always `[verified: <file>]`; the tag exists only for
 utterances a grep can't re-derive.
+
+Three tags still leave no honest slot for the author's own derived
+judgment, so an inference drifts toward the most authoritative adjacent
+tag. `[author-inferred]` is that slot: `plan-review` resolves such a row
+on its own evidence like `[unverified]` and never escalates it to the
+human. Reusing `[unverified]` would lose the provenance distinction, and
+forcing inferences into `[verified: <reasoning>]` would redefine a tag
+whose definition requires a citable code or doc source.
 
 ### Why the tag carries a quote
 
