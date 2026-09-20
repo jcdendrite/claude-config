@@ -303,6 +303,16 @@ def main(argv: list[str]) -> int:
     plan_path = Path(args[0])
 
     try:
+        # is_file() follows symlinks and returns False, without raising, for a
+        # symlink to a device node or any other non-regular, non-directory
+        # target. Git tracks symlinks, so a plan could be committed as one
+        # pointing at e.g. /dev/zero. Reading that target would grow memory
+        # unboundedly and raise MemoryError, which isn't an OSError subclass
+        # and so wouldn't be caught below. A directory is left to read_bytes()
+        # itself, which raises IsADirectoryError (an OSError) for it.
+        if not plan_path.is_file() and not plan_path.is_dir():
+            print(f"{SCRIPT_NAME}: no such file: {_printable_path(plan_path)}", file=sys.stderr)
+            return 2
         # Plan files are KB-sized, so the read is unbounded by design.
         raw = plan_path.read_bytes()
     except FileNotFoundError:

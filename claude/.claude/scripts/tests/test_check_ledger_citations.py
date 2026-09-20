@@ -861,6 +861,49 @@ class TestCli:
         assert "cannot read" in result.stderr.lower()
         assert str(tmp_path) in result.stderr
 
+    def test_exits_2_for_a_symlink_to_a_device_node(self, tmp_path):
+        """A plan committed as a symlink to a device node (git tracks symlinks)
+        must be rejected before read_bytes() ever runs: a symlink to a
+        memory-mapped device like /dev/zero would otherwise grow the read
+        unboundedly and raise MemoryError, which isn't an OSError subclass and
+        so isn't caught -- an uncaught traceback with exit code 1, colliding
+        with the documented "1 = orphan found" contract. /dev/null is safe to
+        point at here since reading it returns EOF immediately; the point is
+        that the guard trips before any read is attempted, not the target's size."""
+        plan = tmp_path / "device-symlink-plan.md"
+        plan.symlink_to("/dev/null")
+        result = _run_cli(str(plan))
+        assert result.returncode == 2
+        assert "no such file" in result.stderr.lower()
+        assert str(plan) in result.stderr
+        assert len(result.stderr.splitlines()) == 1
+
+    def test_exits_2_for_a_symlink_to_a_fifo(self, tmp_path):
+        """The guard must reject a non-regular target generally, not only a
+        character device: a symlink to a FIFO with no writer would otherwise
+        hang read_bytes() indefinitely rather than raising, an uncaught-hang
+        DoS distinct from the device-node case's uncaught MemoryError."""
+        fifo_path = tmp_path / "a-fifo"
+        os.mkfifo(fifo_path)
+        plan = tmp_path / "fifo-symlink-plan.md"
+        plan.symlink_to(fifo_path)
+        result = _run_cli(str(plan))
+        assert result.returncode == 2
+        assert "no such file" in result.stderr.lower()
+        assert str(plan) in result.stderr
+
+    def test_symlink_to_a_regular_file_is_read_normally(self, tmp_path):
+        """The guard must reject by target type, not by is_symlink() alone:
+        a symlink to an ordinary plan file is exactly as valid a plan path as
+        the file itself, and must resolve through the normal PASS/FAIL path."""
+        real_plan = tmp_path / "real-plan.md"
+        real_plan.write_text("Row 1 [mechanism]: x — anchors: root\n")
+        plan = tmp_path / "symlink-plan.md"
+        plan.symlink_to(real_plan)
+        result = _run_cli(str(plan))
+        assert result.returncode == 0
+        assert "pass" in result.stdout.lower()
+
     def test_leading_utf8_bom_before_a_first_line_row_definition_is_ignored(self, tmp_path):
         plan = tmp_path / "bom-plan.md"
         plan.write_bytes(

@@ -5904,7 +5904,7 @@ def test_plan_architect_keeps_hedges_hedged_and_escalates_engineer_only_claims()
     for hedge_paragraph_phrase in (
         "stays hedged",
         "Tag a conclusion you reached yourself `[author-inferred]`",
-        "never cite a row label you have not defined",
+        "Never cite a row label you have not defined",
     ):
         assert hedge_paragraph_phrase in plan_sections, (
             f"{architect_path}: '## MODE=plan-sections' no longer says {hedge_paragraph_phrase!r}, "

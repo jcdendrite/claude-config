@@ -43,7 +43,7 @@ co-located `REFERENCES.md` is an edit-time reference for humans revising
 inserts your return verbatim into the plan file.
 
 A hedge in a reviewer finding handed to you stays hedged in your row. Tag a
-conclusion you reached yourself `[author-inferred]`, and never cite a row
+conclusion you reached yourself `[author-inferred]`. Never cite a row
 label you have not defined in the ledger.
 
 ## MODE=consult
