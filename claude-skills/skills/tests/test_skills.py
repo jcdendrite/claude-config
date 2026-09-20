@@ -4882,9 +4882,10 @@ _PINNED_STEP3_CAP_CLAUSE = (
     "exists, to judge whether the loop is converging (*proceed*) or its "
     "foundation is wrong (*stop*). Add its answer to this pass's record as a "
     "table row whose finding cell reads `cap` and whose Outcome is the "
-    "verdict. A *stop*, a return that reads as neither verdict, or an "
-    "orchestrator disagreement with the return, is a blocking stop-and-ask to "
-    "the human."
+    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
+    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
+    "row, or an orchestrator disagreement with the return, is a blocking "
+    "stop-and-ask to the human."
 )
 
 # Step 3's clean/dirty definition for a disposition record: the Cap counts
@@ -4909,9 +4910,10 @@ _PINNED_STEP3_LOOP_BACK_CLAUSE = (
     "the cap below."
 )
 
-# The retired limitation that step 3 must not re-run `/code-review` on a fix's
-# own output; the loop-back sentence above replaced it.
-_RETIRED_STEP3_LOOP_RISK_PHRASE = "on its own output (loop risk)"
+# Step 3 must re-review a fix's own output in full. This phrase is the tail of
+# the sentence that forbids that re-review, so its presence in step 3 is the
+# regression.
+_STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
 
 
 class TestReadyForReviewStep3LoopCapPins:
@@ -4919,7 +4921,8 @@ class TestReadyForReviewStep3LoopCapPins:
     loop-back sentence, so dropping the unparseable-record-counts-as-dirty
     rule, the cap consult, the statement that a record grants no review skip,
     or the fix-loop return to a full pass fails a test instead of drifting
-    silently. Also guard against the retired "loop risk" limitation returning.
+    silently. One test also asserts step 3 carries no sentence forbidding a
+    re-review of a fix's own output.
     """
 
     @pytest.mark.parametrize(
@@ -4949,13 +4952,14 @@ class TestReadyForReviewStep3LoopCapPins:
             context=f"ready-for-review/SKILL.md: {site} no longer matches.",
         )
 
-    def test_step3_does_not_restore_retired_loop_risk_limitation(self) -> None:
+    def test_step3_does_not_forbid_rereview_of_a_fixs_own_output(self) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
         )
-        assert _RETIRED_STEP3_LOOP_RISK_PHRASE not in " ".join(raw_section.split()), (
-            "ready-for-review/SKILL.md: step 3 restores the retired "
-            f"{_RETIRED_STEP3_LOOP_RISK_PHRASE!r} limitation."
+        assert _STEP3_SKIP_REREVIEW_PHRASE not in " ".join(raw_section.split()), (
+            "ready-for-review/SKILL.md: step 3 forbids re-reviewing a fix's own "
+            f"output ({_STEP3_SKIP_REREVIEW_PHRASE!r}); the fix loop requires "
+            "that re-review."
         )
 
 
@@ -5092,13 +5096,13 @@ _PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
     "never narrows what it reviews or suppresses a finding the current text "
     "supports, and it names in its findings any record it cannot parse, or "
     "whose claim the current text contradicts. For each earlier ADDRESS row "
-    "the same agent raised, it confirms the fix landed as the finding "
-    "required; a missing or partial fix is a new finding for any reviewer "
-    "that sees it, whichever agent raised the row. It re-flags a site an "
-    "earlier fix or verdict rewrote only under a different rule than the one "
-    "behind the rewrite, or for a fact the rewrite dropped, and when its fix "
-    "would move a site back toward its earlier wording it names the finding "
-    "it contradicts."
+    "the same agent raised whose Outcome names a fix, it confirms the fix "
+    "landed as the finding required; a missing or partial fix is a new "
+    "finding for any reviewer that sees it, whichever agent raised the row. "
+    "It re-flags a site an earlier fix or verdict rewrote only under a "
+    "different rule than the one behind the rewrite, or for a fact the "
+    "rewrite dropped, and when its fix would move a site back toward its "
+    "earlier wording it names the finding it contradicts."
 )
 
 
