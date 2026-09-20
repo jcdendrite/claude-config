@@ -166,9 +166,7 @@ Flag and fix:
   narrates by review round or by reviewer instead of by commit: "earlier
   rounds implemented…", "a later review found…", or a reviewer or agent name
   credited with a finding or a method. Rewrite it per **Current state, not
-  branch history** above, keeping the verified fact but not who found it or
-  how, and drop a mechanism the reviewer cannot find at HEAD. Make two
-  or more parallel facts a list. In `## Test plan`, state what the final
+  branch history** above. In `## Test plan`, state what the final
   review pass returned, not how many rounds ran or what earlier ones found.
   The tells are illustrative; the test is whether a reader must have watched
   the branch to follow the sentence.

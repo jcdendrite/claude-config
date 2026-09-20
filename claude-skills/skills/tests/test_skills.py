@@ -1171,28 +1171,34 @@ class TestPrDescriptionExternalStateCheck:
         assert "whether CI is *passing* is not" in self._body()
 
 
+def _bullet_lead_in(line: str) -> str | None:
+    """The bold lead-in of a column-0 `- **...**` bullet line, minus one terminal period.
+
+    Returns None for any line that does not open a bold-led bullet.
+    """
+    match = re.match(r"- \*\*(.+?)\*\*", line)
+    return match.group(1).removesuffix(".") if match else None
+
+
 def _bullet_text(section_text: str, lead_in: str) -> str:
     """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`.
 
-    The lead-in matches the way `_missing_bullet_lead_ins` does: the bold span
-    of a column-0 `- **...**` line, minus one terminal period, equals `lead_in`
-    exactly. The bullet runs to the next blank line, column-0 `- ` bullet, or
-    `#` heading, so the result is independent of hard-wrap position and cannot
-    borrow text from an adjacent bullet or heading. An indented nested bullet
-    is continuation text, not a boundary.
+    The lead-in matches the way `_missing_bullet_lead_ins` does, via
+    `_bullet_lead_in`. The bullet runs to the next blank line, column-0 `- `
+    bullet, or markdown heading (`#` to `######` followed by a space), so the
+    result is independent of hard-wrap position and cannot borrow text from an
+    adjacent bullet or heading. An indented nested bullet is continuation text,
+    not a boundary.
     """
     lines = section_text.splitlines()
-    start = next(
-        (
-            i
-            for i, line in enumerate(lines)
-            if (match := re.match(r"- \*\*(.+?)\*\*", line)) and match.group(1).removesuffix(".") == lead_in
-        ),
-        None,
-    )
+    start = next((i for i, line in enumerate(lines) if _bullet_lead_in(line) == lead_in), None)
     assert start is not None, f"no bullet opens with bold lead-in {lead_in!r}"
     end = next(
-        (i for i in range(start + 1, len(lines)) if not lines[i].strip() or lines[i].startswith(("- ", "#"))),
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if not lines[i].strip() or lines[i].startswith("- ") or re.match(r"#{1,6} ", lines[i])
+        ),
         len(lines),
     )
     return " ".join(" ".join(lines[start:end]).split())
@@ -1203,16 +1209,12 @@ class TestPrDescriptionBranchHistoryCheck:
     out of a PR body.
 
     The neighboring per-commit-narrative check only catches prose that cites
-    commits. Prose narrating by review round ("a later review found...") or by
-    a named reviewer cites none, so it passes that check untouched.
-
-    Each test pins a bullet's content within the section it belongs to, over
-    whitespace-collapsed text, so an emptied bullet, a bullet moved to another
-    section, or a benign re-wrap is judged correctly.
-
-    The SKILL.md prose is the shipped behavior and no eval covers
-    pr-description, so these are presence tripwires, not proof that an agent
-    follows the rules.
+    commits, so prose narrating by review round or by named reviewer passes it
+    untouched. The Check bullet owns detection (it names the tells) and the
+    authoring bullet owns the rule, so each test pins one bullet's content
+    within its own section, over whitespace-collapsed text. The SKILL.md prose
+    is the shipped behavior and no eval covers pr-description, so these are
+    presence tripwires, not proof that an agent follows the rules.
     """
 
     _AUTHORING_LEAD_IN = "Current state, not branch history"
@@ -1238,22 +1240,19 @@ class TestPrDescriptionBranchHistoryCheck:
         assert "not in Context" in bullet
 
     def test_check_names_both_narration_tells(self):
-        """The Check owns detection: it must name round-based narration and
-        reviewer- or agent-name attribution, or sync mode stops flagging them."""
+        """Sync mode stops flagging a tell the Check bullet no longer names."""
         bullet = self._check_bullet()
         assert "earlier rounds" in bullet
         assert "reviewer or agent name" in bullet
 
     def test_check_defers_to_authoring_bullet_by_name(self):
-        """The Check owns detection; the rule it enforces lives in the authoring
-        bullet. The bold pointer name the Check bullet carries must resolve to a
-        bullet lead-in in the authoring section, so a rename of either side
-        fails here."""
+        """The Check bullet's bold pointer name must equal the authoring bullet's
+        lead-in, so a rename or repoint of the pointer fails here."""
         pointer_names = re.findall(r"per \*\*(.+?)\*\* above", self._check_bullet())
         assert len(pointer_names) == 1, (
             f"expected one `per **<name>** above` pointer in the Check bullet, extracted {pointer_names!r}"
         )
-        assert _missing_bullet_lead_ins(pointer_names, self._authoring_section()) == []
+        assert pointer_names == [self._AUTHORING_LEAD_IN]
 
     def test_check_scopes_test_plan_to_final_review_result(self):
         """The Test plan legitimately reports review outcomes; the Check bullet
@@ -1275,11 +1274,7 @@ def _missing_bullet_lead_ins(names: Iterable[str], section_text: str) -> list[st
     Each bullet's bold lead-in span, minus one terminal period, must equal the
     name exactly, so a truncated name does not match.
     """
-    lead_in_names = {
-        match.group(1).removesuffix(".")
-        for line in section_text.splitlines()
-        if (match := re.match(r"- \*\*(.+?)\*\*", line))
-    }
+    lead_in_names = {name for line in section_text.splitlines() if (name := _bullet_lead_in(line)) is not None}
     return [name for name in names if name not in lead_in_names]
 
 
@@ -1347,6 +1342,44 @@ class TestPrDescriptionDefaultTemplateWiring:
         assert _bullet_pointer_names(both_pointers) == ["What and why", "A test plan"]
         one_reworded = "use its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
         assert _bullet_pointer_names(one_reworded) == ["A test plan"]
+
+    def test_bullet_text_excludes_the_following_bullet(self):
+        """Deny fixture: text present only in the next bullet must not appear
+        in the first bullet's result."""
+        section_text = "- **First.** Alpha text.\n- **Second.** Beta text.\n"
+        assert "Alpha text." in _bullet_text(section_text, "First")
+        assert "Beta text." not in _bullet_text(section_text, "First")
+
+    def test_bullet_text_stops_at_a_blank_line_and_at_a_heading(self):
+        """Deny fixture: prose after a blank line, or after a markdown heading
+        with no blank line before it, is not part of the bullet."""
+        after_blank = "- **First.** Alpha text.\n\nStray paragraph.\n"
+        assert _bullet_text(after_blank, "First") == "- **First.** Alpha text."
+        after_heading = "- **First.** Alpha text.\n## Next section\nHeading body.\n"
+        assert _bullet_text(after_heading, "First") == "- **First.** Alpha text."
+
+    def test_bullet_text_treats_a_hash_that_is_not_a_heading_as_continuation(self):
+        """Allow fixture: a column-0 `#` not followed by a space is wrapped
+        prose, so it stays in the bullet."""
+        section_text = "- **First.** Alpha text\n#123 continues here.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text #123 continues here."
+
+    def test_bullet_text_includes_an_indented_nested_bullet(self):
+        """Allow fixture: an indented nested bullet is continuation text."""
+        section_text = "- **First.** Alpha text.\n  - Nested detail.\n- **Second.** Beta text.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text. - Nested detail."
+
+    def test_bullet_text_is_independent_of_hard_wrap_position(self):
+        """Allow fixture: a hard-wrapped bullet equals its unwrapped form."""
+        wrapped = "- **First.** Alpha\n  text that\nwraps.\n"
+        unwrapped = "- **First.** Alpha text that wraps.\n"
+        assert _bullet_text(wrapped, "First") == _bullet_text(unwrapped, "First")
+
+    def test_bullet_text_raises_when_the_lead_in_is_missing(self):
+        """Deny fixture: a renamed lead-in fails loudly instead of returning an
+        empty string that every negative assertion would pass against."""
+        with pytest.raises(AssertionError, match="no bullet opens with bold lead-in"):
+            _bullet_text("- **Other.** Body.\n", "First")
 
 
 class TestPrDescriptionCostSectionWiring:
