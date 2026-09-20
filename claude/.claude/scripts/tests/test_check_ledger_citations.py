@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +32,17 @@ _ORPHAN_AT_EACH_SITE = (
     "Row 2 [assumption]: eviction is constant time [author-inferred] — anchors: row8\n"
     "Eviction cost is settled, see row 9 for the derivation.\n"
     "The invalidation path is covered by [G7] as well.\n"
+)
+
+
+# The only `anchors:` clause is a quoted example inside a fence, while the
+# unfenced prose carries citation-shaped tokens.
+_ANCHORS_ONLY_IN_A_FENCE = (
+    "## Approach\n"
+    "```\n"
+    "anchors: root\n"
+    "```\n"
+    "See row 4 and [G2] for detail.\n"
 )
 
 
@@ -153,6 +163,29 @@ class TestStripping:
         assert _mod.collect_defined_labels(text) == {"row1"}
         assert _mod.find_orphan_citations(text) == [("row9", 8)]
 
+    @pytest.mark.parametrize(
+        "fenced_example",
+        [
+            " ```\nanchors: row99\n ```\n",
+            "   ```\nanchors: row99\n   ```\n",
+            "  ```md\n  anchors: row99\n  ```\n",
+            "```\nanchors: row99\n```  \t\n",
+            "~~~\nanchors: row99\n  ~~~\n",
+        ],
+        ids=[
+            "one-space-indent",
+            "three-space-indent",
+            "list-nested-indent-with-info-string",
+            "closer-with-trailing-whitespace",
+            "indented-tilde-closer",
+        ],
+    )
+    def test_indented_or_space_trailed_fence_is_blanked_and_the_citation_after_it_reports_its_real_line(
+        self, fenced_example
+    ):
+        text = _CLEAN_LEDGER + fenced_example + "An orphan, see row 9.\n"
+        assert _mod.find_orphan_citations(text) == [("row9", 7)]
+
     def test_crlf_fence_is_closed_and_the_citation_after_it_reports_its_real_line(self):
         text = (
             "## Approach\r\n"
@@ -163,6 +196,14 @@ class TestStripping:
             "An orphan, see row 9.\r\n"
         )
         assert _mod.find_orphan_citations(text) == [("row9", 6)]
+
+    def test_fence_opened_and_closed_at_four_spaces_is_still_blanked(self):
+        """The residual checklist documents this lenient pairing: Markdown
+        reads a four-space-indented fence as an indented code block, but this
+        script blanks it, so a quoted `anchors:` clause inside it is not a
+        citation."""
+        text = _CLEAN_LEDGER + "    ```\n    anchors: row99\n    ```\nAn orphan, see row 9.\n"
+        assert _mod.find_orphan_citations(text) == [("row9", 7)]
 
     def test_strip_inline_spans_removes_a_bracketed_label_inside_a_span(self):
         stripped = _mod.strip_inline_spans("quoted `[G7]` here")
@@ -245,6 +286,10 @@ class TestCollectDefinedLabels:
             ("G6`code` widgets are cached", "g6"),
             ("G7", "g7"),
             ("- **ABC1** widgets are immutable — beyond reach: upstream owns it", "abc1"),
+            ("G1 - widgets are cached", "g1"),
+            ("G7\r", "g7"),
+            ("| A10a | widgets are cached |", "a10a"),
+            ("G4a [assumption]: widgets are cached", "g4a"),
         ],
         ids=[
             "bolded-list-item",
@@ -262,6 +307,10 @@ class TestCollectDefinedLabels:
             "backtick-boundary",
             "end-of-line-boundary",
             "three-letter-label",
+            "hyphen-boundary",
+            "carriage-return-end-of-line-boundary",
+            "suffixed-letter-label-in-a-table-cell",
+            "suffixed-letter-label-with-a-tag",
         ],
     )
     def test_each_written_definition_shape_is_collected(self, definition_line, expected_label):
@@ -344,6 +393,15 @@ class TestCollectDefinedLabels:
         assert _mod.collect_defined_labels(text) == set()
         assert _mod.find_orphan_citations(text) == [("row1", 4)]
 
+    def test_ordinal_prefix_before_a_written_row_label_defines_nothing_and_orphans_every_row(self):
+        text = (
+            "## Approach\n"
+            "1. **Row 1** [mechanism]: cache widgets — anchors: root\n"
+            "2. **Row 2** [assumption]: eviction is cheap — anchors: row1\n"
+        )
+        assert _mod.collect_defined_labels(text) == set()
+        assert _mod.find_orphan_citations(text) == [("row1", 2), ("row1", 3), ("row2", 3)]
+
     def test_plan_without_an_anchors_line_defines_nothing(self):
         assert _mod.collect_defined_labels("## Approach\nRow 1 [mechanism]: x\n") == set()
 
@@ -367,6 +425,30 @@ class TestFindCitations:
     def test_anchors_value_continues_across_each_separator(self, anchors_value):
         text = f"## Approach\nEvery claim — anchors: {anchors_value} — y\n"
         assert _mod.find_citations(text) == [("g4", 2), ("row1", 2)]
+
+    @pytest.mark.parametrize(
+        "anchors_clause",
+        ["Anchors: row1, G4", "ANCHORS: row1, G4", "anchors: row1 AND G4", "anchors: row1, And G4"],
+        ids=["capitalized-key", "uppercase-key", "uppercase-and", "capitalized-and-after-comma"],
+    )
+    def test_anchors_key_and_and_separator_match_case_insensitively(self, anchors_clause):
+        text = f"## Approach\nEvery claim — {anchors_clause} — y\n"
+        assert _mod.find_citations(text) == [("g4", 2), ("row1", 2)]
+
+    @pytest.mark.parametrize(
+        ("clause", "expected_tokens"),
+        [
+            ("anchors: row1 — G9", ["row1"]),
+            ("anchors: row1. G9", ["row1"]),
+            ("`anchors: row1` G9", ["row1"]),
+            ("anchors: rows 1, 2] G9", ["row1", "row2"]),
+            ("anchors: value G9", []),
+        ],
+        ids=["em-dash", "sentence-final-period", "closing-backtick", "closing-bracket", "non-label-word"],
+    )
+    def test_label_shaped_token_after_a_stop_is_not_a_citation(self, clause, expected_tokens):
+        text = f"## Approach\nEvery claim — {clause}\n"
+        assert sorted(token for token, _ in _mod.find_citations(text)) == expected_tokens
 
     def test_anchors_value_does_not_continue_across_a_word_that_merely_starts_with_and(self):
         text = "## Approach\nEvery claim — anchors: row1 andG4 — y\n"
@@ -447,6 +529,10 @@ class TestFindCitations:
 
     def test_plan_without_an_anchors_line_cites_nothing(self):
         assert _mod.find_citations("Some prose, see row 4 and [G2].\n") == []
+
+    def test_plan_whose_only_anchors_clause_is_inside_a_fence_cites_nothing(self):
+        assert _mod.find_citations(_ANCHORS_ONLY_IN_A_FENCE) == []
+        assert _mod.find_orphan_citations(_ANCHORS_ONLY_IN_A_FENCE) == []
 
 
 class TestBoundedRuntime:
@@ -532,6 +618,39 @@ class TestFindOrphanCitations:
         )
         assert _mod.find_orphan_citations(text) == []
 
+    def test_defined_and_cited_suffixed_label_resolves(self):
+        text = (
+            "## Approach\n"
+            "Row 4a [mechanism]: x — anchors: root\n"
+            "Row 5 [assumption]: y — anchors: row4a\n"
+        )
+        assert _mod.collect_defined_labels(text) == {"row4a", "row5"}
+        assert _mod.find_orphan_citations(text) == []
+
+    def test_defined_and_cited_suffixed_letter_label_resolves(self):
+        text = (
+            "## Ledger\n"
+            "| A10a | widgets are cached |\n"
+            "G4a [assumption]: widgets are immutable\n"
+            "Row 1 [mechanism]: x — anchors: A10a, G4a\n"
+        )
+        assert _mod.collect_defined_labels(text) == {"a10a", "g4a", "row1"}
+        assert _mod.find_orphan_citations(text) == []
+
+    def test_undefined_suffixed_letter_label_in_an_anchors_value_is_an_orphan(self):
+        text = "## Ledger\n| A10 | widgets are cached |\nRow 1 [mechanism]: x — anchors: A10a\n"
+        assert _mod.find_orphan_citations(text) == [("a10a", 3)]
+
+    def test_undefined_suffixed_prose_citation_is_an_orphan(self):
+        assert _mod.find_orphan_citations(_CLEAN_LEDGER + "See row 4a for detail.\n") == [("row4a", 4)]
+
+    def test_undefined_row_letter_label_in_an_anchors_value_is_an_orphan(self):
+        text = _CLEAN_LEDGER + "Row 3 [assumption]: x — anchors: row G9\n"
+        assert _mod.find_orphan_citations(text) == [("g9", 4)]
+
+    def test_undefined_row_letter_label_in_prose_is_an_orphan(self):
+        assert _mod.find_orphan_citations(_CLEAN_LEDGER + "See row G9 for detail.\n") == [("g9", 4)]
+
     def test_citation_in_a_later_section_without_an_anchors_line_is_scanned_and_orphaned(self):
         text = _CLEAN_LEDGER + "\n## Critical files\nSee row 4 for the derivation.\n"
         assert _mod.find_orphan_citations(text) == [("row4", 6)]
@@ -566,14 +685,20 @@ class TestCli:
         result = _run_cli(str(plan))
         assert result.returncode == 0, result.stdout + result.stderr
         pass_line = result.stdout.splitlines()[0]
-        assert re.fullmatch(
-            r"PASS: every ledger citation resolves \(2 labels defined, \d+ citations checked\)", pass_line
-        )
+        # Three citations: each row's own `Row N` prose plus row 2's `anchors: row1`.
+        assert pass_line == "PASS: every ledger citation resolves (2 labels defined, 3 citations checked)"
         assert "Not checked by this script" in result.stdout
 
     def test_plan_without_an_anchors_line_exits_0(self, tmp_path):
         plan = tmp_path / "no-ledger-plan.md"
         plan.write_text("# Widget plan\n\nSee row 4 and [G2] for detail.\n")
+        result = _run_cli(str(plan))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "FAIL" not in result.stdout
+
+    def test_plan_whose_only_anchors_clause_is_inside_a_fence_exits_0(self, tmp_path):
+        plan = tmp_path / "fence-only-anchors-plan.md"
+        plan.write_text(_ANCHORS_ONLY_IN_A_FENCE)
         result = _run_cli(str(plan))
         assert result.returncode == 0, result.stdout + result.stderr
         assert "FAIL" not in result.stdout
@@ -682,11 +807,16 @@ class TestCli:
             "fenced code block",
             "list position",
             "separator other than a comma, semicolon, or the word",
+            "keys not spelled",
             "four or more letters",
             "hard-wrapped across two lines",
             "wraps onto the next line",
             "inside an HTML block",
             "escaped backtick",
+            "not scanned at all",
+            "follows a non-label word",
+            "punctuation-wrapped",
+            "spaced letter label",
         ],
     )
     def test_not_checked_block_names_each_residual_item(self, tmp_path, capsys, residual_fragment):

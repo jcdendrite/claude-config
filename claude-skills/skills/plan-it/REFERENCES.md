@@ -138,7 +138,7 @@ Row 5 [assumption]: the marker needs no expiry, because a plan edit
 already changes its content hash [author-inferred] — anchors: row1
 ```
 
-### Why four tags, not two
+### Why the tags separate provenance
 
 A binary verified/unverified split can't represent a human-stated fact
 that can't be re-derived by grep yet must never be silently overridden —
@@ -149,13 +149,13 @@ the human instead of overriding them.
 File-sourced facts are always `[verified: <file>]`; the tag exists only for
 utterances a grep can't re-derive.
 
-Three tags still leave no honest slot for the author's own derived
-judgment, so an inference drifts toward the most authoritative adjacent
-tag. `[author-inferred]` is that slot: `plan-review` resolves such a row
-on its own evidence like `[unverified]` and never escalates it to the
-human. Reusing `[unverified]` would lose the provenance distinction, and
-forcing inferences into `[verified: <reasoning>]` would redefine a tag
-whose definition requires a citable code or doc source.
+The other tags each name a source, so none fits the author's own derived
+judgment, and an inference drifts toward the most authoritative adjacent
+tag. `[author-inferred]` is that slot. Reusing `[unverified]` would lose
+the provenance distinction, and forcing inferences into
+`[verified: <reasoning>]` would redefine a tag whose definition requires a
+citable code or doc source. `plan-review` handles the tag per
+`plan-review/ROUTING.md` § "Ledger cross-check".
 
 ### Why the tag carries a quote
 

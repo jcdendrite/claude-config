@@ -163,6 +163,11 @@ PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH = (
     "claude/.claude/scripts/tests/test_plan_ledger_citations_in_diff.py"
 )
 
+# test_skills.py (SKILLS_TESTS_DIR) loads this script and runs it over the
+# plan-it worked example. Its own path change is already covered by the
+# SCRIPTS_DIR row, which does not select SKILLS_TESTS_DIR.
+LEDGER_CITATION_CHECKER_SCRIPT = "claude/.claude/scripts/check-ledger-citations.py"
+
 # test_ci_path_filter.py's only reference to this literal string is a static
 # CI ignore-paths allowlist entry, independent of the file's content.
 CHANGELOG_MD = "CHANGELOG.md"
@@ -473,6 +478,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 # STATUSLINE_COMMAND_SH: see its own comment above for citation.
 # CONFIG_KEYS_PSV: see its own comment above for citation.
+# LEDGER_CITATION_CHECKER_SCRIPT: see its own comment above for citation.
 # _is_py_source_under_claude_or_plugins: see its own comment above for
 # citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
 # CLAUDE_TESTS_DIR directly.
@@ -511,6 +517,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
     (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
     (lambda p: p == CONFIG_KEYS_PSV, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == LEDGER_CITATION_CHECKER_SCRIPT, (SKILLS_TESTS_DIR,)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH, CLAUDE_TESTS_DIR)),
     (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )

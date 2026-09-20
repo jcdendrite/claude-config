@@ -36,6 +36,7 @@ Run with: pytest claude/.claude/
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -5762,7 +5763,8 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
 
 
 _LEDGER_TAG_OPENERS = ("[verified:", "[unverified]", "[engineer-verified:", "[author-inferred]")
-_LEDGER_CITATION_SCRIPT = "check-ledger-citations.py"
+_LEDGER_CITATION_SCRIPT_PATH = SCRIPTS_DIR / "check-ledger-citations.py"
+_LEDGER_CITATION_SCRIPT = _LEDGER_CITATION_SCRIPT_PATH.name
 
 
 def _first_index(lines: list[str], predicate: Callable[[str], bool]) -> int | None:
@@ -5787,17 +5789,10 @@ def _tag_list_bullet_index(lines: list[str], tag_opener: str) -> int | None:
     return _first_index(lines, lambda line: line.startswith(prefix))
 
 
-def test_author_inferred_tag_and_citation_check_placement() -> None:
-    """The fourth ledger tag's definition, its reviewer handling, its two
-    architect constraints, and Step 3's citation check must each sit where
-    the sentence they qualify or the line that governs them lives — a bare
-    substring check passes wherever the text lands. Guards a reviewer
-    defaulting to a settled row and an inference laundered as
-    engineer-confirmed.
+def test_plan_review_step3_runs_the_citation_check_before_its_terminator() -> None:
+    """Step 3's citation check names a real script, carries the fail-closed
+    exit clause, and precedes the terminator so that closing line governs it.
     """
-    # 1. plan-review Step 3: the citation check names a real script, carries
-    # the fail-closed exit clause, and precedes the terminator so that
-    # closing line governs it.
     assert (SCRIPTS_DIR / _LEDGER_CITATION_SCRIPT).is_file(), (
         f"{SCRIPTS_DIR}: {_LEDGER_CITATION_SCRIPT} does not exist, so plan-review Step 3 invokes nothing."
     )
@@ -5820,8 +5815,12 @@ def test_author_inferred_tag_and_citation_check_placement() -> None:
             "so a broken interpreter or unreadable file no longer fails closed."
         )
 
-    # 2. plan-review ROUTING.md: the tag's handling is its own paragraph,
-    # outside the re-review condition, so it fires on round 1.
+
+def test_routing_handles_author_inferred_on_every_round_and_never_escalates_it() -> None:
+    """The tag's handling is its own paragraph, outside the re-review
+    condition so it fires on round 1, and it tells the reviewer to resolve the
+    row rather than escalate it.
+    """
     routing_lines = _ROUTING_MD_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
     routing_start, routing_end = _section_between(routing_lines, "## Ledger cross-check", _ROUTING_MD_PATH)
     routing_paragraphs = _markdown_paragraphs("".join(routing_lines[routing_start + 1 : routing_end]))
@@ -5836,10 +5835,26 @@ def test_author_inferred_tag_and_citation_check_placement() -> None:
         f"{_ROUTING_MD_PATH}: the [author-inferred] handling sits inside the re-review-only paragraph, "
         "so it would not fire on round 1."
     )
+    never_escalate_phrase = "never escalate it to the human"
+    assert any(never_escalate_phrase in paragraph for paragraph in tag_paragraphs), (
+        f"{_ROUTING_MD_PATH}: the [author-inferred] paragraph no longer says {never_escalate_phrase!r}, "
+        "so a reviewer could hand the plan's own inference to the human as a settled question."
+    )
+    for secondary_phrase, consequence in (
+        ("say so in the finding", "a finding could build on an unverified premise as if it were established"),
+        ("is itself a finding", "a mis-tagged row that no repo evidence resolves could pass unflagged"),
+    ):
+        assert any(secondary_phrase in paragraph for paragraph in tag_paragraphs), (
+            f"{_ROUTING_MD_PATH}: the [author-inferred] paragraph no longer says {secondary_phrase!r}, "
+            f"so {consequence}."
+        )
 
-    # 3. plan-it Step 5: all four tags are items of one bulleted list, with
-    # [author-inferred] the last item, a sibling after the others, and
-    # [engineer-verified:] keeping its own sub-bullets.
+
+def test_plan_it_step5_lists_author_inferred_as_the_last_tag_bullet() -> None:
+    """All four tags are items of one bulleted list, with [author-inferred] the
+    last item, a sibling after the others, and [engineer-verified:] keeping its
+    own sub-bullets.
+    """
     plan_it_path = _skill_file("plan-it")
     plan_it_lines = plan_it_path.read_text(encoding="utf-8").splitlines(keepends=True)
     step5_start, step5_end = _section_between(plan_it_lines, "## Step 5 — Architecture design", plan_it_path)
@@ -5874,40 +5889,56 @@ def test_author_inferred_tag_and_citation_check_placement() -> None:
         "This also rejects a deliberate sub-bullet on [author-inferred]; if that is intended, relax this check."
     )
 
-    # 4. plan-architect: the provenance carve-out is in MODE=plan-sections;
-    # the boundary clause and its escalation half, located by their own
-    # phrases (both new paragraphs contain the tag literal), sit between the
-    # open-decision sentence they qualify and the mode-selection heading.
-    # Matched against whitespace-collapsed preamble text so a re-wrap of the
-    # prose does not break the check.
+
+def test_plan_architect_keeps_hedges_hedged_and_escalates_engineer_only_claims() -> None:
+    """The open-decision escalation for an engineer-only claim sits in the
+    preamble both modes read, after the open-decision sentence it qualifies.
+    The hedge-stays-hedged paragraph, with its no-undefined-label rule, sits in
+    MODE=plan-sections. Text is matched whitespace-collapsed so a re-wrap of
+    the prose does not break the check.
+    """
     architect_lines = _agent_body("plan-architect").splitlines(keepends=True)
     architect_path = _AGENTS_DIR / "plan-architect.md"
     plan_sections_start, plan_sections_end = _section_between(architect_lines, "## MODE=plan-sections", architect_path)
-    assert any("[author-inferred]" in line for line in architect_lines[plan_sections_start:plan_sections_end]), (
-        f"{architect_path}: '## MODE=plan-sections' no longer carries the [author-inferred] provenance carve-out."
-    )
+    plan_sections = " ".join("".join(architect_lines[plan_sections_start:plan_sections_end]).split())
+    for hedge_paragraph_phrase in (
+        "stays hedged",
+        "Tag a conclusion you reached yourself `[author-inferred]`",
+        "never cite a row label you have not defined",
+    ):
+        assert hedge_paragraph_phrase in plan_sections, (
+            f"{architect_path}: '## MODE=plan-sections' no longer says {hedge_paragraph_phrase!r}, "
+            "so a hedged finding could be promoted, the architect's own inference left untagged, "
+            "or an undefined label cited."
+        )
+
     mode_selection_idx = _first_index(architect_lines, lambda line: line.rstrip("\n") == "## Mode selection")
     assert mode_selection_idx is not None, f"{architect_path}: '## Mode selection' heading not found."
     preamble = " ".join("".join(architect_lines[:mode_selection_idx]).split())
     anchor_positions = {
-        "open-decision sentence 'genuinely open decision'": preamble.find("genuinely open decision"),
-        "boundary clause 'a reviewer can check against the same code and docs you read'": preamble.find(
-            "a reviewer can check against the same code and docs you read"
+        "the open-decision sentence 'genuinely open decision'": preamble.find("genuinely open decision"),
+        "the engineer-only sentence 'only the engineer can supply is not an inference'": preamble.find(
+            "only the engineer can supply is not an inference"
         ),
-        "escalation clause 'surface it as an open decision'": preamble.find("surface it as an open decision"),
+        "its escalation 'surface it as an open decision'": preamble.find("surface it as an open decision"),
     }
     absent_anchors = [name for name, position in anchor_positions.items() if position == -1]
     assert not absent_anchors, (
         f"{architect_path}: not found in the preamble before '## Mode selection': {absent_anchors}."
     )
     assert list(anchor_positions.values()) == sorted(anchor_positions.values()), (
-        f"{architect_path}: the boundary and escalation clauses must follow the open-decision sentence they qualify, "
-        "in the preamble both modes read."
+        f"{architect_path}: the engineer-only sentence and its escalation must follow the open-decision "
+        "sentence they qualify, in the preamble both modes read."
     )
 
-    # 5. plan-it REFERENCES.md: the Grammar block names all four tags and
-    # the retired three-tag rationale heading is gone.
-    references_path = plan_it_path.parent / "REFERENCES.md"
+
+_TAG_COUNT_HEADING_RE = re.compile(r"^#{1,6}\s+Why\s+(?:one|two|three|four|five|\d+)\s+tags\b", re.MULTILINE)
+
+
+def test_plan_it_references_grammar_names_all_four_tags_and_no_heading_counts_them() -> None:
+    """The Grammar block names every ledger tag, and no rationale heading
+    states a tag count that the Grammar block could disagree with."""
+    references_path = _skill_file("plan-it").parent / "REFERENCES.md"
     references_text = references_path.read_text(encoding="utf-8")
     grammar_start = references_text.find("### Grammar")
     assert grammar_start != -1, f"{references_path}: '### Grammar' heading not found."
@@ -5918,6 +5949,41 @@ def test_author_inferred_tag_and_citation_check_placement() -> None:
     assert not missing_from_grammar, (
         f"plan-it/REFERENCES.md: the Grammar block no longer names {missing_from_grammar}."
     )
-    assert "Why three tags, not two" not in references_text, (
-        "plan-it/REFERENCES.md: the 'Why three tags, not two' heading is stale beside a fourth tag."
+    count_heading = _TAG_COUNT_HEADING_RE.search(references_text)
+    assert count_heading is None, (
+        f"plan-it/REFERENCES.md: the heading {count_heading.group()!r} claims a tag count, "
+        "which disagrees with the Grammar block when the tag set changes."
     )
+
+
+def _plan_it_worked_example_as_plan_text() -> str:
+    """The fenced Worked example ledger of plan-it/REFERENCES.md with its fence
+    lines removed, so the checker reads it as unfenced plan text."""
+    references_path = _skill_file("plan-it").parent / "REFERENCES.md"
+    references_text = references_path.read_text(encoding="utf-8")
+    heading_at = references_text.find("### Worked example")
+    assert heading_at != -1, f"{references_path}: '### Worked example' heading not found."
+    fenced_block = re.search(r"^```\n(?P<body>.*?)\n^```$", references_text[heading_at:], re.DOTALL | re.MULTILINE)
+    assert fenced_block, f"{references_path}: no fenced block under '### Worked example'."
+    return fenced_block.group("body") + "\n"
+
+
+def test_plan_it_worked_example_is_a_ledger_the_citation_checker_reads() -> None:
+    """The checker's input grammar is defined by plan-it/REFERENCES.md. A
+    grammar edit that the checker no longer parses would leave it reading zero
+    labels and citations and passing every plan, so the worked example must
+    yield both and resolve cleanly, and one corrupted anchor must surface."""
+    spec = importlib.util.spec_from_file_location("check_ledger_citations", _LEDGER_CITATION_SCRIPT_PATH)
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    worked_example = _plan_it_worked_example_as_plan_text()
+
+    assert len(checker.collect_defined_labels(worked_example)) > 0
+    assert len(checker.find_citations(worked_example)) > 0
+    assert checker.find_orphan_citations(worked_example) == []
+
+    corrupted = worked_example.replace("anchors: row1", "anchors: row9", 1)
+    assert corrupted != worked_example, "the worked example no longer carries an 'anchors: row1' clause."
+    orphans = checker.find_orphan_citations(corrupted)
+    assert [token for token, _ in orphans] == ["row9"]
+    assert "anchors: row9" in corrupted.splitlines()[orphans[0][1] - 1]

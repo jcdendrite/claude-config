@@ -1,6 +1,7 @@
 """Backstop for plan-review Step 3's ledger-citation check: every plan file the
 current branch changes must have no orphaned ledger citation, so a Step 3 that
-was abbreviated in-session is still caught at push time.
+was abbreviated in-session is still caught by a `pull_request` CI run or a
+local full-suite run.
 
 Scoped to the diff on purpose. The committed plan corpus carries pre-existing
 orphans that this check is not meant to reopen, and it never reads a plan file
@@ -16,9 +17,12 @@ Behaviors a reader of a green or red run should know:
   citations. Committed plans are historical records and are meant to be left
   unedited.
 - It needs `origin/main`, so it depends on the workflow's full-depth checkout.
-  A missing ref fails rather than skips. That includes the full-suite fallback
-  `select-tests.py` takes when git is unavailable.
-- A path git quotes, such as a non-ASCII plan filename, is silently skipped.
+  A missing ref fails rather than skips. When `select-tests.py` falls back to
+  the full suite because git is unavailable, this test runs in that suite and
+  fails.
+- A changed path that git quotes (one with non-ASCII bytes, a tab, a double
+  quote, or a backslash) fails rather than skips, because it cannot be
+  classified as a plan file.
 """
 from __future__ import annotations
 
@@ -54,7 +58,19 @@ def _changed_plan_files() -> list[Path]:
     try:
         changed_paths = _select_tests.compute_changed_paths(REPO_ROOT)
     except _select_tests.GitDiffUnavailable as exc:
-        pytest.fail(f"cannot determine which plan files this branch changed: {exc}", pytrace=False)
+        pytest.fail(
+            f"cannot determine which plan files this branch changed: {exc}. "
+            "This test needs origin/main, so the CI checkout must fetch the full history (`fetch-depth: 0`).",
+            pytrace=False,
+        )
+    # An unquoted path never starts with a double quote, so a leading one marks a path git quoted.
+    quoted_paths = [path for path in changed_paths if path.startswith('"')]
+    if quoted_paths:
+        pytest.fail(
+            f"git quoted these changed paths, so they cannot be classified as plan files: {quoted_paths}. "
+            "Rename the file to plain ASCII without tabs, quotes, or backslashes.",
+            pytrace=False,
+        )
     plans_prefix = PLANS_DIR.relative_to(REPO_ROOT).as_posix() + "/"
     plan_files = [
         REPO_ROOT / path
@@ -116,17 +132,76 @@ def _plans_dir_under(tmp_path: Path, monkeypatch) -> Path:
     return plans_dir
 
 
+def _failure_message_of_changed_plan_files() -> str:
+    """The message of the failure `_changed_plan_files` raises. A skip or a
+    normal return is itself a test failure, since pytest.raises would let a
+    skip pass through as a green SKIPPED."""
+    try:
+        _changed_plan_files()
+    except pytest.fail.Exception as exc:
+        return str(exc)
+    except pytest.skip.Exception:
+        pytest.fail("_changed_plan_files skipped where it had to fail", pytrace=False)
+    pytest.fail("_changed_plan_files returned where it had to fail", pytrace=False)
+
+
 class TestChangedPlanFilesSelection:
-    """Pins the two outcomes for the two different conditions: git unavailable
-    fails, and no changed plan file skips."""
+    """Pins the outcomes for the different conditions: git unavailable or a
+    git-quoted path fails, and no changed plan file skips."""
 
     def test_git_diff_unavailable_fails_with_the_exceptions_own_message(self, monkeypatch):
         def raise_git_diff_unavailable(repo_root):
             raise _select_tests.GitDiffUnavailable("could not resolve merge-base against origin/main")
 
         monkeypatch.setattr(_select_tests, "compute_changed_paths", raise_git_diff_unavailable)
-        with pytest.raises(pytest.fail.Exception, match="could not resolve merge-base against origin/main"):
-            _changed_plan_files()
+
+        assert "could not resolve merge-base against origin/main" in _failure_message_of_changed_plan_files()
+
+    def test_git_diff_unavailable_message_names_the_full_history_checkout_requirement(self, monkeypatch):
+        def raise_git_diff_unavailable(repo_root):
+            raise _select_tests.GitDiffUnavailable("could not resolve merge-base against origin/main")
+
+        monkeypatch.setattr(_select_tests, "compute_changed_paths", raise_git_diff_unavailable)
+
+        assert "fetch-depth: 0" in _failure_message_of_changed_plan_files()
+
+    @pytest.mark.parametrize(
+        "quoted_path",
+        [r'".claude/plans/caf\303\251.md"', r'".claude/plans/tab\there.md"', r'".claude/plans/say \"hi\".md"'],
+        ids=["non-ascii-bytes", "tab", "double-quote"],
+    )
+    def test_git_quoted_changed_path_fails_instead_of_being_skipped(self, monkeypatch, quoted_path):
+        monkeypatch.setattr(_select_tests, "compute_changed_paths", lambda repo_root: [quoted_path])
+
+        assert "git quoted these changed paths" in _failure_message_of_changed_plan_files()
+
+    def test_git_quoted_changed_path_message_asks_for_a_plain_ascii_rename(self, monkeypatch):
+        monkeypatch.setattr(
+            _select_tests, "compute_changed_paths", lambda repo_root: [r'".claude/plans/caf\303\251.md"']
+        )
+
+        message = _failure_message_of_changed_plan_files()
+
+        assert "Rename the file to plain ASCII without tabs, quotes, or backslashes." in message
+        assert "core.quotePath" not in message
+
+    def test_git_quoted_path_outside_the_plans_directory_also_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            _select_tests, "compute_changed_paths", lambda repo_root: [r'"docs/caf\303\251.md"']
+        )
+
+        assert "git quoted these changed paths" in _failure_message_of_changed_plan_files()
+
+    def test_git_quoted_path_beside_an_unquoted_plan_file_still_fails(self, monkeypatch, tmp_path):
+        plans_dir = _plans_dir_under(tmp_path, monkeypatch)
+        (plans_dir / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        monkeypatch.setattr(
+            _select_tests,
+            "compute_changed_paths",
+            lambda repo_root: [r'".claude/plans/caf\303\251.md"', ".claude/plans/plan.md"],
+        )
+
+        assert "git quoted these changed paths" in _failure_message_of_changed_plan_files()
 
     def test_diff_with_no_plan_file_skips(self, monkeypatch):
         monkeypatch.setattr(_select_tests, "compute_changed_paths", lambda repo_root: ["README.md"])

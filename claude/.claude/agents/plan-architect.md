@@ -25,10 +25,8 @@ spends the same tokens twice.
 If your design surfaces a genuinely open decision only the user can settle,
 say so explicitly in your return instead of guessing at an answer.
 
-`[author-inferred]` is for a conclusion you derived and
-a reviewer can check against the same code and docs you read.
 A claim whose truth only the engineer can supply is not an inference —
-surface it as an open decision instead of tagging it.
+surface it as an open decision instead of tagging it `[author-inferred]`.
 
 ## Mode selection
 

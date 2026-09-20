@@ -831,6 +831,16 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH,)
 
+    def test_ledger_citation_checker_change_also_selects_skills_tests(self):
+        """test_skills.py (SKILLS_TESTS_DIR) runs the checker over the plan-it
+        worked example, so a checker edit must select it. Without this
+        cross-domain exception, the SCRIPTS_DIR domain rule claims the path
+        first and that contract goes unrun."""
+        result = _mod.select_pytest_targets([_mod.LEDGER_CITATION_CHECKER_SCRIPT])
+        assert result.is_full_suite is False
+        assert _mod.SKILLS_TESTS_DIR in result.target_paths
+        assert _mod.SCRIPTS_TESTS_DIR in result.target_paths
+
     def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
         """_is_under's directory-boundary check requires an exact match or a
         `directory + "/"` prefix. .claude/plans-archive/ shares PLANS_DIR's
@@ -1485,6 +1495,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
+    _mod.LEDGER_CITATION_CHECKER_SCRIPT,
 )
 
 # The DOMAIN_RULES and CROSS_DOMAIN_EXCEPTIONS targets that name a file rather

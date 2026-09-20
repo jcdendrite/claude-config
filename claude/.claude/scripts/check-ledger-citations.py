@@ -48,12 +48,14 @@ RESIDUAL_CHECKLIST_ITEMS = (
     "whether a row's tag matches its actual provenance",
     "citations to sources outside this file (file:line, doc sections, ticket IDs)",
     "any citation inside a fenced code block, which is treated as quoted rather than asserted",
-    "labels in an `anchors:` value after a separator other than a comma, semicolon, or the word "
-    "`and`, and `anchors` keys not spelled `anchors:` directly before the value "
-    "(`**anchors:** G9`, `anchors : G9`)",
-    "labels in an `anchors:` value that wraps onto the next line, follows a non-label word "
-    "(`anchors: none, G9`), is punctuation-wrapped (`` `G9` ``, `(G9)`), or is a spaced "
-    "letter label (`G 9`)",
+    "a plan with no `anchors:` clause outside a fenced block, which is not scanned at all: its "
+    "`row N` and bracketed-label citations are never read, and it exits 0",
+    "labels in an `anchors:` value after a separator other than a comma, semicolon, or the word `and`",
+    "`anchors` keys not spelled `anchors:` directly before the value (`**anchors:** G9`, `anchors : G9`)",
+    "labels in an `anchors:` value that wraps onto the next line",
+    "labels in an `anchors:` value that follows a non-label word (`anchors: none, G9`)",
+    "labels in an `anchors:` value that are punctuation-wrapped (`` `G9` ``, `(G9)`)",
+    "labels in an `anchors:` value written as a spaced letter label (`G 9`)",
     "fences this script pairs differently from Markdown (indented four or more spaces, "
     "prefixed by a list marker, ended by an outdent, or inside an HTML block), which can hide "
     "visible text between two fences",
