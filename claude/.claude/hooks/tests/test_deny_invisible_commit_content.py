@@ -9,35 +9,14 @@ git-subcommand tests.
 from __future__ import annotations
 
 import json
-import re
+import os
+import shutil
 import subprocess
 
 import pytest
 from helpers import HOOKS_DIR, bash_input, build_path_without, read_input, run_hook, run_hook_reason
 
 DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
-
-# Matches _mask_shell_quotes's own definition, opening brace through the
-# closing brace at column 0 — used to invoke it in isolation, since running
-# the full hook blocks on stdin JSON and never exposes this internal
-# function's raw output.
-_MASK_SHELL_QUOTES_FUNCTION_RE = re.compile(r"_mask_shell_quotes\(\) \{.*?\n\}\n", re.DOTALL)
-
-
-def _call_mask_shell_quotes(text: str) -> str:
-    source = DENY_INVISIBLE_COMMIT_CONTENT_HOOK.read_text()
-    match = _MASK_SHELL_QUOTES_FUNCTION_RE.search(source)
-    assert match is not None, "could not locate _mask_shell_quotes's definition in the hook source"
-    # _mask_shell_quotes calls _lib_capped_for (defined in _lib.sh), so
-    # _lib.sh must be sourced ahead of the extracted function body here too.
-    lib_path = HOOKS_DIR / "_lib.sh"
-    result = subprocess.run(
-        ["bash", "-c", f'. "{lib_path}"; {match.group(0)}_mask_shell_quotes "$1"', "bash", text],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout
 
 
 class TestDenyInvisibleCommitContent:
@@ -159,6 +138,17 @@ class TestDenyInvisibleCommitContent:
             bash_input('"git" commit -m a && git commit -m b'),
         ) == "deny"
 
+    def test_mid_word_quoted_git_word_two_chained_commits_denied(self):
+        """A single-safe-word span glued to adjacent text (`g"it"`) must
+        still unquote to `git` in the masked text, so this first commit
+        counts toward arm 2's total. The fast-reject passes on the bare
+        second commit, so only the masker's mid-word unquoting separates
+        allow from deny here."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('g"it" commit -m a && git commit -m b'),
+        ) == "deny"
+
     def test_ansi_c_quoted_git_word_two_chained_commits_denied(self):
         """GH-783: the ANSI-C-quote form of the git word (`$'git'`) must
         normalize the same way `_lib_strip_shell_quotes` already
@@ -173,7 +163,7 @@ class TestDenyInvisibleCommitContent:
     def test_ansi_c_multi_char_escape_git_word_second_commit_allowed(self):
         """Documented residual (docs/security-hardening.md lines ~784-787):
         the ANSI-C multi-character escape `$'\\x67it'` (`\\x67` is `g`)
-        contains a backslash, so `_mask_shell_quotes`'s single-safe-word
+        contains a backslash, so `_lib_mask_shell_quotes`'s single-safe-word
         exception regex (`^[A-Za-z0-9._/-]+$`) never matches it and the span
         stays blanked -- unlike the single-character-escape-free `$'git'`
         case above, which the masker's `$`-drop/unquote path does recognize.
@@ -184,14 +174,15 @@ class TestDenyInvisibleCommitContent:
             bash_input("$'\\x67it' commit -m x && git commit -m y"),
         ) == "allow"
 
-    def test_mask_shell_quotes_ansi_c_multi_word_span_has_no_stray_dollar(self):
-        """A multi-word ANSI-C-quoted span ($'fix && bar') falls into the
-        blanking branch (its interior isn't a single safe word), which must
-        trim the leading `$` the same way the single-safe-word unquoting
-        branch already does — otherwise the blanked output is `$''`
-        instead of `''`, an internal inconsistency with the masker's own
-        documented "drops the leading $" rule."""
-        assert _call_mask_shell_quotes("$'fix && bar'") == "''"
+    def test_backslash_escaped_quote_second_commit_allowed(self):
+        """Documented known gap (docs/security-hardening.md): the masker does
+        not model backslash escapes, so the `\\"` pair opens a span that
+        blanks the second commit while bash runs both. Arm 2 never counts the
+        second commit, so this allows."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m x && echo \\" && git commit -m y && echo \\"'),
+        ) == "allow"
 
     def test_multi_commit_deny_message_names_invariant(self):
         reason = run_hook_reason(
@@ -244,7 +235,7 @@ class TestDenyInvisibleCommitContent:
 
     def test_multibyte_commit_message_mentioning_git_commit_as_text_allowed(self):
         """Non-ASCII content inside a quoted `-m` value must not desync
-        `_mask_shell_quotes`'s per-character quote-state scan -- same allow
+        `_lib_mask_shell_quotes`'s per-character quote-state scan -- same allow
         outcome as the ASCII-equivalent
         test_commit_message_mentioning_git_commit_as_double_quoted_text_allowed."""
         assert run_hook(
@@ -273,7 +264,7 @@ class TestDenyInvisibleCommitContent:
         of masking correctness, since "add" isn't the commit subcommand.
         The multi-line heredoc body, embedded inside a `$(...)` substitution
         that is itself inside the `-m` argument's double quotes, is exactly
-        the shape `_mask_shell_quotes`'s single-pass scan must mask as one
+        the shape `_lib_mask_shell_quotes`'s single-pass scan must mask as one
         contiguous span rather than splitting at the embedded newline."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
@@ -512,7 +503,7 @@ class TestDenyInvisibleCommitContent:
     def test_embedded_literal_newline_in_message_allowed(self):
         """A real embedded newline inside the `-m` value (not the two-
         character `\\n` escape) must not desync arm 1's fragment walk from
-        arm 2's masked one: `_mask_shell_quotes` collapses the entire
+        arm 2's masked one: `_lib_mask_shell_quotes` collapses the entire
         quoted span, newline included, before either arm splits on shell
         operators."""
         assert run_hook(
@@ -662,7 +653,7 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_awk_absent_from_path_denied(self, tmp_path):
-        """`_mask_shell_quotes`'s single-pass scan is the earliest awk fork
+        """`_lib_mask_shell_quotes`'s single-pass scan is the earliest awk fork
         this hook reaches, ahead of `_lib_commit_fragment_has_worktree_
         target`'s own awk use."""
         farm_dir = tmp_path / "path-without-awk"
@@ -673,6 +664,32 @@ class TestDenyInvisibleCommitContent:
             bash_input("git commit -m x"),
             extra_env={"PATH": restricted_path},
         ) == "deny"
+
+    def test_masking_awk_failure_denies_with_masking_reason(self, tmp_path):
+        """The mask step's own exit status is what fails closed here: the
+        first awk fork fails, and it is the mask step (the hook's earliest
+        awk use), so the deny reason must name the masking step rather than
+        a later fork's failure."""
+        real_awk = shutil.which("awk")
+        assert real_awk is not None
+        shim_dir = tmp_path / "shim-bin"
+        shim_dir.mkdir()
+        fired_marker = shim_dir / "shim-fired"
+        shim = shim_dir / "awk"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'if [ ! -e "{fired_marker}" ]; then : > "{fired_marker}"; exit 3; fi\n'
+            f'exec "{real_awk}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git commit -m x"),
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert fired_marker.exists(), "awk shim never ran: the hook forked no awk on PATH"
+        assert reason is not None
+        assert "could not mask quoted command text" in reason
 
     def test_sed_absent_from_path_denied(self, tmp_path):
         """`_lib_strip_shell_quotes` computing COMMAND_UNQUOTED is the

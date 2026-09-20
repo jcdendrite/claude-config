@@ -1009,6 +1009,17 @@ _lib_is_repo_plan_file() {
   esac
 }
 
+# Succeeds for pseudo-file paths (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`).
+# Takes exactly one argument (`$1`: the path).
+# A hook cannot meaningfully scan their contents: they may resolve differently
+# at hook time than when the guarded command runs, or point into the hook's own stdin.
+_lib_is_pseudo_file_path() {
+  case "$1" in
+    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Decide whether a shell fragment actually invokes `git`, not just mentions it
 # as a substring of a path or URL. Walks whitespace-separated words; returns
 # success iff any word equals `git` or ends in `/git`. Env-var prefixes
@@ -2502,6 +2513,87 @@ _lib_strip_shell_quotes() {
   [ "$unquoted_exit" -ne 0 ] && return 1
   printf '%s' "$unquoted"
   return 0
+}
+
+# Masks each quoted span's interior while leaving its own delimiter pair
+# intact (e.g. `"..."` becomes `""`), so a commit message that merely
+# mentions the words of a commit command as literal text is not miscounted as
+# a real invocation.
+# Takes exactly one argument (`$1`: the command string) and writes the masked
+# text to stdout.
+# A span whose entire interior is a single safe word (`^[A-Za-z0-9._/-]+$`)
+# is emitted unquoted instead, so a quoted command word stays visible.
+# A `$` directly before an opening delimiter is dropped whenever the span
+# closes, and kept when the quote is left open.
+# A quote left open at end of string is left unmasked, erring toward denying.
+# See docs/hooks.md's deny-invisible-commit-content.sh entry for the design.
+# Runs under a 5s `_lib_capped_for` cap because the scan is O(n^2).
+# Call-site contract (load-bearing): awk can be missing, killed, or time out,
+# and no caller runs under `set -e`, so every call site must capture and check
+# the exit status immediately and fail closed on non-zero.
+#
+# Limits (illustrative, not exhaustive):
+# - This is a character-level quote-state scanner, not a bash tokenizer.
+# - It does not model any of these:
+#   - Backslash escapes (`\"` and `\'` are ordinary quote characters).
+#   - An empty quote pair glued to a word.
+#   - A multi-word mid-word split.
+#   - An ANSI-C escape.
+# - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
+#   command into records at each blank line, with two effects:
+#   - An unquoted blank line is deleted and its neighbouring tokens fuse.
+#   - A blank line inside a quoted span resets quote state at the record
+#     boundary, so the span's closing quote acts as an opener and quote parity
+#     stays inverted for the rest of the command, blanking a later real commit
+#     any distance away.
+# - A gap in this class can drop a command word from a caller's fragment
+#   count, and the effect then fails open.
+_lib_mask_shell_quotes() {
+  # False positive: shellcheck's no-warn heuristic for a bare `awk '...'`
+  # pipe stage doesn't recognize awk once it's preceded by the
+  # _lib_capped_for wrapper; the single-quoted script below is an awk
+  # program, not a shell string, and is not meant to expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
+    BEGIN { RS = "\0" }
+    {
+      n = length($0)
+      quote = ""
+      quote_start = 0
+      quote_dollar_prefix = 0
+      span = ""
+      result = ""
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (quote == "") {
+          if (c == dq || c == sq) {
+            quote = c
+            quote_start = i
+            span = ""
+            quote_dollar_prefix = (length(result) > 0 && substr(result, length(result), 1) == "$")
+          } else {
+            result = result c
+          }
+        } else if (c == quote) {
+          if (quote_dollar_prefix) {
+            result = substr(result, 1, length(result) - 1)
+          }
+          if (span ~ /^[A-Za-z0-9._\/-]+$/) {
+            result = result span
+          } else {
+            result = result quote c
+          }
+          quote = ""
+        } else {
+          span = span c
+        }
+      }
+      if (quote != "") {
+        result = result substr($0, quote_start)
+      }
+      printf "%s", result
+    }
+  '
 }
 
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.

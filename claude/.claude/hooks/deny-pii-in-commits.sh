@@ -65,7 +65,7 @@
 # content that is not in the index when this hook fires.
 #
 # Commit-message-source files: `-F <path>` / `--file <path>` are read and
-# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` pseudo-files are rejected
+# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` / `/proc/*/fd/*` pseudo-files are rejected
 # fail-closed — the hook cannot statically verify what git will read.
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from
@@ -290,13 +290,6 @@ extract_commit_message_source_paths() {
   '
 }
 
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # --- Build the scan target -----------------------------------------------
 # Always exclude this hook's own synthetic-PII test fixtures, plus every
 # user-configured `exclude:` glob. `:(top,exclude)` is repo-root-relative.
@@ -361,7 +354,7 @@ COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
 if [ -n "$COMMIT_MSG_SOURCES" ]; then
   while IFS= read -r msg_path; do
     [ -z "$msg_path" ] && continue
-    if is_pseudo_file_path "$msg_path"; then
+    if _lib_is_pseudo_file_path "$msg_path"; then
       emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${msg_path}'). The gate cannot statically verify what git will read from '-' / '/dev/stdin' / '/dev/fd/*'. Inline the message with -m or use a real on-disk file."
       exit 0
     fi

@@ -84,15 +84,6 @@ extract_body_source_paths() {
   '
 }
 
-# Pseudo-file paths whose contents the hook cannot meaningfully scan
-# at hook-fire time. Reject all of them fail-closed.
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Build the scan target: start with the full command string (which
 # contains any inline --body "..." value), then append the contents
 # of any referenced body-source files. Deliberately NOT unioned with a
@@ -106,7 +97,7 @@ BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
-    if is_pseudo_file_path "$body_source_path"; then
+    if _lib_is_pseudo_file_path "$body_source_path"; then
       emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The backtick-escape gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
       exit 0
     fi
