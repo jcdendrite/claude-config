@@ -152,8 +152,16 @@ CONFIG_KEYS_PSV = "claude/.claude/hooks/config-keys.psv"
 # which settings payload backs a re-enabled session.
 CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
 
-# No test reads any file under this directory by path or subprocess.
+# test_plan_ledger_citations_in_diff.py reads whichever files under this
+# directory the current diff changed, by path, so a plan change selects it.
 PLANS_DIR = ".claude/plans"
+
+# Names the one dependent test file rather than its containing domain, like
+# TICKET_REFERENCE_DISCIPLINE_TEST_PATH. Its own path change is already covered
+# by the SCRIPTS_DIR row.
+PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH = (
+    "claude/.claude/scripts/tests/test_plan_ledger_citations_in_diff.py"
+)
 
 # test_ci_path_filter.py's only reference to this literal string is a static
 # CI ignore-paths allowlist entry, independent of the file's content.
@@ -376,7 +384,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_skill_auxiliary_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
-    (lambda p: _is_under(p, PLANS_DIR), ()),
+    (lambda p: _is_under(p, PLANS_DIR), (PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH,)),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
 )

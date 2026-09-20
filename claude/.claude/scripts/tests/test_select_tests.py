@@ -823,13 +823,13 @@ class TestSelectPytestTargets:
         assert len(matching_rows) == 1
         assert matching_rows[0] == (_mod.HOOKS_TESTS_DIR,)
 
-    def test_plans_dir_change_selects_no_tests(self):
-        """No test reads any file under .claude/plans/ by path or
-        subprocess, so a plan change is covered without pulling in the
-        full-suite fallback."""
+    def test_plans_dir_change_selects_only_the_diff_scoped_plan_citation_test(self):
+        """test_plan_ledger_citations_in_diff.py is the only test that reads
+        a file under .claude/plans/, so a plan change selects that one file
+        without pulling in the full-suite fallback."""
         result = _mod.select_pytest_targets([".claude/plans/some-plan.md"])
         assert result.is_full_suite is False
-        assert result.target_paths == ()
+        assert result.target_paths == (_mod.PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH,)
 
     def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
         """_is_under's directory-boundary check requires an exact match or a
@@ -1214,7 +1214,7 @@ class TestResolveTargetPaths:
     def test_empty_input_resolves_to_an_empty_list(self):
         """resolve_target_paths runs unconditionally in main before the
         full-suite/empty/domain branch is decided, so an empty domain
-        selection (e.g. .claude/plans/-only changes) reaches it with ()."""
+        selection (e.g. CHANGELOG.md-only changes) reaches it with ()."""
         assert _mod.resolve_target_paths([], repo_root=_REPO_ROOT) == []
 
 
@@ -1487,13 +1487,14 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.STATUSLINE_COMMAND_SH,
 )
 
-# The two CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than a
-# domain directory. Its only consumer is the fidelity partition below --
+# The DOMAIN_RULES and CROSS_DOMAIN_EXCEPTIONS targets that name a file rather
+# than a domain directory. Its only consumer is the fidelity partition below --
 # _expand_target (select-tests.py) partitions on "*" in target and has no
 # use for this distinction, so it stays a test-only constant.
 _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
+    _mod.PLAN_LEDGER_CITATIONS_IN_DIFF_TEST_PATH,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
@@ -1592,9 +1593,9 @@ class TestRuleTablePathFidelity:
             assert (_REPO_ROOT / target).is_dir(), f"{target} does not exist as a directory"
 
     def test_every_file_target_exists_on_disk(self):
-        """The CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than
-        a domain directory -- excluded from the directory check above,
-        checked as files here instead."""
+        """The DOMAIN_RULES and CROSS_DOMAIN_EXCEPTIONS targets that name a
+        file rather than a domain directory -- excluded from the directory
+        check above, checked as files here instead."""
         for target in _FILE_TARGETS:
             assert (_REPO_ROOT / target).is_file(), f"{target} does not exist as a file"
 
@@ -1925,7 +1926,7 @@ class TestMainComposition:
 
     def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch, tmp_path):
         """Asserts three things: (1) a domain-selected-but-empty target set
-        (e.g. a .claude/plans/ change) short-circuits before `run_pytest`
+        (e.g. a CHANGELOG.md change) short-circuits before `run_pytest`
         rather than falling through to a bare `pytest` invocation that
         recursively collects the whole repo; (2) the selection still gets
         logged exactly once on this early-return path, not just on the
@@ -1947,7 +1948,7 @@ class TestMainComposition:
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(
-            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+            _mod, "compute_changed_paths", lambda repo_root: [_mod.CHANGELOG_MD],
         )
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
         monkeypatch.setattr(os, "getloadavg", fake_getloadavg)
@@ -1976,7 +1977,7 @@ class TestMainComposition:
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(
-            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+            _mod, "compute_changed_paths", lambda repo_root: [_mod.CHANGELOG_MD],
         )
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
 
