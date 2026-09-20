@@ -2917,7 +2917,7 @@ class TestPrLink:
         _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
 
         def fake_run(cmd, *_, **__):
-            raise subprocess.TimeoutExpired(cmd, _mod._PR_COST_GH_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -3000,6 +3000,31 @@ class TestPrLink:
         assert len(diagnostic_lines) == 1
         assert "gh api comments" in diagnostic_lines[0]
 
+    def test_comment_count_os_error_prints_diagnostic_and_keeps_minus_one_cells(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """A bare OSError at the comments call site (e.g. the gh binary
+        vanishing mid-run) degrades to -1 the same as CalledProcessError or
+        TimeoutExpired, rather than propagating uncaught."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
+            raise OSError("gh binary vanished mid-call")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
+        assert cols["PR"] == "5"
+        assert cols["IssueCmt"] == "-1"
+        assert cols["ReviewCmt"] == "-1"
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert len(diagnostic_lines) == 1
+        assert "gh api comments" in diagnostic_lines[0]
+
     def test_comment_count_timeout_prints_diagnostic_and_keeps_minus_one_cells(
         self, fake_projects, monkeypatch, capsys,
     ):
@@ -3008,7 +3033,7 @@ class TestPrLink:
         def fake_run(cmd, *_, **__):
             if "list" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
-            raise subprocess.TimeoutExpired(cmd, _mod._PR_COST_GH_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -3024,9 +3049,8 @@ class TestPrLink:
     @staticmethod
     def _kwarg_recording_run(pr_list_stdout: str, issues_stdout: str, pulls_stdout: str):
         """subprocess.run spy recording each call's kwargs, keyed on gh verb
-        ("list" / "issues" / "pulls") -- unlike the `fake_run(cmd, *_, **__)`
-        doubles elsewhere in this class, which discard kwargs and so can't
-        catch a dropped timeout= at any call site."""
+        ("list" / "issues" / "pulls"), so a test can assert timeout= was
+        passed at every call site."""
         recorded: dict[str, dict] = {}
 
         def fake_run(cmd, *_, **kwargs):
@@ -3051,7 +3075,7 @@ class TestPrLink:
 
         assert set(recorded) == {"list", "issues", "pulls"}
         for kwargs in recorded.values():
-            assert kwargs["timeout"] == _mod._PR_COST_GH_TIMEOUT_S
+            assert kwargs["timeout"] == _mod._GH_CALL_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
@@ -16660,6 +16684,16 @@ class TestBuildParser:
         assert parsed.projects == "*"
         assert parsed.this_repo is True
 
+    def test_pr_link_without_repo_flag_defaults_to_none(self):
+        parser = _mod.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])
+        assert parsed.repo is None
+
+    def test_pr_link_with_repo_flag_parses_value(self):
+        parser = _mod.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y", "--repo", "owner/repo"])
+        assert parsed.repo == "owner/repo"
+
 
 class TestIterSessionsOrdering:
     """iter_sessions must yield in a single flat sort over full file paths, NOT
@@ -23498,14 +23532,32 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         assert _mod._git_remote_origin_host_and_owner_repo() == expected
 
     def test_default_args_prefix_failure_with_pr_cost_and_no_repo_hint(self, monkeypatch, capsys):
-        """Called with no arguments -- pr-cost's own call shape -- against an
-        unparseable origin: the failure message must stay prefixed "pr-cost:"
-        with no --repo hint text, pinning that pr-link's own subcommand/
-        failure_hint arguments leave this default path unchanged."""
+        """Calls _git_remote_origin_host_and_owner_repo with no arguments --
+        pr-cost's own call shape -- against an unparseable origin. Confirms
+        the new subcommand/failure_hint params don't change this default
+        path: the message stays prefixed "pr-cost:" with no --repo hint."""
         monkeypatch.setattr(
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": "not a remote\n", "stderr": ""})(),
         )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("pr-cost:")
+        assert "--repo" not in err
+
+    def test_default_args_prefix_failure_when_origin_remote_unresolvable(self, monkeypatch, capsys):
+        """Calls _git_remote_origin_host_and_owner_repo with no arguments --
+        pr-cost's own call shape -- where `git remote get-url origin` itself
+        fails. Confirms the "could not resolve this repo's own remote"
+        branch, distinct from the regex-mismatch branch covered above, also
+        stays prefixed "pr-cost:" with no --repo hint."""
+
+        def fake_run(cmd, *a, **kw):
+            raise subprocess.CalledProcessError(128, cmd)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit) as exc_info:
             _mod._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
@@ -23725,7 +23777,7 @@ class TestGhCallWithBackoffFailureClassBehavior:
         def fake_run(cmd, *a, **kw):
             nonlocal call_count
             call_count += 1
-            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._GH_CALL_TIMEOUT_S)
 
         sleep_calls: list[float] = []
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -23748,7 +23800,7 @@ class TestGhCallWithBackoffFailureClassBehavior:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._GH_CALL_TIMEOUT_S)
             return type("R", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""})()
 
         sleep_calls: list[float] = []

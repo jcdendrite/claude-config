@@ -3306,9 +3306,10 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
         repo = pr_list_repo = supplied_repo
         api_host_args: list[str] = []
     else:
-        # Host-qualified for `gh pr list --repo`, and `--hostname` for `gh api`
-        # (its path takes no host), so a GHE origin reaches the right host
-        # regardless of the ambient GH_HOST.
+        # `gh pr list --repo` takes the host-qualified slug directly; `gh api`
+        # takes `--hostname` instead, since its path carries no host.
+        # Either way, a GHE origin reaches the right host regardless of the
+        # ambient GH_HOST.
         origin_host, repo = _git_remote_origin_host_and_owner_repo(
             subcommand="pr-link", failure_hint="pass --repo OWNER/REPO",
         )
@@ -3342,11 +3343,11 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
                     "gh", "pr", "list", "--head", branch, "--repo", pr_list_repo,
                     "--state", "all", "--json", "number", "--limit", "1",
                 ],
-                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             prs = json.loads(pr_result.stdout or "[]")
         except (
-            subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError, subprocess.TimeoutExpired,
+            subprocess.CalledProcessError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired,
         ) as exc:
             _pr_link_report_gh_failure(branch, "gh pr list", exc)
             print(f"{branch:<35} {'?':>5} {opus_n:>6} {sonnet_n:>7} {'gh-err':>9} {'':>10}")
@@ -3365,7 +3366,7 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
                     "gh", "api", *api_host_args, f"repos/{repo}/issues/{pr_number}/comments",
                     "--paginate", "--jq", ".[].user.login",
                 ],
-                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             issue_logins = [ln.strip() for ln in ic.stdout.splitlines() if ln.strip()]
             issue_comments = sum(1 for ln in issue_logins if not author or ln == author)
@@ -3375,11 +3376,11 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
                     "gh", "api", *api_host_args, f"repos/{repo}/pulls/{pr_number}/comments",
                     "--paginate", "--jq", ".[].user.login",
                 ],
-                capture_output=True, text=True, check=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             review_logins = [ln.strip() for ln in rc.stdout.splitlines() if ln.strip()]
             review_comments = sum(1 for ln in review_logins if not author or ln == author)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             _pr_link_report_gh_failure(branch, "gh api comments", exc)
             issue_comments = review_comments = -1
 
@@ -8201,7 +8202,7 @@ _PR_COST_TEST_FILE_RE = re.compile(
     r"(^|/)tests?/|(^|/)test_[^/]+\.py$|_test\.py$|\.test\.[jt]sx?$|\.spec\.[jt]sx?$"
 )
 
-_PR_COST_GH_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
+_GH_CALL_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
 # per-call timeout recommendation, so this is a considered guess generous
 # enough for one REST round trip, not a network SLA citation.
 _PR_COST_RATE_LIMIT_MIN_BACKOFF_S = 60.0  # GitHub REST API docs, "Rate
@@ -8516,7 +8517,7 @@ def _git_remote_origin_host_and_owner_repo(subcommand: str = "pr-cost", failure_
     a git repository itself. Accepts any host (github.com, a GitHub
     Enterprise host, ...); whether gh actually holds credentials for that
     host is left to the caller and to gh itself, not decided by this parse.
-    `subcommand` prefixes the failure messages; a non-empty `failure_hint`
+    `subcommand` prefixes the failure messages. A non-empty `failure_hint`
     is appended to them as the caller's escape hatch.
     """
     hint_suffix = f" -- {failure_hint}" if failure_hint else ""
@@ -8602,7 +8603,7 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
         stderr = ""
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                argv, capture_output=True, text=True, timeout=_GH_CALL_TIMEOUT_S,
                 encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -8669,7 +8670,7 @@ def _gh_auth_preflight_ok(hostname: str) -> bool:
     try:
         proc = subprocess.run(
             ["gh", "auth", "status", "--hostname", hostname], capture_output=True, text=True,
-            timeout=_PR_COST_GH_TIMEOUT_S, encoding="utf-8", errors="replace",
+            timeout=_GH_CALL_TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
