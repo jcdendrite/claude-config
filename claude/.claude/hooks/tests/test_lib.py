@@ -1251,6 +1251,82 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
+def _reviewer_persona_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
+    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
+
+    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
+    this literal. A new harness built-in added to the review-only roster with
+    the exclusion left untouched passes, since the name lands on both sides.
+    """
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+
+
+def _is_reviewer_persona(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
+    roster = _reviewer_persona_agents()
+    assert roster, "reviewer-persona roster must not be empty"
+    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
+    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        "Explore",
+        "Plan",
+        "code-writer",
+        "plan-architect",
+        "general-purpose",
+        "",
+        "staff-sdet-x",
+        "staff-sde",
+        "STAFF-SDET",
+        "ciso-reviewer comment-discipline-reviewer",
+    ],
+)
+def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
+    agent_type: str,
+) -> None:
+    """Every agent outside the reviewer-persona array is rejected.
+
+    Explore and Plan are review-only roster members but harness built-ins.
+    code-writer is an implementer. plan-architect is a design consultant that a
+    caller branches on separately. general-purpose is a harness built-in outside
+    the review-only roster. The empty case is a dispatch payload with no
+    subagent_type. The staff-sdet variants pin that the predicate is not doing
+    prefix or case-insensitive matching. The space-joined pair of two real
+    roster members pins that a value is not accepted as a substring or word
+    list of the roster.
+    """
+    assert not _is_reviewer_persona(agent_type)
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied
