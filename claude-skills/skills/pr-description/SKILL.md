@@ -45,8 +45,8 @@ not something you can resolve. If none match, proceed without a layer.
 - **Section structure from the repo's template.** If the repo has
   `.github/PULL_REQUEST_TEMPLATE.md`, read it and use its headings — neither
   `gh pr create --body-file` nor `--body` applies the template, so it is
-  honored only by reading it here. Absent one, use `## Summary` and
-  `## Test plan`.
+  honored only by reading it here. Absent one, read
+  `${CLAUDE_SKILL_DIR}/DEFAULT_TEMPLATE.md` and use its headings the same way.
 - **A `## Test plan` of results, not a checklist.** Verification has already
   run by the time this fires, so state what ran and what it produced, in past
   tense. If verification was skipped under a documented scope exception, say
