@@ -375,6 +375,17 @@ class TestCollectDefinedLabels:
         text = "## Approach\n```\nanchors: root\n```\nRow 1 [mechanism]: x\n"
         assert _mod.collect_defined_labels(text) == set()
 
+    def test_a_heading_shaped_line_inside_a_fence_does_not_fragment_the_ledger_region(self):
+        text = (
+            "## Approach\n"
+            "Row 1 [mechanism]: x\n"
+            "```\n"
+            "## Quoted heading\n"
+            "```\n"
+            "Row 2 [assumption]: y — anchors: row1\n"
+        )
+        assert _mod.collect_defined_labels(text) == {"row1", "row2"}
+
     def test_three_letter_label_can_be_both_defined_and_cited(self):
         text = "## Approach\n- **ABC1** a given — anchors: root\nRow 2 [assumption]: x — anchors: ABC1\n"
         assert _mod.find_orphan_citations(text) == []
@@ -681,6 +692,21 @@ class TestFindOrphanCitations:
 
     def test_clean_ledger_returns_no_orphans(self):
         assert _mod.find_orphan_citations(_CLEAN_LEDGER) == []
+
+    def test_citation_to_a_row_defined_before_a_fenced_heading_shaped_line_resolves(self):
+        """A heading-shaped line quoted inside a fence (e.g. a plan citing
+        another doc's excerpt) must not split the section in two -- a false
+        split would put Row 1's definition on the anchors-line-less side and
+        report this citation as an orphan even though Row 1 is defined."""
+        text = (
+            "## Approach\n"
+            "Row 1 [mechanism]: x\n"
+            "```\n"
+            "## Quoted heading\n"
+            "```\n"
+            "Row 2 [assumption]: y — anchors: row1\n"
+        )
+        assert _mod.find_orphan_citations(text) == []
 
 
 class TestCli:

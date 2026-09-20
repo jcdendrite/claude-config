@@ -582,7 +582,9 @@ class GitDiffUnavailable(Exception):
 class MergeBaseUnresolved(GitDiffUnavailable):
     """The merge-base lookup itself failed, so no diff was attempted.
     Distinguishes that first call's failure from the later diff and
-    ls-files failures, which all raise plain GitDiffUnavailable."""
+    ls-files failures, which all raise plain GitDiffUnavailable.
+    isinstance-checked by tests/test_plan_ledger_citations_in_diff.py to pick
+    CI-checkout-depth advice over generic git-failure advice."""
 
 
 def _run_git(args: list[str], *, cwd: Path, run, decode: bool = True) -> str | bytes | None:
