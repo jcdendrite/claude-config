@@ -574,8 +574,7 @@ interdependent (M3's real-tree assertion fails without M2; M1 cites both).
   name — `from helpers import HOOKS_DIR` (matching `test_lib.py:30,61`'s own
   convention), never `import helpers` followed by dotted `helpers.HOOKS_DIR`
   access. Only the bare-name form is resolvable by
-  `TestCrossDomainReadCompleteness`'s `ast.Name` resolver; its `ast.Attribute`
-  handling covers only `.parent` and `.resolve`, so a dotted read falls through
+  `TestCrossDomainReadCompleteness`'s `ast.Name` resolver, so a dotted read falls through
   unresolved with no failure signal. Under the bare-name form the constants are
   already covered by `DOMAIN_RULES`'s `HOOKS_DIR` row, so they introduce no new
   `CROSS_DOMAIN_EXCEPTIONS` requirement (row 20) — that coverage claim holds

@@ -17,7 +17,6 @@ The capability bats is proposed to add is sourcing a library and calling one fun
 
 - Each of the 103 functions in `_lib.sh` and `_config.sh` has a reference within the liveness guard's scan scope: tracked shell and `.py` files, outside whole-line comments and `plugins/`.
 - Some are referenced only from test files, including three test seams: `_lib_review_only_agents`, `_lib_no_gate_release_agents`, and `_lib_reviewer_persona_agents`.
-- The guard cannot tell a test seam from a function that nothing invokes.
 
 ## The performance hypothesis points the wrong way
 

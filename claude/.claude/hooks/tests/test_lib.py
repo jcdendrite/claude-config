@@ -1307,6 +1307,7 @@ def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> Non
         "staff-sdet-x",
         "staff-sde",
         "STAFF-SDET",
+        "ciso-reviewer comment-discipline-reviewer",
     ],
 )
 def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
@@ -1319,7 +1320,9 @@ def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_a
     caller branches on separately. general-purpose is a harness built-in outside
     the review-only roster. The empty case is a dispatch payload with no
     subagent_type. The staff-sdet variants pin that the predicate is not doing
-    prefix, glob, or case-insensitive matching.
+    prefix or case-insensitive matching. The space-joined pair of two real
+    roster members pins that a value is not accepted as a substring or word
+    list of the roster.
     """
     assert not _is_reviewer_persona(agent_type)
 
