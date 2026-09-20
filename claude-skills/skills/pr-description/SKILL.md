@@ -42,6 +42,13 @@ not something you can resolve. If none match, proceed without a layer.
   chronology, not a summary: it re-narrates how the work arrived instead of
   what it does, and it is the per-commit narrative the checks below exist to
   strip. Organize by the surface a reviewer maps to instead.
+- **Current state, not branch history.** Every section says what the change is
+  and does now, to a reader who never saw the branch develop. Review rounds,
+  superseded designs, and who found what stay out; `git log` and the review
+  record hold them. A mechanism that exists only in the branch's own history is
+  not context, because the reviewer cannot see it. A rejected approach a
+  reviewer would plausibly propose belongs in `## Alternatives considered`
+  with its one-line reason, not in Context.
 - **Section structure from the repo's template.** If the repo has
   `.github/PULL_REQUEST_TEMPLATE.md`, read it and use its headings — neither
   `gh pr create --body-file` nor `--body` applies the template, so it is
@@ -134,6 +141,10 @@ Markers, illustrative rather than exhaustive:
   claim up top against a breaking change in the deploy notes.
 - Leftover template instruction text: placeholder prompts the
   template's own directions said to remove once a condition holds.
+- Prose that only makes sense to someone who watched the branch develop: a
+  term or design the reviewer cannot find at HEAD.
+- Two sections saying the same thing — a Summary bullet restating a list in
+  Context. Keep it in the section where the reader looks for it.
 - Any span a reader arriving cold would stop on and ask "what is this?"
 
 If nothing fires after a careful read, say so — naming the sections
@@ -151,6 +162,16 @@ Flag and fix:
   Reorganize "What shipped" by surface the reviewer maps to (schema /
   handler / tests / invariants / migration-deploy notes); `git log`
   already has the chronology.
+- **Branch-history narration.** The per-commit check's sibling, for prose that
+  narrates by review round or by reviewer instead of by commit: "earlier
+  rounds implemented…", "a later review found…", or a reviewer or agent name
+  credited with a finding or a method. Rewrite it per **Current state, not
+  branch history** above, keeping the verified fact but not who found it or
+  how, and drop a mechanism the reviewer cannot find at HEAD. Make two
+  or more parallel facts a list. In `## Test plan`, state what the final
+  review pass returned, not how many rounds ran or what earlier ones found.
+  The tells are illustrative; the test is whether a reader must have watched
+  the branch to follow the sentence.
 - **Reviewer-action items Claude can answer itself.** Strip claims
   you can verify ("all migrations match precedent" — confirm and
   remove), test counts (those belong in the commit message), and

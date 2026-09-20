@@ -1171,6 +1171,99 @@ class TestPrDescriptionExternalStateCheck:
         assert "whether CI is *passing* is not" in self._body()
 
 
+def _bullet_text(section_text: str, lead_in: str) -> str:
+    """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`.
+
+    The lead-in matches the way `_missing_bullet_lead_ins` does: the bold span
+    of a column-0 `- **...**` line, minus one terminal period, equals `lead_in`
+    exactly. The bullet runs to the next blank line, column-0 `- ` bullet, or
+    `#` heading, so the result is independent of hard-wrap position and cannot
+    borrow text from an adjacent bullet or heading. An indented nested bullet
+    is continuation text, not a boundary.
+    """
+    lines = section_text.splitlines()
+    start = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if (match := re.match(r"- \*\*(.+?)\*\*", line)) and match.group(1).removesuffix(".") == lead_in
+        ),
+        None,
+    )
+    assert start is not None, f"no bullet opens with bold lead-in {lead_in!r}"
+    end = next(
+        (i for i in range(start + 1, len(lines)) if not lines[i].strip() or lines[i].startswith(("- ", "#"))),
+        len(lines),
+    )
+    return " ".join(" ".join(lines[start:end]).split())
+
+
+class TestPrDescriptionBranchHistoryCheck:
+    """Pin the rules that keep review-round and reviewer-attribution narration
+    out of a PR body.
+
+    The neighboring per-commit-narrative check only catches prose that cites
+    commits. Prose narrating by review round ("a later review found...") or by
+    a named reviewer cites none, so it passes that check untouched.
+
+    Each test pins a bullet's content within the section it belongs to, over
+    whitespace-collapsed text, so an emptied bullet, a bullet moved to another
+    section, or a benign re-wrap is judged correctly.
+
+    The SKILL.md prose is the shipped behavior and no eval covers
+    pr-description, so these are presence tripwires, not proof that an agent
+    follows the rules.
+    """
+
+    _AUTHORING_LEAD_IN = "Current state, not branch history"
+
+    def _authoring_section(self):
+        return _raw_heading_section_text(_skill_file("pr-description"), "## What the body must carry")
+
+    def _authoring_bullet(self):
+        return _bullet_text(self._authoring_section(), self._AUTHORING_LEAD_IN)
+
+    def _check_bullet(self):
+        section = _raw_heading_section_text(_skill_file("pr-description"), "## Checks")
+        return _bullet_text(section, "Branch-history narration")
+
+    def test_authoring_bullet_excludes_history_and_routes_rejected_designs(self):
+        """The drafting-side rule: history stays out, a mechanism visible only in
+        branch history is not context, and a rejected approach a reviewer would
+        propose is relocated to Alternatives, not to Context."""
+        bullet = self._authoring_bullet()
+        assert "Review rounds, superseded designs, and who found what stay out" in bullet
+        assert "A mechanism that exists only in the branch's own history is not context" in bullet
+        assert "belongs in `## Alternatives considered`" in bullet
+        assert "not in Context" in bullet
+
+    def test_check_names_both_narration_tells(self):
+        """The Check owns detection: it must name round-based narration and
+        reviewer- or agent-name attribution, or sync mode stops flagging them."""
+        bullet = self._check_bullet()
+        assert "earlier rounds" in bullet
+        assert "reviewer or agent name" in bullet
+
+    def test_check_defers_to_authoring_bullet_by_name(self):
+        """The Check owns detection; the rule it enforces lives in the authoring
+        bullet. The bold pointer name the Check bullet carries must resolve to a
+        bullet lead-in in the authoring section, so a rename of either side
+        fails here."""
+        pointer_names = re.findall(r"per \*\*(.+?)\*\* above", self._check_bullet())
+        assert len(pointer_names) == 1, (
+            f"expected one `per **<name>** above` pointer in the Check bullet, extracted {pointer_names!r}"
+        )
+        assert _missing_bullet_lead_ins(pointer_names, self._authoring_section()) == []
+
+    def test_check_scopes_test_plan_to_final_review_result(self):
+        """The Test plan legitimately reports review outcomes; the Check bullet
+        distinguishes the final result from round-by-round history."""
+        assert (
+            "state what the final review pass returned, not how many rounds ran or what earlier ones found"
+            in self._check_bullet()
+        )
+
+
 def _bullet_pointer_names(template_text: str) -> list[str]:
     """Bold names a template points at with `follow its **<name>**`."""
     return re.findall(r"follow its \*\*(.+?)\*\*", template_text)
