@@ -579,10 +579,22 @@ class GitDiffUnavailable(Exception):
     selection."""
 
 
-def _run_git(args: list[str], *, cwd: Path, run) -> str | None:
+class MergeBaseUnresolved(GitDiffUnavailable):
+    """The merge-base lookup itself failed, so no diff was attempted.
+    Distinguishes that first call's failure from the later diff and
+    ls-files failures, which all raise plain GitDiffUnavailable."""
+
+
+def _run_git(args: list[str], *, cwd: Path, run, decode: bool = True) -> str | bytes | None:
+    """Return git's stdout, or None if git is missing, times out, or exits
+    nonzero. decode=False returns the raw bytes, with no newline translation
+    or strict decoding."""
+    # The default text mode decodes strictly, so rev-parse and merge-base output
+    # with a non-UTF-8 byte raises. Contributors do not control those bytes,
+    # so this is an accepted residual.
     try:
         result = run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True,
+            ["git", *args], cwd=cwd, capture_output=True, text=decode,
             timeout=_GIT_TIMEOUT_SECONDS, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -590,6 +602,14 @@ def _run_git(args: list[str], *, cwd: Path, run) -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout
+
+
+def printable_path(path: str) -> str:
+    """Render a changed path inertly for output: ASCII only, with control
+    characters, non-ASCII characters, and lone surrogates shown as escapes.
+    A changed path is contributor-controlled, so it must never reach a
+    terminal or a log line raw."""
+    return ascii(path)[1:-1]
 
 
 def resolve_repo_root(*, cwd: Path, run=subprocess.run) -> Path:
@@ -609,27 +629,44 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
     Raises GitDiffUnavailable if any underlying git call fails. Most
     commonly: a detached HEAD with no origin remote configured, so
     origin/main can't be found.
+
+    A run= double returns str stdout for the merge-base call and bytes stdout
+    for the three -z calls.
     """
     merge_base_output = _run_git(["merge-base", "HEAD", "origin/main"], cwd=repo_root, run=run)
     if merge_base_output is None or not merge_base_output.strip():
-        raise GitDiffUnavailable("could not resolve merge-base against origin/main")
+        raise MergeBaseUnresolved("could not resolve merge-base against origin/main")
     merge_base = merge_base_output.strip()
 
-    committed = _run_git(["diff", "--name-only", f"{merge_base}...HEAD"], cwd=repo_root, run=run)
+    committed = _run_git(
+        ["diff", "--name-only", "-z", "--no-renames", f"{merge_base}...HEAD"],
+        cwd=repo_root,
+        run=run,
+        decode=False,
+    )
     if committed is None:
         raise GitDiffUnavailable("git diff against the merge-base failed")
-    dirty = _run_git(["diff", "--name-only", "HEAD"], cwd=repo_root, run=run)
+    dirty = _run_git(
+        ["diff", "--name-only", "-z", "--no-renames", "HEAD"], cwd=repo_root, run=run, decode=False
+    )
     if dirty is None:
         raise GitDiffUnavailable("git diff against HEAD failed")
-    untracked = _run_git(["ls-files", "--others", "--exclude-standard"], cwd=repo_root, run=run)
+    untracked = _run_git(
+        ["ls-files", "--others", "--exclude-standard", "-z"], cwd=repo_root, run=run, decode=False
+    )
     if untracked is None:
         raise GitDiffUnavailable("git ls-files for untracked files failed")
 
-    # git's default core.quotePath=true escapes non-ASCII path bytes in this
-    # output, and _run_git does not override it. A non-ASCII changed path
-    # therefore falls open to the full suite instead of matching its domain.
-    changed = set(committed.splitlines()) | set(dirty.splitlines()) | set(untracked.splitlines())
-    return sorted(path for path in changed if path)
+    # -z emits each path verbatim and NUL-terminated, so core.quotePath and
+    # filenames containing newlines cannot alter a path. --no-renames lists
+    # both sides of a rename whatever diff.renames is configured to.
+    changed = {
+        os.fsdecode(record)
+        for output in (committed, dirty, untracked)
+        for record in output.split(b"\0")
+        if record
+    }
+    return sorted(changed)
 
 
 # --- pytest invocation ----------------------------------------------------
@@ -864,7 +901,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if selection.is_full_suite:
         if selection.triggering_paths:
-            paths = ", ".join(selection.triggering_paths)
+            # Uncapped, unlike the log's path cap: a one-shot diagnostic at PR scale.
+            paths = ", ".join(printable_path(path) for path in selection.triggering_paths)
             print(f"select-tests: running the full suite ({selection.reason}: {paths})", file=sys.stderr)
         else:
             print(f"select-tests: running the full suite ({selection.reason})", file=sys.stderr)
@@ -872,7 +910,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"select-tests: nothing to run ({selection.reason})", file=sys.stderr)
         return 0
     else:
-        print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
+        rendered_targets = ", ".join(printable_path(target) for target in resolved_targets)
+        print(f"select-tests: running {rendered_targets}", file=sys.stderr)
 
     # size_result is never None past this point: either branch above that
     # returns early corresponds exactly to will_run_pytest being False.

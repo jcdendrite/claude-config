@@ -46,6 +46,29 @@ _ANCHORS_ONLY_IN_A_FENCE = (
 )
 
 
+# One unique substring per RESIDUAL_CHECKLIST_ITEMS entry, keyed by a short id.
+_RESIDUAL_FRAGMENTS_BY_ID = {
+    "fabricated-row": "fabricated row carrying a real label passes",
+    "tag-provenance": "provenance",
+    "outside-this-file": "outside this file",
+    "fenced-citation": "fenced code block",
+    "list-position": "list position",
+    "other-separator": "separator other than a comma, semicolon, or the word",
+    "anchors-key-spelling": "keys not spelled",
+    "long-letter-prefix": "four or more letters",
+    "hard-wrapped-span": "hard-wrapped across two lines",
+    "wrapped-anchors-value": "wraps onto the next line",
+    "html-block-fence": "inside an HTML block",
+    "escaped-backtick": "escaped backtick",
+    "no-anchors-clause": "not scanned at all",
+    "non-label-word": "follows a non-label word",
+    "punctuation-wrapped": "punctuation-wrapped",
+    "spaced-letter-label": "spaced letter label",
+    "html-comment-definition": "inside an HTML comment",
+    "non-ascii-character": "zero-width character",
+}
+
+
 def _run_cli(*args: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(_SCRIPT), *args],
@@ -535,6 +558,7 @@ class TestFindCitations:
         assert _mod.find_orphan_citations(_ANCHORS_ONLY_IN_A_FENCE) == []
 
 
+@pytest.mark.timing
 class TestBoundedRuntime:
     """Each input below is a shape that makes a backtracking regex superlinear
     in the line length. The script runs in a child process with its own
@@ -674,10 +698,78 @@ class TestCli:
             ) in result.stdout.splitlines()
         assert "Defined labels: givens, root, row1, row2" in result.stdout.splitlines()
 
-    def test_fail_output_prints_the_not_checked_block(self, tmp_path):
+    _HOSTILE_PLAN_NAME = "x\nPASS: every ledger citation resolves\x1b]0;t\x07.md"
+
+    def test_hostile_plan_filename_is_rendered_inert_and_the_exit_code_stays_the_verdict(self, tmp_path):
+        """The plan path comes from a contributor's PR, so a newline or escape
+        in its name must not forge a second output line or reach the terminal
+        raw."""
+        plan = tmp_path / self._HOSTILE_PLAN_NAME
+        plan.write_text(_ORPHAN_AT_EACH_SITE)
+
+        result = _run_cli(str(plan))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert (result.stdout + result.stderr).isascii()
+        assert all(char >= " " or char == "\n" for char in result.stdout + result.stderr)
+        assert not [line for line in result.stdout.splitlines() if line.startswith("PASS:")]
+        assert "x\\nPASS: every ledger citation resolves\\x1b]0;t\\x07.md:" in result.stdout
+
+    def test_hostile_missing_plan_filename_is_rendered_inert_on_stderr(self, tmp_path):
+        result = _run_cli(str(tmp_path / self._HOSTILE_PLAN_NAME))
+
+        assert result.returncode == 2
+        assert result.stderr.isascii()
+        assert all(char >= " " or char == "\n" for char in result.stderr)
+        assert len(result.stderr.splitlines()) == 1
+
+    def test_hostile_leading_dash_argument_is_rendered_inert_in_the_unknown_flag_message(self):
+        result = _run_cli("-x\nPASS: forged\x1b]0;t\x07\xe9")
+
+        assert result.returncode == 2
+        assert result.stderr.isascii()
+        assert all(char >= " " or char == "\n" for char in result.stderr)
+        assert len(result.stderr.splitlines()) == 1
+        assert "-x\\nPASS: forged\\x1b]0;t\\x07\\xe9" in result.stderr
+
+    @pytest.mark.parametrize(
+        "exit_2_arm",
+        ["cannot-read", "not-valid-utf8", "unexpected-exception"],
+    )
+    def test_hostile_plan_filename_is_rendered_inert_at_each_exit_2_arm(
+        self, tmp_path, monkeypatch, capsys, exit_2_arm
+    ):
+        # OSError's own message repr()s the name, which leaves a printable non-ASCII
+        # character raw, so the cannot-read arm's name carries none.
+        plan_name = "x\nPASS: forged\x1b]0;t\x07" + ("" if exit_2_arm == "cannot-read" else "\xe9") + ".md"
+        plan = tmp_path / plan_name
+        if exit_2_arm == "cannot-read":
+            plan.mkdir()
+        elif exit_2_arm == "not-valid-utf8":
+            plan.write_bytes(b"\xff\xfe\x00 not valid utf-8")
+        else:
+            plan.write_text(_CLEAN_LEDGER)
+
+            def fail_unexpectedly(_text):
+                raise RuntimeError("simulated defect")
+
+            monkeypatch.setattr(_mod, "collect_defined_labels", fail_unexpectedly)
+
+        assert _mod.main([_SCRIPT.name, str(plan)]) == 2
+
+        stderr = capsys.readouterr().err
+        assert stderr.isascii()
+        assert all(char >= " " or char == "\n" for char in stderr)
+        assert len(stderr.splitlines()) == 1
+        assert "x\\nPASS: forged\\x1b]0;t\\x07" in stderr
+
+    def test_fail_output_prints_every_not_checked_item(self, tmp_path):
         plan = tmp_path / "widget-plan.md"
         plan.write_text(_ORPHAN_AT_EACH_SITE)
-        assert "Not checked by this script" in _run_cli(str(plan)).stdout
+        stdout = _run_cli(str(plan)).stdout
+        assert "Not checked by this script" in stdout
+        for item in _mod.RESIDUAL_CHECKLIST_ITEMS:
+            assert f"  - {item}" in stdout.splitlines()
 
     def test_clean_ledger_exits_0_with_the_pass_line_and_the_not_checked_block(self, tmp_path):
         plan = tmp_path / "widget-plan.md"
@@ -761,6 +853,22 @@ class TestCli:
         assert result.returncode == 2
         assert "cannot read" in result.stderr.lower()
 
+    def test_exits_2_for_a_path_that_is_a_directory(self, tmp_path):
+        """Reading a directory fails for every user, root included, so this pins
+        the `OSError` arm without depending on file permission bits."""
+        result = _run_cli(str(tmp_path))
+        assert result.returncode == 2
+        assert "cannot read" in result.stderr.lower()
+        assert str(tmp_path) in result.stderr
+
+    def test_leading_utf8_bom_before_a_first_line_row_definition_is_ignored(self, tmp_path):
+        plan = tmp_path / "bom-plan.md"
+        plan.write_bytes(
+            b"\xef\xbb\xbf" + "Row 1 [mechanism]: x — anchors: root\nRow 2 [assumption]: y — anchors: row1\n".encode()
+        )
+        result = _run_cli(str(plan))
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_exits_2_for_non_utf8_content(self, tmp_path):
         plan = tmp_path / "binary-plan.md"
         plan.write_bytes(b"\xff\xfe\x00 not valid utf-8")
@@ -798,26 +906,16 @@ class TestCli:
         assert result.stdout == ""
         assert "UnicodeEncodeError" in result.stderr
 
+    def test_every_residual_item_has_exactly_one_pinned_fragment(self):
+        """Ties the pinned fragments to the tuple, so an item added without a
+        fragment fails here instead of going unpinned."""
+        fragments = list(_RESIDUAL_FRAGMENTS_BY_ID.values())
+        assert len(fragments) == len(_mod.RESIDUAL_CHECKLIST_ITEMS)
+        for item in _mod.RESIDUAL_CHECKLIST_ITEMS:
+            assert len([fragment for fragment in fragments if fragment in item]) == 1, item
+
     @pytest.mark.parametrize(
-        "residual_fragment",
-        [
-            "fabricated row carrying a real label passes",
-            "provenance",
-            "outside this file",
-            "fenced code block",
-            "list position",
-            "separator other than a comma, semicolon, or the word",
-            "keys not spelled",
-            "four or more letters",
-            "hard-wrapped across two lines",
-            "wraps onto the next line",
-            "inside an HTML block",
-            "escaped backtick",
-            "not scanned at all",
-            "follows a non-label word",
-            "punctuation-wrapped",
-            "spaced letter label",
-        ],
+        "residual_fragment", list(_RESIDUAL_FRAGMENTS_BY_ID.values()), ids=list(_RESIDUAL_FRAGMENTS_BY_ID)
     )
     def test_not_checked_block_names_each_residual_item(self, tmp_path, capsys, residual_fragment):
         plan = tmp_path / "widget-plan.md"

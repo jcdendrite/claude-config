@@ -1746,15 +1746,13 @@ class TestComputeChangedPathsGitSmoke:
 
         assert "claude/.claude/scripts/new-script.py" in changed
 
-    def test_non_ascii_path_falls_open_to_full_suite(self, tmp_path):
-        """git's default core.quotePath=true escapes non-ASCII bytes in
-        --name-only output, so a non-ASCII changed path never string-matches
-        a domain predicate and falls open to the full suite."""
+    @pytest.mark.parametrize("quote_path", ["true", "false"], ids=["quotePath-true", "quotePath-false"])
+    def test_non_ascii_path_is_returned_verbatim_and_selects_its_domain(self, tmp_path, quote_path):
+        """`-z` bypasses core.quotePath, so a non-ASCII changed path reaches
+        the domain predicates unescaped whichever way the setting is
+        configured, instead of falling open to the full suite."""
         local, _bare = _make_repo_with_remote(tmp_path)
-        # Pinned explicitly, matching _init_repo's own --initial-branch=main
-        # precedent, so this depends on core.quotePath's default rather than
-        # the executing machine's ambient git config.
-        subprocess.run(["git", "config", "core.quotePath", "true"], cwd=local, check=True)
+        subprocess.run(["git", "config", "core.quotePath", quote_path], cwd=local, check=True)
         scripts_dir = local / "claude" / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
         (scripts_dir / "café.py").write_text("")
@@ -1762,8 +1760,110 @@ class TestComputeChangedPathsGitSmoke:
         changed = _mod.compute_changed_paths(local)
         result = _mod.select_pytest_targets(changed)
 
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert changed == ["claude/.claude/scripts/café.py"]
+        assert result.is_full_suite is False
+        assert result.reason == "domain-selected"
+
+    def test_committed_rename_yields_both_old_and_new_path_with_rename_detection_on(self, tmp_path):
+        """`--no-renames` keeps a rename enumerating its deleted source and
+        its added destination, whatever diff.renames is configured to."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "config", "diff.renames", "true"], cwd=local, check=True)
+        hooks_dir = local / "claude" / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "old-name.sh").write_text("#!/usr/bin/env bash\necho unchanged\n")
+        subprocess.run(["git", "add", "claude/.claude/hooks/old-name.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add hook"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=local, check=True)
+        subprocess.run(
+            ["git", "mv", "claude/.claude/hooks/old-name.sh", "claude/.claude/hooks/new-name.sh"],
+            cwd=local,
+            check=True,
+        )
+        subprocess.run(["git", "commit", "-q", "-m", "rename hook"], cwd=local, check=True)
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert changed == ["claude/.claude/hooks/new-name.sh", "claude/.claude/hooks/old-name.sh"]
+
+    def test_staged_uncommitted_rename_yields_both_old_and_new_path_with_rename_detection_on(self, tmp_path):
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "config", "diff.renames", "true"], cwd=local, check=True)
+        hooks_dir = local / "claude" / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "old-name.sh").write_text("#!/usr/bin/env bash\necho unchanged\n")
+        subprocess.run(["git", "add", "claude/.claude/hooks/old-name.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add hook"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(
+            ["git", "mv", "claude/.claude/hooks/old-name.sh", "claude/.claude/hooks/new-name.sh"],
+            cwd=local,
+            check=True,
+        )
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert changed == ["claude/.claude/hooks/new-name.sh", "claude/.claude/hooks/old-name.sh"]
+
+    def test_committed_modification_yields_exactly_the_modified_path(self, tmp_path):
+        local, _bare = _make_repo_with_remote(tmp_path)
+        hooks_dir = local / "claude" / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        tracked_file = hooks_dir / "existing-hook.sh"
+        tracked_file.write_text("#!/usr/bin/env bash\necho original\n")
+        subprocess.run(["git", "add", "claude/.claude/hooks/existing-hook.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add hook"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=local, check=True)
+        tracked_file.write_text("#!/usr/bin/env bash\necho modified\n")
+        subprocess.run(["git", "commit", "-q", "-am", "modify hook"], cwd=local, check=True)
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert changed == ["claude/.claude/hooks/existing-hook.sh"]
+
+    @pytest.mark.parametrize("line_break", ["\n", "\r"], ids=["newline", "carriage-return"])
+    def test_filename_with_a_literal_line_break_is_returned_as_one_verbatim_path(self, tmp_path, line_break):
+        local, _bare = _make_repo_with_remote(tmp_path)
+        scripts_dir = local / "claude" / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / f"split{line_break}name.py").write_text("")
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert changed == [f"claude/.claude/scripts/split{line_break}name.py"]
+
+    def test_filename_that_is_not_valid_utf8_is_returned_without_raising_and_round_trips(self, tmp_path):
+        """os.fsdecode maps undecodable bytes to surrogate escapes, so a
+        non-UTF-8 filename neither raises nor loses bytes."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        scripts_dir_bytes = os.fsencode(local / "claude" / ".claude" / "scripts")
+        os.makedirs(scripts_dir_bytes)
+        undecodable_name = b"bad\xffname.py"
+        try:
+            with open(scripts_dir_bytes + b"/" + undecodable_name, "wb"):
+                pass
+        except OSError as exc:
+            pytest.skip(f"filesystem rejects a non-UTF-8 filename: {exc}")
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert [os.fsencode(path) for path in changed] == [b"claude/.claude/scripts/" + undecodable_name]
+
+    def test_stubbed_non_utf8_record_is_returned_without_raising_and_round_trips(self, tmp_path):
+        """The same fsdecode invariant as the real-filesystem test above, with
+        no filesystem, so a filesystem that rejects the name cannot skip it."""
+        undecodable_record = b"claude/.claude/scripts/bad\xffname.py\0"
+
+        def fake_run(cmd, **kwargs):
+            if "merge-base" in cmd:
+                return _FakeCompletedProcess(stdout="deadbeef\n")
+            return _FakeCompletedProcess(stdout=undecodable_record)
+
+        changed = _mod.compute_changed_paths(tmp_path, run=fake_run)
+
+        assert [os.fsencode(path) for path in changed] == [undecodable_record.rstrip(b"\0")]
 
     def test_deleted_tracked_file_is_included(self, tmp_path):
         """A deleted-but-committed-then-deleted-again path must still show
@@ -1798,7 +1898,7 @@ class TestComputeChangedPathsGitSmoke:
 
 
 class _FakeCompletedProcess:
-    def __init__(self, *, returncode: int = 0, stdout: str = "") -> None:
+    def __init__(self, *, returncode: int = 0, stdout: str | bytes = "") -> None:
         self.returncode = returncode
         self.stdout = stdout
 
@@ -1859,7 +1959,7 @@ class TestComputeChangedPathsFailureModes:
                 return _FakeCompletedProcess(stdout="deadbeef\n")
             if "diff" in cmd and "HEAD" in cmd:
                 return _FakeCompletedProcess(returncode=1)
-            return _FakeCompletedProcess(stdout="")
+            return _FakeCompletedProcess(stdout=b"")
 
         with pytest.raises(_mod.GitDiffUnavailable):
             _mod.compute_changed_paths(tmp_path, run=fake_run)
@@ -1870,10 +1970,40 @@ class TestComputeChangedPathsFailureModes:
                 return _FakeCompletedProcess(stdout="deadbeef\n")
             if "ls-files" in cmd:
                 return _FakeCompletedProcess(returncode=1)
-            return _FakeCompletedProcess(stdout="")
+            return _FakeCompletedProcess(stdout=b"")
 
         with pytest.raises(_mod.GitDiffUnavailable):
             _mod.compute_changed_paths(tmp_path, run=fake_run)
+
+
+    @pytest.mark.parametrize(
+        ("failing_call", "expected_type"),
+        [
+            ("merge-base", _mod.MergeBaseUnresolved),
+            ("diff-against-merge-base", _mod.GitDiffUnavailable),
+            ("diff-against-head", _mod.GitDiffUnavailable),
+            ("ls-files", _mod.GitDiffUnavailable),
+        ],
+    )
+    def test_only_the_merge_base_failure_raises_the_merge_base_subclass(self, tmp_path, failing_call, expected_type):
+        def call_name(cmd):
+            if "merge-base" in cmd:
+                return "merge-base"
+            if "ls-files" in cmd:
+                return "ls-files"
+            if any("..." in part for part in cmd):
+                return "diff-against-merge-base"
+            return "diff-against-head"
+
+        def fake_run(cmd, **kwargs):
+            name = call_name(cmd)
+            stdout = "deadbeef\n" if name == "merge-base" else b""
+            return _FakeCompletedProcess(returncode=1 if name == failing_call else 0, stdout=stdout)
+
+        with pytest.raises(_mod.GitDiffUnavailable) as raised:
+            _mod.compute_changed_paths(tmp_path, run=fake_run)
+
+        assert type(raised.value) is expected_type
 
 
 class TestMainComposition:
@@ -2038,6 +2168,45 @@ class TestMainComposition:
 
         stderr = capsys.readouterr().err
         assert "running the full suite (unmatched-path: .gitignore, LICENSE)" in stderr
+
+    def test_hostile_unmatched_path_is_rendered_inert_on_stderr(self, monkeypatch, capsys):
+        """A changed path is contributor-controlled: an escape sequence or a
+        newline in its name must not reach the terminal raw or forge a
+        second select-tests output line."""
+        hostile_path = "zz-unmapped/x\x1b]0;title\x07\x7f\xe9\x85\u2028\nselect-tests: forged line\udcff"
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: Path("/fake/repo/root"))
+        monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: [hostile_path])
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+        _mod.main([])
+
+        stderr = capsys.readouterr().err
+        full_suite_lines = [line for line in stderr.splitlines() if "running the full suite" in line]
+        assert len(full_suite_lines) == 1
+        assert full_suite_lines[0].startswith("select-tests: running the full suite (unmatched-path: zz-unmapped/x")
+        assert not [line for line in stderr.splitlines() if line.startswith("select-tests: forged")]
+        assert stderr.isascii()
+        assert all(ord(char) >= 0x20 or char == "\n" for char in stderr)
+        assert "\x7f" not in stderr
+        assert "\\x7f\\xe9\\x85\\u2028" in full_suite_lines[0]
+
+    def test_hostile_glob_matched_target_is_rendered_inert_on_stderr(self, monkeypatch, tmp_path, capsys):
+        """A glob target expands to on-disk names, which a contributor also controls."""
+        tests_dir = tmp_path / "claude" / ".claude" / "scripts" / "tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "test_transcript_analysis_\x1b[2J\x07.py").write_text("")
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: tmp_path)
+        monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: ["claude-skills/skills/some-skill/SKILL.md"])
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+        _mod.main([])
+
+        stderr = capsys.readouterr().err
+        running_lines = [line for line in stderr.splitlines() if line.startswith("select-tests: running ")]
+        assert len(running_lines) == 1
+        assert "test_transcript_analysis_\\x1b[2J\\x07.py" in running_lines[0]
+        assert "\x1b" not in stderr
+        assert "\x07" not in stderr
 
     def test_global_trigger_prints_offending_path_to_stderr(self, monkeypatch, capsys):
         fake_repo_root = Path("/fake/repo/root")
@@ -2311,6 +2480,23 @@ class TestRecordSelection:
         # Parses as real ISO 8601, not merely non-empty -- matches
         # .permission-prompt-log.jsonl's own logged_at field name and format.
         datetime.fromisoformat(record["logged_at"].replace("Z", "+00:00"))
+
+    def test_hostile_changed_paths_are_logged_as_one_ascii_only_json_line(self, monkeypatch, tmp_path):
+        """splitlines() also splits on U+0085 and U+2028, so a raw one in the
+        log line would turn one record into several."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        hostile_paths = ("x\x1b]0;t\x07\x7f\n\x85\u2028\udcff\xe9.py",)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "unmatched-path", hostile_paths)
+
+        _mod.record_selection(selection, list(_mod.FULL_SUITE_TARGETS))
+
+        log_bytes = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_bytes()
+        assert log_bytes.isascii()
+        assert all(byte >= 0x20 or byte == ord("\n") for byte in log_bytes)
+        lines = log_bytes.decode("ascii").splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["triggering_paths"] == list(hostile_paths)
 
     @pytest.mark.parametrize(
         ("size_result", "expect_present"),

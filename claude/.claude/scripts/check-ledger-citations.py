@@ -24,10 +24,16 @@ inline span.
 
 Prints one FAIL line per orphan plus the labels the plan defined, and (always,
 unless --quiet suppressed a pass) the fixed list of things a clean result does
-not cover. Exit codes: 0 no orphan (including a plan with no `anchors:` line),
-1 at least one orphan and nothing else, 2 any other failure (wrong argument
-count, unknown flag, missing file, non-UTF-8 content, an unexpected exception)
-with a one-line message on stderr.
+not cover. A leading UTF-8 byte-order mark is ignored. The script splits lines
+on LF only, so a plan with lone-CR line endings gets wrong line numbers and a
+spurious row, where the CI backstop reads it with universal newlines.
+
+Exit codes:
+  0  no orphan (including a plan with no `anchors:` line)
+  1  at least one orphan and nothing else
+  2  any other failure, with a one-line message on stderr: wrong argument
+     count, unknown flag, unreadable or missing file, non-UTF-8 content, or an
+     unexpected exception
 """
 from __future__ import annotations
 
@@ -66,6 +72,10 @@ RESIDUAL_CHECKLIST_ITEMS = (
     "this script scans as two unquoted lines",
     "whether the plan's rows carry written labels at all -- a ledger numbering its rows by "
     "list position defines none, and the `Defined labels:` line is the only signal of it",
+    "a definition inside an HTML comment, which counts as defined although Markdown does not render it",
+    "non-ASCII whitespace (`NBSP`) or a homoglyph inside a citation, or a second byte-order mark or "
+    "a zero-width character before a fence opener, which this script does not "
+    "read: the citation is not checked, and the unrecognized fence can hide a later orphan",
 )
 
 _ROW_LABEL = r"rows?(?:[ \t]*\d+[a-z]?|[ \t]+[A-Za-z]{1,3}\d+[a-z]?)"
@@ -89,12 +99,12 @@ _FENCE_OPEN_RE = re.compile(r"[ \t]*(?P<run>`{3,}|~{3,})(?P<info>[^\n]*)")
 
 _H2_HEADING_RE = re.compile(r"##[ \t]")
 # Every prefix piece starts with its own non-space character and consumes the
-# whitespace after it once, so no two whitespace quantifiers can trade spaces
-# and matching stays linear in the line length. A letter label starts with an
-# uppercase letter, which keeps a lowercase token such as `x86` or `v2` from
-# defining one.
+# whitespace after it once.
+# So no two whitespace quantifiers can trade spaces, and matching stays linear
+# in the line length.
 _DEFINITION_LINE_RE = re.compile(
     r"[ \t]*(?:#{1,6}[ \t]+)?(?:>[ \t]*)*(?:[-*+][ \t]+)?(?:\|[ \t]*)?(?:(?:\*\*|__)[ \t]*)?"
+    # `(?-i:[A-Z])` requires an uppercase first letter, so `x86` or `v2` never defines a label.
     r"(?P<label>row[ \t]*\d+[a-z]?|(?-i:[A-Z])[a-z]{0,2}\d+[a-z]?)"
     r"(?:\*\*|__|`|[ \t]*(?:[|:—(\[.-]|\r?$))",
     re.IGNORECASE,
@@ -270,6 +280,14 @@ def find_orphan_citations(text: str) -> list[tuple[str, int]]:
     return _unresolved(find_citations(text), collect_defined_labels(text))
 
 
+def _printable_path(path: Path | str) -> str:
+    """Render the plan path (or a flag argument) inertly for output: ASCII only, control characters
+    and lone surrogates shown as escapes. The path is contributor-controlled.
+    Mirrors select-tests.py's printable_path, which a hyphen-named script
+    cannot be imported for."""
+    return ascii(str(path))[1:-1]
+
+
 def main(argv: list[str]) -> int:
     args = argv[1:]
     quiet = False
@@ -277,7 +295,7 @@ def main(argv: list[str]) -> int:
         quiet = True
         args = args[1:]
     if len(args) == 1 and args[0].startswith("-"):
-        print(f"{SCRIPT_NAME}: unknown flag: {args[0]}", file=sys.stderr)
+        print(f"{SCRIPT_NAME}: unknown flag: {_printable_path(args[0])}", file=sys.stderr)
         return 2
     if len(args) != 1:
         print(f"usage: {SCRIPT_NAME} [--quiet] <path-to-plan-file>", file=sys.stderr)
@@ -288,16 +306,16 @@ def main(argv: list[str]) -> int:
         # Plan files are KB-sized, so the read is unbounded by design.
         raw = plan_path.read_bytes()
     except FileNotFoundError:
-        print(f"{SCRIPT_NAME}: no such file: {plan_path}", file=sys.stderr)
+        print(f"{SCRIPT_NAME}: no such file: {_printable_path(plan_path)}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"{SCRIPT_NAME}: cannot read {plan_path}: {exc}", file=sys.stderr)
+        print(f"{SCRIPT_NAME}: cannot read {_printable_path(plan_path)}: {exc}", file=sys.stderr)
         return 2
 
     try:
-        plan_text = raw.decode("utf-8")
+        plan_text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        print(f"{SCRIPT_NAME}: {plan_path} is not valid UTF-8: {exc}", file=sys.stderr)
+        print(f"{SCRIPT_NAME}: {_printable_path(plan_path)} is not valid UTF-8: {exc}", file=sys.stderr)
         return 2
 
     # Exit 1 is reserved for "an orphan was found", so a crash here must not
@@ -306,7 +324,7 @@ def main(argv: list[str]) -> int:
         return _check_plan(plan_path, plan_text, quiet)
     except Exception as exc:
         print(
-            f"{SCRIPT_NAME}: unexpected {type(exc).__name__} while checking {plan_path}: {exc}",
+            f"{SCRIPT_NAME}: unexpected {type(exc).__name__} while checking {_printable_path(plan_path)}: {exc}",
             file=sys.stderr,
         )
         return 2
@@ -323,7 +341,7 @@ def _check_plan(plan_path: Path, plan_text: str, quiet: bool) -> int:
     report: list[str] = []
     if orphans:
         for token, line in orphans:
-            report.append(f"FAIL: {plan_path}:{line}: citation '{token}' resolves to no defined ledger label")
+            report.append(f"FAIL: {_printable_path(plan_path)}:{line}: citation '{token}' resolves to no defined ledger label")
         report.append(f"Defined labels: {', '.join(sorted(written_labels | ALWAYS_RESOLVING_LABELS))}")
     else:
         report.append(
