@@ -47,8 +47,8 @@ _lib_config_dir() {
 # Fallback to bare jq when timeout(1) is absent (BSD/macOS default).
 # install.sh warns about missing timeout at onboarding time.
 # Security implication: on BSD/macOS without coreutils, a stalled or
-# replaced jq binary can hold a gate hook open indefinitely. The harness's
-# own hook timeout (if any) then governs — not this wrapper.
+# replaced jq binary can hold a gate hook open until the harness's own hook
+# timeout, which does not block the tool call (see _lib_capped_for below).
 _lib_jq() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 jq "$@"
@@ -58,20 +58,41 @@ _lib_jq() {
 }
 
 # _lib_capped_for SECONDS CMD [ARGS...]
-# Probes timeout(1) then gtimeout(1); runs CMD uncapped (not denied) when
-# neither exists, so callers must check the exit status themselves.
-# Uncapped fallback trades a loud exit-127 failure for a silent hang risk
-# if CMD stalls -- same trade as claude/.claude/hooks/_lib.sh's
-# _lib_capped_for. Duplicated from that file's function of the same name
-# (see this file's header for why plugin hooks duplicate rather than
-# source).
+# Duplicated from claude/.claude/hooks/_lib.sh's function of the same name
+# (see this file's header for why plugin hooks duplicate rather than source).
+# Probes timeout(1) then gtimeout(1); runs CMD uncapped when neither exists.
+# Callers MUST check the exit status and fail closed on every status they do
+# not recognise.
+# `-k 2` escalates to SIGKILL 2s after the SIGTERM, so the wrapper returns at
+# SECONDS+2 even when the direct child ignores SIGTERM.
+# The bound covers the direct child only. A descendant that holds a captured
+# stdout pipe keeps a `$(...)` caller open, including a nested capped call:
+# GNU timeout puts its child in a new process group unless run with
+# --foreground, so the outer cap's group-directed signal does not reach it.
+# On the uncapped fallback, or with a child that survives SIGKILL, a stalled
+# PreToolUse gate exits only by the harness's own hook timeout, which does not
+# block the tool call (hooks reference, Timeouts section, fetched 2026-09-19).
+# The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
+# `--kill-after=2` with a usage error and never runs the command.
+# The requirement is a `timeout` or `gtimeout` that accepts `-k`: GNU coreutils,
+# or BusyBox 1.35.0 or newer.
+# One that rejects `-k` makes every wrapped call exit nonzero without running
+# CMD, so the SKILL.md commit denies.
+# The claude-config repository's README.md Requirements section is the
+# canonical statement, including the builds not verified here.
+# When the cap fires, the wrapper exits 124 (GNU) or 143 (BusyBox) if SIGTERM
+# killed CMD, and 137 (both) if the -k grace escalated to SIGKILL.
+# 137 and 143 also occur as CMD's own signal-death status, so a status alone
+# cannot prove the cap fired.
+# No capped CMD may trap TERM and exit 0, because BusyBox would then return
+# that 0 where GNU returns 124.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
+    timeout -k 2 "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
+    gtimeout -k 2 "$seconds" "$@"
   else
     "$@"
   fi
@@ -83,7 +104,7 @@ _lib_capped_for() {
 # (jq non-zero exit).
 #
 # Three deny paths protect against silent-allow:
-#   (a) jq non-zero exit (parse failure, timeout exit=124, missing jq binary)
+#   (a) jq non-zero exit (parse failure, timeout exit=124 on GNU, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 # Per Anthropic PreToolUse contract, every legitimate event has a non-empty

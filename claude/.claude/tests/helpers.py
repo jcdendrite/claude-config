@@ -1594,23 +1594,36 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
         "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
         "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
         "# so every other $1 runs at the caller's own duration.\n"
+        "# A leading `-k <n>` pair (_lib_capped_for's SIGKILL grace) is stripped before that check runs, so it isn't\n"
+        "# misread as the duration itself. A 1-9-leading integer grace is scaled by the same divisor before being\n"
+        "# re-attached below; any other grace is forwarded unscaled.\n"
+        "grace=()\n"
+        'if [ "$1" = "-k" ]; then\n'
+        '  grace=(-k "$2")\n'
+        "  shift 2\n"
+        "fi\n"
         'if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then\n'
         '  requested="$1"\n'
         f"  scaled_ms=$(( requested * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
         "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
+        '  if [ "${#grace[@]}" -gt 0 ] && [[ "${grace[1]}" =~ ^[1-9][0-9]*$ ]]; then\n'
+        f"    scaled_grace_ms=$(( grace[1] * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "    printf -v scaled_grace '%d.%03d' \"$(( scaled_grace_ms / 1000 ))\" \"$(( scaled_grace_ms % 1000 ))\"\n"
+        '    grace=(-k "$scaled_grace")\n'
+        "  fi\n"
         "  shift\n"
         "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
         "  # $1 is the wrapped command; the shift above already consumed the duration.\n"
         f"  printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(started_log))}\n"
-        f'  {shlex.quote(str(real_timeout))} "$scaled" "$@"\n'
+        f'  {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$scaled" "$@"\n'
         "  status=$?\n"
-        "  # Assumes exit 124 only comes from timeout's own kill; a race with\n"
-        "  # an external kill (OOM, outer test-runner) is a test-infra\n"
-        "  # concern only, not production-reachable.\n"
-        f"  [[ $status -eq 124 ]] || printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
+        "  # The statuses in _lib_capped_for's header (_lib.sh) count as the cap firing;\n"
+        "  # a child's own 137/143 signal-death is indistinguishable, so an external kill counts the same way.\n"
+        "  [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]] || \\\n"
+        f"    printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
         '  exit "$status"\n'
         "fi\n"
-        f'exec {shlex.quote(str(real_timeout))} "$@"\n'
+        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n'
     )
     shim_path.chmod(0o755)
     return True
@@ -1678,8 +1691,10 @@ def assert_cap_engaged(
 ):
     """Assert a timeout(1) cap killed the wrapped block's capped call(s),
     read from the scaled `timeout` shim's started/completed logs rather
-    than a wall-clock floor. 124 is timeout(1)'s documented exit status for
-    "the command was killed by the cap" -- the discriminator this observes.
+    than a wall-clock floor. The shim logs a call as fired when it returns
+    124, 137 or 143, the statuses _lib_capped_for's header in _lib.sh lists
+    for a cap kill. 137 and 143 also occur as a child's own signal-death
+    status, so a fired call is evidence of a cap kill, not proof.
 
     Snapshots both logs on entry so a second hook run inside the same
     bin_dir isn't double-counted. Raises when the shim recorded nothing at

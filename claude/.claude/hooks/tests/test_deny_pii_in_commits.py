@@ -50,6 +50,56 @@ def _commit(repo, name, content, message="seed"):
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
+def _modify_unstaged(repo, name, content):
+    """Overwrite an already-tracked `repo/name` without staging the change,
+    so the new content is worktree-only -- invisible to `git diff --cached`
+    and visible only to a HEAD-relative scan (`git diff HEAD`).
+
+    A test that must isolate a HEAD probe or HEAD diff branch puts its
+    credential here. A staged credential is caught by the staged-diff scan
+    whether or not that branch denies, so the case would pass for the wrong
+    reason."""
+    (repo / name).write_text(content)
+
+
+# (config key, config value, `.git/info/attributes` line or None, hook runs
+# from a repo subdirectory). Each config exits 0 while altering the diff text.
+DIFF_RENDERING_CONFIGS = [
+    ("color.diff", "always", None, False),
+    ("diff.external", "true", None, False),
+    ("diff.hide.textconv", "true", "*.txt diff=hide", False),
+    ("diff.relative", "true", None, True),
+]
+DIFF_RENDERING_CONFIG_IDS = [
+    "color-diff-always",
+    "diff-external-true",
+    "textconv-prints-nothing",
+    "diff-relative-true",
+]
+
+
+# Both diff calls lead with `-c diff.relative=false`, so the subcommand is
+# argv position 3. A shim predicate that pins `$1 = diff` never matches.
+DIFF_CALL_PREDICATE = '[ "$1" = "-c" ] && [ "$3" = "diff" ]'
+
+
+def _configure_diff_rendering(repo, config_key, config_value, attributes_line, run_from_subdirectory):
+    """Set one diff-rendering config in `repo`'s local git config, write the
+    optional attributes line in `.git/info/attributes` (so no tracked file
+    carries it), and return the directory the hook should run from: the repo
+    root, or a subdirectory of it."""
+    subprocess.run(["git", "config", config_key, config_value], cwd=repo, check=True)
+    if attributes_line is not None:
+        attributes_file = repo / ".git" / "info" / "attributes"
+        attributes_file.parent.mkdir(parents=True, exist_ok=True)
+        attributes_file.write_text(attributes_line + "\n")
+    if not run_from_subdirectory:
+        return repo
+    subdirectory = repo / "sub"
+    subdirectory.mkdir()
+    return subdirectory
+
+
 class TestDenyPiiInCommits:
     @pytest.fixture
     def pii_patterns(self, isolated_home):
@@ -134,6 +184,86 @@ class TestDenyPiiInCommits:
     def test_unarmed_credential_value_in_diff_denied(self, isolated_home, git_repo):
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        ("config_key", "config_value", "attributes_line", "run_from_subdirectory"),
+        DIFF_RENDERING_CONFIGS,
+        ids=DIFF_RENDERING_CONFIG_IDS,
+    )
+    @pytest.mark.parametrize("scan_worktree_content", [False, True], ids=["staged-diff", "head-diff"])
+    def test_credential_denied_when_diff_rendering_config_would_hide_it(
+        self,
+        isolated_home,
+        git_repo,
+        config_key,
+        config_value,
+        attributes_line,
+        run_from_subdirectory,
+        scan_worktree_content,
+    ):
+        """Repo diff-rendering config exits 0 while altering the output the
+        scan reads: `color.diff=always` prefixes each added line with an ANSI
+        escape so the `^+` filter drops it, an always-succeeding
+        `diff.external` prints nothing, a `textconv` driver that prints
+        nothing replaces the file's bytes with empty text, and
+        `diff.relative=true` drops every file outside the hook's cwd
+        subdirectory. The hook's `--no-color --no-ext-diff --no-textconv`
+        flags and `-c diff.relative=false` must keep the committed bytes in
+        the scanned text at both diff sites. The staged case reaches the `git diff
+        --cached` scan. The worktree case adds the commit-all flag and keeps
+        the credential worktree-only, so only the `git diff HEAD` scan can
+        catch it. The deny reason must name the credential-value match: a
+        fail-closed diff-failure deny would otherwise satisfy the test."""
+        hook_cwd = _configure_diff_rendering(git_repo, config_key, config_value, attributes_line, run_from_subdirectory)
+        if scan_worktree_content:
+            _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
+            commit_command = "git commit -a -m wip"
+        else:
+            _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+            commit_command = "git commit -m wip"
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(commit_command), cwd=hook_cwd)
+        assert reason is not None and "Credential value" in reason, reason
+
+    @pytest.mark.parametrize(
+        ("config_key", "config_value", "attributes_line", "run_from_subdirectory"),
+        DIFF_RENDERING_CONFIGS,
+        ids=DIFF_RENDERING_CONFIG_IDS,
+    )
+    @pytest.mark.parametrize("scan_worktree_content", [False, True], ids=["staged-diff", "head-diff"])
+    def test_clean_content_allowed_when_diff_rendering_config_set(
+        self,
+        isolated_home,
+        git_repo,
+        config_key,
+        config_value,
+        attributes_line,
+        run_from_subdirectory,
+        scan_worktree_content,
+    ):
+        """Counterpart of the deny case above with clean content under the
+        same config at the same two diff sites: the deny there is driven by
+        the credential, not by the mere presence of diff-rendering config."""
+        hook_cwd = _configure_diff_rendering(git_repo, config_key, config_value, attributes_line, run_from_subdirectory)
+        if scan_worktree_content:
+            _modify_unstaged(git_repo, "file.txt", "first\nsecond\nclean\n")
+            commit_command = "git commit -a -m wip"
+        else:
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            commit_command = "git commit -m wip"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(commit_command), cwd=hook_cwd) == "allow"
+
+    def test_credential_in_binary_classified_file_allowed(self, isolated_home, git_repo):
+        """Pins an accepted, documented residual (see the hook header's
+        "Binary files differ" bullet): a file git classifies as binary, here
+        through a `-diff` attribute in `.git/info/attributes`, renders as
+        "Binary files differ" with no added lines, so the credential-value
+        scan does not see it. Flip this to a deny test if the residual is
+        closed."""
+        attributes_file = git_repo / ".git" / "info" / "attributes"
+        attributes_file.parent.mkdir(parents=True, exist_ok=True)
+        attributes_file.write_text("*.bin -diff\n")
+        _stage(git_repo, "f.bin", f"x\ntoken {GHP_TOKEN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
 
     def test_quote_split_credential_value_in_commit_message_denied(self, isolated_home, git_repo):
         """Required regression test for a Critical finding: bash reassembles
@@ -240,7 +370,7 @@ class TestDenyPiiInCommits:
         scan, no error, no signal. Fails closed (deny) now instead. A fake
         `git` shadows only the `diff` subcommand (sleeping past the 5s cap)
         and passes every other subcommand through to the real binary."""
-        env = git_timeout_shim('[ "$1" = "diff" ]')
+        env = git_timeout_shim(DIFF_CALL_PREDICATE)
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
@@ -251,9 +381,12 @@ class TestDenyPiiInCommits:
         """Required regression test: `git rev-parse --is-inside-work-tree`'s
         _lib_capped exit status must also fail closed on timeout (exit 124)
         rather than exiting 0 and skipping every scan tier, including the
-        always-on credential-value one."""
+        always-on credential-value one. The staged content is clean: a staged
+        credential would be caught by the staged-diff scan even if the probe
+        fell through, so only the probe's own deny branch can produce `deny`
+        here."""
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]')
-        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
         with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
@@ -263,9 +396,10 @@ class TestDenyPiiInCommits:
         """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
         status must fail closed on timeout, distinct from the legitimate
         no-HEAD-yet (unborn branch) skip. `git commit -a` triggers
-        HEAD_SCAN_NEEDED so this call site is reached."""
+        HEAD_SCAN_NEEDED so this call site is reached. Worktree-only
+        credential (see `_modify_unstaged`)."""
         env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
-        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
         with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
@@ -274,12 +408,238 @@ class TestDenyPiiInCommits:
     def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
         """Required regression test: `git diff HEAD`'s _lib_capped exit
         status must fail closed on timeout, mirroring the STAGED_DIFF fix
-        for the HEAD-relative diff specifically."""
-        env = git_timeout_shim('[ "$1" = "diff" ] && [ "$2" = "HEAD" ]')
-        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        for the HEAD-relative diff specifically. Worktree-only credential
+        (see `_modify_unstaged`)."""
+        env = git_timeout_shim(f'{DIFF_CALL_PREDICATE} && [ "$4" = "HEAD" ]')
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
         with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_work_tree_check_sigterm_immune_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
+        """SIGKILL-after-grace path: a work-tree probe whose child ignores
+        SIGTERM outright must deny once the -k grace escalates to SIGKILL, not
+        skip every scan tier, credential-value tier included. The deny reason
+        must carry exit 137: without the grace the cap kill would surface as
+        124 or 143. The staged content is clean, same reason as the
+        timeout-path case above."""
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]',
+            sigterm_immune=True,
+        )
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and "(exit 137)" in reason, reason
+
+    @pytest.mark.timing
+    def test_head_rev_parse_sigterm_immune_denied(self, isolated_home, git_repo, git_timeout_shim, tmp_path):
+        """SIGKILL-after-grace path: a HEAD probe whose child ignores SIGTERM
+        outright must deny, not be treated as the benign unborn-HEAD skip. The
+        deny reason must carry exit 137: without the grace the cap kill would
+        surface as 124 or 143. Worktree-only credential (see
+        `_modify_unstaged`)."""
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]',
+            sigterm_immune=True,
+        )
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and "(exit 137)" in reason, reason
+
+    @pytest.mark.parametrize("probe_status", [1, 3, 125, 126, 127, 129, 137, 143])
+    def test_work_tree_check_unanticipated_status_denied(
+        self, isolated_home, git_repo, git_timeout_shim, probe_status
+    ):
+        """Any work-tree probe status other than 0 or 128 must deny, because
+        only git's own 128 is a benign skip. 127 is a missing git, 143 a
+        BusyBox SIGTERM cap kill, 137 a SIGKILL after the grace, 125 and 126
+        are GNU timeout's own "timeout failed" and "cannot invoke" statuses,
+        129 is git's usage-error status (a probe has no 129-specific arm, so
+        it must not be mistaken for 128), and 1 and 3 sit outside every
+        cap-kill status set. The timeout and SIGTERM-immune
+        cases above cover 124 and 137 against a real cap.
+        No cap is engaged here: the shim exits with the status directly. The
+        staged content is clean, so only the probe's own deny branch can
+        produce `deny`. The deny reason must name the injected status."""
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]',
+            exit_status=probe_status,
+        )
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and f"(exit {probe_status})" in reason, reason
+
+    @pytest.mark.parametrize("probe_status", [1, 3, 125, 126, 127, 129, 137, 143])
+    def test_head_rev_parse_unanticipated_status_denied(
+        self, isolated_home, git_repo, git_timeout_shim, probe_status
+    ):
+        """Any HEAD probe status other than 0 or 128 must deny, for the same
+        reason as the work-tree probe case above, 129 included. The timeout and
+        SIGTERM-immune HEAD probe cases above cover 124 and 137 against a
+        real cap. Worktree-only credential (see `_modify_unstaged`). The deny
+        reason must name the injected status: a shim that stopped matching
+        would fall through to the real scan and deny on the credential
+        alone."""
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]',
+            exit_status=probe_status,
+        )
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and f"(exit {probe_status})" in reason, reason
+
+    @pytest.mark.parametrize(
+        ("diff_status", "expected_reason_texts", "absent_reason_texts"),
+        [
+            (1, ("failed",), ("killed",)),
+            (3, ("failed",), ("killed",)),
+            (125, ("failed",), ("killed",)),
+            (126, ("failed",), ("killed",)),
+            (127, ("failed",), ("killed",)),
+            (128, ("failed",), ("killed",)),
+            (129, ("failed",), ("killed",)),
+            (124, ("killed",), ()),
+            (137, ("killed",), ()),
+            (143, ("killed",), ()),
+        ],
+        ids=[
+            "status-1",
+            "status-3",
+            "status-125",
+            "status-126",
+            "status-127",
+            "status-128",
+            "status-129",
+            "status-124-killed",
+            "status-137-killed",
+            "status-143-killed",
+        ],
+    )
+    def test_staged_diff_nonzero_status_denied(
+        self, isolated_home, git_repo, git_timeout_shim, diff_status, expected_reason_texts, absent_reason_texts
+    ):
+        """`git diff --cached` failing with any nonzero status must deny: an
+        empty STAGED_DIFF would otherwise leave the always-on credential-value
+        tier scanning nothing. The cap-kill statuses (124, 137, 143) must say
+        "killed", and every other status, 129 (git's usage-error status)
+        included, must not. The shim exits the parametrized status on any
+        `git -c diff.relative=false diff --cached`, so this pins the message,
+        not flag rejection. No cap is engaged: the
+        shim exits with the status directly. The credential is staged, so the
+        deny reason must name the injected status: a shim that stopped
+        matching would deny on the credential alone."""
+        env = git_timeout_shim(
+            f'{DIFF_CALL_PREDICATE} && [ "$4" = "--cached" ]',
+            exit_status=diff_status,
+        )
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and f"(exit {diff_status})" in reason, reason
+        for expected_reason_text in expected_reason_texts:
+            assert expected_reason_text in reason, reason
+        for absent_reason_text in absent_reason_texts:
+            assert absent_reason_text not in reason, reason
+
+    @pytest.mark.parametrize(
+        ("diff_status", "expected_reason_texts", "absent_reason_texts"),
+        [
+            (1, ("failed",), ("killed",)),
+            (3, ("failed",), ("killed",)),
+            (125, ("failed",), ("killed",)),
+            (126, ("failed",), ("killed",)),
+            (127, ("failed",), ("killed",)),
+            (128, ("failed",), ("killed",)),
+            (129, ("failed",), ("killed",)),
+            (124, ("killed",), ()),
+            (137, ("killed",), ()),
+            (143, ("killed",), ()),
+        ],
+        ids=[
+            "status-1",
+            "status-3",
+            "status-125",
+            "status-126",
+            "status-127",
+            "status-128",
+            "status-129",
+            "status-124-killed",
+            "status-137-killed",
+            "status-143-killed",
+        ],
+    )
+    def test_head_diff_nonzero_status_denied(
+        self, isolated_home, git_repo, git_timeout_shim, diff_status, expected_reason_texts, absent_reason_texts
+    ):
+        """Same invariant as the staged-diff case above, for `git diff HEAD`.
+        Worktree-only credential (see `_modify_unstaged`): the staged-diff
+        scan sees nothing. The deny reason must name the injected status and
+        carry the status-specific text and lack the other branch's, for the
+        same reason as above."""
+        env = git_timeout_shim(
+            f'{DIFF_CALL_PREDICATE} && [ "$4" = "HEAD" ]',
+            exit_status=diff_status,
+        )
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\ntoken {GHP_TOKEN}\n")
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
+        assert reason is not None and f"(exit {diff_status})" in reason, reason
+        for expected_reason_text in expected_reason_texts:
+            assert expected_reason_text in reason, reason
+        for absent_reason_text in absent_reason_texts:
+            assert absent_reason_text not in reason, reason
+
+    def test_commit_outside_work_tree_allowed(self, isolated_home, tmp_path):
+        """git's own fatal status (128), not a cap kill: a `git commit`
+        issued from a cwd that is no work tree at all must still skip
+        cleanly. GIT_CEILING_DIRECTORIES stops git's upward search below
+        tmp_path's parent, so an ancestor repository cannot make the probe
+        succeed and the case pass for the wrong reason. No shim or
+        assert_cap_engaged -- nothing here is capped or killed, so attaching
+        either would break on the assertion helper itself rather than on the
+        behavior under test."""
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=not_a_repo,
+            extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path.parent)},
+        ) == "allow"
+
+    def test_head_rev_parse_no_commits_allowed(self, isolated_home, tmp_path):
+        """git's own fatal status (128): an unresolvable HEAD in a repo with
+        no commits yet must skip the HEAD scan cleanly rather than the
+        fail-closed guard misreading it as a cap kill. Needs its own `git
+        init` -- `git_repo` already commits a file. No shim or
+        assert_cap_engaged, and only clean content: this pins the skip on
+        clean content and is NOT evidence that worktree-only content is
+        scanned when HEAD is unborn."""
+        repo = tmp_path / "no-commits-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        _stage(repo, "f.txt", "x\nclean\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo) == "allow"
+
+    def test_head_rev_parse_no_commits_still_scans_staged_credential(self, isolated_home, tmp_path):
+        """Pairs the allow case above: with HEAD unborn, the HEAD probe's 128
+        skip covers only the HEAD-relative diff. A credential staged in the
+        index of a first `git commit -a` must still be denied by the staged
+        diff scan, so a future edit cannot widen that skip into an early exit
+        that drops the always-on credential-value tier. Real `git init`, no
+        shim or assert_cap_engaged. Worktree-only content on an unborn HEAD
+        stays the documented residual and is not asserted here."""
+        repo = tmp_path / "no-commits-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        _stage(repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=repo)
+        assert reason is not None and "Credential value" in reason, reason
 
     # ------------------------------------------------------------------ #
     # Built-in generic patterns                                           #

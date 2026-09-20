@@ -22,15 +22,16 @@ if ! . "$(dirname "${BASH_SOURCE[0]}")/_config.sh"; then
   return 1
 fi
 
-# Backstop against a hung jq (~5s, not a per-fire latency budget).
+# Backstop against a hung jq (5s, plus the 2s SIGKILL grace; not a per-fire
+# latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
 # Probes timeout(1) then gtimeout(1) (Homebrew coreutils' g-prefixed name),
 # falling back to bare jq only when neither is on PATH (stock macOS with no
 # coreutils installed). install.sh warns about missing timeout at onboarding
 # time.
 # Security implication: on a machine with neither binary, a stalled or
-# replaced jq binary can hold a gate hook open indefinitely. The harness's
-# own hook timeout (if any) then governs — not this wrapper.
+# replaced jq binary can hold a gate hook open until the harness's own hook
+# timeout, which does not block the tool call — see _lib_capped_for's header.
 _lib_jq() {
   _lib_capped_for 5 jq "$@"
 }
@@ -53,13 +54,72 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+#
+# Bound:
+#  - `-k 2` escalates to SIGKILL 2s after the SIGTERM, so under GNU timeout
+#    the wrapper returns at SECONDS+2 even when the direct child ignores or
+#    is slow to honor SIGTERM.
+#  - The bound covers the direct child only, because -k acts only while that
+#    child is still alive.
+#  - A descendant that ignores SIGTERM and holds a captured stdout pipe keeps
+#    a `$(...)` caller open until it exits, under GNU and BusyBox alike.
+#  - BusyBox timeout also signals only the direct child, so any pipe-holding
+#    grandchild, even one that honors SIGTERM, can keep a `$(...)` caller
+#    blocked for the grandchild's lifetime.
+#  - GNU timeout puts its child in a new process group unless run with
+#    --foreground. A capped call started inside a capped script, with stdout
+#    inherited from the captured pipe, is therefore outside the outer cap's
+#    group-directed signal. A `$(...)` caller waits for that nested call to
+#    exit on its own cap.
+#  - A call blocked in uninterruptible kernel I/O honors neither signal, so
+#    that case stays unbounded.
+#  - On the uncapped fallback (no timeout or gtimeout on PATH), or with a
+#    child that survives SIGKILL, a stalled PreToolUse gate exits only by the
+#    harness's own hook timeout. Per the Claude Code hooks reference,
+#    Timeouts section (fetched 2026-09-19): "A timed-out `command`, `http`,
+#    or `mcp_tool` hook doesn't block the tool call. The call continues
+#    through the normal permission flow, so don't count on a stalled hook to
+#    act as a gate."
+#
+# Spelling:
+#  - The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
+#    `--kill-after=2` with a usage error and never runs the command.
+#
+# Supported implementations:
+#  - README.md's Requirements section states which `timeout` builds accept
+#    `-k`.
+#  - A timeout that rejects `-k` makes every wrapped call exit nonzero
+#    without running its command.
+#
+# Exit statuses:
+#  - When the cap fires, the wrapper exits 124 (GNU) or 143 (BusyBox) if
+#    SIGTERM killed the child, and 137 (both) if the -k grace escalated to
+#    SIGKILL.
+#  - 137 and 143 also occur as a child's own signal-death status, so a status
+#    alone cannot prove the cap fired.
+#  - BusyBox returns the child's own status instead when the child traps TERM
+#    and exits cleanly. GNU still reports 124.
+#  - No capped child may trap TERM and exit 0, because BusyBox would then
+#    return that 0 where GNU returns 124.
+#  - Any other nonzero status is the child's own or timeout's own failure (GNU
+#    125/126/127, BusyBox usage error 1 or its own 126/127), so a caller that
+#    branches on the exit status must fail closed on every status it does not
+#    recognise.
+#
+# Side effects:
+#  - A SIGKILLed child can leave lock files behind. docs/hooks.md's "Gate
+#    deadlock recovery" section covers a stranded lock, at the path git names
+#    in its error message (under `.git/worktrees/<name>/` in a linked worktree).
+#  - Bash may print a "Killed" line to the hook's stderr after a SIGKILL, or a
+#    "Terminated" line when a BusyBox-capped child dies of SIGTERM, since
+#    BusyBox runs the command in the process bash waits on.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
+    timeout -k 2 "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
+    gtimeout -k 2 "$seconds" "$@"
   else
     "$@"
   fi
@@ -203,7 +263,7 @@ _lib_emit_deny() {
     # before any command filtering, so a missing jq denies every tool call
     # with the parse-failure reason below — which names the wrong cause.
     # Without this line the session has no in-agent route to a fix.
-    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. Underlying gate reason follows.\n%s\n' \
+    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, accepts it) causes the same block; see docs/hooks.md \"Gate deadlock recovery\" in the claude-config repository. Underlying gate reason follows.\n%s\n' \
       "$prefixed_reason" >&2
     exit 2
   fi
@@ -240,7 +300,7 @@ _lib_emit_allow_with_context() {
 # structural-type error when .tool_input is non-object (jq non-zero exit).
 #
 # Four deny paths protect against silent-allow:
-#   (a) jq non-zero exit (parse failure, timeout exit=124, missing jq binary)
+#   (a) jq non-zero exit (parse failure, cap kill per _lib_capped_for's header above, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 #   (d) a 0x1f byte inside any extracted value, which would otherwise shift
@@ -866,7 +926,7 @@ _lib_gate_diff_base() {
     *) return 2 ;;
   esac
   case "$tree_status" in
-    124 | 125 | 126 | 127 | 137) return 2 ;;
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
   esac
   # tree_status is not the validation signal. `merge-tree --write-tree`
   # exits 1 (not 0) whenever the merge it computed conflicts -- the
@@ -880,7 +940,7 @@ _lib_gate_diff_base() {
   _lib_capped git -C "$repo_root" rev-parse --verify --quiet "${tree_oid}^{tree}" >/dev/null 2>&1
   local verify_status=$?
   case "$verify_status" in
-    124 | 125 | 126 | 127 | 137) return 2 ;;
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
   esac
   [ "$verify_status" -eq 0 ] || return 1
 
@@ -907,7 +967,7 @@ _lib_gate_diff_base() {
 # `${PIPESTATUS[0]}` in the same command substitution immediately after the
 # pipeline runs (before any later command in that subshell can overwrite
 # it): any nonzero status there -- an ordinary git error or a cap kill
-# (124/125/126/127/137) alike -- fails this closed regardless of whether
+# (statuses per _lib_capped_for's header) alike -- fails this closed regardless of whether
 # sha256sum/awk still produced output downstream. Callers must fail closed
 # on exit 1, the same posture _lib_active_plan_hash and
 # _lib_reviewer_round_state_value already document for this class of
@@ -3235,13 +3295,15 @@ _lib_reviewer_round_state_key() {
 #
 # Capped-git-call count varies by branch: 3 in the common case outside any
 # in-progress merge/rebase/cherry-pick/revert (HEAD rev-parse, the gitdir
-# rev-parse inside _lib_gate_diff_base, the diff itself), up to 13
-# mid-operation, all inside _lib_gate_diff_base (the ref-file cat, up to 5
-# from _lib_default_branch_or_guess's own origin/HEAD-then-candidate chain,
-# up to two merge-base anchor checks, the merge-tree computation, and the
-# tree verification) -- a future added capped call here pushes the
-# mid-operation ceiling higher still. At _lib_capped's 5s-per-call cap, that
-# ceiling is up to 65s of worst-case wall-clock time for one gate call.
+# rev-parse inside _lib_gate_diff_base, the diff itself), up to 14
+# mid-operation: the HEAD rev-parse, then inside _lib_gate_diff_base the
+# gitdir rev-parse, the ref-file cat, up to 5 from
+# _lib_default_branch_or_guess's own origin/HEAD-then-candidate chain, up to
+# two merge-base anchor checks, the merge-tree computation, and the tree
+# verification, then the base-relative diff and _lib_staged_diff_hash's own
+# diff -- a future added capped call here pushes the mid-operation ceiling
+# higher still. At _lib_capped's 5s-per-call cap that ceiling is 70s of
+# worst-case wall-clock time for one gate call, or up to 98s with the -k grace.
 #
 # Determinism contract (read side and write side must agree byte-for-byte):
 # both halves are captured into variables and tested for emptiness rather

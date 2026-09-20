@@ -1699,3 +1699,48 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "jq" in result.stderr, repr(result.stderr)
+    assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)
+
+
+def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
+    """A `timeout` that rejects `-k` (BusyBox 1.34.1 and older) makes every
+    gate's jq call exit nonzero, so the gate must fail closed through
+    _lib_emit_deny's exit-2 fallback and name the `-k` cause and the
+    runbook, not allow. The fake prints a usage line and exits 1 when its
+    argv contains `-k`, and otherwise execs the real timeout, so jq itself
+    is real."""
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if not real_timeout:
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+    if not shutil.which("jq"):
+        pytest.skip("jq not found in PATH")
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    fake_timeout = fake_bin / "timeout"
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "-k" ]; then\n'
+        '    echo "timeout: invalid option -- \'k\'" >&2\n'
+        '    echo "Usage: timeout [-s SIG] SECS PROG ARGS" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_timeout}" "$@"\n'
+    )
+    fake_timeout.chmod(0o755)
+
+    hook = _MAIN_HOOKS_DIR / "require-code-review.sh"
+    payload = bash_input("git commit -m x", session_id="k-rejecting-timeout-test")
+    env = {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+    result = _run_hook_raw(hook, json.dumps(payload), env=env)
+
+    assert result.returncode == 2, (
+        f"expected exit 2 (fail closed), got {result.returncode}: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert not result.stdout.strip(), f"expected no allow on stdout, got {result.stdout!r}"
+    assert "Hook gate could not encode its deny reason" in result.stderr, repr(result.stderr)
+    assert "rejects -k" in result.stderr, repr(result.stderr)
+    assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)

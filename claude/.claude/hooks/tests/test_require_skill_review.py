@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 
 import pytest
 from helpers import (
@@ -991,8 +992,35 @@ class TestRequireSkillReview:
         elapsed = time.monotonic() - start
 
         assert reason is not None, "hook allowed silently; expected deny"
-        assert "timed out after 10s" in reason, reason
+        assert "validator killed (exit " in reason, reason
         assert elapsed < 30, f"validator call took {elapsed:.1f}s — the 10s cap did not fire"
+
+    @pytest.mark.parametrize("validator_status", [137, 143])
+    def test_structural_validator_signal_death_status_denies_with_killed_message(
+        self, isolated_home, git_repo, tmp_path, monkeypatch, validator_status
+    ):
+        """137 (SIGKILL after the -k grace) and 143 (BusyBox SIGTERM) must deny
+        with the killed-validator message, not fall through the case arm and
+        allow the commit. The fake interpreter exits with the status
+        immediately, so no cap or timing is engaged."""
+        plugin_data = tmp_path / "plugin-data-with-exiting-venv"
+        venv_bin = plugin_data / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        fake_python.write_text(f"#!/bin/bash\nexit {validator_status}\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        _stage_skill_change(git_repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert f"validator killed (exit {validator_status})" in reason, reason
 
     def test_structural_validator_denies_real_violation_when_timeout_binaries_absent(
         self, isolated_home, git_repo, tmp_path
@@ -1539,6 +1567,46 @@ class TestRequireSkillReview:
         assert "SHOULD_NOT_REACH" not in plugin_result.stdout
         assert "should-not-run" not in plugin_result.stdout
         assert "_lib_capped_for requires a seconds argument" in plugin_result.stderr, repr(plugin_result.stderr)
+
+    @pytest.mark.timing
+    @pytest.mark.parametrize("lib_path", [_PLUGIN_LIB, _STOWED_LIB], ids=["plugin", "stowed"])
+    def test_capped_for_sigterm_immune_child_is_killed_by_the_grace_and_reports_137(self, tmp_path, lib_path):
+        """A SIGTERM-immune child (see `_write_conditional_sleep_shim` in
+        conftest.py) must return status 137 within cap+grace from each copy of
+        `_lib_capped_for`, not hang to the fixture's own much longer sleep."""
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        timeout_path = shutil.which("timeout")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        timeout_bin_dir = tmp_path / "bin-with-timeout"
+        timeout_bin_dir.mkdir()
+        (timeout_bin_dir / "timeout").symlink_to(timeout_path)
+        (timeout_bin_dir / "bash").symlink_to(bash_path)
+        (timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (timeout_bin_dir / "dirname").symlink_to(dirname_path)
+        env = {"PATH": str(timeout_bin_dir), "HOME": str(timeout_bin_dir)}
+
+        args = ["_", "1", "bash", "-c", 'trap "" TERM; exec sleep 30']
+
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", harness.format(lib=lib_path), *args],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 137, repr(result)
+        # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
+        # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
+        assert elapsed < 15, f"{lib_path} took {elapsed:.1f}s — the -k grace did not fire"
 
     @pytest.mark.parametrize(
         "command",

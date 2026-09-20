@@ -7,6 +7,35 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **`docs/auto-mode.md` now notes Anthropic's announced default of auto mode on Enterprise, the Claude API, and cloud-provider surfaces.** This is a pending announcement, not yet live. See `docs/auto-mode.md`'s Activating section.
+- **`deny-pii-in-commits.sh` now denies on every nonzero status from its work-tree probe and its HEAD probe except git's own 128, and `_lib_capped_for` escalates to SIGKILL 2s after the cap.** Both probes previously denied only on the cap-kill status 124 and skipped the scan on any other nonzero status, so a probe that failed with any other status (127 for a missing `git`, for example) skipped its scan. Status 128 still skips, with two different extents:
+  - The work-tree probe's skip covers the whole scan, credential-value tier included.
+  - The HEAD probe's skip covers only the HEAD-relative diff, because the staged-diff scan has already run. An unborn HEAD is a known unscanned case for the worktree-only content of a `-a` or pathspec commit, not a benign one.
+  - **If a `git commit` reaches the hook with `git` missing from the hook's PATH, expect a deny where you previously got through.**
+
+  Separately, every `_lib_capped_for` call now passes `-k 2`:
+  - The wrapper bounds a capped call whose child ignores SIGTERM at the cap plus 2s, where it was previously bounded only by the child's own runtime.
+  - A kill by the grace surfaces as status 137. BusyBox already returned 143 for a SIGTERM kill.
+  - A BusyBox 143 from the `merge-tree` and tree-verify calls in `_lib_gate_diff_base` now returns 2 (undetermined).
+  - A SIGKILL after the grace can strand a git lock file. The symptom is "Unable to create '<path>/index.lock': File exists", and `docs/hooks.md`'s "Gate deadlock recovery" section says to remove the lock path git names in its error message.
+
+  The hook's two diff calls also pass `--no-color --no-ext-diff --no-textconv` and `-c diff.relative=false`:
+  - `color.diff` or `color.ui` set to `always`, `diff.external`, a textconv driver, and `diff.relative` can no longer hide a credential from the scan at exit 0.
+  - `--no-textconv` and `--no-ext-diff` also stop the scan seeing text a converter exposes from a binary-classified file, which narrows coverage for a consumer whose repo uses such a driver.
+  - Three cases remain unscanned and are recorded in the hook header: a file git classifies as binary, an added line that starts with `++`, and an added line holding a byte that is invalid in the hook's locale.
+
+  The `skill-management` plugin ships its own copy of `_lib_capped_for` and takes this change at 3.6.1:
+  - Run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh it.
+  - The plugin's deny text for a killed structural validator changes from `validator timed out after 10s` to `validator killed (exit N) by the 10s cap or a signal`.
+- **A `timeout` that rejects `-k` makes every deny, require, block, and guard gate hook deny every call to a tool that a gate matches, not only `git commit`.** Those tools are Bash, Edit/Write/MultiEdit, Read, Agent/Task, and ExitPlanMode. `_lib_jq` fails, and each of those hooks fails closed on it.
+  - Informational and advisory hooks fail open by design, so they degrade silently, including:
+    - `ask-review-permissions.sh` and `ask-new-dependency-disclosure.sh` let `settings.json` edits and dependency-manifest edits proceed with no ask prompt.
+    - `redact-credential-values.sh` (PostToolUse) emits nothing and logs nothing, so credential values stop being redacted from tool output. WebFetch and Grep have no PreToolUse gate, so those calls still run, and they are the channels where the failure surfaces nowhere.
+    - `record-session-end.sh` writes no session record, so a clean exit reads as a possible crash.
+    - `restore-authorization-boundary-on-compact.sh` skips the post-compaction restatement.
+  - The deny message names a missing jq first, then a `timeout` that rejects `-k`, and points at `docs/hooks.md` § "Gate deadlock recovery". It does not mention PATH precedence, so a GNU install helps only if it resolves ahead of the rejecting `timeout`. `gtimeout` is never reached once a `timeout` exists.
+  - Recovery puts a `-k`-capable `timeout` ahead of the rejecting one on the harness's PATH and restarts the harness. See `docs/hooks.md` § "Gate deadlock recovery".
+  - The plugin's exposure is narrower, because its `_lib_jq` is unchanged. `require-skill-review.sh` denies commits that stage a `SKILL.md`, showing `timeout`'s usage text.
+  - See README.md Requirements.
 - **This repo's own `.claude/settings.json` now excludes `claude/.claude/CLAUDE.md` from nested-CLAUDE.md discovery.** A session working in this repo, and every subagent it dispatches, previously loaded the global-instructions file twice: once at user scope through the `~/.claude/CLAUDE.md` stow symlink, and again as a fresh system-reminder block the first time anything under `claude/.claude/**` was read. The `claudeMdExcludes` pattern `**/claude/.claude/CLAUDE.md` covers both a main-checkout session and a worktree-anchored one. See `docs/design-decisions.md` §39.
 - **`claudeMdExcludes` gains a second entry, `**/.claude/worktrees/**/claude/.claude/rules/**`, closing the same double-load for every stow-source rule file in a linked worktree.** A session anchored in a linked worktree previously loaded each matching `claude/.claude/rules/*.md` file twice, because the user-scope symlink target and the nested worktree path are different absolute paths there. The main-checkout copy is the one kept: a branch editing a stow-source rule file will not see its own edit apply in that session. A main-checkout session and a linked worktree created outside `.claude/worktrees/` are unaffected. See `docs/design-decisions.md` §47.
 - **`struggle`, `user-input`, and `friction-count` no longer score a forwarded `<task-notification>` envelope's text against `STRUGGLE_PHRASES`.** On this repo's own corpus (`user-input --projects '*claude-config*' --corrections-only`), "Explicit corrections" drops from 82 to 25. Two residuals are left standing on purpose:
