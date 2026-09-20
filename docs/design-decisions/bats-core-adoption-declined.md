@@ -42,7 +42,14 @@ Nothing in `CLAUDE.md` forbids a mandatory non-pip system package. The precedent
 - The only non-pip CI install is `apt-get install -y stow direnv`.
 - `.github/workflows/tests.yml` installs `stow` and `direnv` because tests exercise the real binaries rather than a stub. bats would be the first system package that is a test vehicle rather than a subject under test.
 
-Sources, as of 2026-09-19: bats-core `docs/source/installation.rst`, `docs/source/tutorial.rst` (lines 16-38), and the usage documentation on parallel execution and ordering, all at github.com/bats-core/bats-core, and the action's repository at https://github.com/bats-core/bats-action. `pypi.org/pypi/bats-core/json` returns 404. `shellcheck --help` (0.11.0) lists `sh, bash, dash, ksh, busybox` for `--shell` and no bats dialect. The open ShellCheck `.bats` issues include github.com/koalaman/shellcheck/issues/2041, /3222, /2873, /3263, /3229, /3247, and /3509.
+Sources, as observed on 2026-09-19. The record links each source instead of quoting it, so re-read the page to check what a claim is scoped to. The three bats-core documentation links are pinned to commit `fbb2d33f256d` so the cited line range stays valid. Every other item is an unpinned observation that can change.
+- Installation routes: https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/installation.rst
+- Submodule quick installation: https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/tutorial.rst (lines 16-38)
+- Parallel execution and ordering: the "Parallel Execution" section of https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/usage.md
+- The action's repository, unpinned: https://github.com/bats-core/bats-action
+- `https://pypi.org/pypi/bats-core/json` returned 404, unpinned.
+- `shellcheck --help` (0.11.0) lists `sh, bash, dash, ksh, busybox` for `--shell` and no bats dialect.
+- The open ShellCheck `.bats` issues, unpinned, include https://github.com/koalaman/shellcheck/issues/2041, https://github.com/koalaman/shellcheck/issues/3222, https://github.com/koalaman/shellcheck/issues/2873, https://github.com/koalaman/shellcheck/issues/3263, https://github.com/koalaman/shellcheck/issues/3229, https://github.com/koalaman/shellcheck/issues/3247, and https://github.com/koalaman/shellcheck/issues/3509.
 
 ShellCheck's `.bats` support is undocumented in `--shell`'s help output and carries several open false-positive issues. Adoption would mean unlinted test files or a growing per-file suppression list.
 
