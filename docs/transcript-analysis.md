@@ -1185,11 +1185,9 @@ Week       Sessions       AboveUSD       TotalUSD   Share
 Total           150         540.00         900.00   60.0%
 ```
 
-A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` holds schema-drift lines — the hook found a usage block but every token field was zero or null, so its field paths may need updating.
+A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` holds schema-drift lines: a usage block with every token field zero or null. When it appears, the subcommand's field paths may need updating.
 
 **When to reach for it.** Measure how much spend sits in the band the handoff nudge governs, as a standing regression tripwire on nudge policy changes.
-
-`handoff-ratio` was an earlier subcommand at this position, reporting a different metric — a per-week ratio of `/handoff` invocations against auto-compaction events — whose formula was not carried into this one.
 
 ---
 
