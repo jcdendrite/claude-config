@@ -45,7 +45,9 @@ not something you can resolve. If none match, proceed without a layer.
 - **Current state, not branch history.** Every section says what the change is
   and does now, to a reader who never saw the branch develop. Review rounds,
   superseded designs, and who found what stay out; `git log` and the review
-  record hold them. A mechanism that exists only in the branch's own history is
+  record hold them. A finding, limitation, or accepted risk that is still true
+  at HEAD stays as a present-tense fact, with only its round and attribution
+  removed. A mechanism that exists only in the branch's own history is
   not context, because the reviewer cannot see it. A rejected approach a
   reviewer would plausibly propose belongs in `## Alternatives considered`
   with its one-line reason, not in Context. The machine-managed blocks under

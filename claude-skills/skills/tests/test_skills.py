@@ -1181,14 +1181,10 @@ def _bullet_lead_in(line: str) -> str | None:
 
 
 def _bullet_text(section_text: str, lead_in: str) -> str:
-    """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`.
+    """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`, up to the next
+    blank line, column-0 `- ` bullet, or markdown heading.
 
-    The lead-in matches the way `_missing_bullet_lead_ins` does, via
-    `_bullet_lead_in`. The bullet runs to the next blank line, column-0 `- `
-    bullet, or markdown heading (`#` to `######` followed by a space), so the
-    result is independent of hard-wrap position and cannot borrow text from an
-    adjacent bullet or heading. An indented nested bullet is continuation text,
-    not a boundary.
+    An indented nested bullet is continuation text.
     """
     lines = section_text.splitlines()
     start = next((i for i, line in enumerate(lines) if _bullet_lead_in(line) == lead_in), None)
@@ -1277,16 +1273,10 @@ class TestBulletHelpers:
 
 class TestPrDescriptionBranchHistoryCheck:
     """Pin the rules that keep review-round and reviewer-attribution narration
-    out of a PR body.
+    out of a PR body, a shape the per-commit-narrative check does not catch.
 
-    The neighboring per-commit-narrative check only catches prose that cites
-    commits, so prose narrating by review round or by named reviewer passes it
-    untouched. The Check bullet owns detection (it names the tells) and the
-    authoring bullets own the rules (the history-excluding rule and the Test
-    plan scoping), so each test pins one bullet's content within its own
-    section, over whitespace-collapsed text. The SKILL.md prose is the shipped
-    behavior and no eval covers pr-description, so these are presence
-    tripwires, not proof that an agent follows the rules.
+    No eval covers pr-description, so these are presence tripwires, not proof
+    that an agent follows the rules.
     """
 
     _AUTHORING_LEAD_IN = "Current state, not branch history"
@@ -1307,15 +1297,20 @@ class TestPrDescriptionBranchHistoryCheck:
     def test_authoring_bullet_excludes_history_and_routes_rejected_designs(self):
         """The drafting-side rule: history stays out, a mechanism visible only in
         branch history is not context, and a rejected approach a reviewer would
-        propose is relocated to Alternatives, not to Context."""
+        propose is relocated to Alternatives, not to Context. A finding still true
+        at HEAD survives as a present-tense fact, and the machine-managed blocks
+        exemption keeps the history-excluding rule off byte-identical blocks."""
         bullet = self._authoring_bullet()
         assert "Review rounds, superseded designs, and who found what stay out" in bullet
+        assert "A finding, limitation, or accepted risk that is still true at HEAD stays as a present-tense fact" in bullet
         assert "A mechanism that exists only in the branch's own history is not context" in bullet
         assert "belongs in `## Alternatives considered`" in bullet
         assert "not in Context" in bullet
+        assert "The machine-managed blocks under Checks below are exempt" in bullet
 
     def test_check_names_both_narration_tells(self):
-        """Sync mode stops flagging a tell the Check bullet no longer names."""
+        """The Check bullet lists the tells it flags, so dropping one silently
+        stops that tell being flagged."""
         bullet = self._check_bullet()
         assert "earlier rounds" in bullet
         assert "reviewer or agent name" in bullet
