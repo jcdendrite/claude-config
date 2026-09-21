@@ -38,6 +38,13 @@ concentrated in idle gaps under 5 minutes across the corpus, where the
 pricier 1-hour breakpoint adds cost with no avoided-rebuild benefit — do not
 set either variable.
 
+**2026-09-20 follow-up:** the settings-key lever unavailable in the
+2026-08-15 entry (`promptCacheTtl`) is now set to `"5m"`, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The 2026-08-15 verdict on the two global force-switch environment
+variables (`ENABLE_PROMPT_CACHING_1H`, `FORCE_PROMPT_CACHING_5M`) is a
+separate, unrelated mechanism and stands unchanged.
+
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
 | Lever | Verdict | Measured reason |

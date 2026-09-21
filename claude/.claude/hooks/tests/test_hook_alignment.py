@@ -682,6 +682,42 @@ def test_syncclaudeaiskills_stays_disabled_in_stow_source_settings() -> None:
     )
 
 
+def test_promptcachettl_stays_5m_in_stow_source_settings() -> None:
+    """The declared config-value backing the main-bucket prompt-cache TTL flip.
+
+    This proves the *declared* config state — `promptCacheTtl` is `"5m"` in
+    the stow-source settings file — not that the harness actually honors the
+    key at runtime. That live-session verification is not checkable
+    pre-merge (see
+    docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md); this test only
+    pins the declaration so a future edit can't drop it silently.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert settings.get("promptCacheTtl") == "5m", (
+        f"promptCacheTtl is not `\"5m\"` in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the main-conversation "
+        f"prompt-cache bucket is no longer pinned to the 5-minute tier"
+    )
+
+
+def test_subagentpromptcachettl_stays_unset_in_stow_source_settings() -> None:
+    """The absence half of `test_promptcachettl_stays_5m_in_stow_source_settings`.
+
+    `subagentPromptCacheTtl` stays deliberately unset: the vendor's TTL
+    precedence chain ranks a bucket's own setting above per-agent
+    `experimental.cacheTtl` frontmatter, so setting this key would silently
+    outrank and disable that per-agent lever for every subagent dispatch.
+    See docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert "subagentPromptCacheTtl" not in settings, (
+        f"subagentPromptCacheTtl is present in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — this outranks and "
+        f"disables per-agent experimental.cacheTtl frontmatter for every "
+        f"subagent dispatch, which was deliberately left available"
+    )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
