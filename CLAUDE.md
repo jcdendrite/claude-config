@@ -165,7 +165,9 @@ account — `docs/private-project-redaction.md` § "Publishing a tooling measure
 two exemptions, and the limits on the owner's case-by-case
 authorization for a wider figure. Anything wider goes to the owner
 privately and publishes only under that cited authorization
-exception. If in doubt, don't.
+exception. Scope is not dimension — the single-account scope
+permitted here is not the per-account dimension barred above. If in
+doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.

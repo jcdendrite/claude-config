@@ -54,6 +54,8 @@ from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
+# The skill-management plugin ships its own copy of _lib_capped_for, since plugin hooks cannot source the stowed _lib.sh.
+_SKILL_MANAGEMENT_PLUGIN_LIB = HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "_lib.sh"
 
 # require-code-review.sh is an unmodified production caller of
 # _lib_parse_tool_input_or_deny, used by the delimiter-shift regression test
@@ -565,7 +567,7 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     (tmp_path / "bash").symlink_to(bash_path)
     # Also symlink standard commands needed by the harness. dirname is
     # required too: _lib.sh's own sourcing of _config.sh resolves its path
-    # via `$(dirname "${BASH_SOURCE[0]}")`, and a failed source now aborts
+    # via `$(dirname "${BASH_SOURCE[0]}")`, and a failed source aborts
     # _lib.sh's own sourcing entirely (see _lib.sh's header comment on that
     # source line). sleep must be symlinked too: the fake jq's body shells
     # out to it, and a missing sleep would return instantly instead of
@@ -775,6 +777,93 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
 
     assert result.returncode == 0, repr(result)
     assert result.stdout == "real-timeout-path", repr(result.stdout)
+
+
+@pytest.mark.parametrize("lib_path", [_LIB_SH, _SKILL_MANAGEMENT_PLUGIN_LIB], ids=["stowed", "plugin"])
+@pytest.mark.parametrize("binary_name", ["timeout", "gtimeout"])
+def test_lib_capped_for_passes_kill_after_flag_before_the_duration(
+    tmp_path: Path, lib_path: Path, binary_name: str
+) -> None:
+    """`-k` and `2` arrive as two separate argv entries, in that order, both
+    ahead of SECONDS: timeout(1) requires OPTION before DURATION, and
+    BusyBox's timeout rejects the long `--kill-after=2` spelling. Pinned
+    against both binary names (the gtimeout case leaves `timeout` absent from
+    PATH) and both copies of the wrapper, so a later "tidy-up" to
+    `--kill-after=2` fails this test instead of shipping."""
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    argv_log = tmp_path / "argv.log"
+    fake_timeout = tmp_path / binary_name
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_log))}\n"
+        "exit 0\n"
+    )
+    fake_timeout.chmod(0o755)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_path))}; _lib_capped_for 5 echo hi"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    argv = argv_log.read_text().splitlines()
+    assert argv[:4] == ["-k", "2", "5", "echo"], (
+        f"expected -k and 2 as separate argv entries ahead of the duration, got {argv!r}"
+    )
+
+
+# A plain, untrapped `sleep N` (this block's sibling cases above) dies to a bare SIGTERM either way, so it
+# cannot show whether `-k` is present. The SIGTERM-immune child is described in
+# conftest's `_write_conditional_sleep_shim`; only `-k`'s grace-expiry SIGKILL can end it.
+@pytest.mark.timing
+def test_lib_capped_for_kills_a_sigterm_immune_child_via_the_grace(tmp_path: Path) -> None:
+    """A child that ignores SIGTERM outright must still return within
+    cap+grace, not hang to the fixture's own much longer sleep. The grace's
+    SIGKILL reports 137, not timeout(1)'s ordinary 124, so the wall time is
+    asserted alongside the status."""
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "timeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call("_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 137, repr(result)
+    # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
+    # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
+    assert elapsed < 15, f"SIGTERM-immune child took {elapsed:.1f}s — the -k grace did not fire"
 
 
 def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
@@ -1249,6 +1338,82 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     pin that the predicate is not doing prefix or case-insensitive matching.
     """
     assert not _is_no_gate_release_agent(agent_type)
+
+
+def _reviewer_persona_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
+    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
+
+    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
+    this literal. A new harness built-in added to the review-only roster with
+    the exclusion left untouched passes, since the name lands on both sides.
+    """
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+
+
+def _is_reviewer_persona(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
+    roster = _reviewer_persona_agents()
+    assert roster, "reviewer-persona roster must not be empty"
+    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
+    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        "Explore",
+        "Plan",
+        "code-writer",
+        "plan-architect",
+        "general-purpose",
+        "",
+        "staff-sdet-x",
+        "staff-sde",
+        "STAFF-SDET",
+        "ciso-reviewer comment-discipline-reviewer",
+    ],
+)
+def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
+    agent_type: str,
+) -> None:
+    """Every agent outside the reviewer-persona array is rejected.
+
+    Explore and Plan are review-only roster members but harness built-ins.
+    code-writer is an implementer. plan-architect is a design consultant that a
+    caller branches on separately. general-purpose is a harness built-in outside
+    the review-only roster. The empty case is a dispatch payload with no
+    subagent_type. The staff-sdet variants pin that the predicate is not doing
+    prefix or case-insensitive matching. The space-joined pair of two real
+    roster members pins that a value is not accepted as a substring or word
+    list of the roster.
+    """
+    assert not _is_reviewer_persona(agent_type)
 
 
 # --- _lib_valid_session_id_component --------------------------------------
@@ -6204,6 +6369,55 @@ class TestGateDiffBaseCapFaultInjection:
         _make_blocking_tree_verify_git(bin_dir)
         env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
         result = _gate_diff_base(repo, env=env, timeout=30)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: exits exit_status at once when any argument
+    matches the shell `case` pattern arg_pattern, printing nothing; every
+    other invocation proxies to the real git. Stands in for a capped call
+    whose wrapper reports a cap-kill status without waiting for the cap."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      exit {exit_status}\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+class TestGateDiffBaseCapKillStatusesAreUndetermined:
+    """Every status a cap kill can produce -- 124 (GNU SIGTERM kill), 143
+    (BusyBox SIGTERM kill), and 137 (SIGKILL after the grace, on both) --
+    must read as undetermined (exit 2), not as the "no override" answer
+    (exit 1). See _lib_capped_for's header in _lib.sh for the mapping. No
+    real cap is engaged: the shim exits with the status directly."""
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    @pytest.mark.parametrize(
+        "arg_pattern",
+        ["merge-tree", '*"^{tree}"'],
+        ids=["merge-tree", "tree-verify"],
+    )
+    def test_cap_kill_status_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path, arg_pattern: str, cap_kill_status: int
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, arg_pattern, cap_kill_status)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
         assert result.returncode == 2
         assert result.stdout == ""
 

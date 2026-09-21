@@ -293,7 +293,7 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 **Purpose.** Map branches to GitHub PRs and pull per-PR comment counts. Requires `gh` and network access.
 
 **Flags.**
-- `--repo OWNER/REPO` *(required)* — GitHub repository
+- `--repo OWNER/REPO` — GitHub repository. Default: parsed from this checkout's `origin` remote, with a GitHub Enterprise origin host-qualified so `gh` reaches the right host. With no usable `origin` and no `--repo`, the command exits 1 with a one-line error naming `--repo`. Supplying `--repo` explicitly does not host-qualify the `gh api` comment-count calls the way the auto-derived path does
 - `--branches B1,B2,...` *(required)* — branches to look up
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -301,11 +301,23 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 
 **Sample output.**
 ```
-Branch                    PR#   Title                              Author comments  Total comments
----------------------------------------------------------------------------------------------------
-feat-TICKET-101           #42   Add new widget component                         3              8
-feat-TICKET-202           #47   Refactor auth middleware                          1              5
+Branch                                 PR   Opus  Sonnet  IssueCmt  ReviewCmt
+--------------------------------------------------------------------------------
+feat-TICKET-101                        42     18       0         3          2
+feat-TICKET-202                      none      0       5         —          —
 ```
+
+**Failure diagnostics.** A failed `gh` call keeps the table cell as `gh-err` (`PR` lookup) or `-1` (comment counts) and prints one `pr-link:` line per failure on stderr naming the branch and one of these failure kinds:
+
+- `auth`
+- `host_mismatch`
+- `rate_limit`
+- `timeout`
+- `gh not found`
+- `unparseable gh output`
+- `network or unrecognized` (the catch-all, which includes a wrong repo slug)
+
+Each label is this module's own classification of `gh`'s stderr, not `gh`'s own vocabulary. The raw stderr is never echoed, because it can repeat the queried repo verbatim. `pr-link` does not retry a failed call.
 
 **When to reach for it.** After a set of branches lands: measure review engagement per branch or filter to one author's comments to count their review activity.
 
@@ -773,14 +785,14 @@ sidechain         240          500,000              0      1,000,000          25
 
 ## cost-trend
 
-**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `handoff-ratio`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
+**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `spend-over-threshold`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), on top of the default corpus already described in "Corpus scope: the declared-roots file" above. Each extra must contain its own `projects/` subdirectory or the run is rejected. Composes with `--this-repo` the same way `cost`'s own `--config-dir` does. Roots resolve via the same `_resolve_cost_roots` funnel `cost` uses (not the generic single-root resolver every other subcommand uses), so the same per-root scan-summary and zero-scope `WARNING` lines `cost` prints also print here. `--config-dir` sums every declared root into the same single weekly table, rather than producing a per-account-per-week matrix.
 
-No `--redact` flag: like `handoff-ratio`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
+No `--redact` flag: like `spend-over-threshold`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
 
 **Sample output.**
 ```
@@ -870,8 +882,9 @@ marker sits at the gap's end and the attribution is tight, a low value
 means the marker landed early and most of the gap is still unexplained.
 It renders n/a whenever the winning marker's own timestamp is missing
 or unparseable, which never changes the cause itself. Main origin is
-excluded: experimental.cacheTtl cannot reach main-conversation traffic,
-so a main-origin split would have no lever to point at. A large
+excluded from this sub-table because experimental.cacheTtl is a
+subagent-frontmatter lever and cannot reach main-conversation
+traffic. The main bucket's own lever is promptCacheTtl. A large
 'unattributed' share means the marker taxonomy is incomplete, not that
 the gaps are causeless -- a transcript records the marker the harness
 delivered, never a statement of why the subagent was idle. [unverified]
@@ -913,10 +926,12 @@ tail-only cause breakdown, and must not be divided into those figures.
 X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold
 past 3600s, so those rebuilds happen under either tier. Net$ is
 savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,
-if negative) against this origin's own traffic. The main row's Net$ has
-no corresponding lever in this plan's scope -- experimental.cacheTtl is
-set in subagent frontmatter and cannot reach main-conversation traffic;
-read it as reconciliation context only.
+if negative) against this origin's own traffic. The main row reads
+zero because this corpus was captured while main traffic was on the
+1h tier -- promptCacheTtl is now "5m". A corpus captured after
+that takes effect would show live W5m/X here too. The per-root
+--ttl-verdict gate below, not this pooled, threshold-independent
+row, is what actually decides a tier change.
 
 Origin                W5m              X    Ratio       Net$
 main                    0              0     0.0%       0.00
@@ -961,7 +976,7 @@ Last marker wins, since the question is what released the subagent, and the last
 - Bash leg: matches only a `tool_use_id` the prior call itself emitted.
 - Meta legs: require both `isMeta` and `isSidechain` true on the record.
 
-**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded**: `experimental.cacheTtl` cannot reach main-conversation traffic (see the switch-delta section below), so a main-origin split would have no lever to point at. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
+**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded** because `experimental.cacheTtl` is a subagent-frontmatter lever and cannot reach main-conversation traffic (see the switch-delta section below). The main bucket's own lever is `promptCacheTtl`, set in `claude/.claude/settings.json`. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
 
 **Own-Bash wait shape** sub-splits the `waiting on own Bash call` row above into three rows — `sleep-poll wait`, `other Bash wait`, `no command recorded` — that partition the row and sum exactly to it, by pattern-matching the winning Bash `tool_use`'s own recorded `command` string:
 
@@ -971,7 +986,7 @@ Last marker wins, since the question is what released the subagent, and the last
 
 The match is textual pattern matching, not shell parsing, so a quoted or heredoc-embedded `sleep` still counts as a match, over-counting `sleep-poll wait` for text that only mentions `sleep` without waiting on it. `sleep $VAR` (no literal leading digit) does not match, under-counting `sleep-poll wait` by missing a real one. A high `sleep-poll wait` share points at no lever; see `docs/cost-levers-considered.md`'s `From background-slow-bash-calls.md` section for why.
 
-**Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row's `Net$` has a lever, `promptCacheTtl`, that `.claude/plans/cache-ttl-tuning-analysis.md` scopes out of shipping** — `experimental.cacheTtl` is set in subagent frontmatter and cannot reach main-conversation traffic at all, so treat the `main` row as reconciliation context (confirming the origin split adds up against the corpus-wide total), not as an actionable figure.
+**Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row reads zero because this corpus was captured while main traffic was still on the 1-hour tier** — `promptCacheTtl` is now `"5m"` (`claude/.claude/settings.json`). A corpus captured after that takes effect would show the `main` row live `W5m`/`X`, the same status the `subagent` row above already carries. The per-root `--ttl-verdict` gate below, not this pooled, threshold-independent row, is what actually decides a tier change.
 
 **Subagent per-dispatch dispersion** is an ex-post oracle bound, not a forecast: it selects individual subagent dispatches by their own *realized* `X`/`W5m` ratio, something no policy fixed before a dispatch runs could do (a policy can only pick agent *types* in advance, not outcomes). A pooled ratio below break-even can still hide dispatches that individually clear it; this bound answers whether a *selective* lever (raising `cacheTtl` only for chronically-idle-gap-prone agent types) is even worth investigating further — if this ex-post-best-case subpopulation still misses a decision floor, no selective policy built on it can either. A dispatch with `W5m = 0` (no 5-minute-tier writes at all) has an undefined ratio and is excluded from the clearing count and the W5m-share denominator. "Their share of per-dispatch subagent W5m" is denominated against the sum of *per-group* `W5m` figures, not the pooled `subagent` row in the table above — the two can diverge (an unpriced call, or an inline sidechain record inside the main transcript file, contributes to the pooled row but to no dispatch group), which is exactly what the trailing coverage-disclosure line measures: the pooled-subagent-`W5m` tokens that landed in no dispatch group at all. A value of 0 there means the oracle bound has exact `W5m` coverage; a non-zero value means the bound is missing some subagent-origin volume, biased toward under-counting rather than over-counting the selective-lever case.
 
@@ -1165,28 +1180,29 @@ Counts main-thread dispatches only; an agent spawned from inside another agent i
 
 ---
 
-## handoff-ratio
+## spend-over-threshold
 
-**Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
+**Purpose.** Per-ISO-week share of session dollars spent above `nudge-handoff-near-context-cap.sh`'s own effective fire threshold — how much of the week's spend happened in context deep enough for the nudge to have fired.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
-- `--debug-detector` — print candidate compaction records for schema-drift inspection
 
-**Sample output.**
+**Sample output** (synthetic, illustrative counts only).
 ```
-Week        Handoffs  Compactions   Ratio
--------------------------------------------
-2026-W19           5           39   11.4%
-2026-W20          10           50   16.7%
-2026-W21           5           16   23.8%
--------------------------------------------
-Total             22          141   13.5%
+Week       Sessions       AboveUSD       TotalUSD   Share
+---------------------------------------------------------
+2026-W19         40         100.00         200.00   50.0%
+2026-W20         60         300.00         500.00   60.0%
+2026-W21         50         140.00         200.00   70.0%
+---------------------------------------------------------
+Total           150         540.00         900.00   60.0%
 ```
 
-**When to reach for it.** Check whether context-cap management is proactive (handoffs) or reactive (compaction). A low ratio means most context resets are happening automatically rather than at deliberate checkpoints.
+A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` holds schema-drift lines: a usage block with every token field zero or null. When it appears, the subcommand's field paths may need updating.
+
+**When to reach for it.** Measure how much spend sits in the band the handoff nudge governs, as a standing regression tripwire on nudge policy changes.
 
 ---
 
@@ -1243,7 +1259,7 @@ A `nudged` log line whose session id has no match in the resolved scope (a since
 - how many main-thread turns and priced dollars elapsed after it
 - whether a live `ready-for-review` active-bypass marker applied at signal time
 
-It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`/`handoff-ratio`: neither of those keys on an *observed* signal, so neither can separate "the session was deep" from "the agent was told and continued anyway."
+It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`: that subcommand does not key on an *observed* signal, so it cannot separate "the session was deep" from "the agent was told and continued anyway."
 
 A `--check` result is invisible in `<config-dir>/.handoff-nudge.log` (it writes no log line — see "Querying the current estimate" in `docs/handoff-nudge.md`), so this subcommand detects all three signal kinds directly from each session's own transcript records, never from the log. Cross-checked against `.handoff-nudge.log`'s `nudged` lines as a corroborating diagnostic only; no per-session row depends on it.
 

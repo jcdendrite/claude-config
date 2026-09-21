@@ -682,6 +682,60 @@ def test_syncclaudeaiskills_stays_disabled_in_stow_source_settings() -> None:
     )
 
 
+def test_promptcachettl_stays_5m_in_stow_source_settings() -> None:
+    """The declared config-value backing the main-bucket prompt-cache TTL flip.
+
+    This proves the *declared* config state — `promptCacheTtl` is `"5m"` in
+    the stow-source settings file — not that the harness actually honors the
+    key at runtime. That live-session verification is not checkable
+    pre-merge (see
+    docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md); this test only
+    pins the declaration so a future edit can't drop it silently.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert settings.get("promptCacheTtl") == "5m", (
+        f"promptCacheTtl is not `\"5m\"` in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the main-conversation "
+        f"prompt-cache bucket is no longer pinned to the 5-minute tier"
+    )
+
+
+def test_subagentpromptcachettl_stays_unset_in_stow_source_settings() -> None:
+    """The absence half of `test_promptcachettl_stays_5m_in_stow_source_settings`.
+
+    `subagentPromptCacheTtl` stays deliberately unset: the vendor's TTL
+    precedence chain ranks a bucket's own setting above per-agent
+    `experimental.cacheTtl` frontmatter, so setting this key would silently
+    outrank and disable that per-agent lever for every subagent dispatch.
+    See docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert "subagentPromptCacheTtl" not in settings, (
+        f"subagentPromptCacheTtl is present in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — this outranks and "
+        f"disables per-agent experimental.cacheTtl frontmatter for every "
+        f"subagent dispatch, which was deliberately left available"
+    )
+
+
+def test_promptcachettl_stays_unset_in_repo_local_settings() -> None:
+    """Guards against mirroring the machine-scoped `promptCacheTtl` verdict
+    into this repo's contributor-shared settings; see
+    docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md's opening
+    paragraph for why this isn't a universal default like
+    `attribution.sessionUrl`.
+    """
+    settings = json.loads(_REPO_LOCAL_SETTINGS_PATH.read_text())
+    assert "promptCacheTtl" not in settings, (
+        f"promptCacheTtl is present in "
+        f"{_REPO_LOCAL_SETTINGS_PATH.relative_to(_REPO_ROOT)} — this "
+        f"mirrors a single-machine, single-corpus verdict onto every "
+        f"contributor of this repo, which "
+        f"docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md's "
+        f"opening paragraph argues against"
+    )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
@@ -1699,3 +1753,48 @@ def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "jq" in result.stderr, repr(result.stderr)
+    assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)
+
+
+def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
+    """A `timeout` that rejects `-k` (BusyBox 1.34.1 and older) makes every
+    gate's jq call exit nonzero, so the gate must fail closed through
+    _lib_emit_deny's exit-2 fallback and name the `-k` cause and the
+    runbook, not allow. The fake prints a usage line and exits 1 when its
+    argv contains `-k`, and otherwise execs the real timeout, so jq itself
+    is real."""
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if not real_timeout:
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+    if not shutil.which("jq"):
+        pytest.skip("jq not found in PATH")
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    fake_timeout = fake_bin / "timeout"
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "-k" ]; then\n'
+        '    echo "timeout: invalid option -- \'k\'" >&2\n'
+        '    echo "Usage: timeout [-s SIG] SECS PROG ARGS" >&2\n'
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_timeout}" "$@"\n'
+    )
+    fake_timeout.chmod(0o755)
+
+    hook = _MAIN_HOOKS_DIR / "require-code-review.sh"
+    payload = bash_input("git commit -m x", session_id="k-rejecting-timeout-test")
+    env = {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+    result = _run_hook_raw(hook, json.dumps(payload), env=env)
+
+    assert result.returncode == 2, (
+        f"expected exit 2 (fail closed), got {result.returncode}: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert not result.stdout.strip(), f"expected no allow on stdout, got {result.stdout!r}"
+    assert "Hook gate could not encode its deny reason" in result.stderr, repr(result.stderr)
+    assert "rejects -k" in result.stderr, repr(result.stderr)
+    assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)

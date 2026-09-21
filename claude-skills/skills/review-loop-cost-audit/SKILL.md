@@ -61,32 +61,32 @@ The table is date-only. Take round instants from the event timeline, which print
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch>
 ```
-A round is one skill invocation, not one review pass: its window runs from its invocation to the session's next skill invocation. A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
+A round is one skill invocation, not one review pass. Its window is the one `docs/transcript-analysis.md` § "review-round-cost" defines. Non-review work such as a handoff write-up, a `pr-description` run, or a `code-writer` dispatch stays inside that window, so a round's main-thread dollars are an upper bound on its review cost. A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
 
 **(c) Cost decomposition.** Arithmetic on the Step (b) table, then the checks below.
 
 - **Concentration:** the top round's share of round dollars and of branch dollars. Also the fewest rounds that cover 60% of round dollars.
 - **Main vs fan-out:** for each concentrated round, the split between `main $` and `agent $`, and its `agents` count. Main-heavy means the orchestrator did the work; agent-heavy means fan-out width. The remedies differ.
-- **Window check:** a concentrated round's window may contain more than review work. Confirm from Step (b)'s timeline that the window holds reviewer waves, and name what else it spans (consults, code-writer dispatches, hook denials, gaps over an hour). A round whose main-thread cost is unexplained by its timeline is reported as a window artifact, not as an expensive orchestrator.
+- **Window check:** a concentrated round's window may contain more than review work. Confirm from Step (b)'s timeline that the window holds reviewer waves, and name what else it spans (consults, code-writer dispatches, hook denials, gaps over an hour). A round whose main-thread cost is unexplained by its timeline is reported as a window artifact, not as an expensive orchestrator. Naming non-review work in the window is not enough. Once such work is named, do not read the round's main-thread dollars as review cost, and subtract the named work before pricing any lever off them.
 - **Round mix:** `ready-for-review` rounds typically dispatch no agents and are cheap. Report review rounds separately from gate re-runs.
 - **Non-round share:** `review-round-cost` prices only a round's own window. The fix a round causes lands outside that window, so the residual includes implementation. State that on every line that reports the residual. The toolkit yields one reconciliation number, not a split, so name the residual's components by count only:
   - code-writer dispatches
   - architect consults
   - resyncs with the default branch
-  - session-startup burn, from the branch's row in `workstream-cost --this-repo`
+  - continuation sessions: the branch's `Sess` count from Step (a)'s `buckets` run, minus one
 
 **(d) Resolve code-churn dates, classify commits, and record the tip SHA.**
 - **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
 
   `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day. Compare the two clocks as instants, never as date strings. `%ad` is the author instant; use it for every ordering test below.
-- **Tier 2** — no local ref: resolve the PR number with `pr-link --repo owner/repo --this-repo --branches <branch>`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
+- **Tier 2** — no local ref: run the `gh` call from the repo's worktree root as its own single statement, so `gh` resolves the repo from the working directory and no repo slug is guessed. Resolve the PR number with `gh pr list --head <branch> --state all --json number --limit 1`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
 - **Tier 3** — both unavailable: report the churn signal as unavailable and skip Step (e)'s commit joins. Do not substitute a weaker proxy for it. Steps (c), (f) and (g) still run.
 
 Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. A branch whose commits are one squashed WIP commit carries no usable per-commit date series; skip the joins in (e) and say why. Never read a single commit as an immediate freeze.
 
 Record the tip SHA when Tier 1 or Tier 2 resolves the branch. Tier 3 has no tip SHA to record, so part 6 reports it as unavailable. Re-read the SHA after Step (g), just before writing the artifact. A changed SHA means the corpus was read mid-flight; report it with the results so a later re-run can tell whether the branch moved. Committer time alone moving (a resync or rebase) is not new work and does not make the branch active.
 
-**(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and the session's next round, and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
+**(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and its close, where the close follows the boundary cited in Step (b), and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
 - A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health.
 - Neither the zero-by-construction outcome nor the zero-after-checking outcome ends the audit, which always continues to (f) and (g).
@@ -124,6 +124,8 @@ Assign each sampled round one trigger class:
 
 A class is assigned only from a primary source: the round's own findings text or a human turn, cited by session and turn or by findings-file path. Commit titles may corroborate a class and never establish one. Default to `unattributed` and print the count, including where the read cannot tell fix-induced from new-finding. A table that is mostly `unattributed` is a useful audit, and one that is confidently mislabeled is not.
 
+A missing findings file is not evidence that the round raised no findings. A reviewer dispatched without `findings_path` returns its findings inline, in the round's own Agent tool result in the dispatching session's transcript. A pipeline rule is never a primary source, so a round whose findings text cannot be read is `unattributed` whatever the pipeline required.
+
 Also note whether rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review. That is session churn, not loop churn, and it does not support a stuck-loop flag.
 
 Causes carry no judgment. `human-scope-expansion` and `new-finding` are often the branch working correctly. Only the flags in Step 4 carry a judgment.
@@ -134,7 +136,7 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
 
 1. **Headline** — rounds split by type, with the review-round versus gate-re-run split and the concentration fact. Name the waves-per-round finding when a round held more than one wave.
 2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds.
-3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source. The top cause is the trigger class holding the most sampled-round dollars, named as `unattributed` when that class leads.
+3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source. Report `pipeline-mandatory` rounds as the loop's fixed cost, by count and share, and never as the top cause. The top cause is the discretionary trigger class (every class except `pipeline-mandatory`) holding the most sampled-round dollars, named as `unattributed` when that class leads the discretionary classes. When fixed-cost rounds dominate, say so and defer the judgment to the Mandatory-round-inflation flag.
 4. **Flags** — each raised or not raised, with its evidence:
    - **Concentration** — one round or few rounds carry most of the round dollars, after the Step (c) window check.
    - **Stuck loop** — rounds keep re-surfacing findings already raised.
@@ -149,18 +151,22 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
    - Legitimate large-diff work is not-evaluable when the commit joins were skipped.
    - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
    - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
-5. **What would have been cheaper** — one to three levers tied to the top cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
+5. **What would have been cheaper** — one to three levers tied to the top discretionary cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
+   - A lever against a mandatory round may only make that round cheaper, through fewer spawns or less orchestrator work inside its window. It never skips or merges the round.
+   - A lever that would change documented behavior must cite the skill body, hook, or decision doc it would change and state what that rule protects. Uncited, it is not a lever.
+   - A lever that prescribes a command-shape change must name the denial's cause from a primary source, the denial's own text. The `--deny-summary` census gives gate names and command shapes but not reasons, so a gate's name is not a cause.
+   - Restating an instruction that already exists is a compliance observation. It does not count toward the one to three levers.
 6. **Caveats** — which of these applied: account scope (`--this-repo` versus `cost --summary`), same-named branch pooling across roots, and anything from `transcript-analysis/SKILL.md` § "Caveats". Also the tip SHA and the roots the branch's sessions live in.
 
 ## Step 5 — Artifact and return
 
-This step is the deep audit's. A sweep writes no artifact file and has no headline, top cause or levers. Its output is Step 2's ranked candidate list, stated as candidates and reasons with no dollar figures or cost shares, per Step 4's publication rule.
+This step is the deep audit's. A sweep writes no artifact file and has no headline, top discretionary cause or levers. Its output is Step 2's ranked candidate list, stated as candidates and reasons with no dollar figures or cost shares, per Step 4's publication rule.
 
 Write one report file, plus Step 3(g)'s `judgment-pairs.md` in the same directory: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm each path written (the report file and `judgment-pairs.md`) either resolves outside a git-tracked tree or is covered by that tree's `.gitignore`, matching `transcript-narrative/SKILL.md`'s own guard.
 
 The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
 
-Return only these four items: the path, the headline, the top cause, and the levers from Step 4 part 5. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no tables inline.
+Return only these four items: the path, the headline, the top discretionary cause (with the fixed-cost round count alongside), and the levers from Step 4 part 5. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no tables inline.
 
 A subagent that invokes this skill by name returns the same four items. It keeps every table in its own context and in the artifact file.
 

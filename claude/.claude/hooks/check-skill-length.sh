@@ -18,9 +18,11 @@
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
-# pr-description/SKILL.md is capped at 210: it writes one paragraph per
-# line with no hard-wrap, so trimming words never reduces the line count,
-# only removing a whole paragraph, heading, or blank line does.
+# pr-description/SKILL.md is capped at 250 lines.
+# It holds the authoring standard and every check a PR body must pass.
+# It writes one paragraph per line with no hard-wrap, so trimming words never
+# reduces the line count; only removing a whole paragraph, heading, or blank
+# line does.
 #
 # The "if" field in settings.json is unreliable — the internal
 # _lib_command_invokes_git_subcmd check is the actual gate. See
@@ -105,7 +107,7 @@ limit_for() {
     claude-skills/skills/code-review/SKILL.md|claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)
-      echo 210 ;;
+      echo 250 ;;
     *)
       echo 200 ;;
   esac
