@@ -5254,6 +5254,45 @@ class TestCodeReviewContradictionRouteRegionPin:
         )
 
 
+_CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
+
+# The whole defer-invariant region: the enforcement-invariant class definition,
+# its never-DEFER-eligible ruling, and the ADDRESS-or-blocking-stop disposition.
+# The contradiction-route region's *keep current text* carve-out takes its scope
+# from this class, so it is pinned whole by exact equality, like that region.
+_PINNED_DEFER_INVARIANT_CLAUSE = (
+    '- **"Enforcement invariant weakened, but disclosed"** — a finding that '
+    "the diff opens a path around an enforcement invariant (a gate, hook, "
+    "permission check, required-approval, or marker guarantee some mechanism "
+    "currently makes unbypassable) is never DEFER-eligible, regardless of "
+    "which criterion above seems to match. Disposition is ADDRESS (fix the "
+    "hole) or a blocking stop-and-ask to the human — never persisted to the "
+    "`## Deferred review findings` block. Approval of a diff or PR does not "
+    "function as informed consent for an invariant-break buried in the body."
+)
+
+
+class TestCodeReviewDeferInvariantRegionPin:
+    """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
+    the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
+    or dropping the blocking stop-and-ask disposition fails a test instead of
+    drifting silently.
+    """
+
+    def test_defer_invariant_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_DEFER_INVARIANT_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_DEFER_INVARIANT_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+
 _CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
 
 # The re-review carry-forward paragraph: the disposition records reach each

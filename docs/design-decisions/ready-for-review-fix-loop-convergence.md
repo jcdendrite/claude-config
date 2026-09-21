@@ -54,11 +54,34 @@ Dispatching the cap consult (or a contradiction consult) with `MODE=consult` wri
 
 A cap or contradiction consult that fires inside an RFR run therefore permanently spends that branch's one round-3 firing. The latch's own stated meaning in [§45](round3-plan-architect-consult-gate.md) is "an architect consult ran on this branch recently," not "the round-3 gate's own prescribed consult ran."
 
-The two mechanisms never interlock, and their trigger windows are mutually exclusive. The active-marker bypass means the round-3 gate can only fire outside an RFR run, and this cap can only fire inside one.
+The two mechanisms' trigger windows are mutually exclusive: the active-marker bypass means the round-3 gate can only fire outside an RFR run and this cap only inside one. The latch described above is their only coupling.
 
 ## How often the new stops interrupt a run
 
-The two new blocking stops — a second consecutive dirty pass, or a finding against an already-settled site — fire only after the loop has already shown it isn't converging, not on ordinary progress. They replace silent thrash: without them, a round-4 finding could revert a round-2 fix with no record either round happened, the shape of a round-4 fix reverting a round-2 fix, GH-752. Autonomous shipping's "without pausing" language covers routine progress through a converging loop, not a loop whose own history shows it is not converging.
+The shipped skill text has these blocking human stops in the fix loop.
+
+From `ready-for-review/SKILL.md` step 3's Cap:
+
+- A dirty pass while a cap row already sits among this branch's records newer than its newest clean one. The second consecutive dirty pass triggers the consult, and the human stop comes on the next dirty pass after a cap row, whatever that row's verdict.
+- A consult verdict of *stop*.
+- A `no verdict` cap row: the dispatch failed, returned nothing, or returned text that reads as neither verdict.
+- An orchestrator disagreement with the consult's return.
+
+From `code-review/SKILL.md`'s `code-review-contradiction-route` region:
+
+- A finding against a site an earlier verdict already settled, or that two earlier rounds' fixes already rewrote, goes straight to the human with no consult.
+- A consult verdict of *cannot choose*.
+- A finding with no explicit per-finding verdict from the consult: failed dispatch, empty, hedged, or partial coverage.
+- An orchestrator disagreement with the consult's return, by way of the heavier-mechanism rule the route follows.
+
+From `code-review/SKILL.md`'s round-cap consult: a return that reads as none of the three verdicts, or one the orchestrator disagrees with.
+
+From `code-review/SKILL.md`'s `code-review-defer-invariant` region: a finding that the diff opens a path around an enforcement invariant is never DEFER-eligible, and its disposition is ADDRESS or a blocking stop-and-ask to the human.
+
+Every Cap stop fires only after two consecutive dirty passes. Every contradiction-route consult-outcome stop fires only on a finding already routed to a consult. The round-cap consult stop fires on a `require-architect-consult.sh` hook denial, then on the consult's return, and needs neither. The site stop has no non-convergence precondition. It fires on a later finding at a settled site, or on a third finding at a site two earlier fixes rewrote, whether or not the loop is converging. It needs no contradiction with an earlier fix and no revert, so a run whose successive findings each name a distinct defect still stops at that site. It applies in staged commit-gate rounds as well as RFR's cumulative passes, because session context carries the earlier rounds' fixes there.
+The skill text does not define "site". No sentence in either SKILL.md gives it a granularity, and the only location field on a finding is the review ledger's optional `--source "<file:line>"`. The orchestrator therefore matches a finding's location against earlier rounds' fixes and verdicts by judgment.
+
+These stops replace silent thrash: without them, a round-4 finding could revert a round-2 fix with no record either round happened, the shape of a round-4 fix reverting a round-2 fix, GH-752. Autonomous shipping's "without pausing" language covers routine progress through passes that hit none of the triggers above, not the stops themselves.
 
 ## The keep/cap interaction
 
