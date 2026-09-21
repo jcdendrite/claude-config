@@ -293,7 +293,7 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 **Purpose.** Map branches to GitHub PRs and pull per-PR comment counts. Requires `gh` and network access.
 
 **Flags.**
-- `--repo OWNER/REPO` *(required)* — GitHub repository
+- `--repo OWNER/REPO` — GitHub repository. Default: parsed from this checkout's `origin` remote, with a GitHub Enterprise origin host-qualified so `gh` reaches the right host. With no usable `origin` and no `--repo`, the command exits 1 with a one-line error naming `--repo`. Supplying `--repo` explicitly does not host-qualify the `gh api` comment-count calls the way the auto-derived path does
 - `--branches B1,B2,...` *(required)* — branches to look up
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -301,11 +301,23 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 
 **Sample output.**
 ```
-Branch                    PR#   Title                              Author comments  Total comments
----------------------------------------------------------------------------------------------------
-feat-TICKET-101           #42   Add new widget component                         3              8
-feat-TICKET-202           #47   Refactor auth middleware                          1              5
+Branch                                 PR   Opus  Sonnet  IssueCmt  ReviewCmt
+--------------------------------------------------------------------------------
+feat-TICKET-101                        42     18       0         3          2
+feat-TICKET-202                      none      0       5         —          —
 ```
+
+**Failure diagnostics.** A failed `gh` call keeps the table cell as `gh-err` (`PR` lookup) or `-1` (comment counts) and prints one `pr-link:` line per failure on stderr naming the branch and one of these failure kinds:
+
+- `auth`
+- `host_mismatch`
+- `rate_limit`
+- `timeout`
+- `gh not found`
+- `unparseable gh output`
+- `network or unrecognized` (the catch-all, which includes a wrong repo slug)
+
+Each label is this module's own classification of `gh`'s stderr, not `gh`'s own vocabulary. The raw stderr is never echoed, because it can repeat the queried repo verbatim. `pr-link` does not retry a failed call.
 
 **When to reach for it.** After a set of branches lands: measure review engagement per branch or filter to one author's comments to count their review activity.
 
