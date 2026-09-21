@@ -228,6 +228,39 @@ class TestStripping:
         text = _CLEAN_LEDGER + "    ```\n    anchors: row99\n    ```\nAn orphan, see row 9.\n"
         assert _mod.find_orphan_citations(text) == [("row9", 7)]
 
+    def test_fence_prefixed_by_a_list_marker_is_not_recognized_as_an_opener(self):
+        """Residual: `_fence_opener` needs only leading spaces or tabs before
+        a backtick run, so a fence prefixed by a list marker (`- ` + backticks)
+        never opens one. The next bare backtick-only line opens a fence in its
+        place, and because it is never closed, both `anchors: row99` and the
+        later `row 9` stay live rather than quoted."""
+        text = _CLEAN_LEDGER + "- ```\nanchors: row99\n```\nSee row 9.\n"
+        assert _mod.find_orphan_citations(text) == [("row99", 5), ("row9", 7)]
+
+    def test_fence_opened_inside_a_list_item_stays_open_across_an_outdented_line(self):
+        """Residual: Markdown ends a list item, and any block nested inside
+        it, at a line that outdents below the item's own continuation
+        indentation. This script tracks only the fence character and run
+        length, so it keeps blanking past that outdent until it reaches a
+        later matching closer."""
+        text = (
+            _CLEAN_LEDGER
+            + "1. See below.\n\n"
+            + "   ```\n"
+            + "   anchors: row99\n"
+            + "outdented, see row 9\n"
+            + "   ```\n"
+        )
+        assert _mod.find_orphan_citations(text) == []
+
+    def test_fence_inside_an_html_block_is_still_blanked(self):
+        """Residual: Markdown does not parse nested syntax inside an HTML
+        block, so a backtick-fence pair inside one quotes nothing there. This
+        script has no HTML-block awareness, so it still pairs the two
+        backtick lines as a fence and blanks the citation between them."""
+        text = _CLEAN_LEDGER + "<div>\n```\nanchors: row99\n```\n</div>\nSee row 9.\n"
+        assert _mod.find_orphan_citations(text) == [("row9", 9)]
+
     def test_strip_inline_spans_removes_a_bracketed_label_inside_a_span(self):
         stripped = _mod.strip_inline_spans("quoted `[G7]` here")
         assert "[G7]" not in stripped
@@ -549,6 +582,18 @@ class TestFindCitations:
 
     @pytest.mark.parametrize(
         "anchors_clause",
+        ["anchors: `G9`", "anchors: (G9)"],
+        ids=["backtick-wrapped-label", "paren-wrapped-label"],
+    )
+    def test_punctuation_wrapped_label_in_an_anchors_value_is_not_a_citation(self, anchors_clause):
+        """Residual: `_ANCHOR_TARGET_RE` matches a label starting right after
+        the `anchors:` key, so a label wrapped in punctuation there (`` `G9` ``,
+        `(G9)`) is not read as a citation."""
+        text = f"## Approach\nEvery claim — {anchors_clause}\n"
+        assert _mod.find_citations(text) == []
+
+    @pytest.mark.parametrize(
+        "anchors_clause",
         ["**anchors:** G9", "anchors : G9"],
         ids=["bolded-key", "space-before-colon"],
     )
@@ -575,6 +620,14 @@ class TestFindCitations:
         citation is not recognized, so the citation itself is not checked."""
         text = _CLEAN_LEDGER + f"The invalidation path is covered by {citation_text} as well.\n"
         assert all(token != "g7" for token, _ in _mod.find_citations(text))
+
+    def test_escaped_backtick_pairs_with_a_later_span_and_hides_a_citation(self):
+        """Residual: `_strip_inline_spans_in_line` has no backslash-escape
+        awareness, so a backslash-escaped backtick still opens a span, and it
+        can pair with a later, unescaped backtick and blank a real citation
+        between them."""
+        text = _CLEAN_LEDGER + "A quoted literal \\` here and see row 9 for detail` more text.\n"
+        assert _mod.find_citations(text) == [("row1", 2), ("row1", 3), ("row2", 3)]
 
     def test_plural_row_word_with_bare_numbers_yields_each_label(self):
         text = "## Approach\nRow 3 [mechanism]: x — anchors: rows 1, 2]\n"

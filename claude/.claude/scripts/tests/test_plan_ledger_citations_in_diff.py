@@ -22,6 +22,8 @@ Behaviors a reader of a green or red run should know:
   A missing ref fails rather than skips. When `select-tests.py` falls back to
   the full suite because git is unavailable, this test runs in that suite and
   fails.
+- A changed plan file that is not valid UTF-8 fails the run naming the file,
+  rather than raising a raw UnicodeDecodeError traceback.
 """
 from __future__ import annotations
 
@@ -98,14 +100,18 @@ def _orphan_messages(plan_files: list[Path]) -> list[str]:
     """One `file:line: citation 'token' ...` message per orphaned citation. The
     plan path is rendered ASCII-only, since a changed path is contributor-controlled
     and the report transport cannot encode a lone surrogate."""
-    return [
-        f"{_select_tests.printable_path(str(plan_file.relative_to(REPO_ROOT)))}:{line}: "
-        f"citation '{token}' resolves to no defined ledger label"
-        for plan_file in plan_files
-        for token, line in _check_ledger_citations.find_orphan_citations(
-            plan_file.read_text(encoding="utf-8-sig")
+    messages: list[str] = []
+    for plan_file in plan_files:
+        relative_path = _select_tests.printable_path(str(plan_file.relative_to(REPO_ROOT)))
+        try:
+            plan_text = plan_file.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"{relative_path} is not valid UTF-8: {exc}", pytrace=False)
+        messages.extend(
+            f"{relative_path}:{line}: citation '{token}' resolves to no defined ledger label"
+            for token, line in _check_ledger_citations.find_orphan_citations(plan_text)
         )
-    ]
+    return messages
 
 
 def test_changed_plan_files_have_no_orphan_ledger_citations():
@@ -135,6 +141,26 @@ class TestOrphanMessages:
         )
 
         assert _orphan_messages([plan_file]) == []
+
+    def test_non_utf8_plan_file_fails_naming_the_file(self, tmp_path):
+        plan_file = tmp_path / "bad-encoding-plan.md"
+        plan_file.write_bytes(b"# Plan\n\n## Ledger\n\nanchors: G9\xff\n")
+
+        with pytest.raises(pytest.fail.Exception) as failure:
+            _orphan_messages([plan_file])
+
+        assert "bad-encoding-plan.md is not valid UTF-8" in str(failure.value)
+
+    def test_non_utf8_plan_file_after_a_clean_one_names_the_bad_file_not_the_first(self, tmp_path):
+        clean_plan = tmp_path / "clean-plan-with-orphan.md"
+        clean_plan.write_text("# Plan\n\n## Ledger\n\nanchors: G9\n", encoding="utf-8")
+        bad_plan = tmp_path / "bad-encoding-plan.md"
+        bad_plan.write_bytes(b"# Plan\n\n## Ledger\n\nanchors: G9\xff\n")
+
+        with pytest.raises(pytest.fail.Exception) as failure:
+            _orphan_messages([clean_plan, bad_plan])
+
+        assert "bad-encoding-plan.md is not valid UTF-8" in str(failure.value)
 
     def test_hostile_valid_utf8_plan_path_yields_one_inert_ascii_message(self, tmp_path, monkeypatch):
         """No file is created: the read is stubbed, so the path only has to
