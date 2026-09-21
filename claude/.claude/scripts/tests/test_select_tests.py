@@ -1897,6 +1897,28 @@ class TestComputeChangedPathsGitSmoke:
             _mod.compute_changed_paths(local)
 
 
+class TestPrintablePath:
+    """Direct unit coverage of printable_path's own contract, distinct from
+    the heavier call-site tests (TestMainWorkerSizingStderr's hostile-path
+    tests, TestRecordSelection's hostile-JSON-log test) that only exercise
+    it indirectly."""
+
+    def test_empty_string_round_trips_to_empty_string(self):
+        assert _mod.printable_path("") == ""
+
+    def test_plain_ascii_path_is_unchanged(self):
+        assert _mod.printable_path("claude/.claude/hooks/removed-hook.sh") == "claude/.claude/hooks/removed-hook.sh"
+
+    def test_a_single_control_character_is_escaped(self):
+        assert _mod.printable_path("a\x1bb") == "a\\x1bb"
+
+    def test_a_lone_surrogate_is_escaped(self):
+        assert _mod.printable_path("a\udc80b") == "a\\udc80b"
+
+    def test_a_multi_byte_non_ascii_character_is_escaped(self):
+        assert _mod.printable_path("café") == "caf\\xe9"
+
+
 class _FakeCompletedProcess:
     def __init__(self, *, returncode: int = 0, stdout: str | bytes = "") -> None:
         self.returncode = returncode

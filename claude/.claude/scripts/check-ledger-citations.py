@@ -307,9 +307,10 @@ def main(argv: list[str]) -> int:
     try:
         # Git tracks symlinks, so a plan path can point at a device node.
         # Reading one could hang or raise MemoryError, which the OSError
-        # handler below won't catch, so non-regular targets are rejected here.
-        # A directory is deliberately left unrejected, for read_bytes() to raise
-        # its own IsADirectoryError.
+        # handler below won't catch.
+        # So non-regular targets are rejected here, before any read is
+        # attempted. A directory is deliberately left unrejected, for
+        # read_bytes() to raise its own IsADirectoryError.
         if not plan_path.is_file() and not plan_path.is_dir():
             if plan_path.exists():
                 print(f"{SCRIPT_NAME}: not a regular file: {_printable_path(plan_path)}", file=sys.stderr)

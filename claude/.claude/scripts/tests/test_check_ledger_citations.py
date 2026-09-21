@@ -896,6 +896,9 @@ class TestFindOrphanCitations:
     def test_clean_ledger_returns_no_orphans(self):
         assert _mod.find_orphan_citations(_CLEAN_LEDGER) == []
 
+    def test_empty_text_returns_no_orphans(self):
+        assert _mod.find_orphan_citations("") == []
+
     def test_citation_to_a_row_defined_before_a_fenced_heading_shaped_line_resolves(self):
         """A heading-shaped line quoted inside a fence (e.g. a plan citing
         another doc's excerpt) must not split the section in two -- a false
@@ -1010,6 +1013,14 @@ class TestCli:
         assert pass_line == "PASS: every ledger citation resolves (2 labels defined, 3 citations checked)"
         assert "Not checked by this script" in result.stdout
 
+    def test_empty_plan_file_exits_0_with_the_zero_counts_pass_line(self, tmp_path):
+        plan = tmp_path / "empty-plan.md"
+        plan.write_text("")
+        result = _run_cli(str(plan))
+        assert result.returncode == 0, result.stdout + result.stderr
+        pass_line = result.stdout.splitlines()[0]
+        assert pass_line == "PASS: every ledger citation resolves (0 labels defined, 0 citations checked)"
+
     def test_plan_without_an_anchors_line_exits_0(self, tmp_path):
         plan = tmp_path / "no-ledger-plan.md"
         plan.write_text("# Widget plan\n\nSee row 4 and [G2] for detail.\n")
@@ -1091,14 +1102,14 @@ class TestCli:
         assert str(tmp_path) in result.stderr
 
     def test_exits_2_for_a_symlink_to_a_device_node(self, tmp_path):
-        """A plan committed as a symlink to a device node (git tracks symlinks)
-        must be rejected before read_bytes() ever runs: a symlink to a
-        memory-mapped device like /dev/zero would otherwise grow the read
-        unboundedly and raise MemoryError, which isn't an OSError subclass and
-        so isn't caught -- an uncaught traceback with exit code 1, colliding
-        with the documented "1 = orphan found" contract. /dev/null is safe to
-        point at here since reading it returns EOF immediately; the point is
-        that the guard trips before any read is attempted, not the target's size."""
+        """A plan committed as a symlink to a device node must be rejected
+        before read_bytes() runs. Reading a memory-mapped device like
+        /dev/zero would grow the read unboundedly and raise MemoryError.
+        MemoryError isn't an OSError subclass, so it would surface as an
+        uncaught traceback with exit code 1 -- colliding with the documented
+        "1 = orphan found" contract. /dev/null is safe to point at here since
+        reading it returns EOF immediately; the point is that the guard trips
+        before any read is attempted, not the target's size."""
         plan = tmp_path / "device-symlink-plan.md"
         plan.symlink_to("/dev/null")
         result = _run_cli(str(plan))
@@ -1109,9 +1120,10 @@ class TestCli:
 
     def test_exits_2_for_a_symlink_to_a_fifo(self, tmp_path):
         """The guard must reject a non-regular target generally, not only a
-        character device: a symlink to a FIFO with no writer would otherwise
-        hang read_bytes() indefinitely rather than raising, an uncaught-hang
-        DoS distinct from the device-node case's uncaught MemoryError."""
+        character device. A symlink to a FIFO with no writer would otherwise
+        hang read_bytes() indefinitely rather than raising -- an
+        uncaught-hang DoS distinct from the device-node case's uncaught
+        MemoryError."""
         fifo_path = tmp_path / "a-fifo"
         os.mkfifo(fifo_path)
         plan = tmp_path / "fifo-symlink-plan.md"
@@ -1125,10 +1137,10 @@ class TestCli:
         """A symlink cycle (a -> b -> a) is another non-regular target
         is_file()/is_dir() must reject before read_bytes() ever runs, rather
         than propagating the OSError that resolving the cycle would raise.
-        exists() swallows that ELOOP OSError and returns False, so this
-        buckets with "no such file" rather than "not a regular file"
-        (the bucket device/FIFO symlinks fall into, since exists() reports
-        True for those)."""
+        exists() swallows that ELOOP OSError and returns False, so a loop
+        buckets with "no such file" rather than "not a regular file".
+        Device and FIFO symlinks land in the other bucket, since exists()
+        reports True for those."""
         loop_a = tmp_path / "loop-a"
         loop_b = tmp_path / "loop-b"
         loop_a.symlink_to(loop_b)
@@ -1181,10 +1193,10 @@ class TestCli:
         assert "simulated defect" in stderr_lines[0]
 
     def test_unencodable_output_exits_2_with_nothing_on_stdout(self, tmp_path):
-        """The only non-encodable text is a defined label, which prints after the
-        ASCII FAIL line, so emitting the report line by line would leave that
-        FAIL line on stdout. `\\d` in the definition pattern matches the Arabic-Indic
-        digit, which is what lets the label reach the output."""
+        """The only non-encodable text is a defined label, and it prints after
+        the ASCII FAIL line. Emitting the report line by line would therefore
+        leave that FAIL line on stdout. `\\d` in the definition pattern matches
+        the Arabic-Indic digit, which is what lets the label reach the output."""
         plan = tmp_path / "widget-plan.md"
         plan.write_text(
             "## Approach\nRow \u0669 [mechanism]: x — anchors: root\nSee row 9 for detail.\n",

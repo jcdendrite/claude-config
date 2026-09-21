@@ -378,6 +378,35 @@ class TestChangedPlanFilesSelection:
         with pytest.raises(pytest.skip.Exception):
             _changed_plan_files()
 
+    def test_changed_path_ending_in_md_that_resolves_to_a_symlink_loop_is_excluded(self, monkeypatch, tmp_path):
+        """`is_file()` swallows the ELOOP OSError a symlink cycle raises and
+        returns False. This is the same mechanism the directory case above
+        relies on."""
+        plans_dir = _plans_dir_under(tmp_path, monkeypatch)
+        loop_a = plans_dir / "loop-a.md"
+        loop_b = plans_dir / "loop-b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        monkeypatch.setattr(
+            _select_tests, "compute_changed_paths", lambda repo_root: [".claude/plans/loop-a.md"]
+        )
+        with pytest.raises(pytest.skip.Exception):
+            _changed_plan_files()
+
+    def test_changed_path_ending_in_md_that_resolves_to_a_device_node_symlink_is_excluded(
+        self, monkeypatch, tmp_path
+    ):
+        """`is_file()` returns False for a symlink to a non-regular target like
+        a device node, without opening it. This is the same mechanism the
+        directory case above relies on."""
+        plans_dir = _plans_dir_under(tmp_path, monkeypatch)
+        (plans_dir / "device-plan.md").symlink_to("/dev/null")
+        monkeypatch.setattr(
+            _select_tests, "compute_changed_paths", lambda repo_root: [".claude/plans/device-plan.md"]
+        )
+        with pytest.raises(pytest.skip.Exception):
+            _changed_plan_files()
+
     def test_existing_non_markdown_file_under_plans_is_excluded_and_markdown_sibling_returned(
         self, monkeypatch, tmp_path
     ):
