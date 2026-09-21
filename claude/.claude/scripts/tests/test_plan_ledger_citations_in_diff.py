@@ -24,6 +24,12 @@ Behaviors a reader of a green or red run should know:
   fails.
 - A changed plan file that is not valid UTF-8 fails the run naming the file,
   rather than raising a raw UnicodeDecodeError traceback.
+- A changed plan file that exists but cannot be read (permission bits, for
+  example) fails the run naming the file, rather than raising a raw OSError
+  traceback.
+- A changed path that resolves to something other than a regular file (a
+  directory, or a symlink to one) is silently excluded rather than checked or
+  failed: `is_file()` never opens the target, so this is safe.
 """
 from __future__ import annotations
 
@@ -107,6 +113,8 @@ def _orphan_messages(plan_files: list[Path]) -> list[str]:
             plan_text = plan_file.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError as exc:
             pytest.fail(f"{relative_path} is not valid UTF-8: {exc}", pytrace=False)
+        except OSError as exc:
+            pytest.fail(f"cannot read {relative_path}: {exc}", pytrace=False)
         # Mirrors check-ledger-citations.py's own main() catch-all, so a bug in
         # the shared parsing functions surfaces here as a named failure too,
         # rather than a raw pytest traceback.
@@ -171,6 +179,19 @@ class TestOrphanMessages:
             _orphan_messages([clean_plan, bad_plan])
 
         assert "bad-encoding-plan.md is not valid UTF-8" in str(failure.value)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_plan_file_fails_naming_the_file(self, tmp_path):
+        plan_file = tmp_path / "unreadable-plan.md"
+        plan_file.write_text("# Plan\n\n## Ledger\n\nanchors: G9\n", encoding="utf-8")
+        plan_file.chmod(0o000)
+        try:
+            with pytest.raises(pytest.fail.Exception) as failure:
+                _orphan_messages([plan_file])
+        finally:
+            plan_file.chmod(0o644)
+
+        assert "cannot read unreadable-plan.md" in str(failure.value)
 
     def test_find_orphan_citations_raising_fails_naming_the_file_not_a_raw_traceback(
         self, tmp_path, monkeypatch
@@ -345,6 +366,17 @@ class TestChangedPlanFilesSelection:
         )
 
         assert _returned_or_failed_on_skip(_changed_plan_files) == [existing_plan]
+
+    def test_changed_path_ending_in_md_that_resolves_to_a_directory_is_excluded(self, monkeypatch, tmp_path):
+        """`is_file()` never opens the target, so a `.md`-suffixed directory is
+        safe to filter out rather than raising."""
+        plans_dir = _plans_dir_under(tmp_path, monkeypatch)
+        (plans_dir / "plan.md").mkdir()
+        monkeypatch.setattr(
+            _select_tests, "compute_changed_paths", lambda repo_root: [".claude/plans/plan.md"]
+        )
+        with pytest.raises(pytest.skip.Exception):
+            _changed_plan_files()
 
     def test_existing_non_markdown_file_under_plans_is_excluded_and_markdown_sibling_returned(
         self, monkeypatch, tmp_path

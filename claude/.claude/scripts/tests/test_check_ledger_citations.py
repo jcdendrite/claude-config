@@ -496,9 +496,9 @@ class TestCollectDefinedLabels:
         """Regression pin: a bolded `**Givens:**` block's bare G-labels are
         real corpus content (this exact shape -- a bolded marker with
         unbolded label rows -- is the more common form across committed
-        plans) that a per-line leniency gate, tried and reverted across
-        three fix rounds, wrongly excluded -- section-scoping alone must
-        keep collecting them."""
+        plans), even though a naive per-line filter would exclude bare,
+        unbolded label lines -- section-scoping alone must keep collecting
+        them."""
         text = (
             "## Approach\n"
             "Row 1 [mechanism]: x — anchors: root\n"
@@ -514,9 +514,9 @@ class TestCollectDefinedLabels:
     def test_bare_mechanism_row_with_its_own_anchors_clause_resolves(self):
         """Regression pin: a bare mechanism/assumption row carrying its own
         `anchors:` clause (the exact shape a real corpus plan uses -- see
-        `relocate-global-claude-md.md`'s M1-M4) is real content a per-line
-        leniency gate, tried and reverted across three fix rounds, wrongly
-        excluded -- section-scoping alone must keep collecting it."""
+        `relocate-global-claude-md.md`'s M1-M4) is real content that a naive
+        per-line filter would exclude -- section-scoping alone must keep
+        collecting it."""
         text = (
             "## Approach\n"
             "- M1: evict widgets on write, not on read — anchors: row4, row5\n"
@@ -1103,7 +1103,7 @@ class TestCli:
         plan.symlink_to("/dev/null")
         result = _run_cli(str(plan))
         assert result.returncode == 2
-        assert "no such file" in result.stderr.lower()
+        assert "not a regular file" in result.stderr.lower()
         assert str(plan) in result.stderr
         assert len(result.stderr.splitlines()) == 1
 
@@ -1118,13 +1118,17 @@ class TestCli:
         plan.symlink_to(fifo_path)
         result = _run_cli(str(plan))
         assert result.returncode == 2
-        assert "no such file" in result.stderr.lower()
+        assert "not a regular file" in result.stderr.lower()
         assert str(plan) in result.stderr
 
     def test_exits_2_for_a_symlink_loop(self, tmp_path):
         """A symlink cycle (a -> b -> a) is another non-regular target
         is_file()/is_dir() must reject before read_bytes() ever runs, rather
-        than propagating the OSError that resolving the cycle would raise."""
+        than propagating the OSError that resolving the cycle would raise.
+        exists() swallows that ELOOP OSError and returns False, so this
+        buckets with "no such file" rather than "not a regular file"
+        (the bucket device/FIFO symlinks fall into, since exists() reports
+        True for those)."""
         loop_a = tmp_path / "loop-a"
         loop_b = tmp_path / "loop-b"
         loop_a.symlink_to(loop_b)

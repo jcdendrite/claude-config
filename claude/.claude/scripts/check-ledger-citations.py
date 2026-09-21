@@ -305,13 +305,18 @@ def main(argv: list[str]) -> int:
     plan_path = Path(args[0])
 
     try:
-        # A symlink to a device node (git tracks symlinks) could hang memory reads
-        # with a MemoryError that the OSError handler below won't catch, so
-        # non-regular targets are rejected here.
+        # Git tracks symlinks, so a plan path can point at a device node.
+        # Reading one could hang or raise MemoryError, which the OSError
+        # handler below won't catch, so non-regular targets are rejected here.
         # A directory is deliberately left unrejected, for read_bytes() to raise
         # its own IsADirectoryError.
         if not plan_path.is_file() and not plan_path.is_dir():
-            print(f"{SCRIPT_NAME}: no such file: {_printable_path(plan_path)}", file=sys.stderr)
+            if plan_path.exists():
+                print(f"{SCRIPT_NAME}: not a regular file: {_printable_path(plan_path)}", file=sys.stderr)
+            else:
+                # exists() swallows the ELOOP OSError a symlink cycle raises
+                # and returns False, so a loop buckets here rather than above.
+                print(f"{SCRIPT_NAME}: no such file: {_printable_path(plan_path)}", file=sys.stderr)
             return 2
         # Plan files are KB-sized, so the read is unbounded by design.
         raw = plan_path.read_bytes()
