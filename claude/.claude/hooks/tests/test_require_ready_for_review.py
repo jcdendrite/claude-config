@@ -50,11 +50,14 @@ def fake_gh_pr_exists(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_gh_no_pr(tmp_path, monkeypatch):
-    """Inject a fake gh that reports no open PR (any subcommand exits 1)."""
+    """Inject a fake gh that reports no open PR (any subcommand exits 1).
+
+    Each invocation's argv is appended to `argv.log` beside the returned gh
+    script, for tests asserting a subcommand was actually reached."""
     bin_dir = tmp_path / "fake-bin-nopr"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text("#!/bin/bash\nexit 1\n")
+    gh.write_text(f'#!/bin/bash\necho "$*" >> "{bin_dir / "argv.log"}"\nexit 1\n')
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     return gh
@@ -82,6 +85,9 @@ def repo_on_feature_branch(tmp_path):
     return repo
 
 
+STALE_HEAD_SHA = "0" * 40
+
+
 def rfr_active_marker(home: Path, session_id: str) -> Path:
     return home / ".claude" / ".ready-for-review-active.d" / session_id
 
@@ -92,6 +98,24 @@ def rfr_completion_marker(
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
     config_dir = config_dir if config_dir is not None else home / ".claude"
     return config_dir / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
+
+
+def seed_live_active_marker(home: Path, session_id: str) -> Path:
+    """Write an active marker holding this test process's own (live) PID."""
+    marker = rfr_active_marker(home, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()))
+    return marker
+
+
+def seed_completion_marker(
+    home: Path, repo: Path, session_id: str, head: str
+) -> Path:
+    """Write a completion marker whose stored HEAD is `head`."""
+    marker = rfr_completion_marker(home, repo, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(head + "\n")
+    return marker
 
 
 def _extract_gh_pr_create_command_span(skill_path: Path) -> str:
@@ -813,15 +837,11 @@ class TestRequireReadyForReview:
     def test_live_marker_still_denies_despite_fragment_split_sed_failure(
         self, isolated_home, repo_on_feature_branch, tmp_path
     ):
-        """The active-marker release decision now runs after the fragment
-        split, so a session holding a live marker no longer gets an
-        unsplit-command rescue when a sed shim fails only on
-        _lib_split_fragments's invocation shape -- that rescue was deleted
-        outright rather than hardened, since deny-private-project-refs.sh
-        already denies every Bash call in a session where this sed shape
-        fails, with no marker exemption. Shares its PATH-shim technique with
-        test_fragments_split_sed_failure_denied (GH-783); differs only in
-        holding a live marker."""
+        """A live marker does not release a command when a sed shim fails only
+        on _lib_split_fragments's invocation shape: the hook denies at the
+        split failure before the release decision. Shares its PATH-shim
+        technique with test_fragments_split_sed_failure_denied (GH-783);
+        differs only in holding a live marker."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
 
@@ -1948,14 +1968,12 @@ class TestRequireReadyForReview:
     def test_skill_record_completion_command_creates_marker(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """SKILL.md record-completion fixture must produce a marker keyed by
-        repo-hash + session-id with HEAD SHA as content, recognized by the
-        hook for HEAD-matching pushes."""
+        """SKILL.md's record-completion fixture produces a marker keyed by
+        repo-hash + session-id with the HEAD SHA as content. The hook
+        allows a HEAD-matching push on that marker alone, and allows the
+        skill's create command on it while the active marker is live."""
         sid = "test-session-rfr-complete"
         _seed_session(isolated_home, sid)
-
-        activate_cmd = extract_skill_command(READY_FOR_REVIEW_SKILL, "activate-gate")
-        run_skill_command(activate_cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)
 
         cmd = extract_skill_command(READY_FOR_REVIEW_SKILL, "record-completion")
         run_skill_command(cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)
@@ -1975,7 +1993,10 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "allow"
-        )
+        ), "the completion marker alone must authorize a HEAD-matching push"
+
+        activate_cmd = extract_skill_command(READY_FOR_REVIEW_SKILL, "activate-gate")
+        run_skill_command(activate_cmd, cwd=repo_on_feature_branch, isolated_home=isolated_home)
 
         create_command = _extract_gh_pr_create_command_span(READY_FOR_REVIEW_SKILL)
         assert (
@@ -1986,10 +2007,8 @@ class TestRequireReadyForReview:
             )
             == "allow"
         ), (
-            "with the active marker still live, the real record-completion "
-            "recipe composed with the real create-step command text must "
-            "still authorize the create via the completion marker at HEAD "
-            "-- the property the reorder buys"
+            "with the active marker live, the completion marker at HEAD must "
+            "authorize the create-step command text extracted from SKILL.md"
         )
 
     # -- Command-shape coverage (regex-gap fixes) -------------------------
@@ -2072,16 +2091,14 @@ class TestRequireReadyForReview:
     def test_active_marker_does_not_bypass_gh_pr_create(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """A live active marker releases git push only -- gh pr create still
+        """A live active marker releases git push only, so gh pr create still
         denies with no completion marker. fake_gh_no_pr (not
         fake_gh_pr_exists) is load-bearing: with an existing PR, a
         regression that stopped skipping the gh pr view check for
         is_gh_pr_create would still pass for the wrong reason (see
         test_gh_pr_create_no_marker_denies's own rationale)."""
         sid = "session-active-marker-create"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         reason = run_hook_reason(
             READY_FOR_REVIEW_HOOK,
             bash_input("gh pr create --title t --body-file /tmp/b", session_id=sid),
@@ -2092,16 +2109,14 @@ class TestRequireReadyForReview:
     def test_active_marker_does_not_bypass_gh_pr_ready(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """A live active marker releases git push only -- gh pr ready still
+        """A live active marker releases git push only, so gh pr ready still
         denies with no completion marker. fake_gh_pr_exists is load-bearing
         in the other direction from the create test above: the hook calls
         gh pr view unconditionally for this arm, so without an existing PR,
         PR_NUMBER is empty and the hook fail-opens to allow, asserting
         nothing (see test_gh_pr_ready_no_marker_denies)."""
         sid = "session-active-marker-ready"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2111,37 +2126,51 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
-    def test_active_marker_live_includes_note_in_deny_reason(
-        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("gh pr create --title t --body-file /tmp/b", id="create"),
+            pytest.param("gh pr ready", id="ready"),
+        ],
+    )
+    def test_active_marker_live_deny_reason_names_write_and_deactivate_exits(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
     ):
-        """A live active marker's deny reason for a newly-excluded arm
-        (gh pr create) carries ACTIVE_MARKER_NOTE, pointing at the gate's
-        remaining steps instead of a from-scratch re-invocation."""
+        """Under a live active marker, both the create and ready deny reasons
+        carry ACTIVE_MARKER_NOTE's two commands: the marker write and the
+        non-attesting deactivate. Asserts on the command tokens rather than
+        the surrounding prose."""
         sid = "session-active-marker-note-present"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         reason = run_hook_reason(
             READY_FOR_REVIEW_HOOK,
-            bash_input("gh pr create --title t --body-file /tmp/b", session_id=sid),
+            bash_input(command, session_id=sid),
             cwd=repo_on_feature_branch,
         )
         assert reason is not None
-        assert "releases git push only, not this command" in reason
+        assert "marker.sh write ready-for-review" in reason
+        assert "marker.sh deactivate ready-for-review" in reason
 
-    def test_active_marker_not_live_excludes_note_from_deny_reason(
-        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("gh pr create --title t --body-file /tmp/b", id="create"),
+            pytest.param("gh pr ready", id="ready"),
+        ],
+    )
+    def test_active_marker_not_live_deny_reason_omits_note(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
     ):
-        """With no active marker, the same arm's deny reason omits
-        ACTIVE_MARKER_NOTE -- the note is scoped to a live-marker session,
-        not shown unconditionally."""
+        """With no active marker, the create and ready deny reasons omit
+        ACTIVE_MARKER_NOTE: it is scoped to a live-marker session."""
         reason = run_hook_reason(
             READY_FOR_REVIEW_HOOK,
-            bash_input("gh pr create --title t --body-file /tmp/b", session_id="s"),
+            bash_input(command, session_id="s"),
             cwd=repo_on_feature_branch,
         )
         assert reason is not None
-        assert "releases git push only, not this command" not in reason
+        assert "marker.sh write ready-for-review" not in reason
+        assert "marker.sh deactivate ready-for-review" not in reason
 
     @pytest.mark.parametrize(
         "command",
@@ -2150,18 +2179,15 @@ class TestRequireReadyForReview:
             "gh pr create -t a -F /tmp/a && git push origin feature",
         ],
     )
-    def test_gated_push_chained_before_non_draft_create_still_denies(
+    def test_gated_push_chained_with_non_draft_create_still_denies(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
     ):
-        """Per-arm conjunction, not disjunction: a live marker's push-arm
-        release must not leak into a chained gh pr create fragment,
-        whichever order the fragments appear in -- an implementation that
-        released on the first matched arm would allow the reversed-order
-        case."""
+        """The push arm's release must not leak into a chained gh pr create
+        fragment, whichever order the fragments appear in: an implementation
+        that released on the first matched arm would allow the reversed
+        order."""
         sid = "session-chained-push-create"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2178,15 +2204,14 @@ class TestRequireReadyForReview:
             "gh pr ready && git push origin feature",
         ],
     )
-    def test_gated_push_chained_before_pr_ready_still_denies(
+    def test_gated_push_chained_with_pr_ready_still_denies(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
     ):
-        """Per-arm conjunction, not disjunction -- see
-        test_gated_push_chained_before_non_draft_create_still_denies."""
+        """The push arm's release must not leak into a chained gh pr ready
+        fragment, whichever order the fragments appear in (see
+        test_gated_push_chained_with_non_draft_create_still_denies)."""
         sid = "session-chained-push-ready"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2196,20 +2221,195 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                "git push origin feature&&gh pr create -t a -F /tmp/a",
+                id="and_glued",
+            ),
+            pytest.param(
+                "git push origin feature;gh pr create -t a -F /tmp/a",
+                id="semicolon_glued",
+            ),
+            pytest.param(
+                "git push origin feature||gh pr create -t a -F /tmp/a",
+                id="or_glued",
+            ),
+            pytest.param(
+                "git push origin feature\ngh pr create -t a -F /tmp/a",
+                id="newline_separated",
+            ),
+            pytest.param(
+                "git push origin feature && echo $(gh pr create -t a -F /tmp/a)",
+                id="command_substitution",
+            ),
+            pytest.param(
+                'git push origin feature && gh pr "create" -t a -F /tmp/a',
+                id="quote_split_subcommand",
+            ),
+            pytest.param(
+                "git push origin feature && bash -c 'gh pr create -t a -F /tmp/a'",
+                id="bash_c_wrapper",
+            ),
+        ],
+    )
+    def test_gated_push_chained_with_create_in_operator_variant_still_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
+    ):
+        """Under a live marker, a gated push chained with a gh pr create
+        spelled with a glued operator, a newline, a substitution, a quote
+        split, or a bash -c wrapper denies: the release requires the scan to
+        see no create fragment, and the split-then-scan sees this one."""
+        sid = "session-chained-create-variants"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                "git push origin feature &gh pr create -t a -F /tmp/a",
+                id="glued_single_ampersand",
+            ),
+            pytest.param(
+                "git push origin feature && gh pr create>/dev/null -t a",
+                id="redirect_adjacent_to_subcommand",
+            ),
+            pytest.param(
+                "git push origin feature && cat <(gh pr create -t a)",
+                id="process_substitution",
+            ),
+            pytest.param(
+                "git push origin feature && ( (gh pr create -t a) )",
+                id="nested_subshell",
+            ),
+            pytest.param(
+                "git push origin feature && GH pr create -t a",
+                id="case_variant_command_name",
+            ),
+            pytest.param(
+                "git push origin feature && gh pr \\\ncreate -t a",
+                id="backslash_newline_continuation",
+            ),
+        ],
+    )
+    def test_documented_create_detection_miss_is_released_under_live_marker(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Deliberately pins the documented detection gaps (hook header, Known
+        gaps): the scan does not recognize the create in these shapes, so a
+        push chained with one is released by the live marker. Each case must
+        flip to deny when its detection is fixed. fake_gh_pr_exists makes the
+        same command deny with no live marker, so the allow here comes from
+        the release."""
+        sid = "session-create-detection-miss"
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        ), "with no live marker the same command must deny"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                "git commit -m x && git push origin feature",
+                id="commit_then_push",
+            ),
+            pytest.param(
+                "git push origin feature && gh pr view",
+                id="push_then_pr_view",
+            ),
+        ],
+    )
+    def test_gated_push_chained_with_benign_fragment_is_released_under_live_marker(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Under a live marker with no completion marker, a push chained with
+        a non-gated fragment allows. The skill's own fix loop chains a commit
+        ahead of its push, so a release limited to single-fragment pushes
+        would deny mid-gate. fake_gh_pr_exists means the allow cannot come
+        from the no-PR fail-open, and the no-marker deny shows the push is
+        detected at all."""
+        sid = "session-chained-benign-push"
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        ), "with no live marker the same command must deny"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin feature && gh pr create -t a -F /tmp/a",
+            "gh pr create -t a -F /tmp/a && git push origin feature",
+            "git push origin feature && gh pr ready",
+            "gh pr ready && git push origin feature",
+        ],
+    )
+    def test_completion_marker_at_head_allows_chained_push_create_ready_with_active_marker_live(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """With a live active marker and a completion marker at HEAD, every
+        chained push/create/ready shape allows: the completion marker, not
+        the active marker, authorizes the create and ready fragments."""
+        sid = "session-both-markers-chained"
+        seed_live_active_marker(isolated_home, sid)
+        seed_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, head_sha(repo_on_feature_branch)
+        )
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
     def test_completion_marker_at_head_allows_create_with_active_marker_live(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """The new authorization path: with both markers present, the
-        completion marker's own stored HEAD authorizes the create even
-        while the active marker is live and would otherwise not release
-        this arm on its own."""
+        """With both markers present, the completion marker's stored HEAD
+        authorizes the create even though the live active marker does not
+        release this arm on its own."""
         sid = "session-both-markers-create"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
-        completion = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
-        completion.parent.mkdir(parents=True, exist_ok=True)
-        completion.write_text(head_sha(repo_on_feature_branch) + "\n")
+        seed_live_active_marker(isolated_home, sid)
+        seed_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, head_sha(repo_on_feature_branch)
+        )
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2224,15 +2424,13 @@ class TestRequireReadyForReview:
     def test_completion_marker_at_head_allows_pr_ready_with_active_marker_live(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """The new authorization path, gh pr ready arm -- see
+        """gh pr ready arm of
         test_completion_marker_at_head_allows_create_with_active_marker_live."""
         sid = "session-both-markers-ready"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
-        completion = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
-        completion.parent.mkdir(parents=True, exist_ok=True)
-        completion.write_text(head_sha(repo_on_feature_branch) + "\n")
+        seed_live_active_marker(isolated_home, sid)
+        seed_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, head_sha(repo_on_feature_branch)
+        )
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2245,18 +2443,15 @@ class TestRequireReadyForReview:
     def test_stale_completion_marker_denies_create_with_active_marker_live(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """A live active marker doesn't relax the completion marker's own
-        HEAD check -- a stale (non-current) completion marker still denies
-        gh pr create even while the active marker is live. See
-        test_completion_marker_at_head_allows_create_with_active_marker_live
-        for the matching allow case at the current HEAD."""
+        """A live active marker does not relax the completion marker's HEAD
+        check: a completion marker naming another HEAD still denies gh pr
+        create. Twin of
+        test_completion_marker_at_head_allows_create_with_active_marker_live."""
         sid = "session-stale-marker-create"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
-        completion = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
-        completion.parent.mkdir(parents=True, exist_ok=True)
-        completion.write_text("0" * 40 + "\n")
+        seed_live_active_marker(isolated_home, sid)
+        seed_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, STALE_HEAD_SHA
+        )
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2271,18 +2466,15 @@ class TestRequireReadyForReview:
     def test_stale_completion_marker_denies_pr_ready_with_active_marker_live(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """A live active marker doesn't relax the completion marker's own
-        HEAD check -- a stale (non-current) completion marker still denies
-        gh pr ready even while the active marker is live. See
-        test_completion_marker_at_head_allows_pr_ready_with_active_marker_live
-        for the matching allow case at the current HEAD."""
+        """A live active marker does not relax the completion marker's HEAD
+        check: a completion marker naming another HEAD still denies gh pr
+        ready. Twin of
+        test_completion_marker_at_head_allows_pr_ready_with_active_marker_live."""
         sid = "session-stale-marker-ready"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
-        completion = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
-        completion.parent.mkdir(parents=True, exist_ok=True)
-        completion.write_text("0" * 40 + "\n")
+        seed_live_active_marker(isolated_home, sid)
+        seed_completion_marker(
+            isolated_home, repo_on_feature_branch, sid, STALE_HEAD_SHA
+        )
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2295,11 +2487,9 @@ class TestRequireReadyForReview:
     def test_skill_create_command_denies_without_completion_marker(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """The literal create command SKILL.md's step 8 runs, extracted from
-        the file rather than duplicated in test source, must still deny
-        under a live active marker with no completion marker -- the
-        alignment pin for the reorder, exercised rather than a second
-        static copy of the command text."""
+        """The literal create command SKILL.md's create step runs, extracted
+        from the file rather than duplicated in test source, denies under a
+        live active marker with no completion marker."""
         sid = "test-session-rfr-create-command"
         _seed_session(isolated_home, sid)
 
@@ -2319,15 +2509,13 @@ class TestRequireReadyForReview:
     def test_active_marker_gh_pr_ready_allows_on_gh_pr_view_failure(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """Pins today's gh pr view fail-open under the newly-reachable path:
-        a live marker no longer releases gh pr ready outright, so a failing
-        gh pr view now actually executes for this arm during a gate run.
-        With no completion marker either, the pre-existing fail-open still
-        allows."""
+        """Deliberately pins a documented Known gap (hook header): when
+        gh pr view fails, the gh pr ready arm is released with no completion
+        marker, even under a live active marker. Must flip if the gap is
+        closed. Asserts gh pr view was invoked, so the allow comes from the
+        fail-open rather than an earlier release."""
         sid = "session-active-marker-ready-gh-failure"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2336,18 +2524,20 @@ class TestRequireReadyForReview:
             )
             == "allow"
         )
+        argv_log = fake_gh_no_pr.with_name("argv.log")
+        assert argv_log.exists(), (
+            "fake gh was never invoked: the hook did not reach gh pr view"
+        )
+        assert "pr view" in argv_log.read_text()
 
     def test_free_text_mention_of_pr_create_denies_under_live_marker(
         self, isolated_home, repo_on_feature_branch
     ):
-        """A live marker no longer exempts a Bash call that merely mentions
-        a gated command in free text -- the release now requires the
-        push-only conjunction to hold, and a commit message naming gh pr
-        create matches the same word-adjacency regex as the real command."""
+        """A live marker does not exempt a Bash call that merely mentions a
+        gated command in free text: a commit message naming gh pr create
+        matches the same word-adjacency regex as the real command."""
         sid = "session-free-text-mention"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        (marker_dir / sid).write_text(str(os.getpid()))
+        seed_live_active_marker(isolated_home, sid)
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -2359,19 +2549,33 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    def test_free_text_mention_of_pr_ready_denies_under_live_marker(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A free-text `gh pr ready` mention under a live marker reaches the
+        gh pr view existence check, unlike a create mention, and denies at
+        the completion-marker check when a PR exists."""
+        sid = "session-free-text-ready-mention"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    'git commit -m "gate gh pr ready on a marker"', session_id=sid
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
     def test_denied_pr_create_still_advances_active_marker_mtime(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """GH-869 non-regression: the active-marker refresh must survive the
-        reorder on the deny path too, not only on an allow. A non-draft gh
-        pr create denies, since the per-arm release excludes this arm, but
-        the marker's mtime must still advance, since the touch happens
-        before that release decision."""
+        """GH-869 non-regression: a denied gh pr create still refreshes the
+        active marker's mtime, because the touch happens before the release
+        decision."""
         sid = "session-deny-still-refreshes"
-        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
-        marker_dir.mkdir(parents=True)
-        marker = marker_dir / sid
-        marker.write_text(str(os.getpid()))
+        marker = seed_live_active_marker(isolated_home, sid)
         old_time = time.time() - 300
         os.utime(marker, (old_time, old_time))
         assert (

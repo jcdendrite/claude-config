@@ -35,11 +35,12 @@
 #
 # Bypass cases (allow without checking marker):
 # - git push, when the skill is currently running (active marker live for
-#   this session). The marker check itself precedes the command-shape,
-#   repo-resolution, and default-branch checks, but the release decision is
-#   evaluated after the command-shape scan classifies which gated commands
-#   are present — gh pr ready and gh pr create are excluded outright even
-#   under a live marker.
+#   this session). A live marker releases git push only.
+#   - gh pr ready and gh pr create, in the shapes the command-shape scan
+#     recognizes (see Known gaps), are excluded even under a live marker.
+#   - The marker check and refresh precede the command-shape,
+#     repo-resolution, and default-branch checks.
+#   - The release decision follows the command-shape scan.
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
 # - The next three are judged per git-push fragment, so a bypassable push
 #   chained ahead of a gated fragment does not exempt it:
@@ -80,24 +81,36 @@
 #   for why that guess is accepted rather than closed). For this hook
 #   specifically, a coincidental branch-name match can skip the entire
 #   review/test/lint gate on a push, tracked as GH-899.
-# - gh pr ready's gh pr view existence check fails open, and that path is
-#   newly reachable during an active-marker session. A transient gh
-#   failure releases that arm with no completion marker.
-# - A git pull in any session swaps this hook under a concurrent session
-#   still holding the old skill text. That run's PR creation denies once,
-#   and the deny message names the recovery.
-# - The fragment scan now runs on every Bash call for the whole
-#   live-marker window, not only at the terminal command — cheap, local
-#   work with no network call. gh pr view is newly reachable during a
-#   live-marker session for genuine gh pr ready invocations only, not
-#   scaling with every Bash call.
-# - The completion marker is written before the artifact it authorizes
-#   exists, so a failed gh pr create leaves a valid marker and no PR. That
-#   marker authorizes any gh pr create/gh pr ready at that HEAD until HEAD
-#   moves, not only the retry.
+# - If gh pr view fails, times out, or is missing from the hook's PATH, the
+#   gh pr ready arm is released with no completion marker.
+# - After the repo and default-branch checks, gh pr view runs for any command
+#   text matching `gh pr ready`, including a free-text mention, unless a
+#   `gh pr create` is also detected.
+# - The fragment scan runs on every Bash call. Each colon-refspec-shaped or
+#   `--tags` push fragment rescans the whole command text, so the worst case
+#   is fragment count times command length.
+# - The completion marker is written before the PR exists, so a failed
+#   gh pr create leaves a valid marker and no PR.
+# - A completion marker persists across sessions and authorizes whenever HEAD
+#   equals its recorded SHA.
+# - A completion marker is keyed on the repo, not the branch, so it also
+#   covers any other branch tip at that SHA.
+# - A completion marker authorizes git push, gh pr create, and gh pr ready
+#   at its HEAD, not only the create that follows it.
+# - The completion marker names the cwd's HEAD at hook time, not the target
+#   of the command, so a create chained after a commit, checkout, or cd is
+#   authorized by the marker recorded before it.
+# - The gh pr create/gh pr ready detection misses shapes including these, so a
+#   live marker still releases a push chained with one of them:
+#   - a glued single `&` (`git push origin feature &gh pr create`)
+#   - a redirect adjacent to the subcommand (`gh pr create>/dev/null`)
+#   - process substitution (`cat <(gh pr create)`)
+#   - a nested subshell (`( (gh pr create) )`)
+#   - a case-variant command name (`GH pr create`)
+#   - a backslash-newline continuation (`gh pr \<newline>create`)
 # - A Bash call that merely mentions gh pr create or gh pr ready in free
-#   text — a commit message, an echo — is denied during a gate run, same
-#   as outside one. The recovery is rewording, not more review work.
+#   text, such as a commit message or an echo, is denied whether or not a
+#   gate run is active. The recovery is rewording it.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -127,13 +140,15 @@
 #   knowingly evasive engineer. Untrusted content ingested mid-session can
 #   persuade the agent's own tool call into an evasive shape without the
 #   agent intending to evade anything.
-# - Threat model differs by arm. The create and ready arms are gated on a
-#   marker naming the artifact (the completion marker's stored HEAD), so
-#   releasing either takes an explicit, false attestation. The push arm is
-#   released by the bare fact that the active marker is live, so it stays
-#   a cooperative mistake-catcher rather than a barrier to a deliberately
-#   steered agent — the marker's session-wide, repo-agnostic refresh
-#   leaves it fully open for the practical duration of the session.
+# - Threat model differs by arm.
+#   - For a create or ready command the scan recognizes, and absent the
+#     bypass cases and Known gaps above, release requires the completion
+#     marker's stored HEAD, so it takes an explicit, false attestation.
+#   - The push arm is released by the bare fact that the active marker is
+#     live, so it stays a cooperative mistake-catcher rather than a barrier
+#     to a deliberately steered agent.
+#   - The active marker's session-wide, repo-agnostic window is described in
+#     docs/hooks.md § "Gate deadlock recovery".
 # - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 #   self-merge, plus CI rerunning the full suite on push. That backstop
 #   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
@@ -147,13 +162,8 @@
 #   push/pr-create/pr-ready commands, so any latent portability gap in that
 #   shared path is now fully exposed, not reached only by a narrow slice of
 #   commands.
-# - The active-marker bypass check now also runs before that same
-#   command-shape scan, so its cost is paid on every Bash call during an
-#   active /ready-for-review run, not only at the terminal push/PR command.
-#   The release itself is narrower than the check's frequency: it fires
-#   only for the push arm, so a live marker's per-call cost is paid on
-#   every Bash call, but a create or ready command reaches the marker
-#   check below on every call without the check ever releasing it.
+# - The active-marker check runs on every Bash call, before the
+#   command-shape scan. It releases only `git push`.
 
 set -uo pipefail
 
@@ -341,7 +351,7 @@ fi
 # for a session already mid-gate rather than telling it to start over.
 ACTIVE_MARKER_NOTE=""
 if $ACTIVE_MARKER_LIVE; then
-  ACTIVE_MARKER_NOTE=" A live /ready-for-review active marker releases git push only, not this command — finish the gate's remaining steps and run \`~/.claude/scripts/marker.sh write ready-for-review\` rather than re-invoking the skill from the start. If this command doesn't actually create or ready a PR — a commit message or echo that only mentions one — the fix is rewording it, not more review work."
+  ACTIVE_MARKER_NOTE=" A live /ready-for-review active marker releases git push only, not this command, so continue the skill from its first unfinished step. Run \`~/.claude/scripts/marker.sh write ready-for-review\` only after steps 1-6 ran to completion at the current HEAD. If HEAD moved since, re-run steps 2-6 first. A dispatched subagent must report this denial to its caller instead of writing the marker, and that rule overrides the earlier do-not-ask-the-user, proceed guidance. If this command only mentions a gated command in free text, such as in a commit message or an echo, reword it. A session holding an abandoned active marker that is not running the skill can end it with \`~/.claude/scripts/marker.sh deactivate ready-for-review\`, which attests nothing."
 fi
 
 # Are we in a git repo?

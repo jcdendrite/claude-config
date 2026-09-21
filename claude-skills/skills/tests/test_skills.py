@@ -5353,36 +5353,68 @@ class TestCodeReviewRippleCarryForwardPin:
 
 _READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
 
-# Step 7's "Do NOT write the completion marker if" bullet naming the
-# halt-on-fail steps, from ready-for-review/SKILL.md. The same step
-# renumbering that required updating _PINNED_HALT_DEFERS_CLAUSE and
-# _PINNED_CONTEXT_BUDGET_CLAUSES also renumbers this bullet's step list, so
-# it is pinned independently rather than relying on either of those to
-# catch a miss here.
+# Step 7's "Do NOT write the completion marker if" bullets, from
+# ready-for-review/SKILL.md: the halt-on-fail step list, the closed list of
+# outcomes that count as complete without full execution (whose last sentence
+# is the missing-body-file case), and the dispatched-subagent rule.
 _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE = (
     "Any halt-on-fail step (1, 2, 3, 4, 6) produced findings that weren't "
     "fixed in this session."
 )
+_PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
+    "Any of steps 1–6 did not run, or ended in an outcome its own text does "
+    "not define as complete. Only these outcomes count as complete without "
+    "full execution: step 2's scope-exception skip, step 2's skip of "
+    "undefined commands, step 3's reported cache hit, step 4's empty-list "
+    "no-op, and step 5's already-in-sync report (see Completion)."
+)
+_PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE = (
+    "With no PR open, step 5 is also incomplete unless it reported a "
+    "`BODY_FILE:` path whose file exists and is non-empty; that file check "
+    "applies only to a reported path when no PR is open."
+)
+_PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE = (
+    "A dispatched subagent never writes this marker; it reports to its caller."
+)
 
 
 class TestReadyForReviewCompletionMarkerHaltStepList:
-    """Pin step 7's halt-on-fail step-number list in the "Do NOT write the
-    completion marker if" bullet, so a future step renumbering that updates
-    _PINNED_HALT_DEFERS_CLAUSE and _PINNED_CONTEXT_BUDGET_CLAUSES but misses
-    this bullet fails CI instead of drifting silently.
+    """Pin step 7's "Do NOT write the completion marker if" bullets against
+    the live SKILL.md text: the halt-on-fail step numbers, the closed list of
+    outcomes that count as complete, the no-body-file case, and the
+    dispatched-subagent rule.
     """
 
-    def test_completion_marker_halt_step_list_matches_live_text(self) -> None:
+    @pytest.mark.parametrize(
+        "pinned_clause",
+        [
+            _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE,
+            # The closed-list bullet ends with the no-body-file sentence, so the
+            # whole bullet is pinned as one string.
+            _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE
+            + " "
+            + _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE,
+        ],
+        ids=[
+            "halt_step_list",
+            "closed_complete_outcomes",
+            "no_body_file",
+            "subagent_never_writes",
+        ],
+    )
+    def test_completion_marker_do_not_write_bullet_matches_live_text(
+        self, pinned_clause: str
+    ) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP7_HEADING
         )
-        pinned_text = " ".join(
-            _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE.split()
-        )
+        pinned_text = " ".join(pinned_clause.split())
         _assert_pinned_clause_right_bounded(
             pinned_text,
             raw_section,
-            context="ready-for-review/SKILL.md: step 7's halt-on-fail step list no longer matches its pinned clause.",
+            context="ready-for-review/SKILL.md: a step 7 do-not-write bullet does not match its pinned clause.",
         )
 
 

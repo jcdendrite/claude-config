@@ -1709,14 +1709,9 @@ def test_ready_for_review_missing_command_allowed() -> None:
 
 
 def test_ready_for_review_writes_completion_marker_before_creating_the_pr() -> None:
-    """Static ordering pin for the active-bypass reorder: SKILL.md's
-    record-completion fixture (the completion-marker write) must precede
-    the PR-create step's text, which must precede the deactivate-gate
-    fixture (session cleanup). All three landmarks are stable anchors —
-    two are fixture comments this suite already re-reads, and the create
-    command's invocation text is pinned literal by the redaction gate the
-    skill itself cites — so this is an ordering check over fixed anchors,
-    not a structural assertion over prose."""
+    """SKILL.md orders the completion-marker write before the PR create and
+    the create before the deactivate, the hygiene recheck before the marker
+    step, and the do-not-write list before the write."""
     text = (_SKILLS_DIR / "ready-for-review" / "SKILL.md").read_text()
     record_completion_pos = text.index("HOOK_TEST_FIXTURE: record-completion")
     create_anchor = "gh pr create --title"
@@ -1729,9 +1724,21 @@ def test_ready_for_review_writes_completion_marker_before_creating_the_pr() -> N
     deactivate_pos = text.index("HOOK_TEST_FIXTURE: deactivate-gate")
     assert record_completion_pos < create_pos < deactivate_pos, (
         "ready-for-review/SKILL.md must record gate completion before "
-        "creating the PR, and create the PR before deactivating the "
-        "session — the ordering the active-bypass scoping change relies on"
+        "creating the PR, and create the PR before deactivating the session"
     )
+    hygiene_heading = "## 6. Final hygiene recheck"
+    hygiene_pos = text.find(hygiene_heading)
+    assert hygiene_pos != -1, (
+        f"{hygiene_heading!r} heading not found -- the hygiene step was "
+        "retitled or moved."
+    )
+    assert (
+        hygiene_pos < record_completion_pos
+    ), "the final hygiene recheck must precede the completion-marker step"
+    assert (
+        text.index("**Do NOT write the completion marker if:**")
+        < record_completion_pos
+    ), "step 7's do-not-write list must precede the completion-marker write"
 
 
 @pytest.mark.timing

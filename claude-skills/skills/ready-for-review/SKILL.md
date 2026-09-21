@@ -129,6 +129,8 @@ Steps 3–5 may have produced new commits or body writes. Reconfirm:
 
 - Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session
   (a DEFERred or *keep current text* finding counts as resolved).
+- Any of steps 1–6 did not run, or ended in an outcome its own text does not define as complete. Only these outcomes count as complete without full execution: step 2's scope-exception skip, step 2's skip of undefined commands, step 3's reported cache hit, step 4's empty-list no-op, and step 5's already-in-sync report (see Completion). With no PR open, step 5 is also incomplete unless it reported a `BODY_FILE:` path whose file exists and is non-empty; that file check applies only to a reported path when no PR is open.
+- A dispatched subagent never writes this marker; it reports to its caller.
 - The user asked you to present findings without finishing the gate.
 - This session deferred via step 1's context-budget check.
 - You are not in a git repository, or the branch has no PR and no remote tracking (nothing to gate).
