@@ -213,9 +213,10 @@ fi
 # contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
 # plan file that is tracked and identical to GATE_DIFF_BASE (HEAD outside any
 # trusted in-progress state) is historical and does not contribute to the
-# hash. Empty result means no plan is active -- gate disarmed, covering an
-# absent .claude/plans/, one containing only historical plans, and a plan
-# file a trusted in-progress state brought in untouched.
+# hash. Empty result means no plan is active -- gate disarmed. Covers:
+#   - no .claude/plans/ directory
+#   - only historical plans present
+#   - a plan file a trusted in-progress state brought in untouched
 # Keep this a top-level assignment. Inside a function, `local VAR=$(...)`
 # reports `local`'s exit status (always 0) and would mask the failure; a
 # refactor that moves this must split the declaration from the assignment.

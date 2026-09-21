@@ -2793,16 +2793,13 @@ def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo")
 
 
 def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") -> Path:
-    """The Write-only reproduction of the forged-anchor residual: no `git
-    merge` and no `commit-tree` at all, and no object the actor did not
-    already have. `MERGE_HEAD` and `refs/remotes/origin/main` are
-    hand-written straight to an existing sibling-branch commit's OID -- the
-    way another worktree's own WIP plan draft already sits in this repo's
-    object store -- and the tracked plan is edited to that commit's own
-    version of the same path. Complements
-    _build_forged_anchor_invisible_plan_edit, whose `git merge --no-ff
-    --no-commit` construction this fixture pins as not the only route to the
-    same accepted residual. See
+    """Reproduces the forged-anchor residual with Write/Edit only: no `git
+    merge`, no `commit-tree`, no object the actor didn't already have.
+    `MERGE_HEAD` and `refs/remotes/origin/main` are hand-written to an
+    existing sibling-branch commit's OID, and the tracked plan is edited to
+    that commit's version of the same path. Complements
+    `_build_forged_anchor_invisible_plan_edit`'s `git merge --no-ff
+    --no-commit` construction; see
     docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
     repo = tmp_path / name
     repo.mkdir()
@@ -2837,6 +2834,9 @@ def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") 
     )
 
     (plans_dir / "plan.md").write_text(sibling_content)
+    _assert_trusted_state_with_empty_active_plan_set(
+        repo, "MERGE_HEAD", ".claude/plans/plan.md"
+    )
     return repo
 
 
@@ -2860,6 +2860,23 @@ class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
             == "allow"
         )
 
+    def test_forged_anchor_plan_edit_local_plan_edit_still_denies(self, isolated_home, tmp_path):
+        """Guards against test_forged_anchor_plan_edit_allows_unrelated_write
+        above passing only because the gate is simply off for this fixture's
+        state: a plan file edited further after the forged anchor is built
+        stays active relative to the base and still demands a review."""
+        repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
+        plan_path = repo / ".claude" / "plans" / "plan.md"
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_hand_forged_anchor_no_real_merge_allows_unrelated_write(
         self, isolated_home, tmp_path
     ):
@@ -2877,6 +2894,25 @@ class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
                 cwd=repo,
             )
             == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_local_plan_edit_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Guards against test_hand_forged_anchor_no_real_merge_allows_unrelated_write
+        above passing only because the gate is simply off for this fixture's
+        state: a plan file edited further after the forged anchor is built
+        stays active relative to the base and still demands a review."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        plan_path = repo / ".claude" / "plans" / "plan.md"
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
         )
 
 
@@ -2915,7 +2951,9 @@ def _push_upstream_plan_addition(tmp_path: Path, bare: Path) -> None:
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
 
 
-def _assert_trusted_state_with_empty_active_plan_set(repo: Path, ref_file: str) -> None:
+def _assert_trusted_state_with_empty_active_plan_set(
+    repo: Path, ref_file: str, plan_rel_path: str
+) -> None:
     """Asserts a fixture's own preconditions by invoking the same primitives
     the hook does, rather than inferring them from git's exit codes. A
     fixture that reaches no admissible anchor leaves the base empty, and the
@@ -2924,8 +2962,8 @@ def _assert_trusted_state_with_empty_active_plan_set(repo: Path, ref_file: str) 
     assert (repo / ".git" / ref_file).exists(), (
         f"fixture setup never left {ref_file} in place"
     )
-    assert (repo / _FIXTURE_PLAN_REL).exists(), (
-        f"fixture setup never left the plan file at {_FIXTURE_PLAN_REL} in the worktree"
+    assert (repo / plan_rel_path).exists(), (
+        f"fixture setup never left the plan file at {plan_rel_path} in the worktree"
     )
     base_result = subprocess.run(
         ["bash", "-c", f'. "{LIB_SH}"; _lib_gate_diff_base "$1"', "_gate_diff_base", str(repo)],
@@ -2955,7 +2993,7 @@ def _build_clean_merge_with_untouched_upstream_plan(tmp_path: Path) -> Path:
     subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
     merge_result = _git(clone, "merge", "--no-ff", "--no-commit", "-q", "origin/main")
     assert merge_result.returncode == 0, merge_result.stdout + merge_result.stderr
-    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD")
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD", _FIXTURE_PLAN_REL)
     return clone
 
 
@@ -2974,7 +3012,7 @@ def _build_cherry_pick_of_untouched_upstream_plan(tmp_path: Path) -> Path:
         clone, "cherry-pick", "-e", "origin/main", env_overrides={"GIT_EDITOR": "false"}
     )
     assert pick_result.returncode != 0, pick_result.stdout + pick_result.stderr
-    _assert_trusted_state_with_empty_active_plan_set(clone, "CHERRY_PICK_HEAD")
+    _assert_trusted_state_with_empty_active_plan_set(clone, "CHERRY_PICK_HEAD", _FIXTURE_PLAN_REL)
     return clone
 
 
@@ -3002,7 +3040,7 @@ def _build_conflicted_merge_with_historical_plan(tmp_path: Path) -> Path:
     subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
     merge_result = _git(clone, "merge", "-q", "origin/main")
     assert merge_result.returncode != 0, merge_result.stdout + merge_result.stderr
-    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD")
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD", _FIXTURE_PLAN_REL)
     return clone
 
 
@@ -3088,12 +3126,12 @@ class TestRequirePlanReviewEmptyActiveSetDisarms:
         self, plan_review_home, tmp_path
     ):
         """ExitPlanMode arm of test_merge_of_upstream_plan_allows_unrelated_write
-        above: the empty active set disarms the gate for ExitPlanMode too,
+        above. The empty active set disarms the gate for ExitPlanMode too,
         not only Write. plan_file_path="" skips the plan-mode priority
-        branch and, unlike Write/Edit/MultiEdit, also skips the
-        Write-only fast-path guard entirely -- it reaches
-        _lib_active_plan_hash directly, a different exit site than the
-        Write arm's, converging on the same underlying primitive."""
+        branch. Unlike Write/Edit/MultiEdit, it also skips the Write-only
+        fast-path guard entirely, reaching _lib_active_plan_hash directly.
+        That is a different exit site than the Write arm's, converging on
+        the same underlying primitive."""
         repo = _build_clean_merge_with_untouched_upstream_plan(tmp_path)
         assert (
             run_hook(
@@ -3110,12 +3148,8 @@ class TestRequirePlanReviewEmptyActiveSetDisarms:
         """ExitPlanMode arm of
         test_hand_forged_anchor_no_real_merge_allows_unrelated_write
         (TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted,
-        above): the forged-anchor residual disarms the gate for
-        ExitPlanMode too, not only Write. plan_file_path="" skips the
-        plan-mode priority branch and, unlike Write/Edit/MultiEdit, also
-        skips the Write-only fast-path guard entirely -- it reaches
-        _lib_active_plan_hash directly, a different exit site than the
-        Write arm's, converging on the same underlying primitive."""
+        above) -- see test_merge_of_upstream_plan_allows_exitplanmode's
+        docstring for why plan_file_path="" reaches the same primitive."""
         repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
         assert (
             run_hook(
@@ -3143,7 +3177,18 @@ class TestRequirePlanReviewEmptyActiveSetDisarms:
         test_hand_forged_anchor_no_real_merge_allows_exitplanmode) passing only
         because the gate is simply off for ExitPlanMode during those states. A
         plan file the branch itself edited stays active relative to the base
-        and still demands a review, so ExitPlanMode is denied too."""
+        and still demands a review, so ExitPlanMode is denied too.
+
+        Covers only clean-merge and forged-anchor, not all four/five
+        fixtures. Past `_lib_gate_diff_base`, ExitPlanMode's deny decision
+        reads only whether the active set is empty, never which state
+        produced the base -- the same state-independence the Write-side
+        parametrization above relies on to cover only three arms instead of
+        a full state x conflict matrix. One representative "ordinary" state
+        (clean-merge) plus the one fixture unique to this test file
+        (forged-anchor) is therefore sufficient; cherry-pick and
+        conflicted-merge are already covered for state-independence by that
+        Write-side parametrization."""
         repo = build_fixture(tmp_path)
         plan_path = repo / plan_rel_path
         plan_path.write_text(plan_path.read_text() + "edited on this branch\n")

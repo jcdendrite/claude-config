@@ -575,11 +575,9 @@ _lib_active_plan_files() {
     }
   fi
 
-  # A plain `local enum_output=$(...)` would report `local`'s own exit
-  # status (always 0) instead of the pipeline's -- same hazard as the
-  # top-level assignment note in require-plan-review.sh's hash block.
-  # Splitting the declaration from the assignment surfaces the pipeline's
-  # own exit status instead.
+  # Declaration split from assignment for the same `local VAR=$(...)`
+  # exit-status-masking hazard documented at the top-level assignment note
+  # above require-plan-review.sh's CURRENT_HASH=$(...) hash-block line.
   # Command substitution is used rather than process substitution because a
   # process substitution's subshell exit status is invisible to a consuming
   # `read` loop.
