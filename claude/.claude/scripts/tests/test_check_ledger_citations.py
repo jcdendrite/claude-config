@@ -48,7 +48,7 @@ _ANCHORS_ONLY_IN_A_FENCE = (
 
 # One unique substring per RESIDUAL_CHECKLIST_ITEMS entry, keyed by a short id.
 _RESIDUAL_FRAGMENTS_BY_ID = {
-    "fabricated-row": "fabricated row carrying a real label passes",
+    "definition-not-a-real-row": "the citation and a line to receive it passes",
     "tag-provenance": "provenance",
     "outside-this-file": "outside this file",
     "fenced-citation": "fenced code block",
@@ -446,6 +446,89 @@ class TestCollectDefinedLabels:
         )
         assert _mod.find_orphan_citations(text) == [("c7", 3)]
 
+    def test_a_line_that_merely_looks_like_a_definition_within_a_ledger_region_still_resolves_as_a_residual(
+        self,
+    ):
+        """Residual (see RESIDUAL_CHECKLIST_ITEMS's first entry): any line
+        inside a section carrying an `anchors:` clause defines a label if it
+        starts with one, so an author who writes both a fabricated citation
+        and a bare line shaped like its definition defeats this check."""
+        text = (
+            "## Rows\n"
+            "\n"
+            "Row 1 [mechanism]: real content — anchors: root\n"
+            "\n"
+            "- S103: an unrelated ruff finding noted for context, not a ledger row\n"
+            "\n"
+            "## Later section\n"
+            "\n"
+            "This fabricated inference is cited as [S103] and should be an orphan.\n"
+        )
+        assert "s103" in _mod.collect_defined_labels(text)
+        assert _mod.find_orphan_citations(text) == []
+
+    def test_a_bare_entry_contiguous_within_a_real_givens_list_is_the_same_disclosed_residual(self):
+        """Residual, same class as above from a different angle: a fabricated
+        entry inserted directly within a real `Givens:` list still qualifies,
+        since the line itself -- not its position relative to a marker -- is
+        what this script reads."""
+        text = (
+            "## Approach\n"
+            "Givens:\n"
+            "- G1: widgets are immutable\n"
+            "- S103: an unrelated ruff finding, indistinguishable in position "
+            "from a real given\n"
+            "Row 1 [mechanism]: x — anchors: G1\n"
+        )
+        assert "s103" in _mod.collect_defined_labels(text)
+
+    def test_a_bare_entry_with_its_own_fabricated_anchors_clause_is_the_same_disclosed_residual(self):
+        """Residual, same class again: a bare entry carrying a fabricated
+        `anchors:` clause of its own is collected exactly as a real row is."""
+        text = (
+            "## Approach\n"
+            "Row 1 [mechanism]: x — anchors: root\n"
+            "- S103: an unrelated ruff finding — anchors: root\n"
+        )
+        assert "s103" in _mod.collect_defined_labels(text)
+
+    def test_bare_givens_block_defines_its_bare_g_labels(self):
+        """Regression pin: a bolded `**Givens:**` block's bare G-labels are
+        real corpus content (this exact shape -- a bolded marker with
+        unbolded label rows -- is the more common form across committed
+        plans) that a per-line leniency gate, tried and reverted across
+        three fix rounds, wrongly excluded -- section-scoping alone must
+        keep collecting them."""
+        text = (
+            "## Approach\n"
+            "Row 1 [mechanism]: x — anchors: root\n"
+            "\n"
+            "**Givens:**\n"
+            "- G1: widgets are cached in memory\n"
+            "\n"
+            "Row 2 [assumption]: y — anchors: G1\n"
+        )
+        assert "g1" in _mod.collect_defined_labels(text)
+        assert _mod.find_orphan_citations(text) == []
+
+    def test_bare_mechanism_row_with_its_own_anchors_clause_resolves(self):
+        """Regression pin: a bare mechanism/assumption row carrying its own
+        `anchors:` clause (the exact shape a real corpus plan uses -- see
+        `relocate-global-claude-md.md`'s M1-M4) is real content a per-line
+        leniency gate, tried and reverted across three fix rounds, wrongly
+        excluded -- section-scoping alone must keep collecting it."""
+        text = (
+            "## Approach\n"
+            "- M1: evict widgets on write, not on read — anchors: row4, row5\n"
+            "Row 4 [mechanism]: x — anchors: root\n"
+            "Row 5 [assumption]: y — anchors: row4\n"
+            "\n"
+            "## Later section\n"
+            "This cites [M1] again.\n"
+        )
+        assert "m1" in _mod.collect_defined_labels(text)
+        assert _mod.find_orphan_citations(text) == []
+
     def test_anchors_line_before_the_first_heading_makes_the_preamble_a_ledger_region(self):
         text = "Row 1 [mechanism]: cache widgets — anchors: root — y\n\n## Later\nprose\n"
         assert _mod.collect_defined_labels(text) == {"row1"}
@@ -619,7 +702,7 @@ class TestFindCitations:
         bracketed-citation site tolerates) or a homoglyph letter inside a
         citation is not recognized, so the citation itself is not checked."""
         text = _CLEAN_LEDGER + f"The invalidation path is covered by {citation_text} as well.\n"
-        assert all(token != "g7" for token, _ in _mod.find_citations(text))
+        assert _mod.find_citations(text) == [("row1", 2), ("row1", 3), ("row2", 3)]
 
     def test_escaped_backtick_pairs_with_a_later_span_and_hides_a_citation(self):
         """Residual: `_strip_inline_spans_in_line` has no backslash-escape
@@ -628,6 +711,14 @@ class TestFindCitations:
         between them."""
         text = _CLEAN_LEDGER + "A quoted literal \\` here and see row 9 for detail` more text.\n"
         assert _mod.find_citations(text) == [("row1", 2), ("row1", 3), ("row2", 3)]
+
+    def test_row_citation_inside_a_hard_wrapped_inline_span_is_read_as_live(self):
+        """Residual: Markdown reads a code span's opener and closer as one
+        span even when they sit on different lines, but `strip_inline_spans`
+        never crosses a line, so an opener with no closer on its own line
+        leaves the next line's content unquoted and its citation live."""
+        text = _CLEAN_LEDGER + "`a code span that wraps\nonto a second line, citing row 9 here`\n"
+        assert _mod.find_citations(text) == [("row1", 2), ("row1", 3), ("row2", 3), ("row9", 5)]
 
     def test_plural_row_word_with_bare_numbers_yields_each_label(self):
         text = "## Approach\nRow 3 [mechanism]: x — anchors: rows 1, 2]\n"
@@ -655,7 +746,7 @@ class TestFindCitations:
 
     def test_anchors_clause_inside_a_fenced_block_is_not_a_citation(self):
         text = "## Approach\nRow 1 [mechanism]: x — anchors: root\n```\nanchors: row99\n```\n"
-        assert all(token != "row99" for token, _ in _mod.find_citations(text))
+        assert _mod.find_citations(text) == [("row1", 2)]
 
     def test_external_lint_and_checklist_ids_in_prose_are_not_citations(self):
         """Regression pin: S103, SC1, and B5 are external lint codes and

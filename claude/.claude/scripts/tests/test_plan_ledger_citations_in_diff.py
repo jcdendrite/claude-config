@@ -107,9 +107,19 @@ def _orphan_messages(plan_files: list[Path]) -> list[str]:
             plan_text = plan_file.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError as exc:
             pytest.fail(f"{relative_path} is not valid UTF-8: {exc}", pytrace=False)
+        # Mirrors check-ledger-citations.py's own main() catch-all, so a bug in
+        # the shared parsing functions surfaces here as a named failure too,
+        # rather than a raw pytest traceback.
+        try:
+            orphans = _check_ledger_citations.find_orphan_citations(plan_text)
+        except Exception as exc:
+            pytest.fail(
+                f"{relative_path}: unexpected {type(exc).__name__} while checking ledger citations: {exc}",
+                pytrace=False,
+            )
         messages.extend(
             f"{relative_path}:{line}: citation '{token}' resolves to no defined ledger label"
-            for token, line in _check_ledger_citations.find_orphan_citations(plan_text)
+            for token, line in orphans
         )
     return messages
 
@@ -161,6 +171,27 @@ class TestOrphanMessages:
             _orphan_messages([clean_plan, bad_plan])
 
         assert "bad-encoding-plan.md is not valid UTF-8" in str(failure.value)
+
+    def test_find_orphan_citations_raising_fails_naming_the_file_not_a_raw_traceback(
+        self, tmp_path, monkeypatch
+    ):
+        """Mirrors check-ledger-citations.py main()'s own catch-all: a bug in
+        the shared parsing functions must surface as a named pytest failure
+        here too, not an uncaught traceback."""
+        plan_file = tmp_path / "plan-that-crashes-the-checker.md"
+        plan_file.write_text("## Ledger\nanchors: root\n", encoding="utf-8")
+
+        def raise_value_error(plan_text):
+            raise ValueError("simulated defect")
+
+        monkeypatch.setattr(_check_ledger_citations, "find_orphan_citations", raise_value_error)
+
+        with pytest.raises(pytest.fail.Exception) as failure:
+            _orphan_messages([plan_file])
+
+        assert "plan-that-crashes-the-checker.md" in str(failure.value)
+        assert "ValueError" in str(failure.value)
+        assert "simulated defect" in str(failure.value)
 
     def test_hostile_valid_utf8_plan_path_yields_one_inert_ascii_message(self, tmp_path, monkeypatch):
         """No file is created: the read is stubbed, so the path only has to

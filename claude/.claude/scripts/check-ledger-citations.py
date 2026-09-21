@@ -50,7 +50,9 @@ ALWAYS_RESOLVING_LABELS = frozenset({"root", "givens"})
 
 # Not a truth claim: each item is something a zero exit says nothing about.
 RESIDUAL_CHECKLIST_ITEMS = (
-    "whether a defined row's content is true (a fabricated row carrying a real label passes)",
+    "whether a defined label belongs to a real ledger row: any line inside a section carrying "
+    "an `anchors:` clause defines a label if it starts with one, so an author who writes both "
+    "the citation and a line to receive it passes",
     "whether a row's tag matches its actual provenance",
     "citations to sources outside this file (file:line, doc sections, ticket IDs)",
     "any citation inside a fenced code block, which is treated as quoted rather than asserted",
