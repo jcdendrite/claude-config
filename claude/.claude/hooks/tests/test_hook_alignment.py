@@ -719,18 +719,11 @@ def test_subagentpromptcachettl_stays_unset_in_stow_source_settings() -> None:
 
 
 def test_promptcachettl_stays_unset_in_repo_local_settings() -> None:
-    """Guards against mirroring the stow-source promptCacheTtl flip here.
-
-    `attribution.sessionUrl` ships in both the stow-source and repo-local
-    settings files because it's a universal privacy default every
-    contributor benefits from. `promptCacheTtl` is not that shape: it's
-    scoped to this machine's own transcript corpus and billing regime, per
+    """Guards against mirroring the machine-scoped `promptCacheTtl` verdict
+    into this repo's contributor-shared settings; see
     docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md's opening
-    paragraph. A future contributor mirroring it into this repo-local
-    `.claude/settings.json` by analogy to attribution.sessionUrl's
-    both-files pattern would silently impose one engineer's single-corpus
-    verdict on every contributor. This test pins the absence so that
-    regression can't land silently.
+    paragraph for why this isn't a universal default like
+    `attribution.sessionUrl`.
     """
     settings = json.loads(_REPO_LOCAL_SETTINGS_PATH.read_text())
     assert "promptCacheTtl" not in settings, (

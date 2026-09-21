@@ -296,6 +296,13 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 |---|---|---|
 | Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while every other account on the byte-identical stowed harness shows non-zero. The earlier "Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever" row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |
 
+**2026-09-20 follow-up:** the "nothing in `settings.json`, hooks, or env
+vars exposes this field" half of the row above is superseded — `promptCacheTtl`
+now exposes the main-conversation bucket's TTL directly in `settings.json`, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The row's account-level-tier-difference finding (plan tier or usage-overage
+state driving the observed 1h/5m split) stands unchanged.
+
 ## From `token-cost-reduction.md` — "Token cost reduction: bound context growth"
 
 | Lever | Verdict | Measured reason |
@@ -421,6 +428,14 @@ existing per-event timestamps. The row's broader claim — that a general
 subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
 stays open. See the `reviewer-instance-continuation.md` section below for
 the corrected pricing this unlocks.
+
+**2026-09-20 follow-up:** `promptCacheTtl` is now a second repo-tracked
+cache-duration control, distinct from the `experimental.cacheTtl` this row
+evaluates — a top-level `settings.json` key for the main-conversation
+bucket, not subagent frontmatter. It's set to `"5m"` for that bucket, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The row's `experimental.cacheTtl`/subagent-bucket half and its
+`experimental.`-namespace objection stand unchanged.
 
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
