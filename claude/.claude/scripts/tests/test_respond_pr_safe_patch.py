@@ -2,7 +2,7 @@
 
 The gh CLI is replaced by a PATH shim that answers GET
 (`gh api repos/<owner>/<repo>/pulls/comments/<id> --jq '.body'`) and PATCH
-(`gh api ... -X PATCH -F body=<value>`) calls against a synthetic PR review
+(`gh api ... -X PATCH -f body=<value>`) calls against a synthetic PR review
 comment, and records every invocation it receives so tests can assert on
 call history -- not just the script's exit code -- for the refusal path's
 most important property: the PATCH is never even attempted.
@@ -144,21 +144,19 @@ class TestUsageError:
 
 
 class TestInvalidArgumentShape:
-    """A `..`-segment or non-numeric argument is rejected before any gh call
-    -- closes the path-traversal gap where an unvalidated $1/$2 could
-    redirect the PATCH to a different repo or comment than intended."""
+    """A malformed repo or comment-id argument is rejected before any gh
+    call. The shape matrix lives in test_respond_pr_lib.py; these cases
+    prove the script's wiring to it."""
 
-    @pytest.mark.parametrize("repo", ["owner/repo/../../other-org/other-repo", "owner", "owner/repo/extra"])
-    def test_invalid_repo_shape_no_gh_calls(self, tmp_path, fake_gh, repo):
+    def test_invalid_repo_shape_no_gh_calls(self, tmp_path, fake_gh):
         env, call_log = fake_gh({})
-        result = _run_script(tmp_path, env, [repo, "42"], input_text="body\n")
+        result = _run_script(tmp_path, env, ["owner/repo/../../other-org/other-repo", "42"], input_text="body\n")
         assert result.returncode == 2
         assert _read_calls(call_log) == []
 
-    @pytest.mark.parametrize("comment_id", ["42/../../999", "abc", "-1"])
-    def test_invalid_comment_id_shape_no_gh_calls(self, tmp_path, fake_gh, comment_id):
+    def test_invalid_comment_id_shape_no_gh_calls(self, tmp_path, fake_gh):
         env, call_log = fake_gh({})
-        result = _run_script(tmp_path, env, ["owner/repo", comment_id], input_text="body\n")
+        result = _run_script(tmp_path, env, ["owner/repo", "42/../../999"], input_text="body\n")
         assert result.returncode == 2
         assert _read_calls(call_log) == []
 
@@ -166,36 +164,17 @@ class TestInvalidArgumentShape:
 class TestEmptyStdin:
     """A caller that omits the body (e.g. drops the heredoc) must not fall
     through to a PATCH with an empty body -- exit 2, same class as the argv
-    usage errors, with no gh call at all."""
+    usage errors, with no gh call at all. The blank-body matrix lives in
+    test_respond_pr_lib.py; this case proves the script's wiring to it. The
+    whitespace-only input also proves the script treats a blank body, not
+    merely a zero-length one, as empty."""
 
-    def test_empty_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh):
+    @pytest.mark.parametrize("blank_stdin", [None, "  \n\t"], ids=["no-stdin", "whitespace-only"])
+    def test_blank_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh, blank_stdin):
         env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=None)
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=blank_stdin)
         assert result.returncode == 2
         assert "empty" in result.stderr.lower()
-        assert _read_calls(call_log) == []
-
-    def test_explicit_empty_string_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh):
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="")
-        assert result.returncode == 2
-        assert _read_calls(call_log) == []
-
-    @pytest.mark.parametrize("whitespace_only_stdin", [" ", "\t"])
-    def test_whitespace_only_stdin_exits_two_no_gh_calls(self, tmp_path, fake_gh, whitespace_only_stdin):
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=whitespace_only_stdin)
-        assert result.returncode == 2
-        assert _read_calls(call_log) == []
-
-    def test_whitespace_only_stdin_exits_two_under_c_locale(self, tmp_path, fake_gh):
-        """[[:space:]] narrows to byte-wise ASCII matching under LC_ALL=C --
-        confirm the ASCII whitespace this guard exists for is still caught
-        even when the pattern's wider Unicode-aware coverage degrades."""
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        env = {**env, "LC_ALL": "C", "LANG": "C"}
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=" ")
-        assert result.returncode == 2
         assert _read_calls(call_log) == []
 
 
@@ -223,12 +202,26 @@ class TestOwnershipMismatchRefused:
         assert "/replies" in result.stderr
         assert _patch_calls(_read_calls(call_log)) == []
 
+    def test_marker_prefixed_replacement_does_not_authorize_patch_of_human_comment(self, tmp_path, fake_gh):
+        """Proves the ownership decision reads the fetched comment body, not
+        the replacement body: a human comment stays unpatchable even when
+        the replacement on stdin carries the ownership marker."""
+        env, call_log = fake_gh({"42": _HUMAN_BODY})
+        result = _run_script(
+            tmp_path, env, ["owner/repo", "42"], input_text="**[Claude Code]** corrected text\n",
+        )
+        assert result.returncode == 1
+        assert "/replies" in result.stderr
+        assert "ownership marker" not in result.stderr
+        assert _patch_calls(_read_calls(call_log)) == []
+
 
 class TestReplacementBodyMustPreserveMarker:
     """The replacement body must itself start with the marker when the
     target comment is already Claude-authored -- refuses to let a caller
     silently strip the ownership marker via the PATCH. Zero PATCH calls on
-    refusal, not just exit code 1."""
+    refusal, not just exit code 1. The marker-match matrix lives in
+    test_respond_pr_lib.py; this case proves the script's wiring to it."""
 
     def test_replacement_body_missing_marker_refused_no_patch(self, tmp_path, fake_gh):
         env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
@@ -236,38 +229,6 @@ class TestReplacementBodyMustPreserveMarker:
         assert result.returncode == 1
         assert "does not start with" in result.stderr
         assert "ownership marker" in result.stderr
-        assert _patch_calls(_read_calls(call_log)) == []
-
-    def test_replacement_body_exactly_bare_marker_is_allowed(self, tmp_path, fake_gh):
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[Claude Code]**")
-        assert result.returncode == 0
-        patches = _patch_calls(_read_calls(call_log))
-        assert len(patches) == 1
-        assert patches[0]["body"] == "**[Claude Code]**"
-
-    def test_replacement_body_with_marker_not_at_start_refused_no_patch(self, tmp_path, fake_gh):
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=" **[Claude Code]** corrected text\n")
-        assert result.returncode == 1
-        assert "does not start with" in result.stderr
-        assert "ownership marker" in result.stderr
-        assert _patch_calls(_read_calls(call_log)) == []
-
-    def test_replacement_body_wrong_case_marker_refused_no_patch(self, tmp_path, fake_gh):
-        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[claude code]** corrected text\n")
-        assert result.returncode == 1
-        assert "does not start with" in result.stderr
-        assert "ownership marker" in result.stderr
-        assert _patch_calls(_read_calls(call_log)) == []
-
-    def test_marker_prefixed_body_does_not_bypass_ownership_check(self, tmp_path, fake_gh):
-        env, call_log = fake_gh({"42": _HUMAN_BODY})
-        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[Claude Code]** corrected text\n")
-        assert result.returncode == 1
-        assert "/replies" in result.stderr
-        assert "ownership marker" not in result.stderr
         assert _patch_calls(_read_calls(call_log)) == []
 
 
@@ -292,7 +253,7 @@ class TestAllowPathPatchesExactCommentWithExactBody:
 class TestPatchFailureAfterOwnershipCheckPropagates:
     """A PATCH failure (auth/network/rate-limit) after the ownership check
     already passed still exits the script non-zero -- `set -e` isn't
-    swallowed by the case statement the PATCH call lives inside."""
+    swallowed by the `if` body the PATCH call lives inside."""
 
     def test_patch_failure_exits_nonzero(self, tmp_path, fake_gh):
         env, call_log = fake_gh({"7": _CLAUDE_CODE_BODY}, patch_exit=1)
@@ -328,7 +289,7 @@ class TestSpecialCharactersReachPatchUnexpanded:
     """A stdin body containing a backtick, a $VAR-shaped sequence, multi-line
     markdown, and an emoji trailer reaches the PATCH call byte-for-byte --
     the property the call site's quoted heredoc terminator protects, and
-    proof the script's own -F body="$BODY" doesn't reintroduce shell
+    proof the script's own -f body="$BODY" doesn't reintroduce shell
     re-expansion."""
 
     def test_shell_metacharacters_survive_unexpanded(self, tmp_path, fake_gh):

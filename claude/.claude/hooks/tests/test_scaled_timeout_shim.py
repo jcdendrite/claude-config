@@ -38,7 +38,7 @@ from helpers import (
 # directly at this module's scope would make pytest collect them a second
 # time under this file's own node-ID, alongside test_lib.py's.
 from . import test_lib
-from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, GHP_TOKEN, _stage
+from .test_deny_pii_in_commits import DENY_PII_IN_COMMITS_HOOK, DIFF_CALL_PREDICATE, GHP_TOKEN, _stage
 
 
 def _install_recording_real_timeout(monkeypatch, tmp_path: Path) -> None:
@@ -126,6 +126,111 @@ def test_regex_rejected_inputs_pass_through_unscaled_and_record_nothing(monkeypa
     assert caps_that_fired(bin_dir) == Counter(), (
         f"{raw_arg!r} should record nothing — the regex rejects it before any log write"
     )
+
+
+def _install_argv_echoing_real_timeout(monkeypatch, tmp_path: Path) -> None:
+    """Prepend a fake `timeout` to PATH that prints every argument it was
+    handed, exits 124 when its last argument is "__KILL__" (SIGTERM cap
+    kill), 143 when it is "__BUSYBOX_KILL__" (BusyBox SIGTERM cap kill), 137
+    when it is "__SIGKILL__" (SIGKILL grace), 128 when it is
+    "__PLAIN_NONZERO__" (an ordinary nonzero status, git's fatal 128), and 0
+    otherwise."""
+    fake_real_timeout_dir = tmp_path / "fake-real-timeout"
+    fake_real_timeout_dir.mkdir()
+    fake_timeout = fake_real_timeout_dir / "timeout"
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$@\"\n"
+        'last="${@: -1}"\n'
+        '[ "$last" = "__KILL__" ] && exit 124\n'
+        '[ "$last" = "__BUSYBOX_KILL__" ] && exit 143\n'
+        '[ "$last" = "__SIGKILL__" ] && exit 137\n'
+        '[ "$last" = "__PLAIN_NONZERO__" ] && exit 128\n'
+        "exit 0\n"
+    )
+    fake_timeout.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_real_timeout_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+@pytest.mark.parametrize(
+    ("last_argument", "expected_returncode", "expected_fired"),
+    [
+        ("true", 0, Counter()),
+        ("__KILL__", 124, Counter({"5 __KILL__": 1})),
+        ("__SIGKILL__", 137, Counter({"5 __SIGKILL__": 1})),
+        ("__BUSYBOX_KILL__", 143, Counter({"5 __BUSYBOX_KILL__": 1})),
+        ("__PLAIN_NONZERO__", 128, Counter()),
+    ],
+    ids=[
+        "completing",
+        "status-124-sigterm-kill",
+        "status-137-sigkill-after-grace",
+        "status-143-busybox-sigterm-kill",
+        "status-128-plain-nonzero-completes",
+    ],
+)
+def test_shim_scales_a_leading_kill_after_pair_and_logs_the_status(
+    monkeypatch, tmp_path, last_argument, expected_returncode, expected_fired
+):
+    """The shim strips a leading `-k <n>` pair before the duration-scaling
+    check runs, scales it by the same divisor, and re-attaches it ahead of
+    the scaled duration. A completing invocation is logged in both started and
+    completed; each cap-kill status (124 or 143 from a SIGTERM cap kill, 137
+    from the SIGKILL grace) is logged as started without completed. A plain
+    nonzero status outside that set (128) is logged as completed, so an
+    ordinary failing call is never counted as a cap firing."""
+    _install_argv_echoing_real_timeout(monkeypatch, tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    assert write_scaled_timeout_shim(bin_dir) is True
+
+    result = subprocess.run(
+        [str(bin_dir / "timeout"), "-k", "2", "5", last_argument], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == expected_returncode, repr(result)
+    assert result.stdout.splitlines()[:3] == ["-k", "0.666", "1.666"], (
+        f"expected the scaled grace ahead of the scaled duration, got {result.stdout!r}"
+    )
+    assert caps_that_fired(bin_dir) == expected_fired
+
+
+def test_shim_forwards_a_regex_rejected_duration_behind_a_kill_after_pair_unscaled(monkeypatch, tmp_path):
+    """A regex-rejected duration behind a `-k <n>` prefix reaches the real
+    binary with its grace intact."""
+    _install_argv_echoing_real_timeout(monkeypatch, tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    assert write_scaled_timeout_shim(bin_dir) is True
+
+    passthrough = subprocess.run(
+        [str(bin_dir / "timeout"), "-k", "2", "019", "true"], capture_output=True, text=True, check=False
+    )
+
+    assert passthrough.stdout.splitlines()[:3] == ["-k", "2", "019"], (
+        f"a regex-rejected duration behind a -k prefix must still reach the real binary "
+        f"with its grace intact, got {passthrough.stdout!r}"
+    )
+
+
+@pytest.mark.parametrize("raw_grace", ["08", "0.5", "2s", "0", "abc"])
+def test_shim_forwards_a_non_integer_kill_after_grace_unscaled(monkeypatch, tmp_path, raw_grace):
+    """Only a 1-9-leading integer grace is scaled: any other grace reaches
+    the real binary as given, while the duration still scales and is still
+    logged."""
+    _install_argv_echoing_real_timeout(monkeypatch, tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    assert write_scaled_timeout_shim(bin_dir) is True
+
+    result = subprocess.run(
+        [str(bin_dir / "timeout"), "-k", raw_grace, "5", "true"], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.splitlines()[:3] == ["-k", raw_grace, "1.666"], (
+        f"grace {raw_grace!r} should pass through unscaled ahead of the scaled duration, got {result.stdout!r}"
+    )
+    assert result.stderr == "", f"a rejected grace must not reach bash arithmetic, got stderr {result.stderr!r}"
 
 
 def test_multiple_invocations_are_counted_not_overwritten(monkeypatch, tmp_path):
@@ -222,16 +327,25 @@ class TestCapMarkersDetectNonFiringCap:
         call completes on its own rather than being killed. assert_cap_engaged
         must raise, with a message distinct from the never-invoked case below.
         This "completes, not killed" outcome depends on TIMEOUT_SCALE_DIVISOR
-        staying <= 4; see the comment above the git_timeout_shim call below."""
+        staying <= 4; see the comment above the git_timeout_shim call below.
+
+        `fake_output` makes the diff shim's completion observable: the hook
+        allows on the credential-free shim output and denies on the real
+        staged diff. The hook's other 5s-capped `git` calls also complete, so
+        the assert_cap_engaged message alone cannot tell a completed diff
+        shim from a predicate that never matched."""
         # sleep_seconds=1 only completes under the cap while TIMEOUT_SCALE_DIVISOR <= 4
         # (ceil(1/divisor) vs 5/divisor) -- a future divisor raise past 4 must re-derive this.
-        env = git_timeout_shim('[ "$1" = "diff" ]', sleep_seconds=1)
+        env = git_timeout_shim(DIFF_CALL_PREDICATE, fake_output="+no credential here", sleep_seconds=1)
         self._stage_credential(git_repo)
         with (
             pytest.raises(AssertionError, match="completed on its own"),
             assert_cap_engaged(tmp_path, production_cap=5),
         ):
-            run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
+            decision = run_hook(
+                DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env
+            )
+        assert decision == "allow", "the diff shim's sleep branch did not run, so the real staged diff was scanned"
 
     def test_never_invoked_raises_with_a_distinct_message(self, tmp_path):
         """The fail-closed property's own proof: a bin_dir where no shim
@@ -251,7 +365,7 @@ class TestCapMarkersDetectNonFiringCap:
         """The committed replacement for CUMULATIVE_DIFF_CAP_FLOOR_SECONDS's
         regression guarantee: a real 5s-cap kill must be rejected under the
         wrong production_cap and accepted under the right one."""
-        env = git_timeout_shim('[ "$1" = "diff" ]')
+        env = git_timeout_shim(DIFF_CALL_PREDICATE)
         self._stage_credential(git_repo)
 
         with pytest.raises(AssertionError), assert_cap_engaged(tmp_path, production_cap=15):
@@ -267,7 +381,7 @@ class TestCapMarkersDetectNonFiringCap:
         """The one property the three row-8 chained-call sites depend on
         with no other coverage: killed_calls compares exactly, not merely
         truthy."""
-        env = git_timeout_shim('[ "$1" = "diff" ]')
+        env = git_timeout_shim(DIFF_CALL_PREDICATE)
         self._stage_credential(git_repo)
 
         def _run_twice():

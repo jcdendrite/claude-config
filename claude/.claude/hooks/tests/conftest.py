@@ -9,6 +9,7 @@ per-test session id, not a fixed injected value; import it directly with
 """
 from __future__ import annotations
 
+import functools
 import os
 import shlex
 import shutil
@@ -22,6 +23,20 @@ from helpers import scaled_shim_sleep, symlink_hooks_lib_chain, write_scaled_tim
 # enough that a broken (uncapped) call site never returns before the
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
+
+
+@functools.cache
+def _real_timeout_is_gnu_coreutils() -> bool:
+    """True when the `timeout`/`gtimeout` that write_scaled_timeout_shim wraps
+    is GNU coreutils. BusyBox's has no `--version`, so its usage text lacks
+    the marker. Only the sigterm_immune cases depend on GNU behavior. This
+    guard skips them under a non-GNU timeout rather than fail misleadingly.
+    It does not make the rest of the suite BusyBox-supported."""
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if real_timeout is None:
+        return False
+    result = subprocess.run([real_timeout, "--version"], capture_output=True, text=True, check=False)
+    return "GNU coreutils" in result.stdout + result.stderr
 
 
 def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
@@ -108,6 +123,8 @@ def _write_conditional_sleep_shim(
     match_condition: str,
     fake_output: str | None = None,
     sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+    sigterm_immune: bool = False,
+    exit_status: int | None = None,
 ) -> None:
     """Write a fake `binary_name` under bin_dir that sleeps sleep_seconds
     (a production-cap-scale duration, scaled down by write_scaled_timeout_shim
@@ -120,9 +137,38 @@ def _write_conditional_sleep_shim(
 
     When `fake_output` is set, it replaces the exec-real-binary fallback
     after the sleep completes, so a broken cap is observably distinct from
-    a working one instead of both converging on the real binary's result."""
-    if sleep_seconds > 0 and write_scaled_timeout_shim(bin_dir):
-        sleep_seconds = scaled_shim_sleep(sleep_seconds)
+    a working one instead of both converging on the real binary's result.
+
+    sigterm_immune writes `trap '' TERM; exec sleep <n>` in place of a plain
+    `sleep <n>`.
+    A TERM disposition ignored via `trap ''` propagates to every command the
+    shell subsequently invokes, exec'd or not (bash(1)'s TRAP builtin).
+    The exec'd `sleep` therefore ignores `timeout`'s SIGTERM, and only the
+    `-k` grace-expiry SIGKILL can end it.
+    It is off by default, so every existing caller stays byte-identical.
+    It is mutually exclusive with fake_output, because the exec replaces this
+    shim's own process before any post-sleep block could run.
+
+    exit_status writes `exit <n>` in place of the sleep, so a matching call
+    fails at once with an arbitrary status and never engages the cap. It is
+    mutually exclusive with fake_output and sigterm_immune, which both
+    assume the shim sleeps."""
+    assert not (sigterm_immune and fake_output is not None), (
+        "sigterm_immune's exec makes the post-sleep fake_output block unreachable"
+    )
+    assert exit_status is None or (fake_output is None and not sigterm_immune), (
+        "exit_status replaces the sleep that fake_output and sigterm_immune both build on"
+    )
+    if exit_status is not None:
+        sleep_line = f"  exit {int(exit_status)}\n"
+    else:
+        if sleep_seconds > 0 and write_scaled_timeout_shim(bin_dir):
+            sleep_seconds = scaled_shim_sleep(sleep_seconds)
+        sleep_line = (
+            f"  trap '' TERM; exec sleep {sleep_seconds}\n"
+            if sigterm_immune
+            else f"  sleep {sleep_seconds}\n"
+        )
     post_sleep = (
         f"  echo {shlex.quote(fake_output)}\n  exit 0\n" if fake_output is not None else ""
     )
@@ -130,7 +176,7 @@ def _write_conditional_sleep_shim(
     fake_binary.write_text(
         f"#!/bin/bash\n"
         f"if {match_condition}; then\n"
-        f"  sleep {sleep_seconds}\n"
+        f"{sleep_line}"
         f"{post_sleep}"
         f"fi\n"
         f'exec {real_binary} "$@"\n'
@@ -169,6 +215,17 @@ def git_timeout_shim(tmp_path):
     `write_scaled_timeout_shim` scales it down when it writes the shim.
     Pass a larger value than `TIMEOUT_SHIM_SLEEP_SECONDS` to test a wider
     cap.
+
+    `install`'s optional `sigterm_immune` passes through to
+    _write_conditional_sleep_shim, for a regression test that needs the
+    grace-expiry SIGKILL path (exit 137) rather than the ordinary
+    SIGTERM-honored one (exit 124). It skips on a non-GNU `timeout`: the
+    scaled shim hands the real binary a sub-second grace, which BusyBox
+    truncates to 0 and treats as no kill-after.
+
+    `install`'s optional `exit_status` passes through to
+    _write_conditional_sleep_shim, for a regression test that needs a matching
+    call to fail with an arbitrary status without engaging the cap.
     """
     real_git = shutil.which("git")
     if not real_git:
@@ -180,9 +237,13 @@ def git_timeout_shim(tmp_path):
         match_condition: str,
         fake_output: str | None = None,
         sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+        sigterm_immune: bool = False,
+        exit_status: int | None = None,
     ) -> dict[str, str]:
+        if sigterm_immune and not _real_timeout_is_gnu_coreutils():
+            pytest.skip("scaled sub-second -k grace is truncated to 0 by a non-GNU timeout, so SIGKILL never fires")
         _write_conditional_sleep_shim(
-            tmp_path, "git", real_git, match_condition, fake_output, sleep_seconds
+            tmp_path, "git", real_git, match_condition, fake_output, sleep_seconds, sigterm_immune, exit_status
         )
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 

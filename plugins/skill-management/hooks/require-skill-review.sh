@@ -170,26 +170,29 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    # 10s caps validator latency; this call and the corpus scan below both run
-    # per commit, so worst-case combined latency is ~20s — weigh future bound
-    # changes against that total.
+    # 10s caps validator latency (12s including the -k grace); this call and
+    # the corpus scan below both run per commit, so worst-case combined
+    # latency is ~24s — weigh future bound changes against that total.
     VALIDATOR_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
       # Strip the tmp-dir prefix so the user sees the original repo-relative
       # SKILL.md path in the deny reason rather than /tmp/tmp.XXXX/...
       VALIDATOR_STDERR=${VALIDATOR_STDERR//"$STAGED_BLOB_DIR/"/}
-      # 124 (SIGTERM before stderr flush) and 127 get their own messages
-      # since VALIDATOR_STDERR is unreliable for both, rather than the
-      # generic wrapped-stderr deny used for real structural violations.
-      # _lib_capped_for's fallback means 127 can no longer actually occur
-      # here, so that branch is defensive-only.
+      # 124 (GNU SIGTERM), 143 (BusyBox SIGTERM), 137 (the -k grace escalated
+      # to SIGKILL), and 127 get their own messages since VALIDATOR_STDERR is
+      # unreliable for all of them, rather than the generic wrapped-stderr
+      # deny used for real structural violations. 137 and 143 are also a
+      # validator's own signal-death statuses, so that arm's text names both
+      # causes. _lib_capped_for's fallback removes the missing-timeout cause of
+      # 127. A validator interpreter (python3) missing from PATH still yields
+      # 127, so that branch stays reachable.
       case "$VALIDATOR_EXIT" in
-        124)
-          emit_deny "Commit blocked by skill-management structural validator: validator timed out after 10s."
+        124|137|143)
+          emit_deny "Commit blocked by skill-management structural validator: validator killed (exit ${VALIDATOR_EXIT}) by the 10s cap or a signal."
           ;;
         127)
-          emit_deny "Commit blocked by skill-management structural validator: timeout command unavailable, or validator command not found."
+          emit_deny "Commit blocked by skill-management structural validator: validator command not found."
           ;;
         *)
           emit_deny "Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
@@ -223,7 +226,7 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
     fi
   done
 
-  # No 124/127 exit-code branch here (contrast the structural validator call
+  # No exit-status branch here (contrast the structural validator call
   # above): this scan is advisory only, so a swallowed timeout or missing
   # binary is a missed warning, not a missed gate.
   CORPUS_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)

@@ -45,6 +45,10 @@ from typing import NamedTuple
 
 import pytest
 
+# pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
+# path, where the auxiliary-filename constant shared with select-tests.py lives.
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
+
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
 from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
@@ -1167,6 +1171,265 @@ class TestPrDescriptionExternalStateCheck:
         assert "whether CI is *passing* is not" in self._body()
 
 
+def _bullet_lead_in(line: str) -> str | None:
+    """The bold lead-in of a column-0 `- **...**` bullet line, minus one terminal period.
+
+    Returns None for any line that does not open a bold-led bullet.
+    """
+    match = re.match(r"- \*\*(.+?)\*\*", line)
+    return match.group(1).removesuffix(".") if match else None
+
+
+def _bullet_text(section_text: str, lead_in: str) -> str:
+    """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`, up to the next
+    blank line, column-0 `- ` bullet, or markdown heading.
+
+    An indented nested bullet is continuation text.
+    """
+    lines = section_text.splitlines()
+    start = next((i for i, line in enumerate(lines) if _bullet_lead_in(line) == lead_in), None)
+    assert start is not None, f"no bullet opens with bold lead-in {lead_in!r}"
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if not lines[i].strip() or lines[i].startswith("- ") or re.match(r"#{1,6} ", lines[i])
+        ),
+        len(lines),
+    )
+    return " ".join(" ".join(lines[start:end]).split())
+
+
+class TestBulletHelpers:
+    """Fixture tests for the `_bullet_lead_in` and `_bullet_text` helpers."""
+
+    def test_bullet_lead_in_strips_one_terminal_period_and_accepts_none(self):
+        """Allow fixture: the bold span is returned with a single terminal
+        period removed, or unchanged when it has none."""
+        assert _bullet_lead_in("- **Name.** body") == "Name"
+        assert _bullet_lead_in("- **Name** body") == "Name"
+
+    def test_bullet_lead_in_removes_only_one_terminal_period(self):
+        """Allow fixture: a span ending in two periods keeps one."""
+        assert _bullet_lead_in("- **Name..** body") == "Name."
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "  - **Name.** body",
+            "- Name. body",
+            "- text **Name.** body",
+        ],
+        ids=["indented-bullet", "non-bold-bullet", "bold-not-at-bullet-opening"],
+    )
+    def test_bullet_lead_in_returns_none_for_a_line_that_does_not_open_a_bold_bullet(self, line):
+        """Deny fixture: only a column-0 bullet whose bold span opens it
+        yields a lead-in."""
+        assert _bullet_lead_in(line) is None
+
+    def test_bullet_lead_in_stops_at_the_first_bold_span(self):
+        """Allow fixture: the bold span is non-greedy, so a second bold span
+        later in the line is not swallowed into the lead-in."""
+        assert _bullet_lead_in("- **A.** **B** rest") == "A"
+
+    def test_bullet_text_excludes_the_following_bullet(self):
+        """Deny fixture: text present only in the next bullet must not appear
+        in the first bullet's result."""
+        section_text = "- **First.** Alpha text.\n- **Second.** Beta text.\n"
+        assert "Alpha text." in _bullet_text(section_text, "First")
+        assert "Beta text." not in _bullet_text(section_text, "First")
+
+    def test_bullet_text_stops_at_a_blank_line_and_at_a_heading(self):
+        """Deny fixture: prose after a blank line, or after a markdown heading
+        with no blank line before it, is not part of the bullet."""
+        after_blank = "- **First.** Alpha text.\n\nStray paragraph.\n"
+        assert _bullet_text(after_blank, "First") == "- **First.** Alpha text."
+        after_heading = "- **First.** Alpha text.\n## Next section\nHeading body.\n"
+        assert _bullet_text(after_heading, "First") == "- **First.** Alpha text."
+
+    def test_bullet_text_treats_a_hash_that_is_not_a_heading_as_continuation(self):
+        """Allow fixture: a column-0 `#` not followed by a space is wrapped
+        prose, so it stays in the bullet."""
+        section_text = "- **First.** Alpha text\n#123 continues here.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text #123 continues here."
+
+    def test_bullet_text_includes_an_indented_nested_bullet(self):
+        """Allow fixture: an indented nested bullet is continuation text."""
+        section_text = "- **First.** Alpha text.\n  - Nested detail.\n- **Second.** Beta text.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text. - Nested detail."
+
+    def test_bullet_text_is_independent_of_hard_wrap_position(self):
+        """Allow fixture: a hard-wrapped bullet equals its unwrapped form."""
+        wrapped = "- **First.** Alpha\n  text that\nwraps.\n"
+        unwrapped = "- **First.** Alpha text that wraps.\n"
+        assert _bullet_text(wrapped, "First") == _bullet_text(unwrapped, "First")
+
+    def test_bullet_text_raises_when_the_lead_in_is_missing(self):
+        """Deny fixture: a renamed lead-in fails loudly instead of returning an
+        empty string that every negative assertion would pass against."""
+        with pytest.raises(AssertionError, match="no bullet opens with bold lead-in"):
+            _bullet_text("- **Other.** Body.\n", "First")
+
+
+class TestPrDescriptionBranchHistoryCheck:
+    """Pin the rules that keep review-round and reviewer-attribution narration
+    out of a PR body, a shape the per-commit-narrative check does not catch.
+
+    No eval covers pr-description, so these are presence tripwires, not proof
+    that an agent follows the rules.
+    """
+
+    _AUTHORING_LEAD_IN = "Current state, not branch history"
+
+    def _authoring_section(self):
+        return _raw_heading_section_text(_skill_file("pr-description"), "## What the body must carry")
+
+    def _authoring_bullet(self):
+        return _bullet_text(self._authoring_section(), self._AUTHORING_LEAD_IN)
+
+    def _check_bullet(self):
+        section = _raw_heading_section_text(_skill_file("pr-description"), "## Checks")
+        return _bullet_text(section, "Branch-history narration")
+
+    def _test_plan_bullet(self):
+        return _bullet_text(self._authoring_section(), "A `## Test plan` of results, not a checklist")
+
+    def test_authoring_bullet_excludes_review_history_and_attribution(self):
+        """Dropping this sentence lets review rounds, superseded designs, and
+        reviewer attribution into the body."""
+        assert "Review rounds, superseded designs, and who found what stay out" in self._authoring_bullet()
+
+    def test_authoring_bullet_keeps_still_true_findings_as_present_tense_facts(self):
+        """Dropping this sentence lets the history rule strip a finding,
+        limitation, or accepted risk that is still true at HEAD."""
+        assert (
+            "A finding, limitation, or accepted risk that is still true at HEAD stays as a present-tense fact"
+            in self._authoring_bullet()
+        )
+
+    def test_authoring_bullet_rejects_branch_only_mechanism_as_context(self):
+        """Dropping this sentence lets a mechanism visible only in the branch's
+        own history pass as reviewer context."""
+        assert "A mechanism that exists only in the branch's own history is not context" in self._authoring_bullet()
+
+    def test_authoring_bullet_routes_rejected_designs_to_alternatives_not_context(self):
+        """Dropping either half lets a rejected approach a reviewer would
+        propose land in Context, or leaves it with no home."""
+        bullet = self._authoring_bullet()
+        assert "belongs in `## Alternatives considered`" in bullet
+        assert "not in Context" in bullet
+
+    def test_authoring_bullet_exempts_machine_managed_blocks(self):
+        """Dropping this sentence applies the history rule to the deferred
+        review findings block, which the coherence pass reinserts verbatim."""
+        assert "The machine-managed blocks under Checks below are exempt" in self._authoring_bullet()
+
+    def test_check_names_both_narration_tells(self):
+        """One tell per narration category (round-based and reviewer-based), so
+        a category dropped entirely fails here."""
+        bullet = self._check_bullet()
+        assert "earlier rounds" in bullet
+        assert "reviewer or agent name" in bullet
+
+    def test_check_defers_to_authoring_bullet_by_name(self):
+        """The Check bullet's bold pointer name must equal the authoring bullet's
+        lead-in, so a rename or repoint of the pointer fails here."""
+        pointer_names = re.findall(r"per \*\*(.+?)\*\* above", self._check_bullet())
+        assert len(pointer_names) == 1, (
+            f"expected one `per **<name>** above` pointer in the Check bullet, extracted {pointer_names!r}"
+        )
+        assert pointer_names == [self._AUTHORING_LEAD_IN]
+
+    def test_test_plan_bullet_scopes_review_result_to_the_final_pass(self):
+        """The Test plan legitimately reports review outcomes; its authoring
+        bullet distinguishes the final result from round-by-round history."""
+        assert (
+            "state what the final review pass returned, not how many rounds ran or what earlier ones found"
+            in self._test_plan_bullet()
+        )
+
+
+def _bullet_pointer_names(template_text: str) -> list[str]:
+    """Bold names a template points at with `follow its **<name>**`."""
+    return re.findall(r"follow its \*\*(.+?)\*\*", template_text)
+
+
+def _missing_bullet_lead_ins(names: Iterable[str], section_text: str) -> list[str]:
+    """Names in `names` that no `- **<name>.**` bullet in `section_text` opens.
+
+    Each bullet's bold lead-in span, minus one terminal period, must equal the
+    name exactly, so a truncated name does not match.
+    """
+    lead_in_names = {name for line in section_text.splitlines() if (name := _bullet_lead_in(line)) is not None}
+    return [name for name in names if name not in lead_in_names]
+
+
+class TestPrDescriptionDefaultTemplateWiring:
+    """Wiring tripwire: SKILL.md points at DEFAULT_TEMPLATE.md through the
+    harness-substituted skill-directory variable, and the file it points at
+    exists with the five section headings in their fixed order. The
+    citation-resolution, runtime-read URL-hygiene, and per-name auxiliary-file
+    tests also read the file, but none checks the pointer or the heading
+    order, so a reordered template would otherwise ship silently."""
+
+    _EXPECTED_HEADINGS = [
+        "Summary",
+        "Screenshots",
+        "Context for the reviewer",
+        "Alternatives considered",
+        "Test plan",
+    ]
+
+    def test_skill_md_points_at_default_template(self):
+        assert "${CLAUDE_SKILL_DIR}/DEFAULT_TEMPLATE.md" in _skill_file("pr-description").read_text()
+
+    def test_default_template_file_exists(self):
+        assert (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").is_file()
+
+    def test_default_template_has_the_five_headings_in_order(self):
+        template = (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").read_text()
+        prose = _blank_code_regions(_blank_frontmatter(template))
+        headings = re.findall(r"^## (.+)$", prose, flags=re.MULTILINE)
+        assert headings == self._EXPECTED_HEADINGS
+
+    def test_template_bullet_pointers_resolve_to_skill_md_bullets(self):
+        """The template's Summary and Test plan sections are only pointers to
+        bold-named SKILL.md bullets. The `§ "Heading"` half of each pointer is
+        checked by the citation test; this pins the bold-bullet half, so
+        renaming either bullet in SKILL.md fails here."""
+        skill_md_path = _skill_file("pr-description")
+        template = (skill_md_path.parent / "DEFAULT_TEMPLATE.md").read_text()
+        pointed_at_names = _bullet_pointer_names(template)
+        assert len(pointed_at_names) == 2, (
+            f"expected the Summary and Test plan pointers, extracted {pointed_at_names!r}; "
+            "update this test's extractor if a pointer was reworded"
+        )
+        section_text = _raw_heading_section_text(skill_md_path, "## What the body must carry")
+        assert _missing_bullet_lead_ins(pointed_at_names, section_text) == []
+
+    def test_bullet_lead_in_check_flags_a_renamed_bullet(self):
+        """Deny fixture: a bullet renamed in SKILL.md must be reported missing."""
+        section_text = "- **What and why.** Body.\n- **Verification results.** Body.\n"
+        assert _missing_bullet_lead_ins(["What and why"], section_text) == []
+        assert _missing_bullet_lead_ins(["What and why", "A test plan"], section_text) == ["A test plan"]
+        renamed_section = "- **Why and what.** Body.\n"
+        assert _missing_bullet_lead_ins(["What and why"], renamed_section) == ["What and why"]
+        # A truncated name that is only a prefix of the bold span does not match.
+        assert _missing_bullet_lead_ins(["What"], section_text) == ["What"]
+        # A bold phrase that is not a bullet lead-in does not satisfy the check.
+        assert _missing_bullet_lead_ins(["What and why"], "Prose mentioning **What and why** inline.\n") == [
+            "What and why"
+        ]
+
+    def test_bullet_pointer_extractor_drops_a_reworded_pointer(self):
+        """Deny fixture: a pointer reworded out of the `follow its **X**` form
+        yields fewer names than the two the wiring test requires."""
+        both_pointers = "follow its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
+        assert _bullet_pointer_names(both_pointers) == ["What and why", "A test plan"]
+        one_reworded = "use its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
+        assert _bullet_pointer_names(one_reworded) == ["A test plan"]
+
+
 class TestPrDescriptionCostSectionWiring:
     """Wiring tripwire, not a behavioral test: the `## Cost (list-price
     estimate)` section's actual runtime behavior -- sentinel absent or mode
@@ -1907,17 +2170,17 @@ class TestValidateContextForkRequiresExplicitBackground:
         f = self._make_skill(tmp_path, "a", ["context: fork", "background: false"])
         assert not self._background_violations(validate(f))
 
-    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path):
+    @pytest.mark.parametrize("spelling", ["yes", "on", "True", "TRUE"])
+    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path, spelling):
         """PyYAML's safe_load coerces yes/on/True (any case) to real
         booleans, so Check 3's isinstance(background, bool) check accepts
         them today — pinning this so a future change to the accepted-input
         semantics doesn't silently narrow (or the message doesn't silently
         drift from behavior) without a test noticing."""
-        for spelling in ("yes", "on", "True", "TRUE"):
-            f = self._make_skill(tmp_path, f"a_{spelling}", ["context: fork", f"background: {spelling}"])
-            assert not self._background_violations(validate(f)), (
-                f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
-            )
+        f = self._make_skill(tmp_path, "a", ["context: fork", f"background: {spelling}"])
+        assert not self._background_violations(validate(f)), (
+            f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
+        )
 
     def test_context_not_fork_skips_the_check_regardless_of_background(self, tmp_path):
         f = self._make_skill(tmp_path, "a", ["context: something-else"])
@@ -2767,10 +3030,8 @@ def test_skill_bodies_carry_no_citation_urls() -> None:
 
     violations: list[str] = []
     for path in skill_files:
-        prose = _blank_code_regions(_blank_frontmatter(path.read_text()))
-        for lineno, line in enumerate(prose.split("\n"), start=1):
-            if _URL_RE.search(line):
-                violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
+        for lineno in _prose_url_line_numbers(path.read_text()):
+            violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
 
     assert not violations, (
         "SKILL.md bodies must not carry citation URLs — a body is re-read on "
@@ -2859,6 +3120,58 @@ def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
     assert "Body prose." in _blank_frontmatter(document)
 
 
+# REFERENCES.md is the edit-time reference and is never loaded at runtime, so it
+# is the one auxiliary name allowed to carry citation URLs.
+# The glob covers claude-skills/skills/ only. Extend it if a runtime auxiliary
+# file ever lands under plugins/ or .claude/skills/.
+_RUNTIME_READ_AUXILIARY_NAMES = tuple(name for name in SKILL_AUXILIARY_MD_NAMES if name != "REFERENCES.md")
+_RUNTIME_READ_AUXILIARY_FILES = sorted(
+    path for name in _RUNTIME_READ_AUXILIARY_NAMES for path in SKILLS_DIR.glob(f"*/{name}")
+)
+
+
+def _prose_url_line_numbers(markdown_text: str) -> list[int]:
+    """1-based line numbers holding a URL outside frontmatter and code regions."""
+    prose = _blank_code_regions(_blank_frontmatter(markdown_text))
+    return [lineno for lineno, line in enumerate(prose.split("\n"), start=1) if _URL_RE.search(line)]
+
+
+@pytest.mark.parametrize("auxiliary_name", _RUNTIME_READ_AUXILIARY_NAMES)
+def test_every_runtime_read_auxiliary_name_matches_a_skill_file(auxiliary_name: str) -> None:
+    """A registered name with no file on disk would make the URL scan below
+    pass vacuously for that name."""
+    assert any(path.name == auxiliary_name for path in _RUNTIME_READ_AUXILIARY_FILES), (
+        f"no skill directory holds a {auxiliary_name}; drop it from SKILL_AUXILIARY_MD_NAMES or add the file."
+    )
+
+
+@pytest.mark.parametrize(
+    "auxiliary_path",
+    _RUNTIME_READ_AUXILIARY_FILES,
+    ids=lambda path: f"{path.parent.name}/{path.name}",
+)
+def test_runtime_read_auxiliary_files_carry_no_citation_urls(auxiliary_path: Path) -> None:
+    """A runtime-read auxiliary file is re-read on every run that reaches it, by
+    a reader that cannot follow a link, so it obeys the same URL rule as a
+    SKILL.md body. Citation URLs belong in the skill's REFERENCES.md."""
+    assert _prose_url_line_numbers(auxiliary_path.read_text()) == [], (
+        f"{auxiliary_path.relative_to(REPO_ROOT)} carries a URL outside a code region; "
+        "move it to the skill's REFERENCES.md."
+    )
+
+
+def test_prose_url_detector_flags_a_leaked_citation_and_spares_code() -> None:
+    """Deny fixture: the runtime-auxiliary URL check must fire on prose URLs."""
+    document = (
+        "# Heading\n"  # 1
+        "Cited at https://leaked.test in prose.\n"  # 2
+        "Payload `https://in-span.test` only.\n"  # 3
+        "```\nhttps://in-fence.test\n```\n"  # 4-6
+        "[docs](https://leaked-link.test)\n"  # 7
+    )
+    assert _prose_url_line_numbers(document) == [2, 7]
+
+
 # --- Cross-reference integrity: `target` § "Heading" citations resolve ---
 #
 # A citation like `subagent-delegation/SKILL.md` § "Heavy command output" lets
@@ -2884,9 +3197,9 @@ _BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
 
 # Known limit, deliberately not closed: this extractor can't tell a live
 # citation from an illustrative example of the citation grammar, so an
-# example inside a scanned SKILL.md/REFERENCES.md will false-fail. Currently
-# safe only because the grammar's own explanation lives outside the scanned
-# corpus (`.claude/rules/skill-and-agent-self-review.md`).
+# example inside a scanned SKILL.md or SKILL_AUXILIARY_MD_NAMES sibling will
+# false-fail. Currently safe only because the grammar's own explanation lives
+# outside the scanned corpus (`.claude/rules/skill-and-agent-self-review.md`).
 
 
 class _Citation(NamedTuple):
@@ -3009,14 +3322,9 @@ def _resolve_citation_target(
 
 
 def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
-    """A SKILL.md plus its REFERENCES.md/ROUTING.md siblings, if present —
-    the two co-located auxiliary files `.claude/rules/skill-and-agent-self-review.md`
-    already names."""
+    """A SKILL.md plus its co-located auxiliary siblings (SKILL_AUXILIARY_MD_NAMES), if present."""
     sources = [skill_md_path]
-    # This set must stay in sync with select-tests.py's
-    # _is_skill_auxiliary_md_change — a shared constant would be warranted
-    # if a third auxiliary filename type is ever added.
-    for sibling_name in ("REFERENCES.md", "ROUTING.md"):
+    for sibling_name in SKILL_AUXILIARY_MD_NAMES:
         sibling = skill_md_path.parent / sibling_name
         if sibling.exists():
             sources.append(sibling)
@@ -3060,9 +3368,9 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     a real file and an exact heading in it.
 
     Scanned corpus: every SKILL.md (`_all_skill_md_files`) plus every
-    REFERENCES.md/ROUTING.md sibling in those same skill directories —
-    widened past SKILL.md alone because a stale citation this test guards
-    against lives in review-permissions/REFERENCES.md.
+    auxiliary sibling (SKILL_AUXILIARY_MD_NAMES) in those same skill
+    directories — widened past SKILL.md alone because a stale citation this
+    test guards against lives in review-permissions/REFERENCES.md.
 
     Reports every violation at once rather than failing on the first, so a
     contributor fixes the whole set in one pass — same convention as
@@ -3118,7 +3426,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     warrant-check section resolves to a real heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus
-    (SKILL.md plus its REFERENCES.md/ROUTING.md siblings only), so
+    (SKILL.md plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
@@ -3148,7 +3456,7 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
     heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
-    plus its REFERENCES.md/ROUTING.md siblings only), so
+    plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees these citations
     — targeted narrowly here instead of widening that corpus.
     """
@@ -3455,18 +3763,6 @@ def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
             id="unresolvable-target-fails",
         ),
         pytest.param(
-            {
-                "example-skill/SKILL.md": "## Real Heading\n",
-                "example-skill/ROUTING.md": (
-                    "## Routing\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'
-                ),
-            },
-            # Proves _citation_sources_for_skill_md actually walks into
-            # ROUTING.md — would be 0 if that sibling were never scanned.
-            1,
-            id="routing-md-sibling-is-scanned",
-        ),
-        pytest.param(
             {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Real Heading"\n'},
             0,
             id="bare-citation-with-no-adjacent-target-resolves-same-file",
@@ -3523,6 +3819,22 @@ def test_citation_report_cases(
     _write_skill_files(tmp_path, skill_files)
     violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
     assert len(violations) == expected_violation_count, violations
+
+
+@pytest.mark.parametrize("sibling_name", SKILL_AUXILIARY_MD_NAMES)
+def test_citation_report_scans_every_auxiliary_sibling(tmp_path: Path, sibling_name: str) -> None:
+    """Every name in SKILL_AUXILIARY_MD_NAMES must actually be walked: a name
+    listed in the tuple but skipped by _citation_sources_for_skill_md would
+    report 0 violations here, whichever name it is."""
+    _write_skill_files(
+        tmp_path,
+        {
+            "example-skill/SKILL.md": "## Real Heading\n",
+            f"example-skill/{sibling_name}": "## Sibling\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n',
+        },
+    )
+    violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
+    assert len(violations) == 1, violations
 
 
 def test_citation_report_target_resolving_to_a_directory_fails(tmp_path: Path) -> None:

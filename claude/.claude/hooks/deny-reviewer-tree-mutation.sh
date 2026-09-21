@@ -309,8 +309,8 @@ case "$TOOL_NAME" in
         # collapsing them into one exit code would report "not actually
         # ignored" for a $CWD that was never checked at all. Sentinel exit 3
         # marks a cd failure distinctly; git/timeout never produce 3 here
-        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: 124
-        # on expiry, or the wrapped command's own code).
+        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: its
+        # own cap-kill statuses, or the wrapped command's own code).
         (
           unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
           cd "$CWD" 2>/dev/null || exit 3
