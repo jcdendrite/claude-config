@@ -718,6 +718,31 @@ def test_subagentpromptcachettl_stays_unset_in_stow_source_settings() -> None:
     )
 
 
+def test_promptcachettl_stays_unset_in_repo_local_settings() -> None:
+    """Guards against mirroring the stow-source promptCacheTtl flip here.
+
+    `attribution.sessionUrl` ships in both the stow-source and repo-local
+    settings files because it's a universal privacy default every
+    contributor benefits from. `promptCacheTtl` is not that shape: it's
+    scoped to this machine's own transcript corpus and billing regime, per
+    docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md's opening
+    paragraph. A future contributor mirroring it into this repo-local
+    `.claude/settings.json` by analogy to attribution.sessionUrl's
+    both-files pattern would silently impose one engineer's single-corpus
+    verdict on every contributor. This test pins the absence so that
+    regression can't land silently.
+    """
+    settings = json.loads(_REPO_LOCAL_SETTINGS_PATH.read_text())
+    assert "promptCacheTtl" not in settings, (
+        f"promptCacheTtl is present in "
+        f"{_REPO_LOCAL_SETTINGS_PATH.relative_to(_REPO_ROOT)} — this "
+        f"mirrors a single-machine, single-corpus verdict onto every "
+        f"contributor of this repo, which "
+        f"docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md's "
+        f"opening paragraph argues against"
+    )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
