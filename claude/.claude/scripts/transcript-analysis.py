@@ -7071,8 +7071,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "means the marker landed early and most of the gap is still unexplained.\n"
         "It renders n/a whenever the winning marker's own timestamp is missing\n"
         "or unparseable, which never changes the cause itself. Main origin is\n"
-        "excluded: experimental.cacheTtl cannot reach main-conversation traffic,\n"
-        "so a main-origin split would have no lever to point at. A large\n"
+        "excluded from this sub-table because experimental.cacheTtl is a\n"
+        "subagent-frontmatter lever and cannot reach main-conversation\n"
+        "traffic. The main bucket's own lever is promptCacheTtl. A large\n"
         "'unattributed' share means the marker taxonomy is incomplete, not that\n"
         "the gaps are causeless -- a transcript records the marker the harness\n"
         "delivered, never a statement of why the subagent was idle. [unverified]\n"
@@ -7123,10 +7124,12 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold\n"
         "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
-        "if negative) against this origin's own traffic. The main row's Net$ has\n"
-        "no corresponding lever in this plan's scope -- experimental.cacheTtl is\n"
-        "set in subagent frontmatter and cannot reach main-conversation traffic;\n"
-        "read it as reconciliation context only.\n"
+        "if negative) against this origin's own traffic. The main row reads\n"
+        "zero because this corpus was captured while main traffic was on the\n"
+        "1h tier -- promptCacheTtl is now \"5m\". A corpus captured after\n"
+        "that takes effect would show live W5m/X here too. The per-root\n"
+        "--ttl-verdict gate below, not this pooled, threshold-independent\n"
+        "row, is what actually decides a tier change.\n"
     )
     print(f"{'Origin':<10} {'W5m':>14} {'X':>14} {'Ratio':>8} {'Net$':>10}")
     for origin in _CACHE_REBUILD_ORIGINS:
