@@ -576,12 +576,18 @@ _lib_active_plan_files() {
   fi
 
   # A plain `local enum_output=$(...)` would report `local`'s own exit
-  # status (always 0) instead of the pipeline's -- see the top-level
-  # assignment note in require-plan-review.sh's hash block for the same
-  # rule. Splitting the declaration from the assignment, and capturing via
-  # command substitution rather than process substitution (whose subshell
-  # exit status a consuming `read` loop can't see), lets a failed `sort`
-  # fail this function closed like every other enumeration failure above.
+  # status (always 0) instead of the pipeline's -- same hazard as the
+  # top-level assignment note in require-plan-review.sh's hash block.
+  # Splitting the declaration from the assignment surfaces the pipeline's
+  # own exit status instead.
+  # Command substitution is used rather than process substitution because a
+  # process substitution's subshell exit status is invisible to a consuming
+  # `read` loop.
+  # This lets a failed `sort` fail this function closed like every other
+  # enumeration failure above.
+  # Not wrapped in _lib_capped like the git calls above: safe uncapped
+  # because the input is a small in-memory pipe -- the untracked/modified
+  # plan lists -- not a call that can hang on a large repo.
   local enum_output
   enum_output=$(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u) || {
     printf '%s' "$plans_dir"

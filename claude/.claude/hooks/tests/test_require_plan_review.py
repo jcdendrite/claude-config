@@ -2793,13 +2793,13 @@ def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo")
 
 
 def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") -> Path:
-    """The Write-only reproduction of the forged-anchor residual (ciso-reviewer
-    finding against this branch): no `git merge` and no `commit-tree` at all,
-    and no object the actor did not already have. `MERGE_HEAD` and
-    `refs/remotes/origin/main` are hand-written straight to an existing
-    sibling-branch commit's OID -- the way another worktree's own WIP plan
-    draft already sits in this repo's object store -- and the tracked plan
-    is edited to that commit's own version of the same path. Complements
+    """The Write-only reproduction of the forged-anchor residual: no `git
+    merge` and no `commit-tree` at all, and no object the actor did not
+    already have. `MERGE_HEAD` and `refs/remotes/origin/main` are
+    hand-written straight to an existing sibling-branch commit's OID -- the
+    way another worktree's own WIP plan draft already sits in this repo's
+    object store -- and the tracked plan is edited to that commit's own
+    version of the same path. Complements
     _build_forged_anchor_invisible_plan_edit, whose `git merge --no-ff
     --no-commit` construction this fixture pins as not the only route to the
     same accepted residual. See
@@ -2846,10 +2846,9 @@ class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
     disappears from the active set, and the gate allows an unrelated Write."""
 
     def test_forged_anchor_plan_edit_allows_unrelated_write(self, isolated_home, tmp_path):
-        """Allows because the forged-anchor path is dominated by the
-        clean-apply zero-gate bypass (residual 1 of
-        .claude/plans/merge-aware-review-gates.md), so a deny here would buy
-        no security. See
+        """Allows because a Bash-capable actor can already write the plan file
+        directly with no gate watching it, so a deny here would buy no
+        security. See
         docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
         repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
         assert (
@@ -2868,8 +2867,8 @@ class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
         this residual: hand-writing MERGE_HEAD and refs/remotes/origin/main
         to an existing sibling-branch commit is enough. Pins the Write-only,
         existing-commit route the decision doc names as the accepted
-        residual, distinct from the Bash-capable, clean-merge-dominated
-        route the sibling test above pins."""
+        residual, distinct from the Bash-capable route the sibling test
+        above pins."""
         repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
         assert (
             run_hook(
@@ -3080,6 +3079,78 @@ class TestRequirePlanReviewEmptyActiveSetDisarms:
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
                 {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_merge_of_upstream_plan_allows_exitplanmode(
+        self, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode arm of test_merge_of_upstream_plan_allows_unrelated_write
+        above: the empty active set disarms the gate for ExitPlanMode too,
+        not only Write. plan_file_path="" skips the plan-mode priority
+        branch and, unlike Write/Edit/MultiEdit, also skips the
+        Write-only fast-path guard entirely -- it reaches
+        _lib_active_plan_hash directly, a different exit site than the
+        Write arm's, converging on the same underlying primitive."""
+        repo = _build_clean_merge_with_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_allows_exitplanmode(
+        self, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode arm of
+        test_hand_forged_anchor_no_real_merge_allows_unrelated_write
+        (TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted,
+        above): the forged-anchor residual disarms the gate for
+        ExitPlanMode too, not only Write. plan_file_path="" skips the
+        plan-mode priority branch and, unlike Write/Edit/MultiEdit, also
+        skips the Write-only fast-path guard entirely -- it reaches
+        _lib_active_plan_hash directly, a different exit site than the
+        Write arm's, converging on the same underlying primitive."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "build_fixture,plan_rel_path",
+        [
+            (_build_clean_merge_with_untouched_upstream_plan, _FIXTURE_PLAN_REL),
+            (_build_hand_forged_anchor_no_real_merge, ".claude/plans/plan.md"),
+        ],
+        ids=["clean-merge", "forged-anchor"],
+    )
+    def test_local_plan_edit_during_merge_still_denies_exitplanmode(
+        self, build_fixture, plan_rel_path, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode counterpart of test_local_plan_edit_during_merge_still_denies
+        above: guards against the two ExitPlanMode allow tests above
+        (test_merge_of_upstream_plan_allows_exitplanmode,
+        test_hand_forged_anchor_no_real_merge_allows_exitplanmode) passing only
+        because the gate is simply off for ExitPlanMode during those states. A
+        plan file the branch itself edited stays active relative to the base
+        and still demands a review, so ExitPlanMode is denied too."""
+        repo = build_fixture(tmp_path)
+        plan_path = repo / plan_rel_path
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
                 cwd=repo,
             )
             == "deny"
