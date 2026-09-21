@@ -15,15 +15,16 @@
 # Two-marker pattern:
 # - Active marker (~/.claude/.ready-for-review-active.d/<session_id>):
 #   content = Claude session PID. Written by /ready-for-review at step 0;
-#   removed at step 7 (completion). Bypasses the gate so the skill's own
-#   iteration pushes (step 3 fix → push → loop) don't self-deny. The hook
-#   checks PID liveness (kill -0) on each gate hit; dead PIDs are evicted
-#   automatically, which handles orphaned markers from sessions that errored
-#   before cleanup.
+#   removed by the skill's final deactivation step. Releases the git-push
+#   arm only, so the skill's own iteration pushes (the fix → push → loop)
+#   don't self-deny. The hook checks PID liveness (kill -0) on each gate
+#   hit; dead PIDs are evicted automatically, which handles orphaned
+#   markers from sessions that errored before cleanup.
 # - Completion marker (~/.claude/ready-for-review-markers/<repo-hash>.<session_id>):
-#   contents are the local HEAD SHA at gate-completion time. Written at
-#   step 7 only when every halt-on-fail step passed. Pushes against the
-#   recorded HEAD are allowed; new commits invalidate the marker
+#   contents are the local HEAD SHA at gate-completion time. Written by the
+#   gate-completion step, before the skill creates the PR, only when every
+#   halt-on-fail step passed. Pushes against the recorded HEAD are
+#   allowed; new commits invalidate the marker
 #   automatically (HEAD moves) and force a re-run.
 #   The <session_id> in the filename is a WRITE-side key only: it keeps
 #   parallel sessions from overwriting each other's markers. The read globs
@@ -33,9 +34,12 @@
 #   session_id) a gate run it already completed at the same HEAD.
 #
 # Bypass cases (allow without checking marker):
-# - The skill is currently running (active marker live for this session).
-#   Checked before the command-shape, repo-resolution, and default-branch
-#   checks, so it fires regardless of what they would decide.
+# - git push, when the skill is currently running (active marker live for
+#   this session). The marker check itself precedes the command-shape,
+#   repo-resolution, and default-branch checks, but the release decision is
+#   evaluated after the command-shape scan classifies which gated commands
+#   are present — gh pr ready and gh pr create are excluded outright even
+#   under a live marker.
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
 # - The next three are judged per git-push fragment, so a bypassable push
 #   chained ahead of a gated fragment does not exempt it:
@@ -76,6 +80,24 @@
 #   for why that guess is accepted rather than closed). For this hook
 #   specifically, a coincidental branch-name match can skip the entire
 #   review/test/lint gate on a push, tracked as GH-899.
+# - gh pr ready's gh pr view existence check fails open, and that path is
+#   newly reachable during an active-marker session. A transient gh
+#   failure releases that arm with no completion marker.
+# - A git pull in any session swaps this hook under a concurrent session
+#   still holding the old skill text. That run's PR creation denies once,
+#   and the deny message names the recovery.
+# - The fragment scan now runs on every Bash call for the whole
+#   live-marker window, not only at the terminal command — cheap, local
+#   work with no network call. gh pr view is newly reachable during a
+#   live-marker session for genuine gh pr ready invocations only, not
+#   scaling with every Bash call.
+# - The completion marker is written before the artifact it authorizes
+#   exists, so a failed gh pr create leaves a valid marker and no PR. That
+#   marker authorizes any gh pr create/gh pr ready at that HEAD until HEAD
+#   moves, not only the retry.
+# - A Bash call that merely mentions gh pr create or gh pr ready in free
+#   text — a commit message, an echo — is denied during a gate run, same
+#   as outside one. The recovery is rewording, not more review work.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -105,6 +127,13 @@
 #   knowingly evasive engineer. Untrusted content ingested mid-session can
 #   persuade the agent's own tool call into an evasive shape without the
 #   agent intending to evade anything.
+# - Threat model differs by arm. The create and ready arms are gated on a
+#   marker naming the artifact (the completion marker's stored HEAD), so
+#   releasing either takes an explicit, false attestation. The push arm is
+#   released by the bare fact that the active marker is live, so it stays
+#   a cooperative mistake-catcher rather than a barrier to a deliberately
+#   steered agent — the marker's session-wide, repo-agnostic refresh
+#   leaves it fully open for the practical duration of the session.
 # - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 #   self-merge, plus CI rerunning the full suite on push. That backstop
 #   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
@@ -121,6 +150,10 @@
 # - The active-marker bypass check now also runs before that same
 #   command-shape scan, so its cost is paid on every Bash call during an
 #   active /ready-for-review run, not only at the terminal push/PR command.
+#   The release itself is narrower than the check's frequency: it fires
+#   only for the push arm, so a live marker's per-call cost is paid on
+#   every Bash call, but a create or ready command reaches the marker
+#   check below on every call without the check ever releasing it.
 
 set -uo pipefail
 
@@ -170,9 +203,12 @@ fi
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Active-marker bypass, checked before the command-shape scan so a
-# non-gated Bash call still refreshes the marker's idle window.
+# non-gated Bash call still refreshes the marker's idle window. The release
+# decision itself is deferred to the per-arm conjunction below, after the
+# command-shape scan has classified which gated commands are present.
+ACTIVE_MARKER_LIVE=false
 if _lib_active_bypass_marker_live_and_touch ".ready-for-review-active.d" "$SESSION_ID"; then
-  exit 0
+  ACTIVE_MARKER_LIVE=true
 fi
 
 # Strips a bare origin/upstream token only when it is the first non-flag word
@@ -292,6 +328,22 @@ if ! $is_gated_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
   exit 0
 fi
 
+# Active-marker release: only the git-push arm is bypass-eligible, mirroring
+# require-plan-review.sh's own exclusion of its terminal command. $is_gated_git_push
+# is spelled out even though it's implied by the surrounding scan, so a fourth
+# gated arm added later must not silently inherit a release.
+if $ACTIVE_MARKER_LIVE && $is_gated_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
+  exit 0
+fi
+
+# Interpolated into the gh pr ready / gh pr create deny messages below when a
+# live marker didn't release this command, so the recovery reads correctly
+# for a session already mid-gate rather than telling it to start over.
+ACTIVE_MARKER_NOTE=""
+if $ACTIVE_MARKER_LIVE; then
+  ACTIVE_MARKER_NOTE=" A live /ready-for-review active marker releases git push only, not this command — finish the gate's remaining steps and run \`~/.claude/scripts/marker.sh write ready-for-review\` rather than re-invoking the skill from the start. If this command doesn't actually create or ready a PR — a commit message or echo that only mentions one — the fix is rewording it, not more review work."
+fi
+
 # Are we in a git repo?
 REPO_ROOT=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
@@ -350,9 +402,9 @@ fi
 # gh pr ready) gh pr view confirmed the branch has an open PR — block,
 # naming whichever of the three commands triggered the gate.
 if $is_gh_pr_ready; then
-  emit_deny "PR ready-for-review marking — no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR ready-for-review marking — no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user.${ACTIVE_MARKER_NOTE}"
 elif $is_gh_pr_create; then
-  emit_deny "PR creation — no /ready-for-review gate run covering the current HEAD was found. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR creation — no /ready-for-review gate run covering the current HEAD was found. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user.${ACTIVE_MARKER_NOTE}"
 else
   emit_deny "Push to a branch with an open PR — no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi

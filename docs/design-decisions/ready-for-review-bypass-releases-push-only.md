@@ -1,0 +1,16 @@
+# The ready-for-review active bypass releases `git push` only
+
+*2026-09-20.*
+
+`require-ready-for-review.sh`'s active-bypass marker used to release `git push`, `gh pr ready`, and `gh pr create` alike, so a session that skipped the gate's own verification steps could still create and publish a PR with no completion marker ever written. The fix moves the release decision after the command-shape scan and excludes `gh pr ready` and `gh pr create` from it outright, mirroring `require-plan-review.sh:258-266`'s own exclusion of its terminal command. See [`docs/hooks.md`](../hooks.md) for the marker mechanics and [the hook's own header comment](../../claude/.claude/hooks/require-ready-for-review.sh) for the current bypass and Known-gaps lists.
+
+Two heavier alternatives were considered and set aside in favor of the reorder:
+
+- **A `--draft` flag on the skill's create, released by a draft regex in the hook.** This needed a second quote-normalization pass to keep the draft regex from being forged by a quoted argument, plus a `gh pr ready` call added to a line-frozen skill. The reorder needs none of that, because what authorizes the create is a marker naming the artifact (the completion marker's stored HEAD) rather than a parse of command text.
+- **Requiring the `cumulative-review` marker to release the create.** Heavier and weaker: it makes the create depend on a marker written by the same self-attesting session, at a higher false-deny cost, for the same residual left standing below.
+
+This design does not repeat the lighter iteration-push tier that PR #413 introduced and reverted (background: GH-415) — that tier broke the invariant that the merged HEAD is always fully gated. This change narrows what the bypass releases and adds no new tier, so the invariant holds the same way it did before.
+
+**The residual this leaves standing.** `marker.sh write ready-for-review` records HEAD and attests nothing about the gate's verification and review steps, so a session that skips them can still write the marker and create the PR. What changes is the *kind* of act required: `marker.sh activate ready-for-review` is a true statement an agent makes before skipping ahead, while `marker.sh write ready-for-review` is a false attestation that the gate completed. Against the actor this gate defends against — a cooperative model abbreviating under context pressure — that gap is the change's entire value. Against a deliberately-steered agent it buys nothing: both are exact-match, no-prompt `permissions.allow` entries, so substituting one for the other costs the same, and the hook header already names `block-gh-pr-merge.sh` plus CI as the backstop for that arm.
+
+**A skew case worth re-checking on a future reorder.** A session still holding the old skill text (hygiene recheck, then record-completion-and-deactivate as one step) denies once on its first `gh pr create` under the new hook, because the new hook no longer releases that arm on the active marker alone — the deny message's recovery text covers this. The recovery only reads correctly because the old skill's own remaining steps happen to run hygiene, then the marker write, in that order — the same two steps the new order needs first. A future reorder of this skill's tail should re-verify that this still holds rather than assume it.

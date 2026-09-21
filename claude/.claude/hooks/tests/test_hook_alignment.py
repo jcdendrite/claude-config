@@ -1708,6 +1708,32 @@ def test_ready_for_review_missing_command_allowed() -> None:
     assert run_hook(hook, payload) == "allow"
 
 
+def test_ready_for_review_writes_completion_marker_before_creating_the_pr() -> None:
+    """Static ordering pin for the active-bypass reorder: SKILL.md's
+    record-completion fixture (the completion-marker write) must precede
+    the PR-create step's text, which must precede the deactivate-gate
+    fixture (session cleanup). All three landmarks are stable anchors —
+    two are fixture comments this suite already re-reads, and the create
+    command's invocation text is pinned literal by the redaction gate the
+    skill itself cites — so this is an ordering check over fixed anchors,
+    not a structural assertion over prose."""
+    text = (_SKILLS_DIR / "ready-for-review" / "SKILL.md").read_text()
+    record_completion_pos = text.index("HOOK_TEST_FIXTURE: record-completion")
+    create_anchor = "gh pr create --title"
+    create_count = text.count(create_anchor)
+    assert create_count == 1, (
+        f"expected exactly one {create_anchor!r} occurrence, found "
+        f"{create_count} -- the create-step prose changed shape."
+    )
+    create_pos = text.index(create_anchor)
+    deactivate_pos = text.index("HOOK_TEST_FIXTURE: deactivate-gate")
+    assert record_completion_pos < create_pos < deactivate_pos, (
+        "ready-for-review/SKILL.md must record gate completion before "
+        "creating the PR, and create the PR before deactivating the "
+        "session — the ordering the active-bypass scoping change relies on"
+    )
+
+
 @pytest.mark.timing
 def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     """GH-480: a jq that hangs (never returns) must not hold the gate open

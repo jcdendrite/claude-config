@@ -4876,7 +4876,7 @@ _PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
         "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
         '`"status":"ok"` with `over_threshold` or `already_fired` true, report '
         "`estimate` and `threshold`, then invoke `/handoff` instead of "
-        "running steps 2–7 in this session. Also name `nudge_disabled` "
+        "running steps 2–9 in this session. Also name `nudge_disabled` "
         "when true — the measurement still holds even though no nudge "
         "fires on its own."
     ),
@@ -4884,7 +4884,7 @@ _PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
         "Deferring here is cheap: steps 3 and 4 each dispatch a full "
         "reviewer pass and step 5 runs `pr-description`'s own checks, so "
         "what remains costs what the diff costs, not what the step "
-        "counter says. Steps 2–7 take their inputs from the repository — "
+        "counter says. Steps 2–9 take their inputs from the repository — "
         "the diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh "
         "session rebuilds almost nothing this one holds."
     ),
@@ -4967,14 +4967,14 @@ _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 
 # The Overview's cross-reference binding a halt on step 2, 3, or 4 to a
 # context-budget re-check that runs only after that round's fix commit has
-# landed, from ready-for-review/SKILL.md. Step 7 is deliberately excluded
+# landed, from ready-for-review/SKILL.md. Step 6 is deliberately excluded
 # (pushing commits is cheap enough to finish before any deferral
 # consideration).
 _PINNED_HALT_DEFERS_CLAUSE = (
     "A halt on step 2, 3, or 4 triggers the fix loop above first; only "
     "once that round's fix commit has landed does a context-budget re-check "
     "run, and only then does an over-threshold/already-fired result "
-    "route to step 1's deferral. A halt on step 7 stays outside this "
+    "route to step 1's deferral. A halt on step 6 stays outside this "
     "routing — pushing the commits is cheap enough to finish before any "
     "deferral consideration."
 )
@@ -5348,6 +5348,41 @@ class TestCodeReviewRippleCarryForwardPin:
             pinned_text,
             raw_section,
             context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
+        )
+
+
+_READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
+
+# Step 7's "Do NOT write the completion marker if" bullet naming the
+# halt-on-fail steps, from ready-for-review/SKILL.md. The same step
+# renumbering that required updating _PINNED_HALT_DEFERS_CLAUSE and
+# _PINNED_CONTEXT_BUDGET_CLAUSES also renumbers this bullet's step list, so
+# it is pinned independently rather than relying on either of those to
+# catch a miss here.
+_PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE = (
+    "Any halt-on-fail step (1, 2, 3, 4, 6) produced findings that weren't "
+    "fixed in this session."
+)
+
+
+class TestReadyForReviewCompletionMarkerHaltStepList:
+    """Pin step 7's halt-on-fail step-number list in the "Do NOT write the
+    completion marker if" bullet, so a future step renumbering that updates
+    _PINNED_HALT_DEFERS_CLAUSE and _PINNED_CONTEXT_BUDGET_CLAUSES but misses
+    this bullet fails CI instead of drifting silently.
+    """
+
+    def test_completion_marker_halt_step_list_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP7_HEADING
+        )
+        pinned_text = " ".join(
+            _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE.split()
+        )
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: step 7's halt-on-fail step list no longer matches its pinned clause.",
         )
 
 

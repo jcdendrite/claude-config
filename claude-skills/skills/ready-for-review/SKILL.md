@@ -14,34 +14,34 @@ argument-hint: "[optional PR context]"
 
 Run steps in order. Halt on failures unless the step is marked **warn only**. After a fix produced by step 2, 3, or 4, return to step 2 and continue in order. Step 3 then re-reviews the fixed cumulative diff in full, because its cache marker misses on the changed bytes. Step 4 does not re-run on its own output.
 
-A halt on step 2, 3, or 4 triggers the fix loop above first; only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 7 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
+A halt on step 2, 3, or 4 triggers the fix loop above first; only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 6 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
 ## 0. Activate gate session
 
-Write the active-session marker so this skill's own pushes (step 7, reached after every fix loop) are not self-blocked by the `require-ready-for-review.sh` hook:
+Write the active-session marker so this skill's own pushes (step 6, reached after every fix loop) are not self-blocked by the `require-ready-for-review.sh` hook:
 
 <!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh activate ready-for-review
 ```
 
-If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block step 7's push without this marker.
+If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this session's id — abort and report; the gate will block step 6's push without this marker.
 
 ## 1. Preconditions (halt on fail)
 
 - **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
-- Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 6 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
+- Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 8 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
 - Working tree is clean: no unstaged or uncommitted changes.
-- **Context budget (defers, not a warning).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, report `estimate` and `threshold`, then invoke `/handoff` instead of running steps 2–7 in this session. Also name `nudge_disabled` when true — the measurement still holds even though no nudge fires on its own.
-- Deferring here is cheap: steps 3 and 4 each dispatch a full reviewer pass and step 5 runs `pr-description`'s own checks, so what remains costs what the diff costs, not what the step counter says. Steps 2–7 take their inputs from the repository — the diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh session rebuilds almost nothing this one holds.
+- **Context budget (defers, not a warning).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, report `estimate` and `threshold`, then invoke `/handoff` instead of running steps 2–9 in this session. Also name `nudge_disabled` when true — the measurement still holds even though no nudge fires on its own.
+- Deferring here is cheap: steps 3 and 4 each dispatch a full reviewer pass and step 5 runs `pr-description`'s own checks, so what remains costs what the diff costs, not what the step counter says. Steps 2–9 take their inputs from the repository — the diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh session rebuilds almost nothing this one holds.
 - Deactivate only once `/handoff`'s own "Verify the handoff file with Bash" step confirms the write succeeded, via `~/.claude/scripts/marker.sh deactivate ready-for-review`. Deactivating earlier risks a session with no active marker, no completion marker, and no handoff file if it fails mid-`/handoff`; a fresh session then restarts this gate from step 0. If `/handoff` itself declines to write (e.g. its own warrant check reports `cannot-resolve`, or states another reason it won't write), that is itself a halt — report and stop, do not deactivate the `ready-for-review` marker.
 - The one exception is an engineer decision, not the agent's judgment: an explicit, unambiguous instruction to finish in this session overrides the deferral, but a vague "let's wrap up soon" does not.
 - Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success.
 - Do not quote the raw `session_id` into prose that may reach the PR body.
 - See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
-- If no PR exists, step 5 authors the body and step 6 opens the PR from it, after verification and review.
-- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- If no PR exists, step 5 authors the body and step 8 opens the PR from it, after verification and review.
+- **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
 ## 2. Verification (halt on fail)
 
@@ -114,34 +114,41 @@ if step 3's `/code-review` returned one (≥1 DEFER, no open PR). With a PR open
 it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
 body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
-## 6. Create PR if missing (skip if PR already exists)
+## 6. Final hygiene recheck (halt on fail)
 
-Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars, using step 1's derived `<TICKET-ID>` (omit the prefix if step 1 found none).
-
-The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
-
-Create it ready for review, not `--draft`: this gate has already verified the work, and CI running against a non-draft PR is normal. A plan or handoff file saying "open a draft PR" recorded a prior agent's default, not the engineer's instruction — reserve draft for genuinely incomplete work.
-
-## 7. Final hygiene recheck (halt on fail)
-
-Steps 3–6 may have produced new commits or body writes. Reconfirm:
+Steps 3–5 may have produced new commits or body writes. Reconfirm:
 
 - Working tree is clean.
 - All commits are pushed. If `git status` shows the branch ahead of `origin/<branch>` because steps 2/3/4 produced fix commits, push them now — those commits are inside the approved scope of this gate and the user does not need to re-authorize the push. After pushing, re-verify the branch is no longer ahead.
-- The PR body landed, whether step 5 edited it or step 6 created the PR from it — re-fetch with `gh pr view` and confirm.
-- Branch is not behind the base branch — if steps 3–6 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
+- The PR body landed, when step 5 edited an already-open PR — re-fetch with `gh pr view` and confirm.
+- Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
-## 8. Record gate completion + deactivate session
+## 7. Record gate completion
 
-If every halt-on-fail step above passed, record the completed gate
-and remove the active-session marker:
+**Do NOT write the completion marker if:**
+
+- Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this session
+  (a DEFERred or *keep current text* finding counts as resolved).
+- The user asked you to present findings without finishing the gate.
+- This session deferred via step 1's context-budget check.
+- You are not in a git repository, or the branch has no PR and no remote tracking (nothing to gate).
+
+Otherwise, record the completed gate:
 
 <!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh write ready-for-review
 ```
 
-Then remove the active-session marker:
+## 8. Create PR if missing (skip if PR already exists)
+
+Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars, using step 1's derived `<TICKET-ID>` (omit the prefix if step 1 found none).
+
+The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Confirm the body landed by re-fetching with `gh pr view`, capture the PR number, then launch the CI watch now (see "CI watch (out-of-band)" below).
+
+Create it ready for review, not `--draft`: this gate has already verified the work, and CI running against a non-draft PR is normal. A plan or handoff file saying "open a draft PR" recorded a prior agent's default, not the engineer's instruction — reserve draft for genuinely incomplete work.
+
+## 9. Deactivate session
 
 <!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/ready-for-review/SKILL.md) to verify it matches require-ready-for-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
@@ -149,14 +156,6 @@ Then remove the active-session marker:
 ```
 
 Removes only this session's file. If the skill errors before reaching this step, the gate will evict the orphan automatically once the session's process ends — the hook checks PID liveness on each gate hit.
-
-**Do NOT write the completion marker if:**
-
-- Any halt-on-fail step (1, 2, 3, 4, 7) left a finding unresolved this session
-  (a DEFERred or *keep current text* finding counts as resolved).
-- The user asked you to present findings without finishing the gate.
-- This session deferred via step 1's context-budget check.
-- You are not in a git repository, or the branch has no PR and no remote tracking (nothing to gate).
 
 ## Completion
 
@@ -171,7 +170,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
+Steps 1 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
 
 **Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
@@ -195,4 +194,4 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
 
 3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again. That dispatch carries step 2's "Test-to-fit is forbidden" — a make-the-check-green prompt is the shape most likely to produce a weakened assertion.
-5. **Land the fix.** Step 8 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, then treat the fix as a step-2 failure's fix under the Overview's fix-loop rule, which carries it through step 8.
+5. **Land the fix.** Step 9 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, then treat the fix as a step-2 failure's fix under the Overview's fix-loop rule, which carries it through step 9.

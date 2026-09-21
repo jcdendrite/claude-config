@@ -412,7 +412,7 @@ Delimiters: `<!-- code-review:deferred:start -->` (opening) and `<!-- code-revie
 
 Append the delimited block if absent; replace the existing delimited block if present (idempotent across repeated `/code-review` runs as fix commits collapse DEFERs into ADDRESSes or introduce new ones). Preserve all PR description content outside the delimiters.
 
-**If no PR is open yet** (pre-`/ready-for-review` path): return the rendered `## Deferred review findings` block as part of the orchestrator output, wrapped in the same HTML comment delimiters (`<!-- code-review:deferred:start -->` / `<!-- code-review:deferred:end -->`). `/ready-for-review` step 5 includes it verbatim in the body it authors, before step 6 creates the PR from that body; the delimiters let a subsequent `/code-review` run locate and replace the block idempotently.
+**If no PR is open yet** (pre-`/ready-for-review` path): return the rendered `## Deferred review findings` block as part of the orchestrator output, wrapped in the same HTML comment delimiters (`<!-- code-review:deferred:start -->` / `<!-- code-review:deferred:end -->`). `/ready-for-review` step 5 includes it verbatim in the body it authors, before step 8 creates the PR from that body; the delimiters let a subsequent `/code-review` run locate and replace the block idempotently.
 
 **If zero DEFERs**: do not add the section. If a prior run wrote the delimited block and the latest run produces zero DEFERs, remove the delimited block from the PR description.
 
