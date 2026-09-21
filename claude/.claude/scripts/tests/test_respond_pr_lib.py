@@ -83,6 +83,13 @@ class TestValidRepoSlug:
     def test_well_formed_slug_is_valid(self, slug):
         assert _predicate_result("respond_pr_valid_repo_slug", slug) is True
 
+    @pytest.mark.parametrize("slug", ["owner/..", "../repo", "../..", "owner/."])
+    def test_all_dot_segment_is_accepted_by_the_shape_check(self, slug):
+        """Pins that the predicate accepts an all-dot segment: `.` is in its
+        allowed character class. This asserts only what the shape check
+        accepts, not that GitHub's own routing treats these slugs as safe."""
+        assert _predicate_result("respond_pr_valid_repo_slug", slug) is True
+
     @pytest.mark.parametrize("slug", [
         "owner/repo/../../other-org/other-repo",
         "owner",

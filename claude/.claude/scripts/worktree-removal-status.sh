@@ -81,18 +81,22 @@ done
 
 declare -a UNMATCHED_FILTER_ARGS=()
 if [ "${#FILTER_ARGS[@]}" -gt 0 ]; then
-  for _f in "${FILTER_ARGS[@]}"; do
-    _canon_f=$(worktree_canon_path "$_f")
+  declare -a _ALL_FILTER_ARGS=("${FILTER_ARGS[@]}")
+  for _f in "${_ALL_FILTER_ARGS[@]}"; do
+    # Reuse worktree_matches_filter for the single-arg check: does any
+    # non-main worktree match this one filter arg on its own.
+    FILTER_ARGS=("$_f")
     _found=0
     for _i in "${!ALL_WT_PATHS[@]}"; do
       [ "${ALL_WT_CANON_PATHS[$_i]}" = "$MAIN_WORKTREE_PATH" ] && continue
-      if [ "$_f" = "${ALL_WT_BRANCHES[$_i]}" ] || [ "$_canon_f" = "${ALL_WT_CANON_PATHS[$_i]}" ]; then
+      if worktree_matches_filter "${ALL_WT_BRANCHES[$_i]}" "${ALL_WT_CANON_PATHS[$_i]}"; then
         _found=1
         break
       fi
     done
     [ "$_found" -eq 0 ] && UNMATCHED_FILTER_ARGS+=("$_f")
   done
+  FILTER_ARGS=("${_ALL_FILTER_ARGS[@]}")
 fi
 
 LINKED_WORKTREE_COUNT=$(( ${#ALL_WT_PATHS[@]} - 1 ))

@@ -546,11 +546,10 @@ class TestWorktreeCanonPath:
         assert result.stdout == "-\n"
 
     def test_empty_input_is_returned_empty_not_resolved_to_cwd(self, tmp_path):
-        """Only a bash 3.2 shell exercises the guard: bash 3.2's `cd ""`
-        succeeds in the current directory, while bash 5's fails. `_run_bash`
-        runs whichever `bash` is first on PATH, so the test is vacuous under any
-        PATH bash 4+ (Homebrew bash, the CI runner) and discriminates only where
-        bash 3.2 is first on PATH (stock macOS)."""
+        """bash 3.2's `cd ""` succeeds in the current directory; bash 4+ (Homebrew
+        bash, the CI runner) fails it, making the guard a no-op there.
+        `_run_bash` runs whichever `bash` is first on PATH, so this test only
+        discriminates on a system where bash 3.2 is first (stock macOS)."""
         result = _run_bash(
             f'cd "{tmp_path}"\nprintf "[%s]\\n" "$(worktree_canon_path "")"', env=_ENV_WITHOUT_CDPATH
         )

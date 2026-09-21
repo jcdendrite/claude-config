@@ -13,8 +13,8 @@
 #   worktree_canon_path                  — symlink-resolved path, raw on failure
 #   worktree_matches_filter              — branch/path match against FILTER_ARGS
 #
-# FILTER_ARGS is a caller-assigned array (may be empty) that worktree_matches_filter
-# reads; assign it before the call, or `set -u` aborts.
+# FILTER_ARGS is a caller-assigned array (may be empty) that worktree_matches_filter reads.
+# Assign it before calling -- an unassigned array aborts under `set -u`.
 #
 # Every function here is side-effect-free with respect to the caller's script
 # state, aside from the documented globals each one reads or populates.
@@ -48,8 +48,8 @@ clear_progress() {
 # A comparison against a raw fallback therefore never matches rather than erroring.
 # An inherited CDPATH is cleared so it cannot resolve a relative name (and
 # print the hit) against an unrelated directory.
-# An empty input or a lone `-` (cd's OLDPWD shorthand) also falls back to raw,
-# and `--` stops an input like `-P` from being read as a cd option.
+# An empty input or a lone `-` (cd's OLDPWD shorthand) falls back to raw.
+# `--` stops an input like `-P` from being read as a cd option instead of a path.
 worktree_canon_path() {
   local p="$1"
   case "$p" in
