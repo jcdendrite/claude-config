@@ -2276,6 +2276,59 @@ class TestRequireReadyForReview:
         "command",
         [
             pytest.param(
+                "git push origin feature&&gh pr ready",
+                id="and_glued",
+            ),
+            pytest.param(
+                "git push origin feature;gh pr ready",
+                id="semicolon_glued",
+            ),
+            pytest.param(
+                "git push origin feature||gh pr ready",
+                id="or_glued",
+            ),
+            pytest.param(
+                "git push origin feature\ngh pr ready",
+                id="newline_separated",
+            ),
+            pytest.param(
+                "git push origin feature && echo $(gh pr ready)",
+                id="command_substitution",
+            ),
+            pytest.param(
+                'git push origin feature && gh pr "ready"',
+                id="quote_split_subcommand",
+            ),
+            pytest.param(
+                "git push origin feature && bash -c 'gh pr ready'",
+                id="bash_c_wrapper",
+            ),
+        ],
+    )
+    def test_gated_push_chained_with_ready_in_operator_variant_still_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Under a live marker, a gated push chained with a gh pr ready
+        spelled with a glued operator, a newline, a substitution, a quote
+        split, or a bash -c wrapper denies: the release requires the scan to
+        see no ready fragment, and the split-then-scan sees this one.
+        fake_gh_pr_exists is load-bearing here for the reason given in
+        test_active_marker_does_not_bypass_gh_pr_ready's own docstring."""
+        sid = "session-chained-ready-variants"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
                 "git push origin feature &gh pr create -t a -F /tmp/a",
                 id="glued_single_ampersand",
             ),
@@ -2311,6 +2364,63 @@ class TestRequireReadyForReview:
         same command deny with no live marker, so the allow here comes from
         the release."""
         sid = "session-create-detection-miss"
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        ), "with no live marker the same command must deny"
+        seed_live_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                "git push origin feature &gh pr ready",
+                id="glued_single_ampersand",
+            ),
+            pytest.param(
+                "git push origin feature && gh pr ready>/dev/null",
+                id="redirect_adjacent_to_subcommand",
+            ),
+            pytest.param(
+                "git push origin feature && cat <(gh pr ready)",
+                id="process_substitution",
+            ),
+            pytest.param(
+                "git push origin feature && ( (gh pr ready) )",
+                id="nested_subshell",
+            ),
+            pytest.param(
+                "git push origin feature && GH pr ready",
+                id="case_variant_command_name",
+            ),
+            pytest.param(
+                "git push origin feature && gh pr \\\nready",
+                id="backslash_newline_continuation",
+            ),
+        ],
+    )
+    def test_documented_ready_detection_miss_is_released_under_live_marker(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Deliberately pins the documented detection gaps (hook header, Known
+        gaps) for the gh pr ready arm: the scan does not recognize the ready
+        in these shapes, so a push chained with one is released by the live
+        marker. Each case must flip to deny when its detection is fixed.
+        fake_gh_pr_exists makes the same command deny with no live marker,
+        so the allow here comes from the release."""
+        sid = "session-ready-detection-miss"
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,

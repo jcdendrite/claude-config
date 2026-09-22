@@ -35,7 +35,7 @@
 #
 # Bypass cases (allow without checking marker):
 # - git push, when the skill is currently running (active marker live for
-#   this session). A live marker releases git push only.
+#   this session) — releases git push only.
 #   - gh pr ready and gh pr create, in the shapes the command-shape scan
 #     recognizes (see Known gaps), are excluded even under a live marker.
 #   - The marker check and refresh precede the command-shape,
@@ -340,8 +340,9 @@ fi
 
 # Active-marker release: only the git-push arm is bypass-eligible, mirroring
 # require-plan-review.sh's own exclusion of its terminal command. $is_gated_git_push
-# is spelled out even though it's implied by the surrounding scan, so a fourth
-# gated arm added later must not silently inherit a release.
+# is spelled out even though the early exit above already guarantees at least
+# one gated flag is true, so a fourth gated arm added later must not silently
+# inherit a release.
 if $ACTIVE_MARKER_LIVE && $is_gated_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
   exit 0
 fi
