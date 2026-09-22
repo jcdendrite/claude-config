@@ -27,7 +27,8 @@
 #     for a `gh pr merge` invocation, not the REST API surface `gh api` reaches.
 #   - `eval "gh pr merge..."`, `bash -c "gh pr merge..."` — subshell wrappers.
 #     The hook inspects tool_input.command, not the expanded subshell content.
-#   See docs/hooks.md § "Threat-model tiers" for how to review a change to this gate (regressions against this list only) and for this gate's gh-api-vs-wrapper-shape adversarial/cooperative distinction.
+#   See docs/hooks.md § "Threat-model tiers" for how to review a change to this gate: for regressions against the merge-base, not for the gaps this list already names.
+#   The gh-api merge path is plausibly adversarial-only; the eval/bash -c wrapper shapes are also plausible cooperative mistakes and stay live findings under this gate's own plain-cooperative tier component.
 
 set -uo pipefail
 

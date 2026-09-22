@@ -1248,6 +1248,7 @@ _THREAT_MODEL_TIERS: tuple[str, ...] = ("cooperative", "untrusted-input", "irrev
 
 _TIER_LINE_FINDER_RE = re.compile(r"^#\s*tier-threat-model\b")
 _TIER_LINE_PREFIX = "# tier-threat-model: "
+_TIER_LINE_WELLFORMED_PREFIX_RE = re.compile(r"^# tier-threat-model: \S")
 
 
 def _find_tier_threat_model_lines(lines: list[str]) -> list[tuple[int, str]]:
@@ -1276,25 +1277,23 @@ def _tier_grammar_violation(line: str) -> str | None:
     Reasons, checked in this precedence order -- an input violating two at
     once is reported under the first one that applies, e.g. an unknown
     token that is also out of canonical order is reported "unknown tier":
-    1. "bad separator" -- the line doesn't start with the exact literal
-       '# tier-threat-model: ' (one space after '#', the colon immediately
-       after the token, one space after the colon), or a ',' inside the
-       value isn't immediately followed by a space.
-    2. "no intent tier" / "unknown tier" -- the value is empty (treated as
-       missing its intent tier), or a comma-space-separated token isn't a
-       member of _THREAT_MODEL_TIERS ("unknown tier"), or the first token
-       isn't 'cooperative' ("no intent tier").
+    1. "bad separator" -- the line doesn't match '#', one space,
+       'tier-threat-model:', exactly one space, then a non-whitespace
+       character (the start of a token, well-formed or not), or a ',' inside
+       the value isn't followed by exactly one space then a non-whitespace
+       character.
+    2. "no intent tier" / "unknown tier" -- a comma-space-separated token
+       isn't a member of _THREAT_MODEL_TIERS ("unknown tier"), or the first
+       token isn't 'cooperative' ("no intent tier").
     3. "duplicate token" -- the same token appears twice.
     4. "out of order" -- the elevation tokens (everything after the intent
        tier) aren't in _THREAT_MODEL_TIERS' own canonical order.
     """
-    if not line.startswith(_TIER_LINE_PREFIX):
+    if not _TIER_LINE_WELLFORMED_PREFIX_RE.match(line):
         return "bad separator"
     value = line[len(_TIER_LINE_PREFIX):].rstrip()
-    if re.search(r",(?!\ )", value):
+    if re.search(r",(?!\ \S)", value):
         return "bad separator"
-    if not value:
-        return "no intent tier"
     tokens = value.split(", ")
     if any(token not in _THREAT_MODEL_TIERS for token in tokens):
         return "unknown tier"
@@ -1609,9 +1608,10 @@ def test_irreversible_floor_pinned(hook_name: str) -> None:
 
 _HOOK_DEPENDENCY_INVARIANT_SENTENCES: dict[str, str] = {
     "block-gh-pr-merge.sh": (
-        'See docs/hooks.md § "Threat-model tiers" for how to review a change '
-        "to this gate (regressions against this list only) and for this "
-        "gate's gh-api-vs-wrapper-shape adversarial/cooperative distinction."
+        "The gh-api merge path is plausibly adversarial-only; the eval/bash "
+        "-c wrapper shapes are also plausible cooperative mistakes and stay "
+        "live findings under this gate's own plain-cooperative tier "
+        "component."
     ),
     "deny-env-reads.sh": (
         "deny-credential-bash-reads.sh's env-variant token match is this "
@@ -1719,9 +1719,12 @@ _TIER_HEADER_FIXTURES: list[tuple[str, list[str], str]] = [
         "bad separator",
     ),
     (
+        # A single trailing space with no token after it fails the
+        # well-formed-prefix check (colon, one space, then a non-whitespace
+        # character), so this is a delimiter-shape failure, not a content one.
         "empty_value",
         ["#!/bin/bash", "# hook-class: gate", "# tier-threat-model: "],
-        "no intent tier",
+        "bad separator",
     ),
     (
         "no_space_after_hash",
@@ -1734,6 +1737,20 @@ _TIER_HEADER_FIXTURES: list[tuple[str, list[str], str]] = [
         # coincidentally via unknown-tier rejection.
         "space_before_colon",
         ["#!/bin/bash", "# hook-class: gate", "# tier-threat-model : cooperative"],
+        "bad separator",
+    ),
+    (
+        "comma_double_space",
+        [
+            "#!/bin/bash",
+            "# hook-class: gate",
+            "# tier-threat-model: cooperative,  untrusted-input",
+        ],
+        "bad separator",
+    ),
+    (
+        "colon_double_space",
+        ["#!/bin/bash", "# hook-class: gate", "# tier-threat-model:  cooperative"],
         "bad separator",
     ),
     (
@@ -1751,6 +1768,14 @@ _TIER_HEADER_FIXTURES: list[tuple[str, list[str], str]] = [
         # pinned precedence: unknown-tier wins.
         "double_violation_unknown_tier_wins",
         ["#!/bin/bash", "# hook-class: gate", "# tier-threat-model: untrusted-input, bogus-tier"],
+        "unknown tier",
+    ),
+    (
+        # A capitalized token starts with a non-whitespace character, so it
+        # passes the well-formed-prefix check and falls through to the
+        # token-membership check -- "unknown tier", not "bad separator".
+        "capitalized_tier_token",
+        ["#!/bin/bash", "# hook-class: gate", "# tier-threat-model: Cooperative"],
         "unknown tier",
     ),
     (
