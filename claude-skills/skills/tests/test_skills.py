@@ -5203,33 +5203,46 @@ class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
 
 _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradiction-route"
 
-# The whole contradiction-route region: the consult route, the settled-site and
-# two-rewrites human stop, the three verdicts, the enforcement-invariant
-# carve-out on *keep current text*, and the no-explicit-verdict blocking stop.
-# It is pinned whole so removing or weakening any sentence fails a test. The
-# whole region is compared by exact equality, so any added, removed, or
-# reworded text inside the anchors fails.
+# The whole contradiction-route region: the consult route, the site definition,
+# the settled-site and two-rewrites human stop, the three verdicts, the
+# enforcement-invariant carve-out on *keep current text*, and the
+# no-explicit-verdict blocking stop. It is pinned whole so removing or
+# weakening any sentence fails a test. The whole region is compared by exact
+# equality, so any added, removed, or reworded text inside the anchors fails.
 _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "**A finding whose fix would undo a fix an earlier round applied is also "
     "a design question, in every round, staged commit-gate rounds included.** "
     "Write `plan-architect — consult` for it on the `Fix route:` line. "
     "Dispatch, verbatim relay, and the disagreement stop-and-ask follow the "
     "heavier-mechanism rule directly above, and the consult also carries the "
-    "earlier finding and its fix. A finding against a site an earlier verdict "
-    "already settled, or that two earlier rounds' fixes already rewrote, goes "
-    "straight to the human as a blocking stop-and-ask, with no consult. The "
-    "consult's judgment standard is that the current text wins unless the "
-    "finding names a defect, under a stated rule, that the current text "
-    "actually has. One consult carries every such finding in the round and "
-    "returns exactly one of the three verdicts per finding. *Keep current "
-    "text* resolves it with nothing dispatched, logged as `--disposition "
-    "ADDRESS` with the verdict in `--rationale`, and is never available to a "
-    "finding the enforcement-invariant rule below covers. *Apply this "
-    "round's fix* is an ordinary ADDRESS row on the `code-writer` route. "
-    "*Cannot choose* is a blocking stop-and-ask to the human. A finding with "
-    "no explicit per-finding verdict from the consult (failed dispatch, "
-    "empty, hedged, or partial coverage) is likewise a blocking stop-and-ask, "
-    "never *keep current text*."
+    "earlier finding and its fix. A site is the file plus the contiguous "
+    "block — paragraph, list item, table row, or function — that an earlier "
+    "round's fix edited, or, when the earlier round's outcome was *keep "
+    "current text* with nothing edited, the block the settled finding's own "
+    "cited location named. A finding's location is matched against that site "
+    "via the ledger's optional `--source \"<file:line>\"` field or the fix "
+    "commit's own diff hunk, read generously enough to include an adjacent "
+    "or wrapped continuation of the same clause and any duplicate expression "
+    "of the same defect elsewhere in the block — a finding is not a "
+    "different site merely because its cited location sits just outside the "
+    "literal edited or cited range. A finding against a site an earlier "
+    "verdict already settled, or that two earlier rounds' fixes already "
+    "rewrote, goes straight to the human as a blocking stop-and-ask, with no "
+    "consult. The consult's judgment standard is that the current text wins "
+    "unless the finding names a defect, under a stated rule, that the "
+    "current text actually has. One consult carries every such finding in "
+    "the round and returns exactly one of the three verdicts per finding. "
+    "*Keep current text* resolves it with nothing dispatched, logged as "
+    "`--disposition ADDRESS` with the verdict in `--rationale`, and is never "
+    "available to a finding the enforcement-invariant rule below covers. "
+    "This branch has no diff-hunk fallback, so `--source \"<file:line>\"` "
+    "naming the site is required in that ledger call — the only anchor a "
+    "session resumed after compaction can match a repeat finding against. "
+    "*Apply this round's fix* is an ordinary ADDRESS row on the "
+    "`code-writer` route. *Cannot choose* is a blocking stop-and-ask to the "
+    "human. A finding with no explicit per-finding verdict from the consult "
+    "(failed dispatch, empty, hedged, or partial coverage) is likewise a "
+    "blocking stop-and-ask, never *keep current text*."
 )
 
 
