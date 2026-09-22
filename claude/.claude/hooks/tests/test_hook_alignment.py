@@ -1606,35 +1606,53 @@ def test_irreversible_floor_pinned(hook_name: str) -> None:
     )
 
 
-_HOOK_DEPENDENCY_INVARIANT_SENTENCES: dict[str, str] = {
+_HOOK_DEPENDENCY_INVARIANT_SENTENCES: dict[str, tuple[str, ...]] = {
     "block-gh-pr-merge.sh": (
-        "The gh-api merge path is plausibly adversarial-only; the eval/bash "
-        "-c wrapper shapes are also plausible cooperative mistakes and stay "
-        "live findings under this gate's own plain-cooperative tier "
-        "component."
+        (
+            "The eval/bash -c wrapper shapes are also plausible cooperative "
+            "mistakes and stay live findings under this gate's plain-cooperative "
+            "tier component."
+        ),
     ),
     "deny-env-reads.sh": (
-        "deny-credential-bash-reads.sh's env-variant token match is this "
-        "gate's own backstop against that Bash-side gap, including a "
-        "steered attempt to read the file through it."
+        (
+            "deny-credential-bash-reads.sh's env-variant token match is this "
+            "gate's own backstop against that Bash-side gap, including a "
+            "steered attempt to read the file through it."
+        ),
+        (
+            "threat model here (prompt-injection or accidental access, "
+            "not a privileged"
+        ),
     ),
     "deny-credential-file-reads.sh": (
-        "This zero-allowlist, no-bypass-valve design is deliberate against "
-        "a steered agent, not only an accidental Read."
+        (
+            "This zero-allowlist, no-bypass-valve design is deliberate against "
+            "a steered agent, not only an accidental Read."
+        ),
     ),
     "deny-network-installs.sh": (
-        "This gate's threat model includes a cooperative agent steered by "
-        "injected content toward an install or curl-pipe-to-shell shape, "
-        "not only an accidental one; the residual gaps below are limits of "
-        "text matching against a deliberately obfuscated command, not a "
-        "claim of safety against one (docs/security-hardening.md)."
+        (
+            "This gate's threat model includes a cooperative agent steered by "
+            "injected content toward an install or curl-pipe-to-shell shape, "
+            "not only an accidental one."
+        ),
+    ),
+    "require-ready-for-review.sh": (
+        "This gate's threat model includes adversarial input, not only a",
+        "The backstop against deliberate evasion is block-gh-pr-merge.sh blocking",
     ),
 }
 
 
-@pytest.mark.parametrize(
-    "hook_name,sentence", sorted(_HOOK_DEPENDENCY_INVARIANT_SENTENCES.items())
+_HOOK_DEPENDENCY_INVARIANT_SENTENCE_CASES: list[tuple[str, str]] = sorted(
+    (hook_name, sentence)
+    for hook_name, sentences in _HOOK_DEPENDENCY_INVARIANT_SENTENCES.items()
+    for sentence in sentences
 )
+
+
+@pytest.mark.parametrize("hook_name,sentence", _HOOK_DEPENDENCY_INVARIANT_SENTENCE_CASES)
 def test_hook_dependency_invariant_sentence_pinned(
     hook_name: str, sentence: str
 ) -> None:
@@ -1647,6 +1665,32 @@ def test_hook_dependency_invariant_sentence_pinned(
         f"{hook_name}: this hook's dependency-invariant/backstop sentence "
         'changed -- see docs/hooks.md § "Threat-model tiers" before '
         "editing this text"
+    )
+
+
+_DOC_DEPENDENCY_INVARIANT_SENTENCES: dict[str, str] = {
+    "enforce-marker-script-shape.sh": (
+        "Defense-in-depth against prompt-injection escalation through the "
+        "`marker.sh` allow rules."
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "hook_name,sentence", sorted(_DOC_DEPENDENCY_INVARIANT_SENTENCES.items())
+)
+def test_doc_dependency_invariant_sentence_pinned(
+    hook_name: str, sentence: str
+) -> None:
+    """Pins the exact docs/hooks.md sentence this hook's tier classification
+    rests on, when that evidentiary text lives in the doc rather than the
+    hook's own header -- a failure here means the docs/hooks.md prose this
+    hook's elevation depends on changed; see docs/hooks.md § "Threat-model
+    tiers" before editing this text."""
+    assert sentence in _HOOKS_DOC_TEXT, (
+        f"{hook_name}: the docs/hooks.md sentence this hook's "
+        'dependency-invariant/backstop text rests on changed -- see '
+        'docs/hooks.md § "Threat-model tiers" before editing this text'
     )
 
 
