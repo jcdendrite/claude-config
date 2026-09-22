@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: review-only agents (the eight staff-*/ciso-reviewer personas, the
 # non-specialist reviewers skill-fidelity-reviewer and
 # comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see

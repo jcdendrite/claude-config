@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: block Edit, Write, and MultiEdit to files in the main working tree of
 # a repo where worktree discipline is active. Three activation markers:
 #   - <repo>/.claude/worktree-required  (committed repo sentinel — opt-out has no effect)

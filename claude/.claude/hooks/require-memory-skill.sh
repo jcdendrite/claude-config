@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # set -uo pipefail but NOT -e: hooks inspect exit codes rather than aborting on them.
 set -uo pipefail
 # PreToolUse hook: block Write/Edit/MultiEdit to Claude Code auto-memory files

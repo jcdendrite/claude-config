@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
 # machine-local or session-scoped keys staged relative to the repo's default
 # branch — see GUARDED_KEYS_JSON below for the guarded set.

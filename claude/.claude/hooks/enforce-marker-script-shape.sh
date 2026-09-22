@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: guard review-marker state. Two jobs:
 #   1. Deny gate-releasing writes (a marker file path via Write/Edit/MultiEdit,
 #      or `marker.sh write|activate` via Bash) from agent types that cannot

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
 # plan file exists in .claude/plans/ and no plan-review marker covering that
 # exact plan state can be found. Exempt: a Write/Edit/MultiEdit whose own

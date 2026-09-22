@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: require git write operations to happen inside a linked worktree,
 # not the main working tree. Three activation markers:
 #   - <repo>/.claude/worktree-required  (committed repo sentinel — opt-out has no effect)

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: block every shape of `gh pr merge` issued by the AI agent.
 # Enforces the repo-root CLAUDE.md rule "AI agents: don't merge your own PRs":
 # CI passing is necessary but not sufficient — the engineer merges directly.
@@ -20,13 +21,13 @@
 # confirm the call is a Bash merge attempt, so do not block). A missing
 # tool_name does NOT fail open: _lib.sh's empty-TOOL_NAME check denies it.
 #
-# Known gaps (out of scope by design):
+# Known gaps, accepted existing debt tracked in GH-1077:
 #   - `gh api repos/OWNER/REPO/pulls/N/merge` — the gh-api path to merge.
 #     Different command shape: this hook inspects tool_input.command text
 #     for a `gh pr merge` invocation, not the REST API surface `gh api` reaches.
 #   - `eval "gh pr merge..."`, `bash -c "gh pr merge..."` — subshell wrappers.
 #     The hook inspects tool_input.command, not the expanded subshell content.
-#     Claude Code agents operating in good faith do not use these forms.
+#   See docs/hooks.md § "Threat-model tiers" for how to review a change to this gate (regressions against this list only) and for this gate's gh-api-vs-wrapper-shape adversarial/cooperative distinction.
 
 set -uo pipefail
 

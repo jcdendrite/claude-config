@@ -3469,6 +3469,90 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
     )
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "CLAUDE.md",
+        "plugins/claude-hook-review/skills/claude-hook-review/SKILL.md",
+    ],
+)
+def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str) -> None:
+    """CLAUDE.md's '## Hook threat model' section and claude-hook-review's
+    SKILL.md tier-header paragraph both cite `docs/hooks.md` § "Threat-model
+    tiers" — resolves to a real heading there.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / relative_path,
+        "docs/hooks.md",
+        "Threat-model tiers",
+        repo_root=REPO_ROOT,
+    )
+
+
+# The same vocabulary claude/.claude/hooks/tests/test_hook_alignment.py's own
+# _THREAT_MODEL_TIERS defines — duplicated here rather than imported, since
+# that module lives in a separate test tree with its own pytest rootdir
+# (see .claude/rules/test-tree-packaging.md) with no shared import path to
+# this one.
+_THREAT_MODEL_TIERS: tuple[str, ...] = ("cooperative", "untrusted-input", "irreversible")
+
+# A single-backtick span whose content is lowercase letters and hyphens only
+# — no whitespace, colon, or other punctuation inside — the shape a bare
+# tier token takes. Excludes a multi-word span like
+# `` `# tier-threat-model: <tiers>` `` or `` `hook-class: gate` ``, each of
+# which contains a space or a colon and so can't satisfy this pattern for
+# its full backtick-delimited content.
+_LOWERCASE_HYPHEN_BACKTICK_SPAN_RE = re.compile(r"`([a-z][a-z-]*)`")
+
+
+def _lowercase_hyphen_backtick_spans(paragraph: str) -> set[str]:
+    """Every distinct lowercase-hyphen-only single-backtick span in `paragraph`."""
+    return set(_LOWERCASE_HYPHEN_BACKTICK_SPAN_RE.findall(paragraph))
+
+
+def _claude_hook_review_tier_paragraph() -> str:
+    """The tier-header paragraph in claude-hook-review's SKILL.md, isolated
+    from the rest of the file so the backtick-span scan below doesn't also
+    sweep unrelated code spans elsewhere in the document (hook names,
+    `_lib.sh`, `hook-class` values, etc.)."""
+    skill_md_text = _skill_file("claude-hook-review").read_text()
+    match = re.search(r"^In a repo that adopts tier headers.*$", skill_md_text, re.MULTILINE)
+    assert match, "claude-hook-review/SKILL.md's tier-header paragraph not found"
+    return match.group(0)
+
+
+def test_claude_hook_review_tier_paragraph_backtick_tokens_are_known_tiers() -> None:
+    """Every lowercase-hyphen-only single-backtick span in claude-hook-review
+    SKILL.md's tier-header paragraph is a member of _THREAT_MODEL_TIERS, so
+    the SKILL.md paragraph's tier vocabulary can't silently drift from
+    docs/hooks.md's own set (test_hook_alignment.py's identically-named
+    constant there).
+    """
+    spans = _lowercase_hyphen_backtick_spans(_claude_hook_review_tier_paragraph())
+    assert spans, "no lowercase-hyphen backtick span found in the tier-header paragraph"
+    unknown = spans - set(_THREAT_MODEL_TIERS)
+    assert not unknown, (
+        f"claude-hook-review/SKILL.md's tier-header paragraph names backtick "
+        f"span(s) {sorted(unknown)} that aren't in _THREAT_MODEL_TIERS "
+        f"{_THREAT_MODEL_TIERS}"
+    )
+
+
+def test_lowercase_hyphen_backtick_spans_ignores_multiword_and_finds_decoy() -> None:
+    """Meta-test for _lowercase_hyphen_backtick_spans: a decoy paragraph
+    containing a hyphenated non-tier span (`` `hook-class` `` alone, isolated
+    in its own backtick span) is still extracted — proving the regex doesn't
+    silently miss a plausible non-tier token — while a multi-word span
+    (`` `# tier-threat-model: <tiers>` ``) stays unextracted.
+    """
+    decoy_paragraph = (
+        "A decoy paragraph naming `hook-class` on its own, plus the real "
+        "header shape `# tier-threat-model: <tiers>`, which must not be "
+        "extracted as a bare span."
+    )
+    assert _lowercase_hyphen_backtick_spans(decoy_paragraph) == {"hook-class"}
+
+
 def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
     """docs/transcript-analysis.md's `cost-trend`/`--share-only` exclusion
     cites `docs/private-project-redaction.md` § "A wider corpus goes to

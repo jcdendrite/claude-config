@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require a published npm package's package.json `version` to be
 # strictly increased before git commit when staged changes touch a non-test
 # source file under that package.

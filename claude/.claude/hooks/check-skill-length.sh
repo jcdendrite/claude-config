@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: block git commit when a staged SKILL.md grows past its per-skill ceiling.
 #
 # Policy: deny when the staged file is over its limit AND longer than the

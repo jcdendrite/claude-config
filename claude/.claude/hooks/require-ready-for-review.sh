@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: require /ready-for-review to have run before pushing to a branch
 # with an open PR, marking a draft PR ready, or creating a PR. Verified via
 # marker file.
