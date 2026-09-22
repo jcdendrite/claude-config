@@ -10,7 +10,7 @@ Quote the resolved-scope header verbatim for every `transcript-analysis.py` subc
 
 This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
 
-`judgment-pair` and `user-input` print raw human prompt text regardless of `--redact`. Keep that text in the artifact file only, never in the return or in any tracked file.
+`judgment-pair` and `user-input` print raw human prompt text regardless of `--redact`. Keep that text in the artifact directory's two files only (the report and `judgment-pairs.md`), never in the return or in any tracked file.
 
 Caveats beyond what is stated below are not restated here — see `transcript-analysis/SKILL.md` § "Caveats" and `docs/transcript-analysis.md`.
 
@@ -105,6 +105,8 @@ For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
 **(g) Attribute a trigger to each sampled round.** The sample is the rounds Step (c) needs to cover 60% of round dollars, plus every round Step (e) found with no following commit. When Step (e)'s joins were skipped, the sample is the 60% set only. Do not read all rounds.
 
+`<artifact-dir>` is the directory of Step 5's output file: the caller-supplied output path's directory, or a fresh `mktemp -d`. Apply Step 5's tracked-tree guard to the `judgment-pairs.md` path itself before running `judgment-pair`, since that file holds raw human prompt text. Write it only in that directory.
+
 Extract the human decision points:
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py judgment-pair --this-repo --branches <branch> --out <artifact-dir>/judgment-pairs.md
@@ -160,7 +162,7 @@ Emit the six parts below. Carry no dollar total, no per-branch cost share, and n
 
 This step is the deep audit's. A sweep writes no artifact file and has no headline, top discretionary cause or levers. Its output is Step 2's ranked candidate list, stated as candidates and reasons with no dollar figures or cost shares, per Step 4's publication rule.
 
-Write one file: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm it does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it, matching `transcript-narrative/SKILL.md`'s own guard.
+Write one report file, plus Step 3(g)'s `judgment-pairs.md` in the same directory: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm each path written (the report file and `judgment-pairs.md`) either resolves outside a git-tracked tree or is covered by that tree's `.gitignore`, matching `transcript-narrative/SKILL.md`'s own guard.
 
 The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
 

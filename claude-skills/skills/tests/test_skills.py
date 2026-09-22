@@ -2201,10 +2201,11 @@ class TestValidateContextForkRequiresExplicitBackground:
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
-# The four DISPOSITION_RULE anchor regions in the corpus. Asserted as an
+# The DISPOSITION_RULE anchor regions in the corpus. Asserted as an
 # exact set, not just "each found anchor is non-trivial" — a corpus scan
 # alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
+    ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
     ("code-review", "code-review-new-primitive-route"),
     ("code-review", "code-review-round-cap-consult-verdict"),
@@ -4197,8 +4198,10 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
         "This pass reviews the cumulative diff with no responsibility-boundary "
         "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
-        "Per-commit findings from earlier in this branch's fix loop feed in as "
-        "context, not a substitute for this pass. The cache marker is written "
+        "Decisions from earlier in this branch's fix loop — per-commit rounds "
+        "and prior cumulative passes alike — feed in as context per "
+        '`code-review/SKILL.md` § "Ripple effect triage", never as a '
+        "substitute for this pass. The cache marker is written "
         "only from a clean pass of this step's own cumulative `/code-review`, "
         "never from a fix commit's staged-diff pass."
     ),
@@ -4495,11 +4498,10 @@ def _section_between(
 
     end_idx is exclusive, at the next line starting with '## ' (or len(lines)
     if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, since none of the four
-    headings this module bounds is currently last in its file). The start
-    heading is asserted found, not inferred — a renamed or deleted heading
-    would otherwise extract as empty and compare equal to another empty
-    extraction.
+    extractor, EOF is not itself a failure here, so a section that is last in
+    its file is bounded correctly). The start heading is asserted found, not
+    inferred — a renamed or deleted heading would otherwise extract as empty
+    and compare equal to another empty extraction.
     """
     start_idx = next(
         (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
@@ -4969,9 +4971,8 @@ _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 # (pushing commits is cheap enough to finish before any deferral
 # consideration).
 _PINNED_HALT_DEFERS_CLAUSE = (
-    "A halt on step 2, 3, or 4 triggers the normal fix loop first "
-    "(dispatch `code-writer`, apply the fix, re-run step 2); only once "
-    "that round's fix commit has landed does a context-budget re-check "
+    "A halt on step 2, 3, or 4 triggers the fix loop above first; only "
+    "once that round's fix commit has landed does a context-budget re-check "
     "run, and only then does an over-threshold/already-fired result "
     "route to step 1's deferral. A halt on step 7 stays outside this "
     "routing — pushing the commits is cheap enough to finish before any "
@@ -4996,6 +4997,357 @@ class TestReadyForReviewHaltRoutesToContextBudgetDeferral:
             pinned_text,
             raw_section,
             context="ready-for-review/SKILL.md: Overview's halt-deferral sentence no longer matches.",
+        )
+        # The halt clause says "the fix loop above", so the fix-loop paragraph
+        # must precede it.
+        # _assert_pinned_clause_right_bounded returns no match position, so the
+        # start offsets are rebuilt here with the same whitespace-tolerant pattern.
+        fix_loop_pattern = r"\s+".join(re.escape(word) for word in _PINNED_FIX_LOOP_CLAUSE.split())
+        halt_pattern = r"\s+".join(re.escape(word) for word in pinned_text.split())
+        fix_loop_match = re.search(fix_loop_pattern, raw_section)
+        halt_match = re.search(halt_pattern, raw_section)
+        assert fix_loop_match is not None and halt_match is not None, (
+            "ready-for-review/SKILL.md: Overview's fix-loop or halt-deferral clause not found "
+            "for the ordering check; if the fix-loop clause drifted, see "
+            "TestReadyForReviewFixLoopRule."
+        )
+        assert fix_loop_match.start() < halt_match.start(), (
+            "ready-for-review/SKILL.md: Overview's fix-loop paragraph must precede the "
+            "halt-deferral paragraph that refers to it as 'the fix loop above'."
+        )
+
+
+# The Overview's fix-loop rule: every fix produced by step 2, 3, or 4
+# re-enters at step 2, and step 4 never re-runs on its own output.
+_PINNED_FIX_LOOP_CLAUSE = (
+    "After a fix produced by step 2, 3, or 4, return to step 2 and continue "
+    "in order. Step 3 then re-reviews the fixed cumulative diff in full, "
+    "because its cache marker misses on the changed bytes. Step 4 does not "
+    "re-run on its own output."
+)
+
+
+class TestReadyForReviewFixLoopRule:
+    """Pin the Overview's fix-loop rule, so a future edit that lets the fix
+    commit's own staged-diff review stand in for a cumulative re-run fails
+    this test instead of drifting silently.
+    """
+
+    def test_overview_fix_loop_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        pinned_text = " ".join(_PINNED_FIX_LOOP_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: Overview's fix-loop clause no longer matches.",
+        )
+
+
+# Step 3's loop cap: each clause binds a condition to its outcome.
+_PINNED_STEP3_CAP_CLAUSE = (
+    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
+    "records newer than its newest clean one, in suffix-timestamp order, "
+    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
+    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
+    "number two or more, first dispatch `plan-architect` with "
+    "`MODE=consult`, carrying the records' paths and the plan path if one "
+    "exists, to judge whether the loop is converging (*proceed*) or its "
+    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
+    "table row whose finding cell reads `cap` and whose Outcome is the "
+    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
+    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
+    "row, or an orchestrator disagreement with the return, is a blocking "
+    "stop-and-ask to the human."
+)
+
+# Step 3's clean/dirty definition for a disposition record: the Cap counts
+# records newer than the newest clean one, and the closing sentence keeps the
+# record from granting a review skip while disclosing that it can relax the Cap.
+_PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
+    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
+    '§ "Step — Record review completion" counts it (a `none` row counts as '
+    "resolved), and dirty otherwise. No record grants a review skip and the "
+    "`cumulative-review` marker stays the sole authorization, but the Cap "
+    "counts records, so a record's clean or dirty status can relax the Cap; "
+    "later reviews otherwise read it only as context."
+)
+
+# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
+# gate, then the Overview's fix-loop rule returns the loop to a full pass of
+# step 3 over the fixed bytes, bounded by the Cap.
+_PINNED_STEP3_LOOP_BACK_CLAUSE = (
+    "Its fix commit goes through the standard staged-diff `/code-review` + "
+    "marker gate, and the Overview's fix-loop rule then brings the loop back "
+    "through step 2 to a full pass of this step over the fixed bytes, within "
+    "the cap below."
+)
+
+# Step 3 must re-review a fix's own output in full. This phrase is the tail of
+# the sentence that forbids that re-review, so its presence in step 3 is the
+# regression.
+_STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
+
+
+class TestReadyForReviewStep3LoopCapPins:
+    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
+    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
+    rule, the cap consult, the statement that a record grants no review skip,
+    or the fix-loop return to a full pass fails a test instead of drifting
+    silently. One test also asserts step 3 carries no sentence forbidding a
+    re-review of a fix's own output.
+    """
+
+    @pytest.mark.parametrize(
+        ("pinned_clause", "site"),
+        [
+            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
+            pytest.param(
+                _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
+                "step 3's clean/dirty definition",
+                id="clean-dirty-definition",
+            ),
+            pytest.param(
+                _PINNED_STEP3_LOOP_BACK_CLAUSE,
+                "step 3's fix loop-back sentence",
+                id="loop-back",
+            ),
+        ],
+    )
+    def test_step3_clause_matches_live_text(self, pinned_clause: str, site: str) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        pinned_text = " ".join(pinned_clause.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=f"ready-for-review/SKILL.md: {site} no longer matches.",
+        )
+
+    def test_step3_does_not_forbid_rereview_of_a_fixs_own_output(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        assert _STEP3_SKIP_REREVIEW_PHRASE not in " ".join(raw_section.split()), (
+            "ready-for-review/SKILL.md: step 3 forbids re-reviewing a fix's own "
+            f"output ({_STEP3_SKIP_REREVIEW_PHRASE!r}); the fix loop requires "
+            "that re-review."
+        )
+
+
+_READY_FOR_REVIEW_CI_WATCH_HEADING = "## CI watch (out-of-band)"
+
+# CI watch's "Land the fix" item routes a CI fix through the Overview's
+# fix-loop rule instead of restating a separate push-then-loop mechanic, so
+# a CI fix gets the same full cumulative re-review as a local-failure fix.
+_PINNED_CI_LAND_THE_FIX_CLAUSE = (
+    "**Land the fix.** Step 8 removed this session's active marker and "
+    "`require-ready-for-review.sh` denies a push without one, so re-run "
+    "step 0's `marker.sh activate` command, then treat the fix as a "
+    "step-2 failure's fix under the Overview's fix-loop rule, which "
+    "carries it through step 8."
+)
+
+
+class TestReadyForReviewCiWatchLandsFixUnderFixLoopRule:
+    """Pin the CI watch's "Land the fix" item, which routes the fix through
+    the Overview's fix-loop rule. That rule gives a CI fix the same fresh
+    cumulative review as a local-failure fix.
+    """
+
+    def test_land_the_fix_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_CI_WATCH_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CI_LAND_THE_FIX_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: CI watch's 'Land the fix' clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_RECORD_COMPLETION_HEADING = "## Step — Record review completion"
+
+# The clean-definition sentence: a DEFERred finding or a contradiction
+# consult's *keep current text* verdict both count as resolved, so neither
+# blocks the review-completion marker written by `marker.sh write code-review`.
+_PINNED_CLEAN_DEFINITION_CLAUSE = (
+    "A finding DEFERred under the closed list, or settled *keep current "
+    "text* by a contradiction consult, counts as resolved. If the review "
+    "is **clean** (no blockers, no unresolved critical findings, and you "
+    "reviewed the currently staged changes), record it by running this "
+    "command exactly once:"
+)
+
+
+class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
+    """Pin code-review/SKILL.md's clean-definition sentence, so a future edit
+    can't silently drop the contradiction-consult *keep* branch and make a
+    settled-keep finding block the review-completion marker.
+    """
+
+    def test_clean_definition_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RECORD_COMPLETION_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CLEAN_DEFINITION_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: clean-definition clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradiction-route"
+
+# The whole contradiction-route region: the consult route, the site definition,
+# the settled-site and two-rewrites human stop, the three verdicts, the
+# enforcement-invariant carve-out on *keep current text*, and the
+# no-explicit-verdict blocking stop. It is pinned whole so removing or
+# weakening any sentence fails a test. The whole region is compared by exact
+# equality, so any added, removed, or reworded text inside the anchors fails.
+_PINNED_CONTRADICTION_ROUTE_CLAUSE = (
+    "**A finding whose fix would undo a fix an earlier round applied is also "
+    "a design question, in every round, staged commit-gate rounds included.** "
+    "Write `plan-architect — consult` for it on the `Fix route:` line. "
+    "Dispatch, verbatim relay, and the disagreement stop-and-ask follow the "
+    "heavier-mechanism rule directly above, and the consult also carries the "
+    "earlier finding and its fix. A site is the file plus the contiguous "
+    "block — paragraph, list item, table row, or function — that an earlier "
+    "round's fix edited, or, when the earlier round's outcome was *keep "
+    "current text* with nothing edited, the block the settled finding's own "
+    "cited location named. A finding's location is matched against that site "
+    "via the ledger's optional `--source \"<file:line>\"` field or the fix "
+    "commit's own diff hunk, read generously enough to include an adjacent "
+    "or wrapped continuation of the same clause and any duplicate expression "
+    "of the same defect elsewhere in the block — a finding is not a "
+    "different site merely because its cited location sits just outside the "
+    "literal edited or cited range. A finding against a site an earlier "
+    "verdict already settled, or that two earlier rounds' fixes already "
+    "rewrote, goes straight to the human as a blocking stop-and-ask, with no "
+    "consult. The consult's judgment standard is that the current text wins "
+    "unless the finding names a defect, under a stated rule, that the "
+    "current text actually has. One consult carries every such finding in "
+    "the round and returns exactly one of the three verdicts per finding. "
+    "*Keep current text* resolves it with nothing dispatched, logged as "
+    "`--disposition ADDRESS` with the verdict in `--rationale`, and is never "
+    "available to a finding the enforcement-invariant rule below covers. "
+    "This branch has no diff-hunk fallback, so `--source \"<file:line>\"` "
+    "naming the site is required in that ledger call — the only anchor a "
+    "session resumed after compaction can match a repeat finding against. "
+    "*Apply this round's fix* is an ordinary ADDRESS row on the "
+    "`code-writer` route. *Cannot choose* is a blocking stop-and-ask to the "
+    "human. A finding with no explicit per-finding verdict from the consult "
+    "(failed dispatch, empty, hedged, or partial coverage) is likewise a "
+    "blocking stop-and-ask, never *keep current text*."
+)
+
+
+class TestCodeReviewContradictionRouteRegionPin:
+    """Pin code-review/SKILL.md's contradiction-route region whole, so dropping
+    the enforcement-invariant carve-out on *keep current text*, the
+    settled-site / two-rewrites human stop, or the no-explicit-verdict
+    blocking stop-and-ask fails a test instead of drifting silently.
+    """
+
+    def test_contradiction_route_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_CONTRADICTION_ROUTE_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+
+_CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
+
+# The whole defer-invariant region: the enforcement-invariant class definition,
+# its never-DEFER-eligible ruling, and the ADDRESS-or-blocking-stop disposition.
+# The contradiction-route region's *keep current text* carve-out takes its scope
+# from this class, so it is pinned whole by exact equality, like that region.
+_PINNED_DEFER_INVARIANT_CLAUSE = (
+    '- **"Enforcement invariant weakened, but disclosed"** — a finding that '
+    "the diff opens a path around an enforcement invariant (a gate, hook, "
+    "permission check, required-approval, or marker guarantee some mechanism "
+    "currently makes unbypassable) is never DEFER-eligible, regardless of "
+    "which criterion above seems to match. Disposition is ADDRESS (fix the "
+    "hole) or a blocking stop-and-ask to the human — never persisted to the "
+    "`## Deferred review findings` block. Approval of a diff or PR does not "
+    "function as informed consent for an invariant-break buried in the body."
+)
+
+
+class TestCodeReviewDeferInvariantRegionPin:
+    """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
+    the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
+    or dropping the blocking stop-and-ask disposition fails a test instead of
+    drifting silently.
+    """
+
+    def test_defer_invariant_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_DEFER_INVARIANT_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_DEFER_INVARIANT_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+
+_CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
+
+# The re-review carry-forward paragraph: the disposition records reach each
+# spawn prompt, a record never narrows a review or suppresses a finding the
+# current text supports, and a missing or partial earlier fix is a new finding
+# for any reviewer. It is pinned whole because the right-bound check needs a
+# structural boundary at the pinned text's end.
+_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
+    "On a re-review, prior decisions are this session's context plus every "
+    "disposition record `ready-for-review/SKILL.md` § \"3. Code review (halt "
+    "on findings)\" wrote for this branch; put those record paths and these "
+    "three rules in each spawn prompt (a reviewer sees only its prompt). The "
+    "spawn finishes its own review before opening the records — a record "
+    "never narrows what it reviews or suppresses a finding the current text "
+    "supports, and it names in its findings any record it cannot parse, or "
+    "whose claim the current text contradicts. For each earlier ADDRESS row "
+    "the same agent raised whose Outcome names a fix, it confirms the fix "
+    "landed as the finding required; a missing or partial fix is a new "
+    "finding for any reviewer that sees it, whichever agent raised the row. "
+    "It re-flags a site an earlier fix or verdict rewrote only under a "
+    "different rule than the one behind the rewrite, or for a fact the "
+    "rewrite dropped, and when its fix would move a site back toward its "
+    "earlier wording it names the finding it contradicts."
+)
+
+
+class TestCodeReviewRippleCarryForwardPin:
+    """Pin code-review/SKILL.md's re-review carry-forward paragraph, so
+    inverting the record-never-suppresses trust rule, dropping the hand-off
+    of record paths to every spawn prompt, or dropping the any-reviewer
+    partial-fix rule fails a test instead of drifting silently.
+    """
+
+    def test_carry_forward_paragraph_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RIPPLE_HEADING
+        )
+        pinned_text = " ".join(_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
         )
 
 
