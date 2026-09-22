@@ -11,9 +11,17 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    _make_git_exiting_with_status,
+    _make_git_recording_argv,
+    absolute_git_dir,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_cherry_pick,
+    build_conflicted_merge,
+    build_conflicted_revert,
     edit_input,
     extract_skill_command,
+    push_conflicting_edit_to_origin,
     run_hook,
     run_hook_reason,
     run_skill_command,
@@ -1636,6 +1644,618 @@ class TestRequireSkillReview:
             "behaves differently than the stowed claude/.claude/hooks/_lib.sh copy for "
             f"{command!r} — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
+
+    # -- Fixed-input parity for the six closure functions row 6 copies into
+    # this plugin's trimmed _lib.sh. declare -f definition-equality
+    # (TestSharedGateDiffBaseClosureDefinitionEquality below) is the primary
+    # drift guard; these pin one concrete behavioral output per function in
+    # the same shape as the parity tests above.
+
+    def test_plugin_lib_sh_capped_matches_stowed_lib_sh(self):
+        """_lib_capped must run a command under the same cap wrapper in both
+        copies — its body is copied byte-identical from the stowed
+        claude/.claude/hooks/_lib.sh (row 6)."""
+        harness = '. "{lib}"; _lib_capped echo hello; printf "RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout == "hello\nRC:0\n"
+
+    def test_plugin_lib_sh_default_branch_from_origin_head_matches_stowed_lib_sh(
+        self, tmp_path
+    ):
+        """_lib_default_branch_from_origin_head must resolve the same branch
+        name from both copies for a repo with origin/HEAD set."""
+        _bare, clone = bare_remote_with_default_branch(tmp_path)
+        harness = '. "{lib}"; _lib_default_branch_from_origin_head "$1"; printf ":RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", str(clone)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", str(clone)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout == "main:RC:0\n"
+
+    def test_plugin_lib_sh_default_branch_or_guess_matches_stowed_lib_sh(self, tmp_path):
+        """_lib_default_branch_or_guess must fall back to the same candidate
+        guess in both copies once origin/HEAD is unset — the branch this
+        function adds over _lib_default_branch_from_origin_head above."""
+        _bare, clone = bare_remote_with_default_branch(tmp_path)
+        subprocess.run(
+            ["git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+            cwd=clone, check=True,
+        )
+        harness = '. "{lib}"; _lib_default_branch_or_guess "$1"; printf ":RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", str(clone)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", str(clone)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout == "main:RC:0\n"
+
+    def test_plugin_lib_sh_git_inprogress_state_matches_stowed_lib_sh(self, git_repo):
+        """_lib_git_inprogress_state must detect the same in-progress state
+        from both copies for the same repo."""
+        build_conflicted_cherry_pick(git_repo)
+        harness = '. "{lib}"; _lib_git_inprogress_state "$1"; printf ":RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout == "cherry-pick:RC:0\n"
+
+    def test_plugin_lib_sh_gate_diff_base_matches_stowed_lib_sh(self, git_repo):
+        """_lib_gate_diff_base must agree on the correct, common-case answer
+        from both copies: outside any in-progress state, no base at all."""
+        harness = '. "{lib}"; _lib_gate_diff_base "$1"; printf ":RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout == ":RC:1\n"
+
+    def test_plugin_lib_sh_staged_diff_hash_matches_stowed_lib_sh(self, git_repo):
+        """_lib_staged_diff_hash must hash git_repo's staged change to the
+        same digest from both copies."""
+        harness = '. "{lib}"; _lib_staged_diff_hash "$1" ""; printf ":RC:%s\\n" "$?"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", str(git_repo)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout == stowed_result.stdout
+        assert plugin_result.stdout.endswith(":RC:0\n")
+        assert len(plugin_result.stdout.split(":RC:")[0]) == 64, plugin_result.stdout
+
+
+class TestSharedGateDiffBaseClosureDefinitionEquality:
+    """declare -f definition-equality over the seven functions this
+    plugin's trimmed _lib.sh copies byte-identical from the stowed
+    claude/.claude/hooks/_lib.sh, standing rather than introduction-time —
+    the primary guard against the two copies drifting apart. Each lib is
+    sourced in its own bash -c subshell — sourcing both into one shell
+    would let the second definition clobber the first and turn the
+    comparison into a function against itself."""
+
+    @pytest.mark.parametrize(
+        "function_name",
+        [
+            "_lib_capped",
+            "_lib_default_branch_from_origin_head",
+            "_lib_default_branch_or_guess",
+            "_lib_git_inprogress_state",
+            "_lib_gate_diff_base",
+            "_lib_staged_diff_hash",
+            "_lib_skill_review_diff_base",
+        ],
+    )
+    def test_definition_matches_stowed_lib_sh(self, function_name):
+        harness = '. "{lib}" >/dev/null 2>&1; declare -f {fn}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB, fn=function_name)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB, fn=function_name)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout, f"{function_name} not defined in the plugin's _lib.sh"
+        assert plugin_result.stdout == stowed_result.stdout, (
+            f"plugins/skill-management/hooks/_lib.sh's {function_name} definition "
+            "diverges from the stowed claude/.claude/hooks/_lib.sh copy"
+        )
+
+
+def _build_conflicted_merge_via_origin(tmp_path):
+    """Local copy of test_marker_script.py's fixture of the same name (DAMP
+    test code): a conflicted merge whose MERGE_HEAD is trusted via the
+    origin/<default> anchor, resolved and staged."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    return clone
+
+
+def _merge_tree_base(repo):
+    """Local copy of test_marker_script.py's helper of the same name:
+    independently computes the reference tree _lib_gate_diff_base's merge
+    row computes. The literal MERGE_HEAD OID (not the ref name) is passed --
+    git embeds a merge-tree argument's own textual form into the conflict
+    marker label, so the ref name would compute a byte-different tree than
+    production's `merge-tree --write-tree HEAD "$state_oid"`."""
+    merge_head_oid = (absolute_git_dir(repo) / "MERGE_HEAD").read_text().strip()
+    out = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "HEAD", merge_head_oid],
+        cwd=repo, capture_output=True, text=True, check=False,
+    ).stdout
+    return out.strip().splitlines()[0]
+
+
+def _run_lib_fn(lib_path, function_name, *args, env=None):
+    """Source `lib_path` and call `function_name` with `args`, returning the
+    CompletedProcess — the shared subprocess shape the residual tests below
+    use to drive both copies identically."""
+    harness = f'. "{lib_path}"; {function_name} "$@"'
+    return subprocess.run(
+        ["bash", "-c", harness, "_", *args],
+        capture_output=True, text=True, check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+
+
+class TestSharedGateDiffBaseClosureResidual:
+    """Four residual cases the declare -f definition-equality above can't
+    reach: identical bodies prove identity for every input, but two seams
+    sit outside that proof — each lib's own `_lib_capped_for` dependency,
+    and the plugin lib actually sourcing cleanly with the functions
+    callable from it. (Reaching them from a real hook run is Dispatch B's
+    concern, not pinned here.) Three further cases pin
+    `_lib_skill_review_diff_base`'s own wrapper behavior — exit-status
+    propagation and pass-through — rather than a closure residual. Each
+    case here asserts both copies' exit status and stdout against an
+    independently computed expectation, never mutual agreement alone."""
+
+    def test_via_origin_anchored_merge_matches_independent_merge_tree_oracle(
+        self, tmp_path
+    ):
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        expected_tree = _merge_tree_base(repo)
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            result = _run_lib_fn(lib, "_lib_gate_diff_base", str(repo))
+            assert result.returncode == 0, f"{lib}: {result.stderr}"
+            assert result.stdout == expected_tree, (
+                f"{lib}'s _lib_gate_diff_base returned {result.stdout!r}, expected "
+                f"the independent merge-tree oracle {expected_tree!r}"
+            )
+
+    def test_head_anchored_revert_excluded_only_by_the_wrapper(self, git_repo):
+        """Pins the revert exclusion as living in _lib_skill_review_diff_base,
+        not in the copied _lib_gate_diff_base closure: the same fixture must
+        return a real tree from one and 1/empty from the other, in both
+        libs."""
+        build_conflicted_revert(git_repo)
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            gate_result = _run_lib_fn(lib, "_lib_gate_diff_base", str(git_repo))
+            assert gate_result.returncode == 0, f"{lib}: {gate_result.stderr}"
+            assert gate_result.stdout != "", (
+                f"{lib}'s _lib_gate_diff_base returned no tree for a HEAD-anchored revert"
+            )
+            wrapper_result = _run_lib_fn(lib, "_lib_skill_review_diff_base", str(git_repo))
+            assert wrapper_result.returncode == 1, f"{lib}: {wrapper_result.stdout!r}"
+            assert wrapper_result.stdout == "", (
+                f"{lib}'s _lib_skill_review_diff_base leaked a base during a revert"
+            )
+
+    def test_unanchored_local_branch_merge_both_exit_1_empty(self, git_repo):
+        build_conflicted_merge(git_repo)  # local "theirs" branch, never pushed: untrusted
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            result = _run_lib_fn(lib, "_lib_gate_diff_base", str(git_repo))
+            assert result.returncode == 1, f"{lib}: rc={result.returncode} stdout={result.stdout!r}"
+            assert result.stdout == ""
+
+    def test_exit_status_shim_both_copies_report_undetermined(self, git_repo, tmp_path):
+        """A capped call reporting a cap-kill status without waiting for the
+        cap must read as undetermined (exit 2), never as "no override" —
+        pinned identically for both copies via the promoted exit-status git
+        shim rather than a real cap firing (no new test may depend on a cap
+        actually firing)."""
+        import shutil
+
+        build_conflicted_revert(git_repo)
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            result = _run_lib_fn(lib, "_lib_gate_diff_base", str(git_repo), env=env)
+            assert result.returncode == 2, f"{lib}: rc={result.returncode} stdout={result.stdout!r}"
+            assert result.stdout == ""
+
+    def test_exit_status_shim_wrapper_propagates_undetermined(self, tmp_path):
+        """Pins _lib_skill_review_diff_base's own
+        `[ "$base_status" -eq 0 ] || return "$base_status"` propagation
+        line: a future edit changing that to `return 1` would silently turn
+        "undetermined, fail closed" into "no in-progress state". Uses the
+        anchored-merge fixture, not build_conflicted_revert: a revert state
+        is excluded at the wrapper's own pre-sample before
+        _lib_gate_diff_base -- and therefore before the merge-tree cap-kill
+        below -- is ever reached, so it cannot exercise this propagation
+        line. An anchored merge falls through the pre-sample unexcluded and
+        reaches the same cap-kill inside _lib_gate_diff_base."""
+        import shutil
+
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            wrapper_result = _run_lib_fn(
+                lib, "_lib_skill_review_diff_base", str(repo), env=env
+            )
+            assert wrapper_result.returncode == 2, (
+                f"{lib}: rc={wrapper_result.returncode} stdout={wrapper_result.stdout!r}"
+            )
+            assert wrapper_result.stdout == ""
+
+    def test_wrapper_hot_path_matches_gate_diff_base_outside_any_state(self, git_repo):
+        """Outside any in-progress state -- the overwhelming common case --
+        the wrapper returns _lib_gate_diff_base's own answer (1, empty)
+        without needing a second, in-progress-state-only probe."""
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            result = _run_lib_fn(lib, "_lib_skill_review_diff_base", str(git_repo))
+            assert result.returncode == 1, f"{lib}: rc={result.returncode} stdout={result.stdout!r}"
+            assert result.stdout == ""
+
+    def test_wrapper_passes_through_unchanged_outside_revert(self, tmp_path):
+        """The revert exclusion is the wrapper's only deviation from
+        _lib_gate_diff_base -- an anchored merge must pass through
+        unchanged in both libs, proving the wrapper doesn't also touch the
+        states it isn't meant to."""
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        for lib in (_PLUGIN_LIB, _STOWED_LIB):
+            gate_result = _run_lib_fn(lib, "_lib_gate_diff_base", str(repo))
+            wrapper_result = _run_lib_fn(lib, "_lib_skill_review_diff_base", str(repo))
+            assert wrapper_result.returncode == gate_result.returncode == 0, (
+                f"{lib}: gate rc={gate_result.returncode} wrapper rc={wrapper_result.returncode}"
+            )
+            assert wrapper_result.stdout == gate_result.stdout != "", (
+                f"{lib}: wrapper diverged from _lib_gate_diff_base outside a revert"
+            )
+
+
+def _three_commit_stateless_repo(tmp_path):
+    """A plain repo, no in-progress git state, with three linear commits --
+    HEAD~1 is both an ancestor of HEAD and has its own parent, the OID
+    shape the double-flip residual test below needs for a REVERT_HEAD
+    stand-in."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    for message in ("commit one", "commit two", "commit three"):
+        (repo / "f").write_text(message + "\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=repo, check=True)
+    return repo
+
+
+class TestSkillReviewDiffBaseRevertBracket:
+    """Pins _lib_skill_review_diff_base's bracket shape (pre-sample, call
+    _lib_gate_diff_base unchanged, post-sample) against the trailing-only
+    single-probe design it replaces, and documents the one residual the
+    bracket does not close. Stowed lib only: M-9's declare -f
+    definition-equality already carries this function's behavior to the
+    plugin copy."""
+
+    def test_wrong_arity_returns_could_not_determine(self):
+        result = _run_lib_fn(_STOWED_LIB, "_lib_skill_review_diff_base")
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+    def test_pre_sample_short_circuits_before_any_base_computation_work(
+        self, git_repo, tmp_path
+    ):
+        """Mid-revert, the wrapper must return before _lib_gate_diff_base
+        spawns any git process of its own -- not merely without a
+        merge-tree call, which a regression that enters _lib_gate_diff_base
+        and exits early for an unrelated reason (a failed trust-anchor
+        check, say) would also satisfy. Asserted against the whole argv
+        log, not the absence of merge-tree alone."""
+        import shutil
+
+        build_conflicted_revert(git_repo)
+        bin_dir = tmp_path / "bin-recording-argv"
+        log_file = tmp_path / "argv.log"
+        _make_git_recording_argv(bin_dir, log_file)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        result = _run_lib_fn(
+            _STOWED_LIB, "_lib_skill_review_diff_base", str(git_repo), env=env
+        )
+        assert result.returncode == 1, f"rc={result.returncode} stdout={result.stdout!r}"
+        assert result.stdout == ""
+        log_lines = log_file.read_text().splitlines()
+        assert log_lines == [f"-C {git_repo} rev-parse --absolute-git-dir"], (
+            f"expected only the wrapper's own gitdir resolution, got {log_lines!r}"
+        )
+
+    def test_pre_sample_regression_guard_against_trailing_only_probe(
+        self, git_repo, tmp_path
+    ):
+        """The verdict-level counterpart to the short-circuit test above,
+        and the one that goes red -- rather than merely slower -- if the
+        pre-sample is dropped for a trailing-only probe. The shim deletes
+        REVERT_HEAD the moment _lib_gate_diff_base would first read the
+        state OID's trust anchor (merge-base --is-ancestor, the first git
+        call after its own internal state probe and ref read); if the
+        pre-sample never entered _lib_gate_diff_base at all, that trigger
+        never fires and REVERT_HEAD survives untouched. With the pre-sample
+        removed, the internal probe would read revert, the subtraction tree
+        would be built from the already-read ref, the shim's deletion would
+        land, and a trailing-only probe would then read no state -- printing
+        that tree instead of excluding it, the pre-fix bug verbatim."""
+        import shutil
+
+        build_conflicted_revert(git_repo)
+        gitdir = absolute_git_dir(git_repo)
+        bin_dir = tmp_path / "bin-recording-argv"
+        log_file = tmp_path / "argv.log"
+        action = (
+            'case "$*" in\n'
+            '  *"merge-base --is-ancestor"*)\n'
+            '    if [ "$(grep -c "merge-base --is-ancestor" "$LOG_FILE")" -eq 1 ]; then\n'
+            f'      rm -f "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            'esac'
+        )
+        _make_git_recording_argv(bin_dir, log_file, action=action)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        result = _run_lib_fn(
+            _STOWED_LIB, "_lib_skill_review_diff_base", str(git_repo), env=env
+        )
+        assert result.returncode == 1, f"rc={result.returncode} stdout={result.stdout!r}"
+        assert result.stdout == ""
+        assert (gitdir / "REVERT_HEAD").exists(), (
+            "REVERT_HEAD was deleted -- the trailing-only probe's trigger fired, "
+            "meaning the pre-sample never short-circuited before "
+            "_lib_gate_diff_base was entered"
+        )
+        log_lines = log_file.read_text().splitlines()
+        assert not any("merge-tree" in line for line in log_lines), (
+            f"_lib_gate_diff_base spawned merge-tree: {log_lines!r}"
+        )
+
+    def test_stateless_double_flip_is_pinned_closed_by_the_no_state_early_out(
+        self, tmp_path
+    ):
+        """Pins the pre-sample's no-state early-out (row 29): from a
+        stateless fixture, a shim that plants a REVERT_HEAD-shaped OID on
+        the second `rev-parse --absolute-git-dir` call
+        (_lib_gate_diff_base's own, the wrapper's being the first) and
+        deletes it again on the first `merge-base --is-ancestor` call must
+        never fire its plant, because the pre-sample reads no state and
+        returns before _lib_gate_diff_base resolves its own gitdir. The
+        whole-log assertion is what makes this a pin rather than a weaker
+        "no merge-tree call" check: with the early-out removed, this exact
+        fixture reproduces the stateless double flip verbatim and the
+        wrapper would exit 0 with the subtraction tree instead."""
+        import shutil
+
+        repo = _three_commit_stateless_repo(tmp_path)
+        planted_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        gitdir = absolute_git_dir(repo)
+        bin_dir = tmp_path / "bin-recording-argv"
+        log_file = tmp_path / "argv.log"
+        action = (
+            'case "$*" in\n'
+            '  *"rev-parse --absolute-git-dir"*)\n'
+            '    if [ "$(grep -c "rev-parse --absolute-git-dir" "$LOG_FILE")" -eq 2 ]; then\n'
+            f'      printf "%s\\n" "{planted_oid}" > "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            '  *"merge-base --is-ancestor"*)\n'
+            '    if [ "$(grep -c "merge-base --is-ancestor" "$LOG_FILE")" -eq 1 ]; then\n'
+            f'      rm -f "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            'esac'
+        )
+        _make_git_recording_argv(bin_dir, log_file, action=action)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        result = _run_lib_fn(
+            _STOWED_LIB, "_lib_skill_review_diff_base", str(repo), env=env
+        )
+
+        assert result.returncode == 1, (
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert result.stdout == ""
+        log_lines = log_file.read_text().splitlines()
+        assert log_lines == [f"-C {repo} rev-parse --absolute-git-dir"], (
+            f"expected only the wrapper's own gitdir resolution, got {log_lines!r}"
+        )
+
+    def test_in_state_double_flip_residual_is_disclosed_not_closed(self, tmp_path):
+        """Row 29's disclosed residual, stated in executable form -- not a
+        pin on the fix. A revert that both starts and ends inside the
+        bracket's own window, while a union state (merge, cherry-pick or
+        rebase) was already in progress at the pre-sample, still yields the
+        subtraction tree. A later tightening that closes this shows up as a
+        deliberate change to this test, not a silent break.
+
+        From the stateless fixture plus a planted MERGE_HEAD (so the
+        pre-sample reads `merge`, not `revert`, and falls through), the shim
+        deletes MERGE_HEAD and then writes a REVERT_HEAD-shaped OID on the
+        second `rev-parse --absolute-git-dir` call (_lib_gate_diff_base's
+        own internal probe) -- in that order, since revert is last in
+        _lib_git_inprogress_state's precedence and a surviving MERGE_HEAD
+        would make that probe read `merge` instead -- and deletes
+        REVERT_HEAD again on the first `merge-base --is-ancestor` call, so
+        the wrapper's own post-sample also reads no state. A conflict-free
+        revert needing no timing, and a committer able to write into the
+        gitdir able to forge a state file outright, both dominate this
+        residual -- which is why it is disclosed rather than closed. If the
+        ordering assumption this test relies on ever proves
+        unconstructible, delete this test rather than adding more shim
+        machinery to force it."""
+        import shutil
+
+        repo = _three_commit_stateless_repo(tmp_path)
+        planted_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        gitdir = absolute_git_dir(repo)
+        (gitdir / "MERGE_HEAD").write_text(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            ).stdout
+        )
+        bin_dir = tmp_path / "bin-recording-argv"
+        log_file = tmp_path / "argv.log"
+        action = (
+            'case "$*" in\n'
+            '  *"rev-parse --absolute-git-dir"*)\n'
+            '    if [ "$(grep -c "rev-parse --absolute-git-dir" "$LOG_FILE")" -eq 2 ]; then\n'
+            f'      rm -f "{gitdir}/MERGE_HEAD"\n'
+            f'      printf "%s\\n" "{planted_oid}" > "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            '  *"merge-base --is-ancestor"*)\n'
+            '    if [ "$(grep -c "merge-base --is-ancestor" "$LOG_FILE")" -eq 1 ]; then\n'
+            f'      rm -f "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            'esac'
+        )
+        _make_git_recording_argv(bin_dir, log_file, action=action)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        result = _run_lib_fn(
+            _STOWED_LIB, "_lib_skill_review_diff_base", str(repo), env=env
+        )
+
+        expected_tree = subprocess.run(
+            [
+                "git", "merge-tree", "--write-tree",
+                f"--merge-base={planted_oid}", "HEAD", f"{planted_oid}^",
+            ],
+            cwd=repo, capture_output=True, text=True, check=False,
+        ).stdout.strip().splitlines()[0]
+
+        assert result.returncode == 0, (
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert result.stdout == expected_tree, (
+            f"expected the independent merge-tree oracle {expected_tree!r}, "
+            f"got {result.stdout!r}"
+        )
+
+    def test_post_sample_independently_excludes_a_revert_that_persists(
+        self, tmp_path
+    ):
+        """Regression guard for the post-sample's own check, distinct from
+        the pre-sample and from the in-state double flip's re-deletion:
+        REVERT_HEAD appears via the shim on _lib_gate_diff_base's internal
+        probe and is never removed, so it is still present when the
+        wrapper's own post-sample runs afterward. Proves the post-sample
+        independently excludes a revert that appeared after the pre-sample
+        and persists through it -- deleting the post-sample block entirely
+        would leak the subtraction tree here even though every other
+        wrapper-bracket test still passes."""
+        import shutil
+
+        repo = _three_commit_stateless_repo(tmp_path)
+        planted_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        gitdir = absolute_git_dir(repo)
+        (gitdir / "MERGE_HEAD").write_text(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            ).stdout
+        )
+        bin_dir = tmp_path / "bin-recording-argv"
+        log_file = tmp_path / "argv.log"
+        action = (
+            'case "$*" in\n'
+            '  *"rev-parse --absolute-git-dir"*)\n'
+            '    if [ "$(grep -c "rev-parse --absolute-git-dir" "$LOG_FILE")" -eq 2 ]; then\n'
+            f'      rm -f "{gitdir}/MERGE_HEAD"\n'
+            f'      printf "%s\\n" "{planted_oid}" > "{gitdir}/REVERT_HEAD"\n'
+            '    fi\n'
+            '    ;;\n'
+            'esac'
+        )
+        _make_git_recording_argv(bin_dir, log_file, action=action)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        result = _run_lib_fn(
+            _STOWED_LIB, "_lib_skill_review_diff_base", str(repo), env=env
+        )
+
+        assert result.returncode == 1, (
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert result.stdout == ""
 
 
 class TestRequireSkillReviewHonorsConfigDir:

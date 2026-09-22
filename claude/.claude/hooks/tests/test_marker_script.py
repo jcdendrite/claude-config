@@ -15,6 +15,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
+    absolute_git_dir,
     agent_input,
     assert_cap_engaged,
     bare_remote_with_default_branch,
@@ -1383,7 +1384,7 @@ def _build_conflicted_merge_via_origin(tmp_path):
         ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
     )
     assert result.returncode != 0, result.stdout + result.stderr
-    assert (clone / ".git" / "MERGE_HEAD").exists()
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
     (clone / "f").write_text("resolved\n")
     subprocess.run(["git", "add", "f"], cwd=clone, check=True)
     return clone
@@ -1396,7 +1397,7 @@ def _merge_tree_base(repo):
     git embeds a merge-tree argument's own textual form into the conflict
     marker label, so the ref name would compute a byte-different tree than
     production's `merge-tree --write-tree HEAD "$state_oid"`."""
-    merge_head_oid = (repo / ".git" / "MERGE_HEAD").read_text().strip()
+    merge_head_oid = (absolute_git_dir(repo) / "MERGE_HEAD").read_text().strip()
     out = subprocess.run(
         ["git", "merge-tree", "--write-tree", "HEAD", merge_head_oid],
         cwd=repo, capture_output=True, text=True, check=False,

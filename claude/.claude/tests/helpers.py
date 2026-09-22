@@ -771,17 +771,25 @@ def staged_diff_hash(repo: Path) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
-def staged_diff_hash_at_base(repo: Path, base: str) -> str:
+def staged_diff_hash_at_base(repo: Path, base: str, *pathspecs: str) -> str:
     """Independent oracle for a base-relative marker preimage: computes
-    `git diff --cached <base>` directly in Python rather than by calling
-    the production `_lib_staged_diff_hash`/`_lib_gate_diff_base` shell
-    functions under test -- a test seeding a marker via the function it is
+    `git diff --cached [<base>] [-- PATHSPEC...]` directly in Python rather
+    than by calling the production `_lib_staged_diff_hash`/`_lib_gate_diff_base`
+    shell functions under test -- a test seeding a marker via the function it is
     testing would only prove the function agrees with itself, not that its
     output is correct (see write_plan_review_marker's docstring below for
-    the same caution applied to a different marker kind)."""
-    diff = subprocess.run(
-        ["git", "diff", "--cached", base], cwd=repo, capture_output=True, check=True
-    ).stdout
+    the same caution applied to a different marker kind). An empty `base`
+    omits the base argument entirely rather than passing it to git as an
+    empty string, so one call expresses both recipes:
+    staged_diff_hash_at_base(repo, "", *pathspecs) is the old HEAD-relative
+    preimage, scoped to PATHSPEC when given."""
+    args = ["git", "diff", "--cached"]
+    if base:
+        args.append(base)
+    if pathspecs:
+        args.append("--")
+        args.extend(pathspecs)
+    diff = subprocess.run(args, cwd=repo, capture_output=True, check=True).stdout
     return hashlib.sha256(diff).hexdigest()
 
 
@@ -797,6 +805,15 @@ def _run_git(repo: Path, *args: str) -> str:
 
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
+
+
+def absolute_git_dir(repo: Path) -> Path:
+    """Resolve `repo`'s real gitdir via `git rev-parse --absolute-git-dir`,
+    rather than assuming `repo / ".git"` is a directory -- a linked worktree
+    makes `.git` a file pointing elsewhere, and the in-progress-state marker
+    files (MERGE_HEAD, REVERT_HEAD, CHERRY_PICK_HEAD, rebase-merge/) live in
+    that real gitdir, not under the worktree's own `.git`."""
+    return Path(_run_git(repo, "rev-parse", "--absolute-git-dir").strip())
 
 
 def _seed_tracked_file(repo: Path, file_name: str, content: str = "base\n") -> Path:
@@ -877,6 +894,63 @@ def push_conflicting_edit_to_origin(
     subprocess.run(["git", "push", "-q", "origin", branch], cwd=push_clone, check=True)
 
 
+def build_conflicted_merge_via_origin_with_upstream_skill_edit(
+    tmp_path: Path, *, skill_name: str = "example-skill", conflict_file: str = "f"
+) -> Path:
+    """Merge fixture with a nested claude-skills/skills/<skill_name>/SKILL.md
+    edited only upstream, before the merge, alongside an edit to
+    `conflict_file` in the same upstream commit -- it auto-merges into the
+    local worktree unchanged, so SKILL.md reads as active relative to plain
+    HEAD (upstream's whole contribution) but not relative to the trusted
+    merge-tree base (already-reviewed content excluded). The conflict is
+    engineered in `conflict_file`, unrelated to SKILL.md, so MERGE_HEAD
+    persists to a resolvable state. Mirrors
+    _build_conflicted_merge_via_origin_with_upstream_plan_edit in
+    test_marker_script.py for the plan-review marker kind, generalized to a
+    shared helper since the skill-review gate's tests need the same shape.
+    Neither bare_remote_with_default_branch nor push_conflicting_edit_to_origin
+    creates parent directories, so this builder does its own mkdir -p for the
+    nested skill path."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
+    skill_path = clone / skill_rel_path
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("base skill\n")
+    subprocess.run(["git", "add", skill_rel_path], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / conflict_file).write_text("ours-edit\n")
+    subprocess.run(["git", "add", conflict_file], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", f"ours edits {conflict_file}"], cwd=clone, check=True)
+
+    push_clone = tmp_path / f"_push_upstream_skill_edit_{skill_name}"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / conflict_file).write_text("origin-edit\n")
+    (push_clone / skill_rel_path).write_text("upstream edited skill\n")
+    subprocess.run(["git", "add", conflict_file, skill_rel_path], cwd=push_clone, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", f"origin edits {conflict_file} and SKILL.md"],
+        cwd=push_clone,
+        check=True,
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    (clone / conflict_file).write_text("resolved\n")
+    subprocess.run(["git", "add", conflict_file], cwd=clone, check=True)
+    return clone
+
+
 def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
     """Build a real conflicted two-way merge inside `repo`: branch "theirs"
     off the checked-out branch, edit `file_name` differently on each side,
@@ -901,7 +975,7 @@ def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected merge conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    assert (absolute_git_dir(repo) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
     return theirs_oid
 
 
@@ -929,7 +1003,7 @@ def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected cherry-pick conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
+    assert (absolute_git_dir(repo) / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
     return source_oid
 
 
@@ -954,7 +1028,7 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected revert conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
     return commit_a
 
 
@@ -998,7 +1072,7 @@ def build_conflicted_rebase(
     assert result.returncode != 0, (
         f"expected rebase conflict, got: {result.stdout}{result.stderr}"
     )
-    gitdir = repo / ".git"
+    gitdir = absolute_git_dir(repo)
     assert (gitdir / "rebase-merge").is_dir() or (gitdir / "rebase-apply").is_dir(), (
         "rebase did not leave rebase-merge/ or rebase-apply/"
     )
@@ -1498,6 +1572,54 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
             key, _, value = line.partition("=")
             outputs[key] = value
     return outputs
+
+
+def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: exits exit_status at once when any argument
+    matches the shell `case` pattern arg_pattern, printing nothing; every
+    other invocation proxies to the real git. Stands in for a capped call
+    whose wrapper reports a cap-kill status without waiting for the cap.
+    Callers must set REAL_GIT in the shim's environment to a real git
+    binary path (e.g. via shutil.which("git"))."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      exit {exit_status}\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_recording_argv(bin_dir: Path, log_file: Path, action: str = "") -> Path:
+    """Shim at bin_dir/git: appends this invocation's argv as one line to
+    log_file, then runs the caller-supplied bash `action` -- which sees that
+    argv as "$@" and this invocation's own running count (log_file's line
+    count immediately after the append, so no second state file exists to
+    drift) as $count -- before exec'ing the real git. `action` defaults to a
+    no-op, for callers that only need the recorded log. Callers must set
+    REAL_GIT in the shim's environment to a real git binary path (e.g. via
+    shutil.which("git"))."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        f'LOG_FILE="{log_file}"\n'
+        'printf "%s\\n" "$*" >> "$LOG_FILE"\n'
+        'count=$(wc -l < "$LOG_FILE")\n'
+        f'{action}\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
 
 
 def build_path_without(binary: str, farm_dir: Path) -> str:

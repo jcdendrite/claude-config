@@ -1,10 +1,13 @@
 #!/bin/bash
 # Trimmed shared helper library for skill-management plugin hooks.
-# Source this file (do NOT invoke it). Contains only the helpers needed by
+# Source this file (do NOT invoke it). Contains the helpers needed by
 # require-skill-review.sh: _lib_config_dir, _lib_jq, _lib_capped_for,
 # _lib_parse_tool_input_or_deny, _marker_lib_repo_hash,
-# _lib_marker_value_present, and _lib_chains_marker_write_before_commit. No
-# git helpers, no worktree-enforcement helpers.
+# _lib_marker_value_present, _lib_chains_marker_write_before_commit,
+# _lib_capped, _lib_default_branch_from_origin_head,
+# _lib_default_branch_or_guess, _lib_git_inprogress_state,
+# _lib_gate_diff_base, _lib_staged_diff_hash, and
+# _lib_skill_review_diff_base. No worktree-enforcement helpers.
 #
 # _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
 # same functions in the stowed claude/.claude/hooks/_lib.sh. marker.sh (the
@@ -14,6 +17,13 @@
 # shared between the write side and this hook's read side.
 # _lib_marker_value_present is duplicated from that same file for the same
 # reason the others are: a plugin cannot source across the plugin boundary.
+# _lib_capped, _lib_default_branch_from_origin_head,
+# _lib_default_branch_or_guess, _lib_git_inprogress_state,
+# _lib_gate_diff_base, _lib_staged_diff_hash, and
+# _lib_skill_review_diff_base carry the same byte-identical-body contract:
+# require-skill-review.sh's novel-content base and marker preimage must
+# match scripts/marker.sh's write side exactly, or a marker written under
+# one recipe can never match the gate reading it under the other.
 
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
 # (must be absolute — a relative value resolves differently per invocation
@@ -96,6 +106,328 @@ _lib_capped_for() {
   else
     "$@"
   fi
+}
+
+# Same backstop and same probe-then-fallback as _lib_jq, for any other
+# command that reads the filesystem and can stall on it (git against a
+# locked .git/index, sha256sum against a dead NFS mount). Callers MUST check
+# the exit status: a bare `timeout 5 git ...` is not just uncapped when
+# timeout(1) is missing, it is "command not found" (127), which silently
+# yields empty output on stock macOS.
+# Usage: out=$(_lib_capped git -C "$root" ls-files ...) || <fail closed>
+_lib_capped() {
+  _lib_capped_for 5 "$@"
+}
+
+# _lib_default_branch_from_origin_head REPO_ROOT
+# Resolve REPO_ROOT's default branch from the local symbolic ref
+# refs/remotes/origin/HEAD alone, verifying the target actually resolves to
+# a commit before returning it.
+# Local refs only, never the network -- callers use the result as a local ref immediately.
+# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
+# latter never returns empty, which would mask an unset origin/HEAD.
+# Two-outcome contract:
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: origin/HEAD is unset, dangling, or the call
+#     timed out. Callers decide their own fallback.
+_lib_default_branch_from_origin_head() {
+  local repo_root="$1"
+  local ref default_branch
+  ref=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
+  [ -n "$ref" ] || return 1
+  _lib_capped git -C "$repo_root" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || return 1
+  default_branch="${ref#refs/remotes/origin/}"
+  [ -n "$default_branch" ] || return 1
+  printf '%s' "$default_branch"
+}
+
+# _lib_default_branch_or_guess REPO_ROOT
+# Resolve REPO_ROOT's default branch: first via
+# _lib_default_branch_from_origin_head, then, on its failure, by falling
+# through to probing conventional candidate names (main, master, develop)
+# against existing origin/<candidate> refs. Designed to be shared by every
+# caller whose wrong-answer consequence is a diff, a message, or a withheld
+# gate rather than the base it fetches, rebases onto, or deletes against
+# (docs/design-decisions.md §54).
+# Local refs only, never the network -- callers use the result as a local ref immediately.
+# Candidate order is a prior, not a guarantee: with origin/HEAD unset and
+# several candidate refs present, the first match wins even when it is stale.
+# Two-outcome contract:
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: neither the symbolic ref nor any candidate
+#     resolved. Callers decide their own fallback -- this helper does not
+#     pick a fail posture.
+_lib_default_branch_or_guess() {
+  local repo_root="$1"
+  local default_branch candidate
+  if default_branch=$(_lib_default_branch_from_origin_head "$repo_root"); then
+    printf '%s' "$default_branch"
+    return 0
+  fi
+  for candidate in main master develop; do
+    if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# _lib_git_inprogress_state REPO_ROOT [GITDIR]
+# Detects which git operation, if any, is paused mid-way in REPO_ROOT:
+# rebase, merge, cherry-pick, or revert. Precedence is checked in that
+# order, matching git-state-safety/SKILL.md's own rule-of-thumb ordering.
+# GITDIR is optional: when the caller has already resolved
+# `--absolute-git-dir` for its own purposes (_lib_gate_diff_base does), pass
+# it here to skip this function's own resolution and avoid spawning git
+# twice for the same answer. Omit it to have this function resolve gitdir
+# itself.
+# Detection recipe per state (`git rev-parse --absolute-git-dir` resolved
+# once, then plain file tests against it -- not `git rev-parse --git-path`
+# per state, which would spawn git four times for the same answer):
+#   rebase       rebase-merge/ or rebase-apply/ dir exists
+#   merge        MERGE_HEAD exists
+#   cherry-pick  CHERRY_PICK_HEAD exists
+#   revert       REVERT_HEAD exists
+# --absolute-git-dir (not --git-dir) resolves a linked worktree's own
+# per-worktree gitdir rather than the shared main one, which is where these
+# five markers actually live.
+#
+# Tri-state via exit status:
+#   - exit 0, stdout = one of rebase/merge/cherry-pick/revert: that state is
+#     in progress.
+#   - exit 1, stdout empty: no in-progress state.
+#   - exit 2, stdout empty: the gitdir could not be resolved (or, when
+#     GITDIR was passed in, it was empty) -- the underlying _lib_capped call
+#     timed out, was killed, or git itself was missing. Callers MUST NOT
+#     treat this as "no state" -- see _lib_gate_diff_base below, whose
+#     safety property depends on this status never being read as a green
+#     light.
+_lib_git_inprogress_state() {
+  [ "$#" -eq 1 ] || [ "$#" -eq 2 ] || return 2
+  local repo_root="$1"
+  local gitdir="${2:-}"
+  if [ -z "$gitdir" ]; then
+    if ! gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null); then
+      return 2
+    fi
+  fi
+  [ -n "$gitdir" ] || return 2
+  if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+    printf '%s' rebase
+    return 0
+  fi
+  if [ -f "$gitdir/MERGE_HEAD" ]; then
+    printf '%s' merge
+    return 0
+  fi
+  if [ -f "$gitdir/CHERRY_PICK_HEAD" ]; then
+    printf '%s' cherry-pick
+    return 0
+  fi
+  if [ -f "$gitdir/REVERT_HEAD" ]; then
+    printf '%s' revert
+    return 0
+  fi
+  return 1
+}
+
+# _lib_gate_diff_base REPO_ROOT
+# Prints the tree-ish a commit-time gate should diff its staged content
+# against, in place of the index's implicit HEAD base -- so a gate that
+# hashes or scans `git diff --cached "$(_lib_gate_diff_base "$repo")"` sees
+# only content novel to the commit being made, even mid-merge. Outside an
+# in-progress state (the overwhelming common case) this prints nothing, and
+# the call site issues plain `git diff --cached` with no base argument.
+# During a trusted in-progress state, this computes the tree git's own
+# automatic merge/rebase/cherry-pick/revert machinery would have produced,
+# via `git merge-tree --write-tree`. See the claude-config repository's
+# docs/design-decisions/merge-tree-base-recipe-for-gate-diff-base.md for the
+# per-state command table, the trust-anchor definitions and
+# admissibility argument, the fallback-case enumeration, and the
+# OID-shape and merge-tree-output validation this function applies before
+# trusting either.
+#
+# Tri-state via exit status, same contract as _lib_git_inprogress_state:
+#   - exit 0, stdout = a tree OID: an in-progress state was detected, its
+#     OID reached a trusted anchor, and the reference tree was computed.
+#   - exit 1, stdout empty: no in-progress state, or one whose OID reached
+#     no anchor, or a topology/git-version this design computes no base
+#     for. This is the correct answer, not a degraded one.
+#   - exit 2, stdout empty: undetermined -- a capped git call inside
+#     detection or tree computation timed out, was killed, or its binary
+#     was missing. Every caller consumes stdout unconditionally regardless
+#     of exit status, so this must stay empty on status 2; see the
+#     design-decision doc for the full load-bearing safety argument.
+_lib_gate_diff_base() {
+  [ "$#" -eq 1 ] || return 2
+  local repo_root="$1"
+
+  local gitdir
+  gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || return 2
+  [ -n "$gitdir" ] || return 2
+
+  local state state_status
+  state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  state_status=$?
+  [ "$state_status" -eq 2 ] && return 2
+  [ "$state_status" -eq 1 ] && return 1
+
+  local ref_file
+  case "$state" in
+    rebase) ref_file="REBASE_HEAD" ;;
+    merge) ref_file="MERGE_HEAD" ;;
+    cherry-pick) ref_file="CHERRY_PICK_HEAD" ;;
+    revert) ref_file="REVERT_HEAD" ;;
+    *) return 2 ;;
+  esac
+  [ -f "$gitdir/$ref_file" ] || return 1
+  local state_oid
+  state_oid=$(_lib_capped cat "$gitdir/$ref_file" 2>/dev/null)
+  [ -n "$state_oid" ] || return 1
+  [[ "$state_oid" =~ ^[0-9a-f]{40}$ ]] || [[ "$state_oid" =~ ^[0-9a-f]{64}$ ]] || return 1
+
+  local default_branch anchor_reached=1
+  default_branch=$(_lib_default_branch_or_guess "$repo_root")
+  if [ -n "$default_branch" ] \
+    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "origin/$default_branch" >/dev/null 2>&1
+  then
+    anchor_reached=0
+  elif _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" HEAD >/dev/null 2>&1; then
+    anchor_reached=0
+  fi
+  [ "$anchor_reached" -eq 0 ] || return 1
+
+  local tree_out tree_status
+  case "$state" in
+    merge)
+      tree_out=$(_lib_capped git -C "$repo_root" merge-tree --write-tree HEAD "$state_oid" 2>/dev/null)
+      tree_status=$?
+      ;;
+    rebase | cherry-pick)
+      tree_out=$(_lib_capped git -C "$repo_root" merge-tree --write-tree "--merge-base=${state_oid}^" HEAD "$state_oid" 2>/dev/null)
+      tree_status=$?
+      ;;
+    revert)
+      tree_out=$(_lib_capped git -C "$repo_root" merge-tree --write-tree "--merge-base=${state_oid}" HEAD "${state_oid}^" 2>/dev/null)
+      tree_status=$?
+      ;;
+    # Unreachable: the earlier case in this function already validates
+    # $state against these same four values with its own `*) return 2`.
+    *) return 2 ;;
+  esac
+  case "$tree_status" in
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
+  esac
+  # tree_status is not the validation signal. `merge-tree --write-tree`
+  # exits 1 (not 0) whenever the merge it computed conflicts -- the
+  # expected, common case here, since resolving that conflict is the whole
+  # reason this function exists. It still writes a valid tree, with
+  # embedded conflict markers, on its first stdout line. Whether that first
+  # line resolves to a real tree is the actual check, below.
+  local tree_oid="${tree_out%%$'\n'*}"
+  [ -n "$tree_oid" ] || return 1
+
+  _lib_capped git -C "$repo_root" rev-parse --verify --quiet "${tree_oid}^{tree}" >/dev/null 2>&1
+  local verify_status=$?
+  case "$verify_status" in
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
+  esac
+  [ "$verify_status" -eq 0 ] || return 1
+
+  printf '%s' "$tree_oid"
+}
+
+# _lib_skill_review_diff_base REPO_ROOT
+# Returns the same tri-state contract as _lib_gate_diff_base, except mid-revert
+# returns 1, empty stdout, in place of the synthesized tree.
+# A revert's synthesized tree is HEAD minus a reviewed patch, so its removals
+# were reviewed nowhere.
+# A pre-sample reading no in-progress state returns 1 directly, without
+# calling _lib_gate_diff_base, the same answer _lib_gate_diff_base itself
+# gives on the same resolved gitdir.
+# The state is sampled once before and once after the _lib_gate_diff_base
+# call, not only after, because both reads hit the same mutable gitdir.
+_lib_skill_review_diff_base() {
+  [ "$#" -eq 1 ] || return 2
+  local repo_root="$1"
+
+  local gitdir
+  gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || return 2
+  [ -n "$gitdir" ] || return 2
+
+  local pre_state pre_status
+  pre_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  pre_status=$?
+  # Unreachable: gitdir is verified non-empty above, and _lib_git_inprogress_state
+  # returns 2 on a passed-in GITDIR only when it is empty.
+  [ "$pre_status" -eq 2 ] && return 2
+  [ "$pre_status" -eq 1 ] && return 1
+  [ "$pre_state" = revert ] && return 1
+
+  local base base_status
+  base=$(_lib_gate_diff_base "$repo_root")
+  base_status=$?
+  [ "$base_status" -eq 0 ] || return "$base_status"
+
+  local post_state post_status
+  post_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  post_status=$?
+  # Unreachable: same gitdir, already verified non-empty above.
+  [ "$post_status" -eq 2 ] && return 2
+  [ "$post_status" -eq 0 ] && [ "$post_state" = revert ] && return 1
+
+  printf '%s' "$base"
+}
+
+# _lib_staged_diff_hash REPO_ROOT BASE [PATHSPEC...]
+# Shared body behind every content-addressed marker preimage and round-state
+# value in this file and in scripts/marker.sh: sha256 of `git diff --cached`,
+# restricted to PATHSPEC when given. BASE is already resolved by the caller
+# (typically via _lib_gate_diff_base) -- this function has no way to
+# recompute one, which is deliberate: the write side (marker.sh) and every
+# read side must hash byte-identical input, and threading an
+# already-resolved value through the signature makes that structural rather
+# than a discipline each of the seven call sites has to remember.
+# BASE empty means no override: this runs plain `git diff --cached
+# [-- PATHSPEC...]`. BASE non-empty means `git diff --cached "$BASE"
+# [-- PATHSPEC...]`.
+# Two-outcome contract: exit 0 with the hex digest on stdout, or exit 1 with
+# empty stdout when git or sha256sum failed or was killed. sha256 of even an
+# empty diff is a non-empty 64-hex digest, so stdout alone can't distinguish
+# "nothing staged" from a failed pipeline -- what actually distinguishes them
+# is the capped `git diff` call's own exit status, captured via
+# `${PIPESTATUS[0]}` in the same command substitution immediately after the
+# pipeline runs (before any later command in that subshell can overwrite
+# it): any nonzero status there -- an ordinary git error or a cap kill
+# (statuses per _lib_capped_for's header) alike -- fails this closed regardless of whether
+# sha256sum/awk still produced output downstream. Callers must fail closed
+# on exit 1: a marker preimage that treats a failed hash as "empty diff"
+# would authorize release on content nobody reviewed.
+# Fails closed on an empty REPO_ROOT rather than letting `git -C ""` resolve
+# relative to the caller's cwd -- every current call site already validates
+# REPO_ROOT, but this is a shared primitive future callers may not.
+# A no-op GIT_EXTERNAL_DIFF/diff.external driver makes a genuinely-staged
+# change hash as empty here, an accepted, untested residual.
+_lib_staged_diff_hash() {
+  [ "$#" -ge 2 ] || return 1
+  local repo_root="$1" base="$2"
+  [ -n "$repo_root" ] || return 1
+  shift 2
+  local -a diff_args=(-C "$repo_root" diff --cached)
+  [ -n "$base" ] && diff_args+=("$base")
+  [ "$#" -gt 0 ] && diff_args+=(-- "$@")
+  local out git_status digest
+  out=$(
+    _lib_capped git "${diff_args[@]}" 2>/dev/null | sha256sum | awk '{print $1}'
+    printf '\n%s' "${PIPESTATUS[0]}"
+  )
+  git_status="${out##*$'\n'}"
+  digest="${out%$'\n'*}"
+  digest="${digest%$'\n'}"
+  [ "$git_status" -eq 0 ] || return 1
+  [ -n "$digest" ] || return 1
+  printf '%s' "$digest"
 }
 
 # Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)

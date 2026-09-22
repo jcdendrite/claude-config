@@ -28,6 +28,7 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    _make_git_exiting_with_status,
     _run_git,
     assert_cap_engaged,
     bare_remote_with_default_branch,
@@ -6371,28 +6372,6 @@ class TestGateDiffBaseCapFaultInjection:
         result = _gate_diff_base(repo, env=env, timeout=30)
         assert result.returncode == 2
         assert result.stdout == ""
-
-
-def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
-    """Shim at bin_dir/git: exits exit_status at once when any argument
-    matches the shell `case` pattern arg_pattern, printing nothing; every
-    other invocation proxies to the real git. Stands in for a capped call
-    whose wrapper reports a cap-kill status without waiting for the cap."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
-    shim.write_text(
-        '#!/bin/bash\n'
-        'for arg in "$@"; do\n'
-        '  case "$arg" in\n'
-        f'    {arg_pattern})\n'
-        f'      exit {exit_status}\n'
-        '      ;;\n'
-        '  esac\n'
-        'done\n'
-        'exec "$REAL_GIT" "$@"\n'
-    )
-    shim.chmod(0o755)
-    return shim
 
 
 class TestGateDiffBaseCapKillStatusesAreUndetermined:
