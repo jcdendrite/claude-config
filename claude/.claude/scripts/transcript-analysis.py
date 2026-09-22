@@ -6178,6 +6178,23 @@ def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> f
     return gap if gap >= 0 else None
 
 
+def _cache_rebuild_in_idle_5m_1h_band(
+    is_first_call: bool, gap_seconds: float | None,
+    *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
+) -> bool:
+    """Whether one call's own prior-call gap lands in
+    [idle_5m_boundary_seconds, _CACHE_REBUILD_IDLE_1H_SECONDS) -- the gap
+    test alone, with no cache-write-tier qualifier.
+
+    Deliberately tier-blind: _classify_cache_rebuild_cause's write-tier
+    qualifier answers a different question than --ttl-verdict's 1h-to-5m
+    direction, which only needs the gap.
+    """
+    if is_first_call or gap_seconds is None:
+        return False
+    return idle_5m_boundary_seconds <= gap_seconds < _CACHE_REBUILD_IDLE_1H_SECONDS
+
+
 def _classify_cache_rebuild_cause(
     is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool,
     *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
@@ -6190,8 +6207,8 @@ def _classify_cache_rebuild_cause(
     ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
     the 1h-TTL cache would still be warm, so it falls to "unexplained"
     instead of "idle 5m-1h". idle_5m_boundary_seconds overrides the idle
-    band's lower bound for --ttl-verdict's own two-point sensitivity check;
-    every other caller uses the default, vendor-grounded boundary.
+    band's lower bound and is forwarded to _cache_rebuild_in_idle_5m_1h_band.
+    Production callers use the default, vendor-grounded boundary.
     """
     if is_first_call:
         return _CAUSE_SESSION_START
@@ -6199,7 +6216,9 @@ def _classify_cache_rebuild_cause(
         return _CAUSE_TS_ANOMALY
     if gap_seconds >= _CACHE_REBUILD_IDLE_1H_SECONDS:
         return _CAUSE_IDLE_OVER_1H
-    if gap_seconds >= idle_5m_boundary_seconds:
+    if _cache_rebuild_in_idle_5m_1h_band(
+        is_first_call, gap_seconds, idle_5m_boundary_seconds=idle_5m_boundary_seconds
+    ):
         return _CAUSE_UNEXPLAINED if pure_1h_tier_write else _CAUSE_IDLE_5M_1H
     if model_changed:
         return _CAUSE_MODEL_SWITCH
@@ -6815,16 +6834,14 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 if ttl_verdict and in_scope and account_ordinal is not None:
                     root_key = (origin, account_ordinal)
                     read_tokens = int(usage.get("cache_read_input_tokens", 0))
-                    # is_idle_5m_1h_cause (the primary, vendor-grounded
-                    # boundary) is exactly `cause == _CAUSE_IDLE_5M_1H`,
-                    # already computed above -- reused here rather than
-                    # re-running _classify_cache_rebuild_cause at its own
-                    # default boundary a second time.
-                    is_idle_primary = cause == _CAUSE_IDLE_5M_1H
-                    is_idle_sensitivity = _classify_cache_rebuild_cause(
-                        is_first_call, gap_seconds, model_changed, pure_1h_tier_write,
+                    # The idle flags here are the gap test alone.
+                    # A call's own cache-write tier gates whether a 5-minute expiry
+                    # forced its write, not whether a live 1-hour tier served its read.
+                    is_idle_primary = _cache_rebuild_in_idle_5m_1h_band(is_first_call, gap_seconds)
+                    is_idle_sensitivity = _cache_rebuild_in_idle_5m_1h_band(
+                        is_first_call, gap_seconds,
                         idle_5m_boundary_seconds=_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS,
-                    ) == _CAUSE_IDLE_5M_1H
+                    )
 
                     in_w5m_branch = eph_5m > 0
                     # A call in the sensitivity idle band (the wider of the
@@ -6840,6 +6857,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                     # per branch -- a record eligible for both branches (a
                     # mixed-tier write, or a sensitivity-band warm read
                     # alongside a 5m-tier write) is counted at most once.
+                    dollars_by_class: dict[str, float] | None = None
                     if in_w5m_branch or in_w1h_branch:
                         dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
                         if dollars_by_class is None:
@@ -6848,9 +6866,11 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
 
                     if in_w5m_branch:
                         w5m_by_origin_root[root_key] += eph_5m
-                        rates = _model_rates(model)
-                        if rates is not None:
-                            w5m_dollars_by_origin_root[root_key] += eph_5m / 1_000_000 * rates["cache_write_5m"]
+                        # Reuses _price_turn's own priced classes so the margin denominator
+                        # carries the same fast-mode/US-geo multipliers the net's own
+                        # per-call delta already applies.
+                        if dollars_by_class is not None:
+                            w5m_dollars_by_origin_root[root_key] += dollars_by_class["cache_write_5m"]
                         # X is a primary-boundary-only quantity (the report's
                         # own display column) -- only switch_delta_5m_to_1h_*
                         # needs the sensitivity boundary too, for the
@@ -6869,9 +6889,8 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
 
                     if in_w1h_branch:
                         w1h_by_origin_root[root_key] += eph_1h
-                        rates = _model_rates(model)
-                        if rates is not None:
-                            w1h_dollars_by_origin_root[root_key] += eph_1h / 1_000_000 * rates["cache_write_1h"]
+                        if dollars_by_class is not None:
+                            w1h_dollars_by_origin_root[root_key] += dollars_by_class["cache_write_1h"]
                         # Z is a primary-boundary-only quantity, the same
                         # reason as X above.
                         if is_idle_primary:
@@ -7126,8 +7145,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
         "if negative) against this origin's own traffic. The main row reads\n"
         "zero because this corpus was captured while main traffic was on the\n"
-        "1h tier -- promptCacheTtl is now \"5m\". A corpus captured after\n"
-        "that takes effect would show live W5m/X here too. The per-root\n"
+        "1h tier -- promptCacheTtl is unset for main (see\n"
+        "docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
+        "corpus captured today still shows the 1h tier here. The per-root\n"
         "--ttl-verdict gate below, not this pooled, threshold-independent\n"
         "row, is what actually decides a tier change.\n"
     )

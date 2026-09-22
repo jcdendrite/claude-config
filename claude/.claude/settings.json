@@ -79,7 +79,6 @@
   "disableArtifact": true,
   "disableWorkflows": true,
   "syncClaudeAiSkills": false,
-  "promptCacheTtl": "5m",
   "attribution": {
     "sessionUrl": false
   },

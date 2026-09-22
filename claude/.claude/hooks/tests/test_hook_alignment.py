@@ -682,26 +682,27 @@ def test_syncclaudeaiskills_stays_disabled_in_stow_source_settings() -> None:
     )
 
 
-def test_promptcachettl_stays_5m_in_stow_source_settings() -> None:
-    """The declared config-value backing the main-bucket prompt-cache TTL flip.
+def test_promptcachettl_stays_unset_in_stow_source_settings() -> None:
+    """The declared config-value backing the main-bucket prompt-cache TTL verdict.
 
-    This proves the *declared* config state — `promptCacheTtl` is `"5m"` in
+    This proves the *declared* config state — `promptCacheTtl` is absent from
     the stow-source settings file — not that the harness actually honors the
-    key at runtime. That live-session verification is not checkable
+    key's absence at runtime. That live-session verification is not checkable
     pre-merge (see
-    docs/design-decisions/main-bucket-prompt-cache-ttl-5m.md); this test only
-    pins the declaration so a future edit can't drop it silently.
+    docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md); this test
+    only pins the declaration so a future edit can't reintroduce it silently.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
-    assert settings.get("promptCacheTtl") == "5m", (
-        f"promptCacheTtl is not `\"5m\"` in "
+    assert "promptCacheTtl" not in settings, (
+        f"promptCacheTtl is present in "
         f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the main-conversation "
-        f"prompt-cache bucket is no longer pinned to the 5-minute tier"
+        f"prompt-cache bucket is no longer left at the vendor default"
     )
 
 
 def test_subagentpromptcachettl_stays_unset_in_stow_source_settings() -> None:
-    """The absence half of `test_promptcachettl_stays_5m_in_stow_source_settings`.
+    """Sibling to `test_promptcachettl_stays_unset_in_stow_source_settings`,
+    pinning that the *subagent* bucket's own key also stays unset.
 
     `subagentPromptCacheTtl` stays deliberately unset: the vendor's TTL
     precedence chain ranks a bucket's own setting above per-agent
