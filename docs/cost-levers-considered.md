@@ -45,6 +45,10 @@ The 2026-08-15 verdict on the two global force-switch environment
 variables (`ENABLE_PROMPT_CACHING_1H`, `FORCE_PROMPT_CACHING_5M`) is a
 separate, unrelated mechanism and stands unchanged.
 
+**2026-09-21 follow-up:** the `"5m"` value above is superseded —
+`promptCacheTtl` is unset again, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
+
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
 | Lever | Verdict | Measured reason |
@@ -303,6 +307,12 @@ now exposes the main-conversation bucket's TTL directly in `settings.json`, per
 The row's account-level-tier-difference finding (plan tier or usage-overage
 state driving the observed 1h/5m split) stands unchanged.
 
+**2026-09-21 follow-up:** the value cited above is superseded — `promptCacheTtl`
+is unset again, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
+The exposure/mechanism finding itself — that `promptCacheTtl` exposes the
+main-conversation bucket's TTL directly in `settings.json` — is unaffected.
+
 ## From `token-cost-reduction.md` — "Token cost reduction: bound context growth"
 
 | Lever | Verdict | Measured reason |
@@ -436,6 +446,10 @@ bucket, not subagent frontmatter. It's set to `"5m"` for that bucket, per
 [`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
 The row's `experimental.cacheTtl`/subagent-bucket half and its
 `experimental.`-namespace objection stand unchanged.
+
+**2026-09-21 follow-up:** the `"5m"` value above is superseded —
+`promptCacheTtl` is unset again for the main-conversation bucket, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
 
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 

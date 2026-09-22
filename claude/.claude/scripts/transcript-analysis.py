@@ -7147,8 +7147,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
         "if negative) against this origin's own traffic. The main row reads\n"
         "zero because this corpus was captured while main traffic was on the\n"
-        "1h tier -- promptCacheTtl is now \"5m\". A corpus captured after\n"
-        "that takes effect would show live W5m/X here too. The per-root\n"
+        "1h tier -- promptCacheTtl was briefly set to \"5m\" and then reverted\n"
+        "(docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
+        "corpus captured today still shows the 1h tier here. The per-root\n"
         "--ttl-verdict gate below, not this pooled, threshold-independent\n"
         "row, is what actually decides a tier change.\n"
     )
