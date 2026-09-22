@@ -6186,11 +6186,9 @@ def _cache_rebuild_in_idle_5m_1h_band(
     [idle_5m_boundary_seconds, _CACHE_REBUILD_IDLE_1H_SECONDS) -- the gap
     test alone, with no cache-write-tier qualifier.
 
-    _classify_cache_rebuild_cause asks whether a 5-minute TTL expiry forced
-    this call's cache write, which the call's own write tier does bear on.
-    --ttl-verdict's 1h-to-5m direction asks whether a live 1-hour tier
-    served this call's prefix as a warm read, which it does not. Both share
-    this band.
+    Deliberately tier-blind: _classify_cache_rebuild_cause's write-tier
+    qualifier answers a different question than --ttl-verdict's 1h-to-5m
+    direction, which only needs the gap.
     """
     if is_first_call or gap_seconds is None:
         return False
@@ -6209,8 +6207,8 @@ def _classify_cache_rebuild_cause(
     ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
     the 1h-TTL cache would still be warm, so it falls to "unexplained"
     instead of "idle 5m-1h". idle_5m_boundary_seconds overrides the idle
-    band's lower bound and is forwarded to _cache_rebuild_in_idle_5m_1h_band;
-    production callers use the default, vendor-grounded boundary.
+    band's lower bound and is forwarded to _cache_rebuild_in_idle_5m_1h_band.
+    Production callers use the default, vendor-grounded boundary.
     """
     if is_first_call:
         return _CAUSE_SESSION_START
@@ -7147,8 +7145,8 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
         "if negative) against this origin's own traffic. The main row reads\n"
         "zero because this corpus was captured while main traffic was on the\n"
-        "1h tier -- promptCacheTtl was briefly set to \"5m\" and then reverted\n"
-        "(docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
+        "1h tier -- promptCacheTtl is unset for main (see\n"
+        "docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
         "corpus captured today still shows the 1h tier here. The per-root\n"
         "--ttl-verdict gate below, not this pooled, threshold-independent\n"
         "row, is what actually decides a tier change.\n"

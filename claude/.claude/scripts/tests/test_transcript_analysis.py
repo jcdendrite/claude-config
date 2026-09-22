@@ -10649,6 +10649,9 @@ class TestCacheRebuildIdle5m1hBandPredicate:
     def test_gap_one_second_under_the_overridden_lower_bound_is_out_of_band(self):
         assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 59, idle_5m_boundary_seconds=60) is False
 
+    def test_overridden_lower_bound_with_gap_at_the_hardcoded_upper_bound_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 3600, idle_5m_boundary_seconds=60) is False
+
 
 class TestCacheRebuild1hTo5mDeltaPricing:
     """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars,
