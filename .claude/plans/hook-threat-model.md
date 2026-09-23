@@ -13,7 +13,7 @@ Outcome:
 2. A `## Threat-model tiers` section in `docs/hooks.md` holding the axes, tier definitions, dependency invariant, and per-hook classification.
 3. A `# tier-threat-model: <tiers>` header line on every `# hook-class: gate` hook, plus tests in `test_hook_alignment.py`.
 
-Review rounds after this plan was written revised several pieces of this plan's quoted "exact"/"verbatim" text (the CLAUDE.md section, M14's header lines, M15's deny-network-installs sentence, and others) for accuracy or clarity. The shipped files are authoritative for final wording; this plan's quotes are the design intent, not a byte-for-byte diff target.
+Review rounds after this plan was written revised several pieces of this plan's quoted "exact"/"verbatim" text (the CLAUDE.md section, M14's header lines, M15's deny-network-installs sentence, and others) for accuracy or clarity. The shipped files are authoritative for final wording; this plan's quotes are the design intent, not a byte-for-byte diff target. The waiver paragraph in `docs/hooks.md` now states accepted risk rather than compensating controls, so this plan's "compensating controls" wording is superseded.
 
 ## Approach
 

@@ -179,10 +179,9 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 
     docs/hooks.md opens with "Full descriptions for every hook in
     claude/.claude/hooks/" — this test keeps that claim true. Its opening
-    line also names one exception, added alongside the tier-threat-model
-    headers: the "## Threat-model tiers" table also covers the 4 plugin
-    gates. That exception doesn't reach this test's own per-hook bullet
-    requirement below, which stays main-dir-only; plugin hooks
+    line also names one exception: the "## Threat-model tiers" table also
+    covers the 4 plugin gates. That exception doesn't reach this test's own
+    per-hook bullet requirement below, which stays main-dir-only; plugin hooks
     (plugins/*/hooks/) have no bullet of their own in docs/hooks.md.
 
     Requires a line-start `- **`{name}`**` bullet (docs/hooks.md's
@@ -1243,7 +1242,8 @@ class TestHookClassHeader:
 
 # First entry is the intent tier, the rest the canonical elevation order —
 # also the vocabulary claude-hook-review/SKILL.md's tier-header paragraph's
-# tier-shaped backtick spans must stay a subset of (see test_skills.py).
+# tier-shaped backtick spans must equal (test_skills.py derives its own copy
+# from docs/hooks.md's definition bullets).
 _THREAT_MODEL_TIERS: tuple[str, ...] = ("cooperative", "untrusted-input", "irreversible")
 
 _TIER_LINE_FINDER_RE = re.compile(r"^#\s*tier-threat-model\b")
@@ -1259,15 +1259,20 @@ def _find_tier_threat_model_lines(lines: list[str]) -> list[tuple[int, str]]:
     Loose on purpose: a near-miss delimiter shape (no space after '#', a
     space before the colon) is still found here and left for
     _tier_grammar_violation to classify as malformed rather than silently
-    read as absent. One function's output backs both the file-wide
-    exactly-one-count check and the position-at-index-2 check below,
-    instead of two independent scans.
+    read as absent. The window bounds the position check (index 2); the
+    exactly-one count is file-wide, via _count_tier_threat_model_lines.
     """
     return [
         (i, line)
         for i, line in enumerate(lines[:_HEADER_SCAN_LINE_COUNT])
         if _TIER_LINE_FINDER_RE.match(line)
     ]
+
+
+def _count_tier_threat_model_lines(lines: list[str]) -> int:
+    """Number of loosely-matching '# tier-threat-model' lines anywhere in
+    `lines`, so a stale second line below the header window is counted."""
+    return sum(1 for line in lines if _TIER_LINE_FINDER_RE.match(line))
 
 
 def _tier_grammar_violation(line: str) -> str | None:
@@ -1329,8 +1334,9 @@ def _hook_tier_value(hook: Path) -> str | None:
 def _tier_hook_key(hook: Path) -> str:
     """The docs/hooks.md table's own key for `hook`: a bare filename for a
     claude/.claude/hooks/ gate, a repo-relative POSIX path for a plugin
-    gate -- matching that table's own per-row spelling for each (G5: the
-    table is the one section that also covers the 4 plugin gates)."""
+    gate -- matching that table's own per-row spelling for each (the
+    table is the one docs/hooks.md section that also covers the 4 plugin
+    gates)."""
     if hook.parent == _MAIN_HOOKS_DIR:
         return hook.name
     return hook.relative_to(_REPO_ROOT).as_posix()
@@ -1439,9 +1445,11 @@ def test_tier_threat_model_header_present_and_well_formed(hook: Path) -> None:
     '# tier-threat-model:' line at line 3 (index 2)."""
     lines = hook.read_text().splitlines()
     matches = _find_tier_threat_model_lines(lines)
-    assert len(matches) == 1, (
-        f"{hook.name}: expected exactly one '# tier-threat-model:' line, "
-        f"found {len(matches)} -- add it at line 3, spelled "
+    file_wide_count = _count_tier_threat_model_lines(lines)
+    assert len(matches) == 1 and file_wide_count == 1, (
+        f"{hook.name}: expected exactly one '# tier-threat-model:' line in "
+        f"the whole file, found {file_wide_count} ({len(matches)} in the "
+        f"header window) -- keep one at line 3, spelled "
         f"'# tier-threat-model: <tiers>'; copy the value from "
         f'docs/hooks.md § "Threat-model tiers"'
     )
@@ -1682,10 +1690,21 @@ def test_tier_rationale_doc_sentence_pinned(
 ) -> None:
     """Pins the exact docs/hooks.md sentence this hook's tier classification
     rests on, when that evidentiary text lives in the doc rather than the
-    hook's own header -- a failure here means the sentence docs/hooks.md's
-    tier table rests on for this hook changed; see docs/hooks.md §
-    "Threat-model tiers" before editing this text."""
-    assert sentence in _HOOKS_DOC_TEXT, (
+    hook's own header. Checked against the hook's own `- **`name`**` bullet
+    only: the tier table's Why cell quotes the same sentence and would
+    satisfy a whole-document check. A failure here means the sentence
+    docs/hooks.md's tier table rests on for this hook changed; see
+    docs/hooks.md § "Threat-model tiers" before editing this text."""
+    bullet_prefix = f"- **`{hook_name}`**"
+    bullets = [
+        line for line in _HOOKS_DOC_TEXT.splitlines()
+        if line.startswith(bullet_prefix)
+    ]
+    assert len(bullets) == 1, (
+        f"{hook_name}: expected exactly one '{bullet_prefix}' bullet in "
+        f"docs/hooks.md, found {len(bullets)}"
+    )
+    assert sentence in bullets[0], (
         f"{hook_name}: the sentence docs/hooks.md's tier table rests on for "
         "this hook changed in docs/hooks.md's prose -- see docs/hooks.md § "
         '"Threat-model tiers" before editing this text'
@@ -1701,6 +1720,70 @@ def test_hook_threat_model_section_names_every_tier_token() -> None:
         assert tier in section, (
             f"CLAUDE.md's '## Hook threat model' section never mentions '{tier}'"
         )
+
+
+_HOOK_THREAT_MODEL_SECTION = (
+    "This repo's hooks default to guarding a **cooperative** agent that makes "
+    "honest mistakes, not one attacking the gate. A review finding that needs a "
+    "command or staged-content shape a cooperative agent would never emit is not "
+    "a defect in a gate whose `# tier-threat-model:` line is present but omits "
+    "`untrusted-input`. A gate with no tier line at all is not yet classified and "
+    "gets no waiver. Non-gate hooks and shared library code get no waiver from "
+    "this framework. A gate that lists `untrusted-input` gets no such waiver, "
+    "because content read from outside the session can steer a cooperative agent "
+    "into any shape. A gate is at least as strict as any gate whose header names "
+    "it as that gate's backstop against evasion. A shared helper function is "
+    "never relaxed just because one of its many callers denies less. A gate that "
+    "lists `irreversible` is never relaxed on false-positive cost alone. A tier "
+    "scopes what a reviewer treats as a defect in *this* gate; it never licenses "
+    "the agent this repo guards to use a shape the gate happens to miss. See "
+    "`docs/hooks.md` § \"Threat-model tiers\" for the tier definitions and each "
+    "gate's classification."
+)
+
+
+def test_hook_threat_model_section_matches_pinned_text() -> None:
+    """CLAUDE.md's '## Hook threat model' section, whitespace-normalized,
+    equals _HOOK_THREAT_MODEL_SECTION."""
+    section = _markdown_section_text(_CLAUDE_MD.read_text(), "Hook threat model")
+    assert " ".join(section.split()) == _HOOK_THREAT_MODEL_SECTION, (
+        "CLAUDE.md's '## Hook threat model' section changed. The text is waiver "
+        "scope: an edit needs _HOOK_THREAT_MODEL_SECTION updated and the "
+        "rationale stated in the commit message"
+    )
+
+
+def test_hooks_doc_tier_bullets_match_tier_vocabulary() -> None:
+    """The tier-definition bullets in docs/hooks.md name exactly
+    _THREAT_MODEL_TIERS, so the docs and the header grammar cannot drift."""
+    documented = tuple(
+        match.group(1)
+        for line in _markdown_section_text(
+            _HOOKS_DOC_TEXT, "Threat-model tiers"
+        ).splitlines()
+        if (match := re.match(r"^- `([a-z-]+)` — ", line))
+    )
+    assert documented == _THREAT_MODEL_TIERS, (
+        f"docs/hooks.md tier bullets {documented} != _THREAT_MODEL_TIERS "
+        f"{_THREAT_MODEL_TIERS}"
+    )
+
+
+def test_count_tier_threat_model_lines_sees_a_stale_line_past_the_header_window() -> None:
+    """A second tier line below the header window is invisible to
+    _find_tier_threat_model_lines but counted by the file-wide count."""
+    lines = [
+        "#!/bin/bash",
+        "# hook-class: gate",
+        "# tier-threat-model: cooperative",
+        "# a",
+        "# b",
+        "# c",
+        "# d",
+        "# tier-threat-model: cooperative, irreversible",
+    ]
+    assert len(_find_tier_threat_model_lines(lines)) == 1
+    assert _count_tier_threat_model_lines(lines) == 2
 
 
 def _classify_tier_header(lines: list[str]) -> str:
@@ -1854,8 +1937,7 @@ _TIER_HEADER_FIXTURES: list[tuple[str, list[str], str]] = [
 def test_tier_header_pipeline_fixtures(fixture_lines: list[str], expected: str) -> None:
     """Meta-test for the finder+grammar-validator pipeline: one parametrized
     function over every header-line case _find_tier_threat_model_lines and
-    _tier_grammar_violation must classify correctly, rather than sixteen
-    standalone tests."""
+    _tier_grammar_violation must classify correctly."""
     assert _classify_tier_header(fixture_lines) == expected
 
 
@@ -1956,8 +2038,7 @@ def test_tier_table_pipeline_fixtures(
     doc_text: str, gate_keys: set[str], header_values: dict, expected_diff: dict
 ) -> None:
     """Meta-test for _parse_tier_table + _diff_table_against_headers
-    together: one parametrized function over every table case, rather than
-    sixteen standalone tests."""
+    together: one parametrized function over every table case."""
     rows = _parse_tier_table(doc_text)
     diff = _diff_table_against_headers(rows, gate_keys, header_values)
     assert diff == expected_diff
