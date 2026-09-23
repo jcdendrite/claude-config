@@ -7,6 +7,7 @@ binary and the real shared /tmp:
 """
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import subprocess
@@ -842,15 +843,14 @@ _STAMP_LEN = len("2026-01-01T00:00:00Z")
 _DEST_BASENAME_LEN = len("resume-context.") + 6
 
 
-def _skip_if_bytes_exceed_path_max(fixture_root: Path, byte_len: int) -> None:
-    """Skip when byte_len (a path's encoded length) meets or exceeds PC_PATH_MAX
-    for fixture_root's filesystem. Takes a byte count rather than a Path so a
-    call site can probe a not-yet-built path length (e.g. the script's own
-    mktemp destination) as easily as a real one.
+def _dest_path_len(tmp_path: Path) -> int:
+    """Byte length of the script's mktemp destination path under tmp_path."""
+    return len(os.fsencode(tmp_path)) + 1 + _DEST_BASENAME_LEN
 
-    fixture_root must already exist, because probing an uncreated long path
-    would itself risk hitting the limit this helper is meant to detect.
-    """
+
+def _skip_if_bytes_exceed_path_max(fixture_root: Path, byte_len: int) -> None:
+    """Skip when byte_len meets or exceeds PC_PATH_MAX for fixture_root, which must already exist
+    (probing an uncreated long path hits the same limit)."""
     try:
         path_max = os.pathconf(fixture_root, "PC_PATH_MAX")
     except OSError as exc:
@@ -889,21 +889,38 @@ class TestSkipIfBytesExceedPathMax:
 
     def test_skips_when_pathconf_raises(self, monkeypatch, tmp_path):
         def _raise(*_a):
-            raise OSError("no such pathconf name")
+            raise OSError(errno.EINVAL, "Invalid argument")
 
         monkeypatch.setattr(os, "pathconf", _raise)
         with pytest.raises(pytest.skip.Exception):
             _skip_if_bytes_exceed_path_max(tmp_path, 10)
 
 
+class TestSkipCallSiteWiring:
+    def test_src_path_builder_skips_before_creating_any_directory(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(os, "pathconf", lambda *_a: len(os.fsencode(tmp_path)) + 50)
+        with pytest.raises(pytest.skip.Exception):
+            _src_path_of_exact_length(tmp_path, len(str(tmp_path)) + 500)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_dest_probe_skips_at_dest_length_but_not_one_byte_above(self, monkeypatch, tmp_path):
+        dest_len = _dest_path_len(tmp_path)
+        monkeypatch.setattr(os, "pathconf", lambda *_a: dest_len)
+        with pytest.raises(pytest.skip.Exception):
+            _skip_if_bytes_exceed_path_max(tmp_path, _dest_path_len(tmp_path))
+        monkeypatch.setattr(os, "pathconf", lambda *_a: dest_len + 1)
+        try:
+            _skip_if_bytes_exceed_path_max(tmp_path, _dest_path_len(tmp_path))
+        except pytest.skip.Exception as exc:
+            pytest.fail(f"unexpected skip: {exc}")
+
+
 def _src_path_of_exact_length(tmpdir_root: Path, total_len: int) -> Path:
-    """Builds an absolute source path with exactly total_len characters,
-    using nested short directory components (each far under the 255-byte
-    NAME_MAX) so the total can be tuned to an exact byte count without any
-    single component exceeding NAME_MAX; skips where the filesystem's
-    PC_PATH_MAX cannot hold the total -- the same nesting idiom the byte-cap
-    tests above use to build an over-cap path, generalized to hit a precise
-    length."""
+    """Builds a path of exactly total_len characters from nested components each under NAME_MAX.
+
+    Skips when PC_PATH_MAX cannot hold the total.
+    Uses the same nesting idiom as the byte-cap tests above.
+    """
     component_len = 100
     dir_path = tmpdir_root
     remaining = total_len - len(str(tmpdir_root))
@@ -1149,8 +1166,8 @@ class TestConsumedIndex:
         "$row_bytes" -gt 2048 ]` is a strict inequality, so the cap itself is
         inclusive."""
         stub, _ = _install_recorder(tmp_path)
-        dest_len = len(str(tmp_path)) + 1 + _DEST_BASENAME_LEN
-        _skip_if_bytes_exceed_path_max(tmp_path, len(os.fsencode(tmp_path)) + 1 + _DEST_BASENAME_LEN)
+        dest_len = _dest_path_len(tmp_path)
+        _skip_if_bytes_exceed_path_max(tmp_path, dest_len)
         src_len = 2048 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
         src.write_text("hello brief\n")
@@ -1171,8 +1188,8 @@ class TestConsumedIndex:
         confirming the cap's strict inequality cuts off immediately past
         2048, not somewhere looser."""
         stub, _ = _install_recorder(tmp_path)
-        dest_len = len(str(tmp_path)) + 1 + _DEST_BASENAME_LEN
-        _skip_if_bytes_exceed_path_max(tmp_path, len(os.fsencode(tmp_path)) + 1 + _DEST_BASENAME_LEN)
+        dest_len = _dest_path_len(tmp_path)
+        _skip_if_bytes_exceed_path_max(tmp_path, dest_len)
         src_len = 2049 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
         src.write_text("hello brief\n")
