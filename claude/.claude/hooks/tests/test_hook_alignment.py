@@ -1510,13 +1510,12 @@ def test_gate_header_tier_matches_table_row(hook: Path) -> None:
 
 
 # The pinned floor from docs/hooks.md § "Threat-model tiers": the seven
-# gates that carry `untrusted-input`. One-sided by design (see the module's
-# own tests below) -- it fails loudly if a pinned name stops being a
-# hook-class: gate hook, is renamed, or drops `untrusted-input` from its
-# header, which is a security-class relaxation needing a stated rationale
-# (docs/hooks.md's symmetric add-side relaxation rule). It does not fail if
-# a new gate later adds `untrusted-input` on its own -- the header stays
-# the source of truth for that.
+# gates that carry `untrusted-input`. One-sided by design: it fails loudly
+# if a pinned name stops being a hook-class: gate hook, is renamed, or
+# drops `untrusted-input` from its header, a security-class relaxation
+# needing a stated rationale. It does not fail if a new gate later adds
+# `untrusted-input` on its own -- the header stays the source of truth for
+# that.
 _UNTRUSTED_INPUT_FLOOR: frozenset[str] = frozenset(
     {
         "deny-env-reads.sh",
@@ -1555,13 +1554,12 @@ def test_untrusted_input_floor_pinned(hook_name: str) -> None:
 
 
 # The pinned floor from docs/hooks.md § "Threat-model tiers": the 14 gates
-# that carry `irreversible`. One-sided by design (see the module's own
-# tests below) -- it fails loudly if a pinned name stops being a
-# hook-class: gate hook, is renamed, or drops `irreversible` from its
-# header, which is a security-class relaxation needing a stated rationale
-# (docs/hooks.md's symmetric add-side relaxation rule). It does not fail if
-# a new gate later adds `irreversible` on its own -- the header stays the
-# source of truth for that.
+# that carry `irreversible`. One-sided by design: it fails loudly if a
+# pinned name stops being a hook-class: gate hook, is renamed, or drops
+# `irreversible` from its header, a security-class relaxation needing a
+# stated rationale. It does not fail if a new gate later adds
+# `irreversible` on its own -- the header stays the source of truth for
+# that.
 _IRREVERSIBLE_FLOOR: frozenset[str] = frozenset(
     {
         "block-gh-pr-merge.sh",
@@ -1606,7 +1604,7 @@ def test_irreversible_floor_pinned(hook_name: str) -> None:
     )
 
 
-_HOOK_DEPENDENCY_INVARIANT_SENTENCES: dict[str, tuple[str, ...]] = {
+_TIER_RATIONALE_HOOK_SENTENCES: dict[str, tuple[str, ...]] = {
     "block-gh-pr-merge.sh": (
         (
             "The eval/bash -c wrapper shapes are also plausible cooperative "
@@ -1645,30 +1643,30 @@ _HOOK_DEPENDENCY_INVARIANT_SENTENCES: dict[str, tuple[str, ...]] = {
 }
 
 
-_HOOK_DEPENDENCY_INVARIANT_SENTENCE_CASES: list[tuple[str, str]] = sorted(
+_TIER_RATIONALE_HOOK_SENTENCE_CASES: list[tuple[str, str]] = sorted(
     (hook_name, sentence)
-    for hook_name, sentences in _HOOK_DEPENDENCY_INVARIANT_SENTENCES.items()
+    for hook_name, sentences in _TIER_RATIONALE_HOOK_SENTENCES.items()
     for sentence in sentences
 )
 
 
-@pytest.mark.parametrize("hook_name,sentence", _HOOK_DEPENDENCY_INVARIANT_SENTENCE_CASES)
-def test_hook_dependency_invariant_sentence_pinned(
+@pytest.mark.parametrize("hook_name,sentence", _TIER_RATIONALE_HOOK_SENTENCE_CASES)
+def test_tier_rationale_hook_sentence_pinned(
     hook_name: str, sentence: str
 ) -> None:
-    """Pins the exact sentence docs/hooks.md's tier classification rests on
-    for this hook's header -- a failure here means this hook's
-    dependency-invariant/backstop sentence changed; see docs/hooks.md §
-    "Threat-model tiers" before editing this text."""
+    """Pins the exact sentence docs/hooks.md's tier table rests on for this
+    hook -- a failure here means that sentence changed in this hook's
+    header; see docs/hooks.md § "Threat-model tiers" before editing this
+    text."""
     hook = _MAIN_HOOKS_DIR / hook_name
     assert sentence in hook.read_text(), (
-        f"{hook_name}: this hook's dependency-invariant/backstop sentence "
-        'changed -- see docs/hooks.md § "Threat-model tiers" before '
-        "editing this text"
+        f"{hook_name}: the sentence docs/hooks.md's tier table rests on for "
+        "this hook's header changed -- see docs/hooks.md § "
+        '"Threat-model tiers" before editing this text'
     )
 
 
-_DOC_DEPENDENCY_INVARIANT_SENTENCES: dict[str, str] = {
+_TIER_RATIONALE_DOC_SENTENCES: dict[str, str] = {
     "enforce-marker-script-shape.sh": (
         "Defense-in-depth against prompt-injection escalation through the "
         "`marker.sh` allow rules."
@@ -1677,20 +1675,20 @@ _DOC_DEPENDENCY_INVARIANT_SENTENCES: dict[str, str] = {
 
 
 @pytest.mark.parametrize(
-    "hook_name,sentence", sorted(_DOC_DEPENDENCY_INVARIANT_SENTENCES.items())
+    "hook_name,sentence", sorted(_TIER_RATIONALE_DOC_SENTENCES.items())
 )
-def test_doc_dependency_invariant_sentence_pinned(
+def test_tier_rationale_doc_sentence_pinned(
     hook_name: str, sentence: str
 ) -> None:
     """Pins the exact docs/hooks.md sentence this hook's tier classification
     rests on, when that evidentiary text lives in the doc rather than the
-    hook's own header -- a failure here means the docs/hooks.md prose this
-    hook's elevation depends on changed; see docs/hooks.md § "Threat-model
-    tiers" before editing this text."""
+    hook's own header -- a failure here means the sentence docs/hooks.md's
+    tier table rests on for this hook changed; see docs/hooks.md §
+    "Threat-model tiers" before editing this text."""
     assert sentence in _HOOKS_DOC_TEXT, (
-        f"{hook_name}: the docs/hooks.md sentence this hook's "
-        'dependency-invariant/backstop text rests on changed -- see '
-        'docs/hooks.md § "Threat-model tiers" before editing this text'
+        f"{hook_name}: the sentence docs/hooks.md's tier table rests on for "
+        "this hook changed in docs/hooks.md's prose -- see docs/hooks.md § "
+        '"Threat-model tiers" before editing this text'
     )
 
 
