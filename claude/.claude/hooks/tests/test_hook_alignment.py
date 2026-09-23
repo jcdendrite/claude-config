@@ -1708,6 +1708,39 @@ def test_ready_for_review_missing_command_allowed() -> None:
     assert run_hook(hook, payload) == "allow"
 
 
+def test_ready_for_review_writes_completion_marker_before_creating_the_pr() -> None:
+    """SKILL.md orders the completion-marker write before the PR create and
+    the create before the deactivate, the hygiene recheck before the marker
+    step, and the do-not-write list before the write."""
+    text = (_SKILLS_DIR / "ready-for-review" / "SKILL.md").read_text()
+    record_completion_pos = text.index("HOOK_TEST_FIXTURE: record-completion")
+    create_anchor = "gh pr create --title"
+    create_count = text.count(create_anchor)
+    assert create_count == 1, (
+        f"expected exactly one {create_anchor!r} occurrence, found "
+        f"{create_count} -- the create-step prose changed shape."
+    )
+    create_pos = text.index(create_anchor)
+    deactivate_pos = text.index("HOOK_TEST_FIXTURE: deactivate-gate")
+    assert record_completion_pos < create_pos < deactivate_pos, (
+        "ready-for-review/SKILL.md must record gate completion before "
+        "creating the PR, and create the PR before deactivating the session"
+    )
+    hygiene_heading = "## 6. Final hygiene recheck"
+    hygiene_pos = text.find(hygiene_heading)
+    assert hygiene_pos != -1, (
+        f"{hygiene_heading!r} heading not found -- the hygiene step was "
+        "retitled or moved."
+    )
+    assert (
+        hygiene_pos < record_completion_pos
+    ), "the final hygiene recheck must precede the completion-marker step"
+    assert (
+        text.index("**Do NOT write the completion marker if:**")
+        < record_completion_pos
+    ), "step 7's do-not-write list must precede the completion-marker write"
+
+
 @pytest.mark.timing
 def test_blocks_when_jq_hangs(tmp_path: Path) -> None:
     """GH-480: a jq that hangs (never returns) must not hold the gate open

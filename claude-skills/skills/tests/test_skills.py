@@ -1552,7 +1552,7 @@ class TestRespondPrPromiseRedemption:
 
 
 class TestReadyForReviewBodyFileGuard:
-    """Pin that step 6 rejects a whitespace-only body file, not merely an empty one.
+    """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 
     The guard protects an unrecoverable state: once a PR exists carrying an
     empty body, step 5 takes its sync path, which checks a body against branch
@@ -1565,7 +1565,7 @@ class TestReadyForReviewBodyFileGuard:
     """
 
     def test_body_file_check_strips_whitespace_before_testing_content(self):
-        """step 6's guard must strip whitespace rather than rely on a byte-size test."""
+        """step 8's guard must strip whitespace rather than rely on a byte-size test."""
         assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
 
 
@@ -4876,7 +4876,7 @@ _PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
         "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
         '`"status":"ok"` with `over_threshold` or `already_fired` true, report '
         "`estimate` and `threshold`, then invoke `/handoff` instead of "
-        "running steps 2–7 in this session. Also name `nudge_disabled` "
+        "running steps 2–9 in this session. Also name `nudge_disabled` "
         "when true — the measurement still holds even though no nudge "
         "fires on its own."
     ),
@@ -4884,7 +4884,7 @@ _PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
         "Deferring here is cheap: steps 3 and 4 each dispatch a full "
         "reviewer pass and step 5 runs `pr-description`'s own checks, so "
         "what remains costs what the diff costs, not what the step "
-        "counter says. Steps 2–7 take their inputs from the repository — "
+        "counter says. Steps 2–9 take their inputs from the repository — "
         "the diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh "
         "session rebuilds almost nothing this one holds."
     ),
@@ -4967,14 +4967,14 @@ _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 
 # The Overview's cross-reference binding a halt on step 2, 3, or 4 to a
 # context-budget re-check that runs only after that round's fix commit has
-# landed, from ready-for-review/SKILL.md. Step 7 is deliberately excluded
+# landed, from ready-for-review/SKILL.md. Step 6 is deliberately excluded
 # (pushing commits is cheap enough to finish before any deferral
 # consideration).
 _PINNED_HALT_DEFERS_CLAUSE = (
     "A halt on step 2, 3, or 4 triggers the fix loop above first; only "
     "once that round's fix commit has landed does a context-budget re-check "
     "run, and only then does an over-threshold/already-fired result "
-    "route to step 1's deferral. A halt on step 7 stays outside this "
+    "route to step 1's deferral. A halt on step 6 stays outside this "
     "routing — pushing the commits is cheap enough to finish before any "
     "deferral consideration."
 )
@@ -5143,11 +5143,11 @@ _READY_FOR_REVIEW_CI_WATCH_HEADING = "## CI watch (out-of-band)"
 # fix-loop rule instead of restating a separate push-then-loop mechanic, so
 # a CI fix gets the same full cumulative re-review as a local-failure fix.
 _PINNED_CI_LAND_THE_FIX_CLAUSE = (
-    "**Land the fix.** Step 8 removed this session's active marker and "
+    "**Land the fix.** Step 9 removed this session's active marker and "
     "`require-ready-for-review.sh` denies a push without one, so re-run "
     "step 0's `marker.sh activate` command, then treat the fix as a "
     "step-2 failure's fix under the Overview's fix-loop rule, which "
-    "carries it through step 8."
+    "carries it through step 9."
 )
 
 
@@ -5348,6 +5348,73 @@ class TestCodeReviewRippleCarryForwardPin:
             pinned_text,
             raw_section,
             context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
+        )
+
+
+_READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
+
+# Step 7's "Do NOT write the completion marker if" bullets, from
+# ready-for-review/SKILL.md: the halt-on-fail step list, the closed list of
+# outcomes that count as complete without full execution (whose last sentence
+# is the missing-body-file case), and the dispatched-subagent rule.
+_PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE = (
+    "Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this "
+    "session (a DEFERred or *keep current text* finding counts as resolved)."
+)
+_PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
+    "Any of steps 1–6 did not run, or ended in an outcome its own text does "
+    "not define as complete. Only these outcomes count as complete without "
+    "full execution: step 2's scope-exception skip, step 2's skip of "
+    "undefined commands, step 3's reported cache hit, step 4's empty-list "
+    "no-op, and step 5's already-in-sync report (see Completion)."
+)
+_PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE = (
+    "With no PR open, step 5 is also incomplete unless it reported a "
+    "`BODY_FILE:` path whose file exists and is non-empty; that file check "
+    "applies only to a reported path when no PR is open."
+)
+_PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE = (
+    "A dispatched subagent never writes this marker; it reports to its caller."
+)
+
+
+class TestReadyForReviewCompletionMarkerHaltStepList:
+    """Pin step 7's "Do NOT write the completion marker if" bullets against
+    the live SKILL.md text: the halt-on-fail step numbers, the closed list of
+    outcomes that count as complete, the no-body-file case, and the
+    dispatched-subagent rule.
+    """
+
+    @pytest.mark.parametrize(
+        "pinned_clause",
+        [
+            _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE,
+            # The closed-list bullet ends with the no-body-file sentence, so the
+            # whole bullet is pinned as one string.
+            _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE
+            + " "
+            + _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE,
+        ],
+        ids=[
+            "halt_step_list",
+            "closed_complete_outcomes",
+            "no_body_file",
+            "subagent_never_writes",
+        ],
+    )
+    def test_completion_marker_do_not_write_bullet_matches_live_text(
+        self, pinned_clause: str
+    ) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP7_HEADING
+        )
+        pinned_text = " ".join(pinned_clause.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: a step 7 do-not-write bullet does not match its pinned clause.",
         )
 
 
