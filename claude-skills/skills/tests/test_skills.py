@@ -1552,7 +1552,7 @@ class TestRespondPrPromiseRedemption:
 
 
 class TestReadyForReviewBodyFileGuard:
-    """Pin that step 6 rejects a whitespace-only body file, not merely an empty one.
+    """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 
     The guard protects an unrecoverable state: once a PR exists carrying an
     empty body, step 5 takes its sync path, which checks a body against branch
@@ -1565,7 +1565,7 @@ class TestReadyForReviewBodyFileGuard:
     """
 
     def test_body_file_check_strips_whitespace_before_testing_content(self):
-        """step 6's guard must strip whitespace rather than rely on a byte-size test."""
+        """step 8's guard must strip whitespace rather than rely on a byte-size test."""
         assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
 
 
@@ -5143,11 +5143,11 @@ _READY_FOR_REVIEW_CI_WATCH_HEADING = "## CI watch (out-of-band)"
 # fix-loop rule instead of restating a separate push-then-loop mechanic, so
 # a CI fix gets the same full cumulative re-review as a local-failure fix.
 _PINNED_CI_LAND_THE_FIX_CLAUSE = (
-    "**Land the fix.** Step 8 removed this session's active marker and "
+    "**Land the fix.** Step 9 removed this session's active marker and "
     "`require-ready-for-review.sh` denies a push without one, so re-run "
     "step 0's `marker.sh activate` command, then treat the fix as a "
     "step-2 failure's fix under the Overview's fix-loop rule, which "
-    "carries it through step 8."
+    "carries it through step 9."
 )
 
 
@@ -5358,8 +5358,8 @@ _READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
 # outcomes that count as complete without full execution (whose last sentence
 # is the missing-body-file case), and the dispatched-subagent rule.
 _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE = (
-    "Any halt-on-fail step (1, 2, 3, 4, 6) produced findings that weren't "
-    "fixed in this session."
+    "Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this "
+    "session (a DEFERred or *keep current text* finding counts as resolved)."
 )
 _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
     "Any of steps 1–6 did not run, or ended in an outcome its own text does "
