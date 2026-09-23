@@ -66,6 +66,39 @@ def _write_fixture(base: Path, rel_path: str) -> Path:
     return path
 
 
+def _stub_git_linked_worktree(tmp_path: Path, toplevel: str) -> tuple[dict, Path]:
+    """(PATH env, stub bin dir) for a `git` stub that reports a linked
+    worktree (differing git-dir and common-dir) whose --show-toplevel prints
+    `toplevel` verbatim. The hook discards git's stderr, so the stub records
+    its behavior in marker files under the bin dir instead: `show-toplevel-called`
+    is touched when the toplevel call is reached, and any other git argv is
+    appended to `unexpected-argv` (and exits 99)."""
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    fake_git = stub_bin / "git"
+    fake_git.write_text(
+        "#!/bin/bash\n"
+        'if [ "$3" = "rev-parse" ]; then\n'
+        '  case "$4" in\n'
+        "    --git-dir) exit 0 ;;\n"
+        "    --absolute-git-dir) printf '%s\\n' /fake/git-dir/A; exit 0 ;;\n"
+        "    --path-format=absolute)\n"
+        '      if [ "$5" = "--git-common-dir" ]; then\n'
+        "        printf '%s\\n' /fake/git-dir/B; exit 0\n"
+        "      fi\n"
+        "      ;;\n"
+        "    --show-toplevel)\n"
+        f"      touch {shlex.quote(str(stub_bin / 'show-toplevel-called'))}\n"
+        f"      printf '%s' {shlex.quote(toplevel)}; exit 0 ;;\n"
+        "  esac\n"
+        "fi\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(stub_bin / 'unexpected-argv'))}\n"
+        "exit 99\n"
+    )
+    fake_git.chmod(0o755)
+    return {"PATH": f"{stub_bin}:{os.environ['PATH']}"}, stub_bin
+
+
 @pytest.fixture
 def linked_worktree(git_repo, tmp_path):
     """A linked worktree of git_repo, checked out on a fresh branch — the
@@ -251,9 +284,9 @@ class TestAnnounceResumeCommand:
         """Explicit pass-case regression for the FILE_PATH allowlist gate,
         for symmetry with
         test_worktree_root_with_embedded_space_falls_back_to_bare_command's
-        pass-case coverage of WORKTREE_ROOT below: a file_path built only
-        from letters, digits, and the allowed punctuation clears
-        ^[A-Za-z0-9._/@+-]+$ and is included in the emitted command."""
+        pass-case coverage of WORKTREE_ROOT below: only allowlisted bytes
+        [A-Za-z0-9._/@+-] pass, so a file_path built solely from them is
+        included in the emitted command."""
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
@@ -261,9 +294,10 @@ class TestAnnounceResumeCommand:
         assert f"resume-context {fixture}" in payload["systemMessage"]
 
     def test_file_path_with_embedded_space_emits_nothing(self, isolated_home):
-        """A file_path that clears the continuity-path glob but fails the
-        ^[A-Za-z0-9._/@+-]+$ allowlist must produce no output at all — assert
-        on the absence of output, not on a sanitized string."""
+        """Only allowlisted bytes [A-Za-z0-9._/@+-] pass, so a file_path that
+        clears the continuity-path glob but contains a space must produce no
+        output at all — assert on the absence of output, not on a sanitized
+        string."""
         fixture = _write_fixture(isolated_home, ".claude/handoffs/my notes-handoff.md")
         result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
         assert result.returncode == 0
@@ -283,6 +317,144 @@ class TestAnnounceResumeCommand:
         assert result.returncode == 0
         assert result.stdout == ""
         assert "SENTINEL-INJECT" not in result.stdout
+
+    def test_file_path_with_embedded_carriage_return_emits_nothing(self, isolated_home):
+        """Class-membership guard: a carriage return is not in
+        [A-Za-z0-9._/@+-], so widening the allowed set to admit it fails
+        here. Also passes on the pre-fix hook, so it does not pin the
+        newline-handling fix."""
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/notes\rhandoff-handoff.md")
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture)), home=isolated_home)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "file_name",
+        ["caf\u00e9-handoff.md", "esc\x1b[31m-handoff.md"],
+        ids=["non-ascii-e-acute", "escape-byte"],
+    )
+    def test_file_path_with_non_allowlisted_byte_emits_nothing_under_utf8_locale(
+        self, isolated_home, file_name
+    ):
+        """Locale-pinned deny test: non-ASCII and ESC bytes are rejected by the
+        allowlist gate even when the caller exports a UTF-8 locale. Under
+        /bin/bash 3.2 the non-ASCII case is admitted by the bracket class
+        unless the hook assigns LC_ALL=C first, so it guards that line. The
+        non-ASCII case guards the LC_ALL=C line only under bash < 5 (macOS
+        /bin/bash 3.2), so a green Linux CI run is not proof of that line."""
+        file_path = _write_fixture(isolated_home, f".claude/handoffs/{file_name}")
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(file_path)),
+            home=isolated_home,
+            extra_env={"LC_ALL": "en_US.UTF-8"},
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        ("raw_name", "stripped_name"),
+        [("a\u0000b-handoff.md", "ab-handoff.md"), ("a-handoff.md\n", "a-handoff.md")],
+        ids=["embedded-nul", "trailing-newline"],
+    )
+    def test_file_path_bytes_dropped_by_shell_announce_only_allowlisted_bytes(
+        self, isolated_home, raw_name, stripped_name
+    ):
+        """Residual of the allowlist gate: a NUL or trailing newline in the JSON
+        file_path is dropped by the shell's command substitution before the
+        gate runs, so the announced command carries only allowlisted bytes and
+        the stripped path."""
+        stripped_path = _write_fixture(isolated_home, f".claude/handoffs/{stripped_name}")
+        raw_path = f"{stripped_path.parent}/{raw_name}"
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(raw_path), home=isolated_home)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        message = payload["systemMessage"]
+        assert f"resume-context {stripped_path}" in message
+        assert "\u0000" not in result.stdout
+        assert "\n" not in message
+        assert "\n" not in payload["hookSpecificOutput"]["additionalContext"]
+
+    def test_file_path_with_at_and_plus_passes_allowlist(self, isolated_home):
+        """`@` and `+` are in the allowed set, so a path containing both is
+        announced."""
+        file_path = isolated_home / ".claude" / "handoffs" / "team@x+y-handoff.md"
+        result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(file_path)), home=isolated_home)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert f"resume-context {file_path}" in payload["systemMessage"]
+
+    def test_worktree_root_with_embedded_newline_falls_back_to_bare_command(
+        self, isolated_home, tmp_path
+    ):
+        """The WORKTREE_ROOT gate's counterpart to
+        test_file_path_with_embedded_newline_emits_nothing: a worktree root
+        containing an embedded newline fails the allowlist, so only --cwd is
+        dropped and none of the root's text -- including any injected
+        sentinel -- reaches the output. Drives the CANDIDATE_ROOT arm with a
+        PATH-stubbed git rather than a real `git worktree add`, since the
+        call site never validates that CANDIDATE_ROOT is a real directory --
+        the stub proves the identical invariant deterministically on every
+        platform."""
+        malicious_root = "linked\n\nSENTINEL-INJECT\n\nwt"
+        stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, malicious_root)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(isolated_home)),
+            home=isolated_home,
+            extra_env=stub_env,
+        )
+        assert result.returncode == 0
+        assert not (stub_bin / "unexpected-argv").exists()
+        assert (stub_bin / "show-toplevel-called").exists()
+        payload = json.loads(result.stdout)
+        assert "--cwd" not in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
+        assert "--cwd" not in payload["hookSpecificOutput"]["additionalContext"]
+        assert f"resume-context {fixture}" in payload["hookSpecificOutput"]["additionalContext"]
+        assert "SENTINEL-INJECT" not in result.stdout
+
+    @pytest.mark.parametrize(
+        "clean_root", ["/fake/worktrees/linked-root", "/fake/wt@team/a+b"], ids=["plain", "at-and-plus"]
+    )
+    def test_clean_worktree_root_from_stub_git_emits_cwd_flag(
+        self, isolated_home, tmp_path, clean_root
+    ):
+        """Positive control for the stub-git newline test above: the same stub
+        with an allowlist-clean toplevel emits --cwd, proving the toplevel
+        call is reached. Also covers `@` and `+` on the WORKTREE_ROOT gate."""
+        stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, clean_root)
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(isolated_home)),
+            home=isolated_home,
+            extra_env=stub_env,
+        )
+        assert result.returncode == 0
+        assert not (stub_bin / "unexpected-argv").exists()
+        payload = json.loads(result.stdout)
+        assert f"resume-context --cwd {clean_root} {fixture}" in payload["systemMessage"]
+
+    def test_empty_worktree_root_from_stub_git_emits_bare_command(self, isolated_home, tmp_path):
+        """Invariant: an empty `--show-toplevel` result falls back to the bare
+        command. Pins the `[ -n "$WORKTREE_ROOT" ]` check, not the allowlist's
+        empty arm; only --cwd is dropped."""
+        stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, "")
+        fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK,
+            write_input(str(fixture), cwd=str(isolated_home)),
+            home=isolated_home,
+            extra_env=stub_env,
+        )
+        assert result.returncode == 0
+        assert not (stub_bin / "unexpected-argv").exists()
+        assert (stub_bin / "show-toplevel-called").exists()
+        payload = json.loads(result.stdout)
+        assert "--cwd" not in payload["systemMessage"]
+        assert f"resume-context {fixture}" in payload["systemMessage"]
 
     def test_worktree_root_with_embedded_space_falls_back_to_bare_command(
         self, isolated_home, git_repo, tmp_path
