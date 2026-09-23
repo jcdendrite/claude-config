@@ -21,7 +21,7 @@ pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugin
 # settings.json files) — pass -n0 on the CLI to debug serially (-s / --pdb / -x),
 # which overrides this cleanly. --strict-markers makes a typo'd marker name a
 # collection error instead of a silently-unfiltered test.
-addopts = ["-n", "auto", "--strict-markers"]
+addopts = ["-n", "auto", "--strict-markers", "-ra"]
 # Unbounded retention fills /tmp/pytest-of-<user>/ with every session's tmp_path
 # directories; failed-only, one-session retention caps it to the last failure's
 # output for debugging.

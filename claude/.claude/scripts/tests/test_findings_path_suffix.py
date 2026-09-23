@@ -9,9 +9,11 @@ agent name and `.md` extension to form the full `findings_path`.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,54 @@ def _run_script(cwd: Path) -> subprocess.CompletedProcess:
 
 def _exclude_lines(repo: Path) -> list[str]:
     return (repo / ".git" / "info" / "exclude").read_text().splitlines()
+
+
+def _skip_unless_filesystem_accepts_filename(directory: Path, filename: bytes) -> None:
+    """Skip when the filesystem under `directory` refuses to create a file named with exactly these bytes."""
+    probe_path = os.path.join(os.fsencode(directory), filename)
+    try:
+        with open(probe_path, "wb"):
+            pass
+    except OSError as exc:
+        pytest.skip(f"filesystem rejects filename {filename!r}: {exc.strerror}")
+        return
+    # tmp_path's own pytest teardown still removes the file; an unlink failure
+    # here must not fail a test whose creation already succeeded.
+    with contextlib.suppress(OSError):
+        os.unlink(probe_path)
+
+
+class TestSkipUnlessFilesystemAcceptsFilename:
+    def test_does_not_skip_for_an_always_valid_filename(self, tmp_path):
+        try:
+            _skip_unless_filesystem_accepts_filename(tmp_path, b"valid-name")
+        except pytest.skip.Exception as exc:
+            pytest.fail(f"unexpected skip: {exc}")
+        assert not (tmp_path / "valid-name").exists(), "probe file must be cleaned up"
+
+    def test_skips_when_open_raises_oserror_and_probes_the_exact_bytes(self, monkeypatch, tmp_path):
+        probed_paths = []
+
+        def _record_and_raise(path, *_a, **_k):
+            probed_paths.append(path)
+            raise OSError(92, "Illegal byte sequence")
+
+        # Patched on this module only: the helper resolves `open` here, and a builtins patch would leak process-wide.
+        monkeypatch.setattr(sys.modules[__name__], "open", _record_and_raise, raising=False)
+        filename = b"\xff\xfe"
+        with pytest.raises(pytest.skip.Exception, match="Illegal byte sequence"):
+            _skip_unless_filesystem_accepts_filename(tmp_path, filename)
+        assert probed_paths == [os.fsencode(tmp_path) + b"/" + filename]
+
+    def test_does_not_skip_or_raise_when_unlink_fails(self, monkeypatch, tmp_path):
+        def _raise(*_a, **_k):
+            raise OSError("unlink refused")
+
+        monkeypatch.setattr(os, "unlink", _raise)
+        try:
+            _skip_unless_filesystem_accepts_filename(tmp_path, b"valid-name")
+        except pytest.skip.Exception as exc:
+            pytest.fail(f"unexpected skip: {exc}")
 
 
 class TestIdempotentAppendAndSuffixShape:
@@ -363,6 +413,7 @@ class TestNonUtf8BranchNameEntirelyInvalid:
         # 0xF5-0xFF are never valid UTF-8 lead or continuation bytes, so no
         # prefix of this name decodes -- `tr -cd 'A-Za-z0-9-'` strips it to nothing.
         branch_name = b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8"
+        _skip_unless_filesystem_accepts_filename(tmp_path, branch_name)
         subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
 
         result = subprocess.run([str(_SCRIPT)], cwd=str(repo), capture_output=True, check=False)
