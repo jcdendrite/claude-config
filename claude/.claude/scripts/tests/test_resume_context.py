@@ -903,17 +903,6 @@ class TestSkipCallSiteWiring:
             _src_path_of_exact_length(tmp_path, len(str(tmp_path)) + 500)
         assert list(tmp_path.iterdir()) == []
 
-    def test_dest_probe_skips_at_dest_length_but_not_one_byte_above(self, monkeypatch, tmp_path):
-        dest_len = _dest_path_len(tmp_path)
-        monkeypatch.setattr(os, "pathconf", lambda *_a: dest_len)
-        with pytest.raises(pytest.skip.Exception):
-            _skip_if_bytes_exceed_path_max(tmp_path, _dest_path_len(tmp_path))
-        monkeypatch.setattr(os, "pathconf", lambda *_a: dest_len + 1)
-        try:
-            _skip_if_bytes_exceed_path_max(tmp_path, _dest_path_len(tmp_path))
-        except pytest.skip.Exception as exc:
-            pytest.fail(f"unexpected skip: {exc}")
-
 
 def _src_path_of_exact_length(tmpdir_root: Path, total_len: int) -> Path:
     """Builds a path of exactly total_len characters from nested components each under NAME_MAX.
@@ -1167,9 +1156,11 @@ class TestConsumedIndex:
         inclusive."""
         stub, _ = _install_recorder(tmp_path)
         dest_len = _dest_path_len(tmp_path)
-        _skip_if_bytes_exceed_path_max(tmp_path, dest_len)
         src_len = 2048 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
+        # src_len is derived from 2048 - dest_len, so src is always at least as long as
+        # dest here; _src_path_of_exact_length's own probe on src covers dest too.
+        assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
         src.write_text("hello brief\n")
 
         result = _run(
@@ -1189,9 +1180,11 @@ class TestConsumedIndex:
         2048, not somewhere looser."""
         stub, _ = _install_recorder(tmp_path)
         dest_len = _dest_path_len(tmp_path)
-        _skip_if_bytes_exceed_path_max(tmp_path, dest_len)
         src_len = 2049 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
+        # src_len is derived from 2049 - dest_len, so src is always at least as long as
+        # dest here; _src_path_of_exact_length's own probe on src covers dest too.
+        assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
         src.write_text("hello brief\n")
 
         result = _run(
