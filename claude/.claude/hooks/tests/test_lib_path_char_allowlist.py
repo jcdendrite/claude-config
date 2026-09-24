@@ -72,14 +72,8 @@ def _run_sweep(values: list[bytes], locale: str) -> bytes:
 
 
 def _en_us_utf8_exhibits_locale_sensitive_bracket_matching() -> bool:
-    """Whether this runner's en_US.UTF-8 locale actually enables locale-
-    sensitive bracket-range collation -- the hazard documented in
-    set-session-title-from-branch.sh's locale-sensitive-range comment -- rather than silently
-    collapsing to C behavior because the locale isn't installed. Without
-    this check, an en_US.UTF-8-parametrized case run on a runner where that
-    locale collapses to C would pass regardless of whether the helper's own
-    LC_ALL=C pin still works, giving no failure signal for a real
-    regression in the property this file guards."""
+    """True only when this runner's en_US.UTF-8 makes bracket ranges locale-sensitive;
+    if it collapses to C, the en_US params cannot guard the LC_ALL=C pin."""
     probe = subprocess.run(
         [b"/bin/bash", b"-c", b"[[ \xc3\xa9 == [a-z] ]]"],
         capture_output=True,
@@ -97,15 +91,11 @@ def utf8_locale_is_functional() -> bool:
     return _en_us_utf8_exhibits_locale_sensitive_bracket_matching()
 
 
-# Removing the helper's LC_ALL=C pin is detectable only by the
-# `non-ascii-e-acute` whole-value deny case on bash < 5 (macOS /bin/bash 3.2).
-# A green Linux CI run (bash 5, where the en_US.UTF-8 cases skip) is not proof
-# the pin exists.
 def _skip_if_utf8_locale_not_functional(locale: str, utf8_locale_is_functional: bool) -> None:
     if locale != "C" and not utf8_locale_is_functional:
         pytest.skip(
-            "runner's en_US.UTF-8 locale does not exhibit locale-sensitive "
-            "bracket matching -- not a meaningful regression guard here"
+            "en_US.UTF-8 locale is not installed on this runner, or this bash already does "
+            "ASCII-only bracket ranges (expected on bash 5), so the LC_ALL=C pin is invisible here"
         )
 
 
@@ -114,12 +104,12 @@ class TestLibPassesPathCharAllowlist:
     def test_single_byte_sweep_accepts_exactly_the_allowlisted_class(
         self, locale, utf8_locale_is_functional
     ):
-        """Exhaustive 0x01-0xFF single-byte sweep (NUL can't go in argv):
-        exactly the 68 bytes in [A-Za-z0-9._/@+-] are accepted, under both
-        the C locale and a caller-exported UTF-8 locale -- catches a typo in
-        the class, including the boundary bytes `:`, `[`, backtick and `{`.
-        Single high bytes are invalid UTF-8 and are never collated, so this
-        sweep cannot detect removal of the helper's LC_ALL=C pin."""
+        """Sweeps every single byte from 0x01 to 0xFF; NUL cannot go in argv.
+        Exactly the 68 bytes in [A-Za-z0-9._/@+-] are accepted.
+        The sweep runs under both the C locale and a caller-exported UTF-8 locale.
+        It catches a typo in the class, including the boundary bytes `:`, `[`, backtick and `{`.
+        Single high bytes are invalid UTF-8 and are never collated.
+        The sweep therefore cannot detect removal of the helper's LC_ALL=C pin."""
         _skip_if_utf8_locale_not_functional(locale, utf8_locale_is_functional)
         values = [bytes([b]) for b in range(1, 256)]
         verdicts = _run_sweep(values, locale)
@@ -130,6 +120,9 @@ class TestLibPassesPathCharAllowlist:
     @pytest.mark.parametrize("locale", ["C", "en_US.UTF-8"])
     @pytest.mark.parametrize("value", _DENY_WHOLE_VALUES)
     def test_whole_value_deny_cases(self, value, locale, utf8_locale_is_functional):
+        """Only the non-ascii-e-acute case detects removal of the LC_ALL=C pin.
+        It does so only on bash < 5 (macOS /bin/bash 3.2).
+        A green Linux CI run is therefore not proof the pin exists."""
         _skip_if_utf8_locale_not_functional(locale, utf8_locale_is_functional)
         assert _run_sweep([value], locale) == b"0"
 
@@ -169,6 +162,9 @@ class TestLibPassesPathCharAllowlist:
             capture_output=True,
             text=True,
             check=False,
+            # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
+            env={**os.environ, "LC_ALL": "C"},
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "status=1"
+        assert "unbound variable" not in result.stderr

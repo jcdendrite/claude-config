@@ -327,9 +327,11 @@ class TestAnnounceResumeCommand:
         payload = json.loads(result.stdout)
         message = payload["systemMessage"]
         assert f"resume-context {stripped_path}" in message
-        assert "\u0000" not in result.stdout
+        additional_context = payload["hookSpecificOutput"]["additionalContext"]
+        assert "\x00" not in message
+        assert "\x00" not in additional_context
         assert "\n" not in message
-        assert "\n" not in payload["hookSpecificOutput"]["additionalContext"]
+        assert "\n" not in additional_context
 
     def test_worktree_root_with_embedded_newline_falls_back_to_bare_command(
         self, isolated_home, tmp_path
@@ -340,11 +342,8 @@ class TestAnnounceResumeCommand:
         dropped and none of the root's text, including any injected sentinel,
         reaches the output.
 
-        A PATH-stubbed git drives the CANDIDATE_ROOT arm instead of a real
-        `git worktree add`. The call site never validates that
-        CANDIDATE_ROOT is a real directory, so the stub proves the same
-        invariant on every platform without depending on whether the local
-        git accepts a newline-containing path."""
+        Uses a PATH-stubbed git because the CANDIDATE_ROOT call site never validates
+        the path is a real directory, so it is platform-independent."""
         malicious_root = "linked\n\nSENTINEL-INJECT\n\nwt"
         stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, malicious_root)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
