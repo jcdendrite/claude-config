@@ -2,7 +2,13 @@
 
 ## Context
 
-Fix five test fixtures in claude-config's Python test suite that fail locally on macOS with filesystem-related `OSError`s, even though they pass in CI (Linux) — GitHub issue #1084. Four fixtures in `test_resume_context.py` build synthetic long paths to test `resume-context.sh`'s 2048-byte row-length cap and hit macOS APFS's real `PC_PATH_MAX` (1024 bytes) ceiling, which no amount of directory nesting can work around since it's a flat limit on any syscall's full path string, not a per-component limit — the issue's own suggested fix (shorter nesting components) cannot close this gap. A fifth fixture in `test_findings_path_suffix.py` builds an invalid-UTF-8 branch name and hits a related but distinct macOS/APFS constraint: the filesystem refuses to create filenames that aren't valid UTF-8, which breaks git's ref-lock file creation — a different mechanism than the issue describes for this test. Both are fixture-construction bugs, not production-code bugs; the shell scripts under test behave correctly. The fix adds capability-probe skips so these tests degrade gracefully wherever the local filesystem can't support the fixture's construction, while continuing to exercise the real assertions unchanged on Linux CI and anywhere else with sufficient headroom.
+Fix five test fixtures in claude-config's Python test suite that fail locally on macOS with filesystem-related `OSError`s, even though they pass in CI (Linux) — GitHub issue #1084.
+
+- Four fixtures in `test_resume_context.py` build synthetic long paths to test `resume-context.sh`'s 2048-byte row-length cap and hit macOS APFS's real `PC_PATH_MAX` (1024 bytes) ceiling.
+- No amount of directory nesting can work around that ceiling, since it's a flat limit on any syscall's full path string, not a per-component limit — the issue's own suggested fix (shorter nesting components) cannot close this gap.
+- A fifth fixture in `test_findings_path_suffix.py` builds an invalid-UTF-8 branch name and hits a related but distinct macOS/APFS constraint: the filesystem refuses to create filenames that aren't valid UTF-8, which breaks git's ref-lock file creation — a different mechanism than the issue describes for this test.
+- Both are fixture-construction bugs, not production-code bugs; the shell scripts under test behave correctly.
+- The fix adds capability-probe skips so these tests degrade gracefully wherever the local filesystem can't support the fixture's construction, while continuing to exercise the real assertions unchanged on Linux CI and anywhere else with sufficient headroom.
 
 ## Approach
 
@@ -26,9 +32,9 @@ def _skip_if_bytes_exceed_path_max(fixture_root: Path, byte_len: int) -> None:
         pytest.skip(f"fixture path needs {byte_len} bytes; PC_PATH_MAX here is {path_max}")
 ```
 
-- Call it at three call sites. At each one, the call goes after the relevant length is known and before the first `mkdir`:
+- Call it inside two builder helpers, each with a single call site. At each one, the call goes after the relevant length is known and before the first `mkdir`:
   - **`_src_path_of_exact_length`:** build `src_path = dir_path / ("a" * leaf_len)` first. Then call `_skip_if_bytes_exceed_path_max(tmpdir_root, len(os.fsencode(src_path)))`, then `dir_path.mkdir(parents=True, exist_ok=True)`, then `return src_path`. This single call covers both `test_row_at_exact_2048_byte_cap_appends` and `test_row_at_2049_bytes_skips_append_but_consume_still_succeeds`.
-  - **The two inline-loop tests** (`test_row_exceeding_length_cap_skips_append_but_consume_still_succeeds` and `test_row_under_character_cap_but_over_byte_cap_skips_append`): move `src = deep / "task.md"` above `deep.mkdir(parents=True)`, and insert `_skip_if_bytes_exceed_path_max(tmp_path, len(os.fsencode(src)))` between them. The CJK test's `assert len(str(src)) < 2048` stays where it is.
+  - **`_nested_src_path`:** both inline-loop tests (`test_row_exceeding_length_cap_skips_append_but_consume_still_succeeds` and `test_row_under_character_cap_but_over_byte_cap_skips_append`) now build `src` through this shared helper instead of looping inline. It builds `deep` from the repeated component, sets `src = deep / "task.md"`, calls `_skip_if_bytes_exceed_path_max(tmpdir_root, len(os.fsencode(src)))`, and only then calls `deep.mkdir(parents=True)` — mirroring `_src_path_of_exact_length`'s own skip-before-`mkdir` pattern. The CJK test's `assert len(str(src)) < 2048` stays where it is. A parametrized `TestSkipCallSiteWiring` test pins that this helper's skip also runs before its `mkdir`, for both the ASCII and CJK cases.
 - Correct two docstrings that claim the nesting avoids ENAMETOOLONG (row 20):
   - In `_src_path_of_exact_length`, replace "without tripping ENAMETOOLONG" with "without any single component exceeding NAME_MAX; skips where the filesystem's PC_PATH_MAX cannot hold the total".
   - In `test_row_exceeding_length_cap_...`, replace the same phrase with "without any single component exceeding NAME_MAX".
@@ -97,7 +103,7 @@ A fifth method, `test_does_not_skip_at_a_byte_count_every_supported_filesystem_h
 
 - In `test_findings_path_suffix.py`, near `_skip_unless_filesystem_accepts_filename`, a parallel `TestSkipUnlessFilesystemAcceptsFilename` covering: a real, always-valid filename under `tmp_path` (must not skip); a monkeypatched `open()` that raises `OSError`, asserting the skip reason names the exact bytes probed (must skip); and a monkeypatched `os.unlink` failure in the trailing cleanup, asserting it neither raises nor fails the test — this file's probe has no `-1`/no-limit-style sentinel to cover, since it works by direct attempt rather than a queried ceiling.
 
-Both classes use `pytest.raises(pytest.skip.Exception)` to assert a skip fires without the asserting test itself reporting as skipped, and the inverse pattern (call, catch, `pytest.fail` on an unexpected `Skipped`) to assert one does not — a bare call with no assertion would let a regressed helper silently skip the assertion test itself rather than fail it. A third class, `TestSkipCallSiteWiring`, checks the call-site wiring itself — that `_src_path_of_exact_length` calls the skip before its first `mkdir` — rather than either helper's own comparison logic.
+Both classes use `pytest.raises(pytest.skip.Exception)` to assert a skip fires without the asserting test itself reporting as skipped, and the inverse pattern (call, catch, `pytest.fail` on an unexpected `Skipped`) to assert one does not — a bare call with no assertion would let a regressed helper silently skip the assertion test itself rather than fail it. A third class, `TestSkipCallSiteWiring`, checks the call-site wiring itself — that each of `_src_path_of_exact_length` and `_nested_src_path` calls the skip before its first `mkdir` — rather than either probe helper's own comparison logic. It proves the ordering, not just that a skip occurred, by asserting `list(tmp_path.iterdir()) == []` after catching the `pytest.skip.Exception`: that assertion only holds if the skip ran before any directory was created.
 
 **CI skip-reason visibility.** The plan's design intent — "each skip reason names the measured limit or the OS error" — doesn't reach the CI log as CI is configured today: `.github/workflows/tests.yml`'s two "Run tests" steps invoke `pytest ... -v` with no `-r` flag, and `pyproject.toml`'s `addopts` doesn't add one either, so a future skip on CI would show a bare `SKIPPED` line with no reason text. Add `"-ra"` to `pyproject.toml`'s `addopts` (line 24: `addopts = ["-n", "auto", "--strict-markers"]` becomes `addopts = ["-n", "auto", "--strict-markers", "-ra"]`) — the single source of truth both CI steps and `select-tests.py` runs already inherit, rather than editing each CI step individually. `-ra` surfaces skip/xfail/error reasons in the terminal summary without the noise of listing every passed test. This plan's own Verification step 2 already overrides `addopts` entirely via `-o addopts=""` and adds its own `-v -rs`, so that command is unaffected by this change either way.
 
@@ -130,6 +136,7 @@ Both classes use `pytest.raises(pytest.skip.Exception)` to assert a skip fires w
 - M2: The byte length comes from `os.fsencode` at the `src`/CJK call sites, so one helper serves both the ASCII and CJK fixtures. anchors: row2
 - M3: `fixture_root` is an explicit parameter, not discovered from `path`. anchors: row18
 - M4: The skip runs after the relevant length is known and before the first `mkdir`. anchors: row3
+- M4a: Every skip call site sits inside a builder helper (`_src_path_of_exact_length` or `_nested_src_path`), each pinned by a `TestSkipCallSiteWiring` test asserting the skip fires before the first `mkdir` — closing the cumulative-review staff-sdet finding that the two inline-loop call sites lacked this pin. anchors: this revision's own resolution of that finding, not a row
 - M5: Each helper lives in the one test file that uses it. anchors: row14
 - M6: `_skip_unless_filesystem_accepts_filename` actually tries to create the file. anchors: row10, row11, row21
 - M7: The probe catches any `OSError` and puts `strerror` in the skip reason. anchors: row10
@@ -174,10 +181,10 @@ Both classes use `pytest.raises(pytest.skip.Exception)` to assert a skip fires w
 - `claude/.claude/scripts/tests/test_resume_context.py` (modify):
   - add `import pytest`;
   - add `_skip_if_bytes_exceed_path_max` (wraps `os.pathconf` in `try`/`except OSError`);
-  - call it at three sites (inside `_src_path_of_exact_length`, which covers both exact-boundary tests, and in the two inline-loop tests);
+  - add two builder helpers, each with one skip call site: `_src_path_of_exact_length` (covers both exact-boundary tests) and `_nested_src_path` (covers both inline-loop tests, which now call it instead of looping inline);
   - add `_dest_path_len`, a byte-length helper for the script's mktemp destination that feeds the exact-boundary tests' `src_len`;
   - add `TestSkipIfBytesExceedPathMax`, a filesystem-free unit test of the helper's own boundary/`-1`/raise-path logic, plus a real-filesystem method asserting 1000 bytes never skips on any supported filesystem;
-  - add `TestSkipCallSiteWiring`, one test: `_src_path_of_exact_length` skips before creating any directory;
+  - add `TestSkipCallSiteWiring`, now 2 test methods (one parametrized with 2 cases, so 3 total wiring-test executions): `_src_path_of_exact_length` skips before creating any directory, and `_nested_src_path` does too for both the ASCII and CJK cases;
   - correct two docstrings.
 - `claude/.claude/scripts/tests/test_findings_path_suffix.py` (modify): add `_skip_unless_filesystem_accepts_filename` (with a guarded trailing `os.unlink`) and call it once, in `TestNonUtf8BranchNameEntirelyInvalid.test_suffix_is_valid_utf8_when_branch_name_is_entirely_invalid_utf8`; add `TestSkipUnlessFilesystemAcceptsFilename`, a small unit test covering the always-valid-filename case, a monkeypatched `open()`-raises case, and a monkeypatched-`unlink`-fails case.
 - `pyproject.toml` (modify): add `"-ra"` to `addopts` (line 24) so a future CI skip on any of these five tests shows its reason string in the log instead of a bare `SKIPPED`.
@@ -213,4 +220,3 @@ The commands use `.venv/bin/...` as run from the main checkout. README.md's Test
 - Failing hard when `GITHUB_ACTIONS` is set, as `require_direnv()` does. On today's Linux runner the skip can only fire if `tmp_path` exceeds 1822 bytes (row 2). With `-ra` now in `addopts` (M13), the CI log names any SKIPPED test's reason, which is the auditability this plan wants — a hard failure would additionally break a future macOS CI leg for a real filesystem limit.
 - Adding a macOS leg to CI.
 - `test_nudge_long_turn_subagent.py::TestNudgeLongTurnSubagent::test_scan_lock_release_point_matches_the_read_scan_write_scope`. The issue itself flags it as an unreproduced flake and leaves it off its failing-test list.
-- Pinning the two inline-loop tests' skip-before-`mkdir` ordering with a wiring test. Unlike `_src_path_of_exact_length`'s `TestSkipCallSiteWiring`, no test checks that the skip call precedes `deep.mkdir(parents=True)` at those two call sites. A regression there produces an uncaught macOS-only `OSError` fixture crash with no CI signal, since Linux's headroom (row 2) means the skip never needs to fire there either way.

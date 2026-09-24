@@ -848,9 +848,17 @@ def _dest_path_len(tmp_path: Path) -> int:
     return len(os.fsencode(tmp_path)) + 1 + _DEST_BASENAME_LEN
 
 
+def _assert_src_still_dominates_dest(src: Path, dest_len: int) -> None:
+    """src_len is derived by subtracting dest_len from the row-byte cap, so src is always at
+    least as long as dest; _src_path_of_exact_length's own probe on src covers dest too."""
+    assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
+
+
 def _skip_if_bytes_exceed_path_max(fixture_root: Path, byte_len: int) -> None:
-    """Skip when byte_len meets or exceeds PC_PATH_MAX for fixture_root, which must already exist
-    (probing an uncreated long path hits the same limit)."""
+    """Skip when byte_len meets or exceeds PC_PATH_MAX for fixture_root.
+
+    fixture_root must already exist: probing an uncreated long path hits the same limit.
+    """
     try:
         path_max = os.pathconf(fixture_root, "PC_PATH_MAX")
     except OSError as exc:
@@ -881,7 +889,8 @@ class TestSkipIfBytesExceedPathMax:
             pytest.fail(f"unexpected skip: {exc}")
 
     def test_does_not_skip_at_a_byte_count_every_supported_filesystem_holds(self, tmp_path):
-        # 1000 clears APFS's 1024 and Linux's 4096 but not a wrong pathconf name like PC_NAME_MAX.
+        # 1000 clears both APFS's 1024-byte and Linux's 4096-byte ceilings.
+        # It would not catch a wrong pathconf name constant (e.g. PC_NAME_MAX).
         try:
             _skip_if_bytes_exceed_path_max(tmp_path, 1000)
         except pytest.skip.Exception as exc:
@@ -903,6 +912,27 @@ class TestSkipCallSiteWiring:
             _src_path_of_exact_length(tmp_path, len(str(tmp_path)) + 500)
         assert list(tmp_path.iterdir()) == []
 
+    @pytest.mark.parametrize(
+        ("component", "depth"), [("a" * 20, 2), ("中" * 5, 2)], ids=["ascii", "cjk"]
+    )
+    def test_nested_src_path_builder_skips_before_creating_any_directory(self, monkeypatch, tmp_path, component, depth):
+        # Fixture paths stay far under every real PC_PATH_MAX, so a misordered mkdir succeeds and
+        # leaves directories for the iterdir assertion to catch.
+        # The patched limit sits above the cjk fixture's total character length but below its total encoded-byte length.
+        # A skip check based on len(str(...)) would not fire at this limit, so the cjk case also pins byte-based measurement.
+        monkeypatch.setattr(os, "pathconf", lambda *_a: len(os.fsencode(tmp_path)) + 30)
+        with pytest.raises(pytest.skip.Exception):
+            _nested_src_path(tmp_path, component, depth)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_builds_expected_nested_path_and_creates_its_parent_directories(self, tmp_path):
+        component = "a" * 20
+        depth = 2
+        src = _nested_src_path(tmp_path, component, depth)
+        assert src == tmp_path / component / component / "task.md"
+        assert src.parent.is_dir()
+        assert not src.exists()
+
 
 def _src_path_of_exact_length(tmpdir_root: Path, total_len: int) -> Path:
     """Builds a path of exactly total_len characters from nested components each under NAME_MAX.
@@ -922,6 +952,20 @@ def _src_path_of_exact_length(tmpdir_root: Path, total_len: int) -> Path:
     _skip_if_bytes_exceed_path_max(tmpdir_root, len(os.fsencode(src_path)))
     dir_path.mkdir(parents=True, exist_ok=True)
     return src_path
+
+
+def _nested_src_path(tmpdir_root: Path, component: str, depth: int) -> Path:
+    """Builds tmpdir_root/<component repeated depth times>/task.md and creates its parent directories.
+
+    Skips when PC_PATH_MAX cannot hold the path's byte length.
+    """
+    deep = tmpdir_root
+    for _ in range(depth):
+        deep = deep / component
+    src = deep / "task.md"
+    _skip_if_bytes_exceed_path_max(tmpdir_root, len(os.fsencode(src)))
+    deep.mkdir(parents=True)
+    return src
 
 
 class TestConsumedIndex:
@@ -1066,12 +1110,7 @@ class TestConsumedIndex:
         under the 255-byte single-component limit) to build a long total
         path without any single component exceeding NAME_MAX."""
         stub, _ = _install_recorder(tmp_path)
-        deep = tmp_path
-        for _ in range(15):
-            deep = deep / ("a" * 150)
-        src = deep / "task.md"
-        _skip_if_bytes_exceed_path_max(tmp_path, len(os.fsencode(src)))
-        deep.mkdir(parents=True)
+        src = _nested_src_path(tmp_path, "a" * 150, 15)
         src.write_text("hello brief\n")
 
         result = _run(
@@ -1129,12 +1168,7 @@ class TestConsumedIndex:
         shape that would slip past a character-counting cap but must be
         caught by the byte-counting one."""
         stub, _ = _install_recorder(tmp_path)
-        deep = tmp_path
-        for _ in range(9):
-            deep = deep / ("中" * 78)
-        src = deep / "task.md"
-        _skip_if_bytes_exceed_path_max(tmp_path, len(os.fsencode(src)))
-        deep.mkdir(parents=True)
+        src = _nested_src_path(tmp_path, "中" * 78, 9)
         src.write_text("hello brief\n")
         assert len(str(src)) < 2048, "fixture must stay under the character cap to isolate the byte-cap defect"
 
@@ -1158,9 +1192,7 @@ class TestConsumedIndex:
         dest_len = _dest_path_len(tmp_path)
         src_len = 2048 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
-        # src_len is derived from 2048 - dest_len, so src is always at least as long as
-        # dest here; _src_path_of_exact_length's own probe on src covers dest too.
-        assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
+        _assert_src_still_dominates_dest(src, dest_len)
         src.write_text("hello brief\n")
 
         result = _run(
@@ -1182,9 +1214,7 @@ class TestConsumedIndex:
         dest_len = _dest_path_len(tmp_path)
         src_len = 2049 - _STAMP_LEN - 1 - dest_len - 1 - 1
         src = _src_path_of_exact_length(tmp_path, src_len)
-        # src_len is derived from 2049 - dest_len, so src is always at least as long as
-        # dest here; _src_path_of_exact_length's own probe on src covers dest too.
-        assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
+        _assert_src_still_dominates_dest(src, dest_len)
         src.write_text("hello brief\n")
 
         result = _run(
