@@ -27,13 +27,15 @@ _CACHE_WRITE_1H_MULTIPLIER = 2
 _CACHE_READ_MULTIPLIER = 0.1
 
 # Cache-read multiplier for the model IDs the pricing page states a reduced
-# cache-hit rate for (0.025x base input, vs. every other model's 0.1x) --
-# every other class still derives from _CACHE_READ_MULTIPLIER's siblings
-# above via _model_rates. Claude Mythos 5.1 shares this exception on the
-# pricing page too but has no row in _MODEL_BASE_INPUT_RATES, so it stays
-# unpriced rather than gaining a cache-read-only entry here.
-_REDUCED_CACHE_READ_MULTIPLIER = 0.025
-_REDUCED_CACHE_READ_MODEL_IDS: frozenset[str] = frozenset({"claude-fable-5-1"})
+# cache-hit rate for, overriding _CACHE_READ_MULTIPLIER -- every other class
+# still derives from its own sibling multiplier above via _model_rates.
+# Claude Mythos 5.1 shares the fable-5-1 exception on the pricing page too
+# but has no row in _MODEL_BASE_INPUT_RATES, so it stays unpriced rather
+# than gaining a cache-read-only entry here.
+_CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
+    "claude-fable-5-1": 0.025,
+    "claude-opus-5-5": 0.05,
+}
 
 # Multipliers applied to every dollar class when usage.speed/usage.inference_geo
 # report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
@@ -48,6 +50,7 @@ _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 # Output/cache-write/cache-read rates are derived from this one base rate per
 # model by _model_rates, so each model needs only its base rate kept current.
 _MODEL_BASE_INPUT_RATES: dict[str, float] = {
+    "claude-opus-5-5": 4.00,
     "claude-opus-5": 5.00,
     "claude-opus-4-8": 5.00,
     "claude-sonnet-5": 2.00,
@@ -143,16 +146,14 @@ def _model_rates(model: str) -> dict[str, float] | None:
     """Return per-MTok dollar rates for one model ID, or None if unpriced.
 
     Every class but cache_read derives from one base rate for every model.
-    cache_read uses _REDUCED_CACHE_READ_MULTIPLIER instead of
-    _CACHE_READ_MULTIPLIER for the model IDs in _REDUCED_CACHE_READ_MODEL_IDS
-    -- the one class the pricing page states a per-model exception for.
+    cache_read uses _CACHE_READ_MULTIPLIER_OVERRIDES' per-model value instead
+    of _CACHE_READ_MULTIPLIER when the model has one -- the one class the
+    pricing page states per-model exceptions for.
     """
     base = _MODEL_BASE_INPUT_RATES.get(model)
     if base is None:
         return None
-    cache_read_multiplier = (
-        _REDUCED_CACHE_READ_MULTIPLIER if model in _REDUCED_CACHE_READ_MODEL_IDS else _CACHE_READ_MULTIPLIER
-    )
+    cache_read_multiplier = _CACHE_READ_MULTIPLIER_OVERRIDES.get(model, _CACHE_READ_MULTIPLIER)
     return {
         "input": base,
         "output": base * _OUTPUT_RATE_MULTIPLIER,

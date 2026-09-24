@@ -2168,6 +2168,42 @@ class TestFablePricing:
         assert cache_read_cols["$"] == "0.05"
 
 
+class TestOpus55Pricing:
+    """Opus 5.5 rate arithmetic against the vendor-published figures
+    (platform.claude.com/docs/en/about-claude/pricing). These validate rate
+    arithmetic only, never the model-ID string -- an exact-match dict test
+    supplies the same key it looks up, so no test shape here can catch a
+    wrong guess at what Claude Code actually writes to message.model."""
+
+    def test_opus_5_5_rates_use_its_own_reduced_cache_read_multiplier(self):
+        """Opus 5.5: base $4, output 5x=$20, cache_write_5m 1.25x=$5,
+        cache_write_1h 2x=$8, cache_read 0.05x (its own reduced multiplier,
+        distinct from Fable 5.1's 0.025x)=$0.20."""
+        rates = _mod._model_rates("claude-opus-5-5")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(4.00)
+        assert rates["output"] == pytest.approx(20.00)
+        assert rates["cache_write_5m"] == pytest.approx(5.00)
+        assert rates["cache_write_1h"] == pytest.approx(8.00)
+        assert rates["cache_read"] == pytest.approx(0.20)
+
+    def test_opus_5_5_priced_turn_hand_computed_dollar_total(self, fake_projects, capsys):
+        """End-to-end through _cost_report: an Opus 5.5 turn's cache_read
+        dollars reflect the 0.05x path, not the 0.1x every non-overridden
+        model uses."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-5-5", input=100_000, cache_read=200_000, output=5_000),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        # $4/MTok input on 100,000 = $0.40; $20/MTok output on 5,000 = $0.10;
+        # $0.20/MTok cache_read (0.05x reduced multiplier) on 200,000 = $0.04.
+        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert input_cols["$"] == "0.40"
+        cache_read_cols = _table_cols(out, header_contains="Class", row_contains="cache_read", row_startswith=True)
+        assert cache_read_cols["$"] == "0.04"
+
+
 class TestCostSummary:
     """--summary: a structurally scoped, aggregate-only rendering branch."""
 
