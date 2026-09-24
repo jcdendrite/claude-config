@@ -163,6 +163,21 @@ fi
 # A fully stalled git costs about one cap, about 7s.
 # The merge-tree object-write rationale is in
 # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+# Base resolution spawns about 11 git processes mid-merge, cherry-pick, or
+# rebase, which is about 7 more than a plain HEAD-relative gate.
+# Outside any in-progress state it spawns about 1.
+# Mid-revert it also spawns about 1, because it short-circuits.
+# Full-hook worst case, summing each capped site's own cap (5s plus the 2s
+# grace, or 7s, except where noted): ~70s base resolution, 3 x 7s
+# gated_paths_at_base listings, 7s per staged SKILL.md `git show`, 12s
+# structural validator (10s cap plus grace), 12s corpus-budget scan, and 7s
+# marker-hash diff.
+# That totals ~122s + 7s x (staged SKILL.md count), an upper bound no run
+# reaches because a cap hit at a listing, `git show`, or validator site denies
+# and exits early.
+# hooks.json sets no `timeout`, so Claude Code's default of 600 seconds for
+# command hooks applies (https://code.claude.com/docs/en/hooks.md).
+# A PreToolUse command hook that times out does not block the call.
 BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
 BASE_STATUS=$?
 

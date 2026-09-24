@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import time
 
@@ -1651,8 +1650,8 @@ class TestRequireSkillReview:
             f"{command!r} — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
-    # -- Fixed-input parity for the six closure functions row 6 copies into
-    # this plugin's trimmed _lib.sh. declare -f definition-equality
+    # -- Fixed-input parity for the six closure functions this plugin's
+    # trimmed _lib.sh copies from the stowed _lib.sh. declare -f definition-equality
     # (TestSharedGateDiffBaseClosureDefinitionEquality below) is the primary
     # drift guard; these pin one concrete behavioral output per function in
     # the same shape as the parity tests above.
@@ -1660,7 +1659,7 @@ class TestRequireSkillReview:
     def test_plugin_lib_sh_capped_matches_stowed_lib_sh(self):
         """_lib_capped must run a command under the same cap wrapper in both
         copies — its body is copied byte-identical from the stowed
-        claude/.claude/hooks/_lib.sh (row 6)."""
+        claude/.claude/hooks/_lib.sh."""
         harness = '. "{lib}"; _lib_capped echo hello; printf "RC:%s\\n" "$?"'
         plugin_result = subprocess.run(
             ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
@@ -1845,8 +1844,8 @@ class TestSharedGateDiffBaseClosureResidual:
     reach: identical bodies prove identity for every input, but two seams
     sit outside that proof — each lib's own `_lib_capped_for` dependency,
     and the plugin lib actually sourcing cleanly with the functions
-    callable from it. (Reaching them from a real hook run is Dispatch B's
-    concern, not pinned here.) Three further cases pin
+    callable from it. (Reaching them from a real hook run is exercised by
+    TestSkillReviewGateMergeAwareVerdict, not pinned here.) Three further cases pin
     `_lib_skill_review_diff_base`'s own wrapper behavior — exit-status
     propagation and pass-through — rather than a closure residual. Each
     case here asserts both copies' exit status and stdout against an
@@ -1980,8 +1979,8 @@ class TestSkillReviewDiffBaseRevertBracket:
     """Pins _lib_skill_review_diff_base's bracket shape (pre-sample, call
     _lib_gate_diff_base unchanged, post-sample) against the trailing-only
     single-probe design it replaces, and documents the one residual the
-    bracket does not close. Stowed lib only: M-9's declare -f
-    definition-equality already carries this function's behavior to the
+    bracket does not close. Stowed lib only: the declare -f
+    definition-equality in TestSharedGateDiffBaseClosureDefinitionEquality already carries this function's behavior to the
     plugin copy."""
 
     def test_wrong_arity_returns_could_not_determine(self):
@@ -2073,7 +2072,7 @@ class TestSkillReviewDiffBaseRevertBracket:
     def test_stateless_double_flip_is_pinned_closed_by_the_no_state_early_out(
         self, tmp_path
     ):
-        """Pins the pre-sample's no-state early-out (row 29): from a
+        """Pins the pre-sample's no-state early-out: from a
         stateless fixture, a shim that plants a REVERT_HEAD-shaped OID on
         the second `rev-parse --absolute-git-dir` call
         (_lib_gate_diff_base's own, the wrapper's being the first) and
@@ -2129,7 +2128,7 @@ class TestSkillReviewDiffBaseRevertBracket:
         )
 
     def test_in_state_double_flip_residual_is_disclosed_not_closed(self, tmp_path):
-        """Row 29's disclosed residual, stated in executable form -- not a
+        """The disclosed residual, stated in executable form -- not a
         pin on the fix. A revert that both starts and ends inside the
         bracket's own window, while a union state (merge, cherry-pick or
         rebase) was already in progress at the pre-sample, still yields the
@@ -2267,11 +2266,10 @@ class TestSkillReviewDiffBaseRevertBracket:
 class TestRequireSkillReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the skill-review marker directory the same
     way for marker.sh (write) and this hook (read) -- see marker.sh and the
-    cross-account bypass this closes (ledger row 7).
+    cross-account bypass this closes.
 
     Also the regression guard for a sessions_dir/config_dir mismatch bug in
-    helpers.py's write_skill_review_marker (fixed earlier this branch): if
-    that bug recurs, marker.sh write fails and these tests surface it as an
+    helpers.py's write_skill_review_marker: if that bug recurs, marker.sh write fails and these tests surface it as an
     unlabeled subprocess.CalledProcessError from write_skill_review_marker's
     `check=True` rather than a named assertion failure here."""
 
@@ -2605,7 +2603,7 @@ def _build_reported_bug_fixture_in_linked_worktree(tmp_path):
 
 
 def _build_armed_fixture(tmp_path):
-    """The armed fixture named in Dispatch B's Verification section: gated
+    """The armed fixture: gated
     file Y (claude-skills/skills/untouched-skill/SKILL.md) arrives
     untouched from upstream, so its base-relative diff is empty, while the
     resolution adds a different gated file X
@@ -2627,8 +2625,8 @@ def _build_armed_fixture(tmp_path):
 
 
 def _assert_armed_fixture_preimages_differ(repo, pathspecs=None):
-    """Precondition every marker-behavior test on this fixture asserts, per
-    Dispatch B's Verification section: oracle(base="") != oracle(base)."""
+    """Precondition every marker-behavior test on this fixture asserts:
+    oracle(base="") != oracle(base)."""
     pathspecs = pathspecs or ()
     base = _merge_tree_base(repo)
     head_relative = staged_diff_hash_at_base(repo, "", *pathspecs)
@@ -2740,7 +2738,7 @@ class TestSkillReviewGateMergeAwareVerdict:
         assert reason is not None and "skill-review gate" in reason
 
     def test_revert_stays_armed_with_gated_removal(self, isolated_home, git_repo):
-        """Revert stays armed (M-8): mid-conflicted-revert with a gated
+        """Revert stays armed: mid-conflicted-revert with a gated
         removal in the index, the gate denies with the marker-gate reason,
         and the same fixture's _lib_gate_diff_base is asserted to return a
         tree -- so the deny is the exclusion firing, not an anchor
@@ -2971,7 +2969,7 @@ def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_r
 
 
 class TestSkillReviewGateStructuralValidatorScoping:
-    """M-4: the structural validator's input is scoped to the base-relative
+    """The structural validator's input is scoped to the base-relative
     path list, both directions, non-vacuously."""
 
     def test_malformed_untouched_upstream_file_does_not_deny(self, isolated_home, tmp_path):
@@ -3113,8 +3111,8 @@ class TestSkillReviewGateStatusVisibility:
 
 
 class TestSkillReviewGateNoCapBinaryAndHashFailure:
-    """G-5, row 17: with neither timeout(1) nor gtimeout(1) on PATH, the
-    base resolves uncapped and the disarm still fires. Row 24: a hash
+    """With neither timeout(1) nor gtimeout(1) on PATH, the
+    base resolves uncapped and the disarm still fires. A hash
     computation failure denies, never allows."""
 
     def test_no_cap_binary_on_path_mid_merge_allows(self, isolated_home, tmp_path):
@@ -3206,7 +3204,7 @@ def _build_unpushed_local_branch_merge_with_untouched_gated_skill(
 class TestSkillReviewGateAnchorRejection:
     """Anchor rejection at verdict level: the deny counter to the allow
     proven by test_reported_bug_upstream_skill_edit_allows_with_no_marker,
-    and the only place M-1's central closure-copy claim (that a forged or
+    and the only place the closure-copy claim (that a forged or
     untrusted anchor cannot release the gate) is tested end to end rather
     than against the primitive directly."""
 
@@ -3415,7 +3413,7 @@ def _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path, name="repo"):
 
 
 class TestSkillReviewGateForgedAnchorResidual:
-    """The forged-anchor residual G-3 accepts, pinned both ways in
+    """The accepted forged-anchor residual, pinned both ways in
     test_require_plan_review.py::test_hand_forged_anchor_no_real_merge_allows_unrelated_write's
     style: the same forged anchor allows absent any gated content, and
     denies the moment gated content is genuinely staged, so a later
@@ -3461,7 +3459,7 @@ class TestSkillReviewGateForgedAnchorResidual:
 
 
 def _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path):
-    """Row 16: the conflict IS the gated SKILL.md itself, left unresolved
+    """The conflict IS the gated SKILL.md itself, left unresolved
     and unstaged (a `UU` index entry) rather than resolved and re-staged --
     proving gated_paths_at_base's `--name-only` listing still reports the
     gated path while it is an unmerged index entry, keeping the gate armed
@@ -3505,7 +3503,7 @@ def _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path):
 
 
 class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
-    """Row 16, pinned at two layers: the git-primitive fact that
+    """Pinned at two layers: the git-primitive fact that
     `--name-only` still lists an unmerged path against a tree argument (not
     just bare HEAD), and the hook-verdict consequence -- a conflicted gated
     file that is still unmerged and unstaged keeps the gate armed."""
@@ -4091,7 +4089,7 @@ class TestSkillReviewGateValidatorSkipsOnlyDiffDeletions:
     def test_near_exact_rename_with_invalid_frontmatter_denies_at_validator(
         self, isolated_home, git_repo
     ):
-        """R09x: a large body with only the frontmatter broken stays above the
+        """A large body with only the frontmatter broken stays above the
         rename threshold, so git reports R for the destination."""
         long_body = "".join(f"body line {number}\n" for number in range(200))
         _stage_gated_file(
@@ -4179,6 +4177,42 @@ class TestSkillReviewGateAliasedIndexEntryResidual:
         )
         assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
 
+    def test_editing_only_the_invalid_entry_after_review_denies_at_marker_gate(
+        self, isolated_home, git_repo
+    ):
+        """The marker hash is the residual's compensating control: the twin
+        hides the invalid entry from the validator, so an edit to that entry
+        alone must still invalidate the marker written for the reviewed
+        state."""
+        session_id = "aliased-index-edit-session"
+        self._cacheinfo(git_repo, _BROKEN_SKILL_MD, self._INVALID_REL)
+        self._cacheinfo(git_repo, _WELL_FORMED_SKILL_MD, self._TWIN_REL)
+        _write_matching_marker(isolated_home, git_repo, session_id)
+        hook_input = bash_input("git commit -m aliased", session_id=session_id)
+        assert run_hook(SKILL_REVIEW_HOOK, hook_input, cwd=git_repo) == "allow"
+
+        self._cacheinfo(git_repo, _BROKEN_SKILL_MD + "\nchanged\n", self._INVALID_REL)
+
+        reason = run_hook_reason(SKILL_REVIEW_HOOK, hook_input, cwd=git_repo)
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_marker_hash_changes_when_invalid_entrys_own_content_changes(
+        self, isolated_home, git_repo
+    ):
+        """Changing only the invalid entry's blob must move the digest the
+        production marker writer records, independent of the hook verdict."""
+        session_id = "aliased-index-hash-session"
+        marker = skill_review_marker_path(isolated_home, git_repo, session_id=session_id)
+
+        digests = []
+        for invalid_entry_content in (_BROKEN_SKILL_MD, _BROKEN_SKILL_MD + "\nchanged\n"):
+            self._cacheinfo(git_repo, invalid_entry_content, self._INVALID_REL)
+            write_skill_review_marker(isolated_home, git_repo, session_id=session_id)
+            digests.append(marker.read_text().strip())
+
+        assert all(digests)
+        assert digests[0] != digests[1]
+
 
 class TestSkillReviewGateDenyAndTraceText:
     """Distinctive tokens, not full strings, so wording edits elsewhere in
@@ -4254,22 +4288,46 @@ class TestSkillReviewGateDenyAndTraceText:
 class TestSkillReviewPathspecParity:
     """The hook's MARKER_PATHSPECS and the marker script's
     SKILL_REVIEW_PATHSPECS are separate literals; a drift makes markers for
-    the changed layout never match."""
+    the changed layout never match. That the hook hashes with MARKER_PATHSPECS
+    is covered by the routing-diff marker verdict tests, not here."""
 
     @staticmethod
-    def _array_literal(text: str, name: str) -> list[str]:
-        match = re.search(rf"^{name}=\((.*)\)$", text, re.MULTILINE)
-        assert match, f"{name} literal not found"
-        return re.findall(r"'([^']*)'", match.group(1))
+    def _evaluated_array(script, assignment_names, array_name):
+        """Evaluates the script's own single-line top-level assignments in
+        bash and returns the named array's elements. An empty result (a
+        multi-line or appended assignment the grep cannot capture) fails with
+        a message naming the script and array."""
+        harness = (
+            f"eval \"$(grep -E '^({assignment_names})=' \"$1\")\" || exit 1; "
+            f"printf '%s\\n' \"${{{array_name}[@]}}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "_", str(script)],
+            capture_output=True, text=True,
+        )
+        elements = result.stdout.splitlines()
+        assert result.returncode == 0 and elements, (
+            f"could not evaluate {array_name} from {script.name}: "
+            f"rc={result.returncode} stderr={result.stderr!r}"
+        )
+        return elements
 
     def test_hook_and_marker_script_pathspec_sets_are_equal(self):
-        hook_text = SKILL_REVIEW_HOOK.read_text()
-        marker_text = (SCRIPTS_DIR / "marker.sh").read_text()
+        """Dropping ROUTING_PATHSPEC from the hook's composition fails here."""
+        hook_content_pathspecs = self._evaluated_array(
+            SKILL_REVIEW_HOOK, "SKILL_CONTENT_PATHSPECS", "SKILL_CONTENT_PATHSPECS"
+        )
+        hook_pathspecs = self._evaluated_array(
+            SKILL_REVIEW_HOOK,
+            "SKILL_CONTENT_PATHSPECS|ROUTING_PATHSPEC|MARKER_PATHSPECS",
+            "MARKER_PATHSPECS",
+        )
+        marker_pathspecs = self._evaluated_array(
+            SCRIPTS_DIR / "marker.sh", "SKILL_REVIEW_PATHSPECS", "SKILL_REVIEW_PATHSPECS"
+        )
 
-        hook_pathspecs = self._array_literal(
-            hook_text, "SKILL_CONTENT_PATHSPECS"
-        ) + re.findall(r"^ROUTING_PATHSPEC='([^']*)'$", hook_text, re.MULTILINE)
-        marker_pathspecs = self._array_literal(marker_text, "SKILL_REVIEW_PATHSPECS")
-
-        assert len(hook_pathspecs) == 5
+        routing_pathspecs = [
+            pathspec for pathspec in hook_pathspecs if pathspec not in hook_content_pathspecs
+        ]
+        assert len(routing_pathspecs) == 1
         assert hook_pathspecs == marker_pathspecs

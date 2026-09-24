@@ -1632,7 +1632,7 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
     the same base require-skill-review.sh's read side resolves -- write and
     read must agree byte-for-byte or a marker written mid-merge can never
     match. Mirrors TestMarkerScriptMergeAwareBase above for the skill-review
-    marker kind, plus a revert pair (M-8): mid-revert this marker kind
+    marker kind, plus a revert pair: mid-revert this marker kind
     excludes the merge-tree base and stays HEAD-relative, unlike
     code-review's GATE_DIFF_BASE."""
 
@@ -1737,12 +1737,12 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
     def test_write_skill_review_marker_value_matches_head_relative_oracle_mid_revert(
         self, isolated_home, git_repo
     ):
-        """M-8's write-side counterpart to the hook's revert-stays-armed
-        test: mid-revert, the wrapper excludes the merge-tree subtraction
+        """Write-side counterpart to the hook's
+        test_revert_stays_armed_with_gated_removal: mid-revert, the wrapper excludes the merge-tree subtraction
         base, so the written marker equals the HEAD-relative oracle, not
         one built from the subtraction tree -- proving this call site uses
         _lib_skill_review_diff_base rather than _lib_gate_diff_base
-        directly, a mistake M-9's differential residual (which compares the
+        directly, a mistake TestSharedGateDiffBaseClosureResidual (which compares the
         two functions directly, not through either marker.sh arm) would not
         catch."""
         repo = _build_conflicted_revert_with_staged_skill_change(git_repo)
@@ -2001,7 +2001,7 @@ class TestMarkerScriptHonorsConfigDir:
         )
 
     def test_write_aborts_when_config_dir_unresolvable(self, isolated_home, git_repo):
-        """Fail closed (ledger row 11): a relative CLAUDE_CONFIG_DIR must
+        """Fail closed: a relative CLAUDE_CONFIG_DIR must
         abort the write rather than silently falling through to a
         root-anchored path."""
         result = _run(
