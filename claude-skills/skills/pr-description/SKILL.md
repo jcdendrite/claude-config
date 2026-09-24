@@ -78,6 +78,8 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
+This block is pre-cleared for publication, so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
+
 Resolve the section with a single script call:
 
 ```bash

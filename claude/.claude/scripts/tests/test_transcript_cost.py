@@ -1801,7 +1801,7 @@ class TestCostMarkdownTablePrinters:
         out = capsys.readouterr().out
         assert "Of those, unreadable" not in out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "3"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
 
@@ -1809,7 +1809,7 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "3"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
@@ -1818,13 +1818,13 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
-        assert coverage_cols["Transcript files scanned"] == "1,500,000"
+        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "1,500,000"
 
     def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
         _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
-        assert coverage_cols["Transcript files scanned"] == "0"
+        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "0"
         assert coverage_cols["Sessions with priced turns"] == "0"
         assert coverage_cols["Priced turns"] == "0"
 
@@ -1857,6 +1857,29 @@ class TestCostMarkdownTablePrinters:
             "| claude-sonnet-5 | 3.00 | 75.0% |\n"
             "| claude-opus-5 | 1.00 | 25.0% |\n"
         )
+
+
+class TestSummaryScopeBranchClause:
+    """Direct unit coverage of _summary_scope_branch_clause, mirroring
+    TestCostMarkdownTablePrinters's precedent -- pins the singular/plural/
+    absent-filter/empty-filter wording without paying a full _cost_report
+    fixture per case. TestCostSummary below exercises the absent-filter,
+    single-branch, and multiple-branches cases end-to-end through
+    _cost_report's Scope: caption."""
+
+    def test_no_branch_filter_renders_all_branches(self):
+        assert _mod.cost._summary_scope_branch_clause(None) == "all branches"
+
+    def test_empty_branch_filter_renders_no_branches(self):
+        assert _mod.cost._summary_scope_branch_clause(set()) == "no branches"
+
+    def test_single_branch_renders_singular_clause(self):
+        assert _mod.cost._summary_scope_branch_clause({"GH-1088/pr-cost-scope-header"}) == \
+            "branch GH-1088/pr-cost-scope-header"
+
+    def test_multiple_branches_render_plural_sorted_clause(self):
+        assert _mod.cost._summary_scope_branch_clause({"feature-b", "feature-a"}) == \
+            "branches feature-a, feature-b"
 
 
 class TestPrintBranchExclusionDiagnostic:
@@ -2461,9 +2484,11 @@ class TestCostSummary:
     def test_summary_scope_caption_discloses_single_account_scope(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The Scope: caption alone must make single-account scope legible
-        to a reader unfamiliar with this toolkit. No separate disclosure
-        sentence follows the scan-coverage table. See
+        """The Scope: caption alone must make single-repository,
+        single-account scope legible to a reader unfamiliar with this
+        toolkit -- this fixture omits --branches, so the caption must also
+        read "all branches" rather than silently dropping the clause. No
+        separate disclosure sentence follows the scan-coverage table. See
         docs/transcript-analysis.md's --summary flag entry for the full
         narrowing contract."""
         projects = tmp_path / "projects"
@@ -2482,12 +2507,72 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
-        assert "\nScope: this account only, all time.\n" in out
+        assert "\nScope: this repository only, all branches. This account only, all time.\n" in out
         assert "different Claude account" not in out
         # Structural guard: catches any prose reintroduced between the table and the
         # next heading, regardless of its wording -- not just the phrase above.
         before_heading = out[: out.index("### Cost by token class")]
         assert before_heading.endswith("|\n\n")
+
+    def test_summary_scope_caption_names_single_branch_filter(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches main must reach the Scope: caption's branch clause,
+        not just _summary_scope_branch_clause's own hand-built-set unit
+        test -- proves the scope._branch_filter(args) -> caption wiring
+        end-to-end, catching a regression where the parsed filter silently
+        stops reaching the caption (e.g. an argument-order swap or a
+        filter that always resolves to None)."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        assert "\nScope: this repository only, branch main. This account only, all time.\n" in out
+
+    def test_summary_scope_caption_names_multiple_branch_filters_sorted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Plural counterpart: two --branches values reach the caption in
+        sorted order, not just via _summary_scope_branch_clause's own
+        hand-built two-element set."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="feature-b,feature-a"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        assert (
+            "\nScope: this repository only, branches feature-a, feature-b. "
+            "This account only, all time.\n" in out
+        )
 
     def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
         self, tmp_path, monkeypatch, capsys
@@ -2550,7 +2635,7 @@ class TestCostSummary:
 
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
-        assert coverage_cols["Transcript files scanned"] == "2"
+        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "2"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "1"
         assert coverage_cols["Priced turns"] == "1"
@@ -2587,7 +2672,7 @@ class TestCostSummary:
         two_roots_out = capsys.readouterr().out
 
         def _scope_span(out: str) -> str:
-            start = out.index("\nScope: this account only,")
+            start = out.index("\nScope: this repository only,")
             # Bounded by the next heading rather than the note's own wording.
             # A wording-anchored bound would miss a regression that appends
             # content between the note and that heading.

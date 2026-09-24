@@ -306,6 +306,23 @@ def _accumulate_per_account_turn(
     account_totals["model_totals"][model] += turn_total
 
 
+def _summary_scope_branch_clause(branch_filter: set[str] | None) -> str:
+    """Render --summary's Scope caption's repo/branch-restriction clause.
+
+    branch_filter is scope._branch_filter's parsed --branches set (or None
+    when --branches was not given). Sorted for deterministic output -- the
+    underlying set carries no ordering guarantee.
+    """
+    if branch_filter is None:
+        return "all branches"
+    if not branch_filter:
+        return "no branches"
+    names = sorted(branch_filter)
+    if len(names) == 1:
+        return f"branch {names[0]}"
+    return "branches " + ", ".join(names)
+
+
 def _print_scan_coverage_table(
     transcripts_scanned: int, transcripts_unreadable: int, priced_sessions: int, priced_turns: int,
 ) -> None:
@@ -313,12 +330,18 @@ def _print_scan_coverage_table(
 
     No markdown parameter: the full report already discloses these facts
     per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
-    plain-text branch here would be dead code.
+    plain-text branch here would be dead code. The "(this repo, all
+    branches)" suffix on the first column is accurate regardless of
+    --branches: _scan_root_transcripts (this table's data source) is
+    slug-restricted to this repo's project dirs but never branch-filtered.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
     unreadable_delimiter = "---|" if transcripts_unreadable else ""
     unreadable_cell = f" {transcripts_unreadable:,} |" if transcripts_unreadable else ""
-    print(f"| Transcript files scanned |{unreadable_header} Sessions with priced turns | Priced turns |")
+    print(
+        "| Transcript files scanned (this repo, all branches) |"
+        f"{unreadable_header} Sessions with priced turns | Priced turns |"
+    )
     print(f"|---|{unreadable_delimiter}---|---|")
     print(f"| {transcripts_scanned:,} |{unreadable_cell} {priced_sessions:,} | {priced_turns:,} |")
 
@@ -953,7 +976,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
         #   table's last row directly adjacent to the next section's heading.
         print(_LIST_PRICE_CAVEAT_ALERT)
-        print(f"\nScope: this account only, {title_since}.\n")
+        branch_clause = _summary_scope_branch_clause(branch_filter)
+        print(f"\nScope: this repository only, {branch_clause}. This account only, {title_since}.\n")
         _print_scan_coverage_table(
             total_transcripts_scanned, total_transcripts_skipped, priced_session_count, priced_turn_count,
         )
