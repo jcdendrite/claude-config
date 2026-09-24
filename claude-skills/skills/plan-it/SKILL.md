@@ -68,7 +68,7 @@ Choose the approach. Always include brief rationale — what alternatives were w
 
 **External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
 
-**Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Code Comments, Documentation, and Prose.
+**Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Durable text.
 
 **Name the dispatch split.** Implementation of an approved plan is
 delegated to `code-writer` per phase by default (`subagent-delegation`);

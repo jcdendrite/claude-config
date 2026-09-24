@@ -6,6 +6,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`claude/.claude/CLAUDE.md` is split into an Agent Core group and a Main session group, and subagents other than forks are told to skip Main session.** An opening line states each group's audience and translates ask/confirm/stop steps into "report it in your return" for dispatched agents. Consumer-visible changes:
+  - The `# Global Instructions` heading is now `# Agent Core`, and `## Code Comments, Documentation, and Prose` is now `### Durable text` under Prose and Output Format. References to the old name now read `§Durable text`.
+  - `## Safety` and `## Working Style` each appear twice, once per group.
+  - The permissions-globs rule's rationale now loads on a Read-tool read of a settings file inside the project, from `claude/.claude/rules/settings-json-conventions.md`, instead of always. A one-line stub stays always loaded in Agent Core.
+  - The output-preferences read instruction is main-session-only.
+  - The shipping clause now names forks: any fork or subagent returns its work to its dispatcher instead of committing or opening a PR.
 - **The `/ready-for-review` active bypass now releases `git push` only, and the skill records its completion marker before it creates the PR.** `gh pr create` and `gh pr ready` need the completion marker at HEAD even while the active marker is live. A session mid-run on the previous skill text is denied once at PR creation after pulling. No migration required.
 - **`docs/auto-mode.md` now notes Anthropic's announced default of auto mode on Enterprise, the Claude API, and cloud-provider surfaces.** This is a pending announcement, not yet live. See `docs/auto-mode.md`'s Activating section.
 - **`deny-pii-in-commits.sh` now denies on every nonzero status from its work-tree probe and its HEAD probe except git's own 128, and `_lib_capped_for` escalates to SIGKILL 2s after the cap.** Both probes previously denied only on the cap-kill status 124 and skipped the scan on any other nonzero status, so a probe that failed with any other status (127 for a missing `git`, for example) skipped its scan. Status 128 still skips, with two different extents:

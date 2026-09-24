@@ -13,6 +13,7 @@ from helpers import (
     HOOKS_DIR,
     bash_input,
     edit_input,
+    multiedit_input,
     run_hook,
     run_hook_reason,
     write_input,
@@ -28,8 +29,9 @@ class TestAskReviewPermissions:
             edit_input("/some/project/.claude/settings.json"),
             edit_input("/some/project/.claude/settings.local.json"),
             write_input("/some/project/.claude/settings.json"),
+            multiedit_input("/some/project/.claude/settings.json"),
         ],
-        ids=["edit-settings", "edit-settings-local", "write-settings"],
+        ids=["edit-settings", "edit-settings-local", "write-settings", "multiedit-settings"],
     )
     def test_settings_edits_ask(self, tool_input):
         assert run_hook(REVIEW_PERMS_HOOK, tool_input) == "ask"
