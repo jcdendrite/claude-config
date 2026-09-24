@@ -819,6 +819,48 @@ class TestNoGateReleaseRosterSync:
         )
 
 
+def _review_only_agents() -> list[str]:
+    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
+    """docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    rates the residual Low on the invariant that every current or future agent
+    holding Write but not Bash is confined to _LIB_REVIEW_ONLY_AGENTS. Today
+    comment-discipline-reviewer and skill-fidelity-reviewer are the only such
+    agents, and both are already listed there. Without this test, a future
+    agent added with Write and no Bash, outside that roster, would silently
+    reopen the residual."""
+
+    def test_write_without_bash_agents_are_review_only_confined(self):
+        review_only = set(_review_only_agents())
+        for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
+            fm = parse_frontmatter(path)
+            declared = fm.get("tools") or ""
+            tools = (
+                {t.strip() for t in declared.split(",")}
+                if isinstance(declared, str)
+                else {str(t).strip() for t in declared}
+            )
+            if "Write" in tools and "Bash" not in tools:
+                assert path.stem in review_only, (
+                    f"{path.name} declares Write without Bash but is not in "
+                    "_LIB_REVIEW_ONLY_AGENTS (_lib.sh). A Write-without-Bash agent "
+                    "outside that roster reopens the residual "
+                    "docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md "
+                    "rates Low. Add it to _LIB_REVIEW_ONLY_AGENTS if it is genuinely "
+                    "review-only, or grant it Bash otherwise."
+                )
+
+
 # Pinned so a future edit to ciso-reviewer.md can't silently drop any of
 # these three sentences with no CI signal.
 _CISO_NARROWER_PRINCIPAL_SET_SENTENCE = (

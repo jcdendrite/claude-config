@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: deny Claude's Read tool on data-shaped files before their content
 # enters the conversation context. A data dump (CSV export, database
 # backup, statistical dataset) read into context is PII/PHI exposure.

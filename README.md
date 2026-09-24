@@ -54,7 +54,7 @@ Claude Code without enforcement will claim code is done before tests pass, skip 
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran against this exact diff." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins and a set of bundled Claude Code skills that overlap with its review pipeline disabled by default, so contributors opt in deliberately (see the "Bundled skills disabled by default" section of [docs/skills.md](docs/skills.md)). `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
+`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It ships a set of bundled Claude Code skills that overlap with its review pipeline disabled by default, so contributors opt in deliberately (see the "Bundled skills disabled by default" section of [docs/skills.md](docs/skills.md)). `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
 
 ## Docs
 
@@ -94,6 +94,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
 - **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
+- **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
 - **Claude Code CLI:** `>= 2.1.218` for `transcript-narrative` and `error-mode-analysis`, this repo's two `context: fork` skills. An earlier version honors `context: fork` without honoring `background: false`. That produces a background fork whose narrowed tool set may omit `Bash`. Below that floor, each skill's first step stops and names the version requirement once it detects `Bash` is unavailable, rather than failing silently or half-run. Not enforced by `install.sh`, since it would block installation for every consumer who never invokes either skill.
@@ -248,7 +249,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and test-tree packaging.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, and this repo's bash unit-test-seam mechanics.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, settings.json conventions, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
@@ -523,10 +524,13 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. To cap it:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest claude/.claude/ claude-skills/` command has no such sizing; cap it manually:
 
-- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/ claude-skills/` and `select-tests.py`.
-- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
+  - Checks ahead of xdist's own core-count detection.
+  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
+- Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
@@ -539,6 +543,8 @@ For a faster local dev loop, `select-tests.py` runs pytest against just the test
 ```
 
 Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
+
+Set `test_selection_tracking = true` in `<config-dir>/claude-config.toml` (off by default) to log every `select-tests.py` invocation's selection outcome to `<config-dir>/.test-selection-log.jsonl`, one JSON line per invocation. Each line always records the selection reason. For a full-suite fallback, it also records which changed path triggered it. When that invocation computed a load-aware worker count, it also records the worker count and the 1-minute load average. This makes fallback-to-full-suite frequency measurable instead of a stderr line that scrolls away. Like [`.permission-prompt-log.jsonl`](docs/permission-prompt-tracking.md#known-limitations), the log is append-only with no automatic rotation; trim it manually if disk space or data age is a concern. Its invocation frequency is structurally higher than that log's, since it appends on every `select-tests.py` run rather than only on an interactive permission dialog.
 
 ## Acknowledgments
 

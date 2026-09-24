@@ -16,9 +16,9 @@ from helpers import (
     build_path_without,
     run_hook,
     run_hook_reason,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
 )
-
-from .conftest import _write_conditional_sleep_shim
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 
@@ -228,32 +228,61 @@ class TestRequireStowReminder:
         cmd = f"gh pr create --title T --body-file {body}"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
 
-    def test_body_file_device_file_is_denied_not_hung(self, stow_repo):
-        """`--body-file /dev/zero` must deny, not hang: /dev/zero passes
-        the `[ -r ]` readability check but is not a regular file, so the
-        `[ ! -f ]` guard rejects it before the capped `cat` call ever runs."""
+    def test_body_file_device_file_is_denied_not_hung(self, stow_repo, tmp_path):
+        """`--body-file /dev/zero` must deny without `cat` ever touching it:
+        /dev/zero passes the `[ -r ]` readability check but is not a regular
+        file, so the `[ ! -f ]` guard must reject it before the capped read.
+        A `cat` shim records any invocation on the device (and never reads
+        it), so removing the guard fails the test rather than being masked by
+        the cat-timeout skip or hanging on a host without timeout(1)."""
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr create --title T --body-file /dev/zero"
-        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        invocation_log = tmp_path / "cat-on-device.log"
+        fake_cat = stub_dir / "cat"
+        fake_cat.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = /dev/zero ]; then\n'
+            f"  echo invoked >> {shlex.quote(str(invocation_log))}\n"
+            "  exit 0\n"
+            "fi\n"
+            f'exec {real_cat} "$@"\n'
+        )
+        fake_cat.chmod(0o755)
+
+        result = subprocess.run(
+            [str(STOW_REMINDER_HOOK)],
+            input=json.dumps(bash_input(cmd)),
+            capture_output=True,
+            text=True,
+            cwd=stow_repo,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not invocation_log.exists(), "cat was invoked on the non-regular body source"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     @pytest.mark.timing
     def test_body_file_cat_timeout_skips_source_not_denied(self, stow_repo, tmp_path):
-        """Required regression test: the body-source file's `_lib_capped
-        cat` call previously swallowed a timeout's exit 124 with
-        `|| true`. This hook's existing disposition for an unreadable
-        body-source file (see the `[ ! -r ]`/`[ ! -f ]` checks above) is
-        to skip that source and keep checking the rest — not deny — so a
-        timeout must apply that same skip rather than introduce a new
-        fail-closed path. The marker lives only in the inline --body
-        text (a source the gate always scans); the body file itself
-        carries no marker and times out on read. A wrongly-introduced
-        deny-on-timeout disposition would block this PR even though the
-        marker is already present elsewhere; the correct skip
-        disposition allows it."""
+        """A body-source `cat` killed by the cap (exit 124) is skipped like an
+        unreadable file: its partial output must not reach the scan target.
+        The shim prints a marker to stdout before sleeping past the cap, and
+        no marker appears anywhere else in the command. Skipping discards the
+        partial output, so the gate denies; a swallowed 124 appends it and the
+        gate wrongly allows."""
         commit_new_toplevel_dir(stow_repo, "agents")
         body = tmp_path / "body.md"
         body.write_text("no marker in this file\n")
-        cmd = f"gh pr create --title T --body 'post-merge: run ./install.sh' --body-file {body}"
+        cmd = f"gh pr create --title T --body 'no reminder here' --body-file {body}"
 
         real_cat = shutil.which("cat")
         if not real_cat:
@@ -263,12 +292,47 @@ class TestRequireStowReminder:
 
         stub_dir = tmp_path / "stub-bin-cat"
         stub_dir.mkdir()
-        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body))} ]')
+        sleep_seconds = scaled_shim_sleep(5) if write_scaled_timeout_shim(stub_dir) else 5
+        fake_cat = stub_dir / "cat"
+        fake_cat.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = {shlex.quote(str(body))} ]; then\n'
+            "  echo 'partial output: run ./install.sh'\n"
+            f"  sleep {sleep_seconds}\n"
+            "fi\n"
+            f'exec {real_cat} "$@"\n'
+        )
+        fake_cat.chmod(0o755)
 
         env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
         with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
             decision = run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
-        assert decision == "allow"
+        assert decision == "deny"
+
+    def test_body_file_pseudo_path_is_not_read(self, stow_repo, tmp_path):
+        """A `/dev/fd/N` --body-file is skipped, not read: the marker in the
+        file behind an fd the hook inherits must not satisfy the gate."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        body = tmp_path / "body.md"
+        body.write_text("Adds agents/.\n\nPost-merge: run ./install.sh.\n")
+        with body.open() as body_handle:
+            fd = body_handle.fileno()
+            cmd = f"gh pr create --title T --body-file /dev/fd/{fd}"
+            result = subprocess.run(
+                [str(STOW_REMINDER_HOOK)],
+                input=json.dumps(bash_input(cmd)),
+                capture_output=True,
+                text=True,
+                cwd=stow_repo,
+                pass_fds=(fd,),
+                check=False,
+            )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "hook allowed: the pseudo-file body source was read"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        # The stow-marker deny, not an unrelated fail-closed deny.
+        assert "adds new files" in payload["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_fill_with_marker_in_commit_message_allowed(self, stow_repo):
         """`gh pr create --fill` sources body from commits — a marker

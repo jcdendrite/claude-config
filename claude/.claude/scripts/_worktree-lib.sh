@@ -1,7 +1,8 @@
 #!/bin/bash
 # _worktree-lib.sh — shared helpers for worktree-cleanup scripts.
 #
-# Sourced by cleanup-merged-branches.sh and cleanup-idle-open-pr-worktrees.sh.
+# Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh, and
+# worktree-removal-status.sh.
 # Not executable on its own; source it, do not invoke it directly.
 #
 # Provides:
@@ -9,11 +10,18 @@
 #   collect_process_cwds / worktree_in_use — live-process detection
 #   resolve_worktree_for_branch          — branch -> worktree path/lock lookup
 #   collect_all_worktrees                — full `worktree list --porcelain` scan
+#   worktree_canon_path                  — symlink-resolved path, raw on failure
+#   worktree_matches_filter              — branch/path match against FILTER_ARGS
 #
-# Every function here is pure / side-effect-free with respect to the caller's
-# script state (aside from the documented globals each one populates), so a
-# behavior regression traced back to this file can be fixed by editing this
-# file alone — neither consumer script needs a parallel change.
+# FILTER_ARGS is a caller-assigned array (may be empty) that worktree_matches_filter reads.
+# Assign it before calling -- an unassigned array aborts under `set -u`.
+#
+# Every function here is side-effect-free with respect to the caller's script
+# state, aside from the documented globals each one reads or populates.
+# collect_process_cwds is the one exception: its lsof branch installs an EXIT trap.
+# That trap replaces any EXIT trap the caller already set, and the reset does not restore it.
+# A behavior regression traced back to this file can therefore be fixed by
+# editing this file alone — neither consumer script needs a parallel change.
 
 # ---------------------------------------------------------------------------
 # Progress helpers (stderr-only, no-op when stderr is not a TTY)
@@ -28,6 +36,44 @@ progress() {
 clear_progress() {
   [ -t 2 ] || return 0
   printf '\r%-80s\r' '' >&2
+}
+
+# ---------------------------------------------------------------------------
+# Path canonicalization and filter matching
+# ---------------------------------------------------------------------------
+
+# worktree_canon_path <path> — prints <path> with symlinks resolved.
+# Falls back to the raw input when <path> can't be cd'd into (e.g. a prunable
+# worktree whose directory is gone, or a branch name).
+# A comparison against a raw fallback therefore never matches rather than erroring.
+# An inherited CDPATH is cleared so it cannot resolve a relative name (and
+# print the hit) against an unrelated directory.
+# An empty input or a lone `-` (cd's OLDPWD shorthand) falls back to raw.
+# `--` stops an input like `-P` from being read as a cd option instead of a path.
+worktree_canon_path() {
+  local p="$1"
+  case "$p" in
+    '' | -) printf '%s' "$p"; return 0 ;;
+  esac
+  (CDPATH='' cd -- "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+}
+
+# worktree_matches_filter <branch> <canonical-path> — does the worktree with
+# this branch and canonical path survive the FILTER_ARGS filter?
+#   0 = matches (always, when FILTER_ARGS is empty)   1 = no match
+# Each filter argument matches by exact branch name or by canonicalized path,
+# so a relative path or a symlinked component still matches the canonical
+# form git reports. A branch-name argument is compared raw, since
+# worktree_canon_path only ever resolves an actual path.
+worktree_matches_filter() {
+  local branch="$1" canon_path="$2" _f
+  [ "${#FILTER_ARGS[@]}" -eq 0 ] && return 0
+  for _f in "${FILTER_ARGS[@]}"; do
+    if [ "$_f" = "$branch" ] || [ "$(worktree_canon_path "$_f")" = "$canon_path" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -103,7 +149,7 @@ worktree_in_use() {
   local target="$1" resolved cwd
   # Canonicalize so symlinked path components match the kernel-canonical
   # cwd strings reported by /proc and lsof.
-  resolved=$(cd "$target" 2>/dev/null && pwd -P) || resolved="$target"
+  resolved=$(worktree_canon_path "$target")
   for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
     if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
       return 0

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Bash tool whenever the raw command text contains a credential-path token (SSH private key basename, .netrc/_netrc, .git-credentials, a cloud credential-store path, a non-template .env variant, credentials.json). Always on, no arming file, no bypass valve — closes the Bash-based read gap that deny-env-reads.sh and deny-data-file-reads.sh leave open by only gating the Read tool.
 # Matches the path token alone, with no verb condition: the set of commands that can expose file content (vim, tee, dd, openssl, curl --upload-file, ...) is unbounded, so a verb allowlist would trade a bounded false-positive cost for an unbounded bypass surface. Also denies non-exposing commands like ssh-add/chmod/ssh -i — run those via the `!` shell escape instead.
 # One exemption: a `.env`-shaped argument to a documented env-file loader flag (`--env-file`, `--env-file-if-exists`, `--envfile`) is stripped before the re-scan below, since that flag loads the file into a subprocess environment rather than printing it. See _lib_strip_env_file_flag_args in _lib.sh for the argument-shape and metacharacter-termination conditions that keep every other credential family denied in flag position.

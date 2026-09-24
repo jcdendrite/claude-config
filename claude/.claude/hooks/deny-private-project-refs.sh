@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
 # create`, `gh issue comment`, `gh issue edit`, and mutating `gh api`
 # calls if their content (staged diff, commit message, PR/issue
@@ -459,7 +460,7 @@ extract_gh_api_input_paths() {
 # gh reads the file at invocation time and uses the contents as the
 # field value, so a tracker token in the file ships in the request
 # body identically to inline `-f key="..."`. The pseudo-file form
-# `@-` reads stdin (rejected by is_pseudo_file_path).
+# `@-` reads stdin (rejected by _lib_is_pseudo_file_path).
 # Field key must start with letter or underscore; whitespace inside
 # the path truncates the same way as the other extractors. Same
 # xargs tokenization behavior as extract_body_source_paths prevents
@@ -478,17 +479,6 @@ extract_gh_api_field_at_paths() {
       if (val ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, "", val); print val }
     }
   '
-}
-
-# Pseudo-file paths whose contents the hook cannot meaningfully scan:
-# the path either resolves to a different file at hook time than it
-# will at gh-invocation time, or it's a process-specific fd reference
-# that points into the hook's own stdin. Reject all of them fail-closed.
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 # Detect && / || chain operators in the command and append a corrective
@@ -543,7 +533,7 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
     if [ -n "$COMMIT_MSG_SOURCES" ]; then
       while IFS= read -r commit_msg_path; do
         [ -z "$commit_msg_path" ] && continue
-        if is_pseudo_file_path "$commit_msg_path"; then
+        if _lib_is_pseudo_file_path "$commit_msg_path"; then
           emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${commit_msg_path}'). The redaction gate cannot statically verify what git will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not git's future stdin. Inline the message with -m or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
@@ -582,7 +572,7 @@ if [ "$IS_GH_PR" -eq 1 ]; then
   if [ -n "$BODY_SOURCES" ]; then
     while IFS= read -r body_source_path; do
       [ -z "$body_source_path" ] && continue
-      if is_pseudo_file_path "$body_source_path"; then
+      if _lib_is_pseudo_file_path "$body_source_path"; then
         emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -615,7 +605,7 @@ if [ "$IS_GH_ISSUE" -eq 1 ]; then
   if [ -n "$ISSUE_BODY_SOURCES" ]; then
     while IFS= read -r issue_body_source_path; do
       [ -z "$issue_body_source_path" ] && continue
-      if is_pseudo_file_path "$issue_body_source_path"; then
+      if _lib_is_pseudo_file_path "$issue_body_source_path"; then
         emit_deny "gh issue command passes a body-source flag pointing at a pseudo-file path ('${issue_body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -648,7 +638,7 @@ if [ "$IS_GH_API" -eq 1 ]; then
   if [ -n "$GH_API_INPUT_SOURCES" ]; then
     while IFS= read -r gh_api_input_path; do
       [ -z "$gh_api_input_path" ] && continue
-      if is_pseudo_file_path "$gh_api_input_path"; then
+      if _lib_is_pseudo_file_path "$gh_api_input_path"; then
         emit_deny "gh api command passes --input pointing at a pseudo-file path ('${gh_api_input_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the body with -f / -F field flags or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -674,7 +664,7 @@ if [ "$IS_GH_API" -eq 1 ]; then
   if [ -n "$GH_API_FIELD_AT_SOURCES" ]; then
     while IFS= read -r gh_api_field_at_path; do
       [ -z "$gh_api_field_at_path" ] && continue
-      if is_pseudo_file_path "$gh_api_field_at_path"; then
+      if _lib_is_pseudo_file_path "$gh_api_field_at_path"; then
         emit_deny "gh api command passes a -f / -F / --field / --raw-field value of the form key=@PATH where PATH is a pseudo-file ('${gh_api_field_at_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the value or use a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi

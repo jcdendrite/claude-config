@@ -32,9 +32,15 @@ set -uo pipefail
 # code.claude.com/docs/en/hooks, "Common fields"/SessionEnd section). A
 # per-hook `timeout` field raises that budget, up to a 60s ceiling.
 # settings.json sets `"timeout": 10` on this hook's registration for that
-# reason. The self-sweep below is capped at 2s. The per-fire cost above
-# is comfortably sub-second, so 10 gives several times headroom over the
-# realistic ~2-3s worst case without approaching the 60s ceiling.
+# reason. The self-sweep below is capped at 2s, or 4s counting _lib_capped_for's
+# -k SIGKILL grace. The per-fire cost above is comfortably sub-second, and 10
+# is well under the 60s ceiling.
+#
+# Two 5s-capped _lib_jq calls run before the first exit gate that depends on
+# jq output, so a systemic jq stall exhausts that 10s budget after two calls:
+# 10s if jq honors SIGTERM, which equals the budget, and 14s if it ignores
+# SIGTERM (7s per call with the grace), which exceeds it.
+# The only consequence is a dropped best-effort record.
 #
 # Self-sweep: after a successful write, deletes any file in its own records
 # directory older than 30 days. That's this repo's established idiom for

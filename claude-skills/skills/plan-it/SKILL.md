@@ -50,7 +50,7 @@ Dispatch `plan-architect` with an explicit `model: "opus"` override to author th
 
 The dispatch prompt carries:
 - `MODE=plan-sections` as the prompt's first line, on every Step 5 dispatch including revision re-dispatches. This literal selects the plan-section grammar — `plan-architect` also serves ad hoc consults, so the mode can no longer be inferred from context.
-- The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim.
+- The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim. Relay each answer as the selected label or the engineer's typed text; mark any option description you relay as your own proposal (CLAUDE.md §Working Style).
 - Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
 
 Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
@@ -89,12 +89,17 @@ same open question differently, and no agent's self-review sees the
 other's.
 
 **Assumption ledger.** The Approach section carries a structured ledger — recording what was checked and what wasn't, so a later revision can be diffed against it instead of silently drifting from a fact the session already established:
-- **One root problem/threat line** stating what the plan solves, followed by the **givens** it accepts — conditions the design treats as fixed that lie beyond its own reach. Each carries a one-sentence reason: another party owns it, a vendor or protocol imposes it, or dissolving the design's dependence on it needs a decision outside this plan. "The engineer decided it" is not such a reason — tag that `[engineer-verified]` on its own row. A condition the plan *could* change but deliberately won't is not a given — record it in **Out of scope** with its reason. A given with no qualifying reason is an untested premise, and `plan-review` Step 4 fires on it.
+- **One root problem/threat line** stating what the plan solves, followed by the **givens** it accepts — conditions the design treats as fixed that lie beyond its own reach. Each carries a one-sentence reason: another party owns it, a vendor or protocol imposes it, or dissolving the design's dependence on it needs a decision outside this plan. "The engineer decided it" is not such a reason — tag that `[engineer-verified: "<quote>"]` on its own row. A condition the plan *could* change but deliberately won't is not a given — record it in **Out of scope** with its reason. A given with no qualifying reason is an untested premise, and `plan-review` Step 4 fires on it.
 - **Per mechanism:** a one-line justification anchored to `anchors: root` or `anchors: row<N>`, so completeness is a real parse, not another judgment call. This is where the over-powered-primitive check lives: if a mechanism is heavier, more privileged, or wider-scope than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — enumerate at least two lighter primitives from the source documentation/system and justify in one sentence why each fails, anchored to the row it replaces; fewer than two found means re-read the source with the specific question "what mechanisms exist that do NOT require this heavier choice?" before continuing.
 - **Every material assumption gets its own row, tagged:**
   - `[verified: <source>]` — checked against code/docs this session, source citable — and prose describing a restriction is not evidence about behavior, so when the claim is what a tool or path can reach, run it and cite the result.
   - `[unverified]` — asserted, load-bearing, not checked; anything downstream inherits the flag.
-  - `[engineer-verified]` — sourced from a direct utterance this session, never from a file the human wrote (that is `[verified: <file>]`, which carries no override protection). Never silently revise or override it from your own investigation — a contradiction pauses and asks instead.
+  - `[engineer-verified: "<quote>"]` — the quote is the engineer's own words from this session or the literal option label they selected, verbatim or a verbatim excerpt.
+    - Never quote a file the human wrote; that is `[verified: <file>]`, which carries no override protection.
+    - The tag covers only what the quote states, read against the question it answered.
+    - An option description you wrote, or an inference from options they didn't pick, goes on its own `[unverified]` row (CLAUDE.md §Working Style).
+    - Never silently revise or override the quoted content from your own investigation; a contradiction pauses and asks instead.
+    - Use the quoted form on every row you add or change. Bare `[engineer-verified]` tags already in committed plans remain valid; treat the whole claim of such a row as protected, as `plan-review` does.
 
 See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 

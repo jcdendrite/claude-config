@@ -15,9 +15,10 @@ set -u
 PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
-# plugin, and plugin-root-equals-repo-root locations) plus plan-review/ROUTING.md,
-# matching what require-skill-review.sh checks at commit time.
-SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
+# plugin, plugin-root-equals-repo-root, and this repo's own project-layer
+# locations) plus plan-review/ROUTING.md, matching what require-skill-review.sh
+# checks at commit time.
+SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
 
 usage() {
   cat >&2 <<'EOF'
