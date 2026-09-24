@@ -34,9 +34,9 @@ Two pins in the group test restate current wording and need a test edit with the
 
 ## Forks
 
-The opening line names forks: `only the main session and forks follow Main session`. A fork holds the whole conversation and acts for the main session.
+The opening line names forks: `only the main session and forks follow Main session`. A fork acts for the main session and cannot ask the user.
 
-"Fork" here means a dispatched run that either inherits the parent's conversation or, for a `context: fork` skill, receives none. Neither can ask the user.
+"Fork" here means a dispatched run that either inherits the parent's conversation or, for a `context: fork` skill, receives none.
 
 The shipping clause ("any fork or subagent returns its work to its dispatcher rather than shipping on its own") names forks because, with the opening line granting forks Main session, "a dispatched subagent" would not cover them. Its handling of forks:
 
@@ -82,7 +82,7 @@ Known gaps. Gap (d), Bash-mediated writes, is an accepted risk on the basis that
 
 - (a) Advice given without any settings file being opened or created, which neither the rule nor the hook reaches.
 - (b) A Write that creates a new settings file gets the hook's generic ask, but may not get the rule's guidance before the content is written.
-- (c) A settings file under a config directory whose path has no `.claude/` segment gets the rule on Read but no ask.
+- (c) A settings file under a config directory whose path has no `.claude/` segment gets the rule on Read only when the config directory is inside the session's project, and never gets an ask. An out-of-project config directory gets neither, leaving only the always-loaded one-line stub.
 - (d) Bash-mediated writes (`jq`, `sed -i`, `tee`) get no ask, because the hook covers Edit, Write and MultiEdit only.
 - (e) A consumer who pulls without re-running `install.sh` after a hook-file addition loses the hook.
 - (f) In one-trial subagent probes, a Read-tool read of a settings file outside the session's project loaded no rule, including the user-scope `~/.claude/settings.json`, where the hook asks but the rule did not load.
