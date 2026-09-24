@@ -67,9 +67,9 @@ language and stack:
   clause a test pins verbatim, and the dispatch prompt does not direct it, stop
   and report it under **Still uncertain** — do not trim elsewhere to make room,
   and do not edit the pin.
-- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and §Code
-  Comments, Documentation, and Prose actively steer choices — surface each at
-  its own decision point, not only at self-review:
+- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and
+  §Durable text actively steer choices — surface each at its own decision
+  point, not only at self-review:
   - Understand the intent of existing code before changing it.
   - Ground every choice: timeouts, suppressions, discriminator literals, new
     dependencies.
@@ -114,8 +114,7 @@ more focused task than writing it — use that asymmetry deliberately.
    the table below, even on one line: in a one-paragraph-per-line file, one
    line is a whole paragraph.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
-   Style, and §Code Comments, Documentation, and Prose before handoff. Flag
-   each of these separately:
+   Style, and §Durable text before handoff. Flag each of these separately:
    - An unverified external-state claim.
    - An out-of-scope file edit.
    - An ungrounded timeout or literal.
