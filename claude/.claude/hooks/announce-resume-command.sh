@@ -27,14 +27,13 @@
 #
 # Both interpolated values (the written file's path, and the linked
 # worktree's root when present) must be non-empty and consist only of bytes
-# in [A-Za-z0-9._/@+-], checked by the bash `case` glob in _passes_allowlist.
-# A failing FILE_PATH emits nothing; a failing worktree root drops only --cwd.
+# in [A-Za-z0-9._/@+-], checked by _lib_passes_path_char_allowlist in _lib.sh.
+# A failing FILE_PATH emits nothing.
+# A failing worktree root drops only --cwd.
 # This closes the shell-quoting, terminal-escape, and newline-based
 # structural case-glob bypass a tool-supplied path would otherwise open
 # (set-session-title-from-branch.sh: 18-23, :151-155).
 # It is a structural filter only, not general semantic-content filtering.
-# LC_ALL=C is set script-wide, after the continuity-path glob, and is
-# exported to child processes only if the caller had already exported it.
 # $(...) strips NUL bytes and trailing newlines before the gate, so an
 # announced path can differ from the real one.
 # No byte outside the allowlist reaches the output either way.
@@ -81,18 +80,7 @@ case "$FILE_PATH" in
   *) exit 0 ;;
 esac
 
-# Bracket ranges are byte ranges only in the C locale.
-LC_ALL=C
-
-# Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
-# Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
-_passes_allowlist() {
-  case "$1" in
-    '' | *[!A-Za-z0-9._/@+-]*) return 1 ;;
-  esac
-}
-
-_passes_allowlist "$FILE_PATH" || exit 0
+_lib_passes_path_char_allowlist "$FILE_PATH" || exit 0
 
 WORKTREE_ROOT=""
 PAYLOAD_CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null) || exit 0
@@ -101,7 +89,7 @@ if [ -n "$PAYLOAD_CWD" ] && _lib_capped git -C "$PAYLOAD_CWD" rev-parse --git-di
   GIT_COMMON_DIR=$(_lib_capped git -C "$PAYLOAD_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   if [ -n "$GIT_DIR_ABS" ] && [ -n "$GIT_COMMON_DIR" ] && [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
     CANDIDATE_ROOT=$(_lib_capped git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null)
-    if _passes_allowlist "$CANDIDATE_ROOT"; then
+    if _lib_passes_path_char_allowlist "$CANDIDATE_ROOT"; then
       WORKTREE_ROOT="$CANDIDATE_ROOT"
     fi
   fi
