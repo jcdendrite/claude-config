@@ -86,7 +86,8 @@ class TestSkipUnlessFilesystemAcceptsFilename:
             probed_paths.append(path)
             raise OSError(92, "Illegal byte sequence")
 
-        # Patched on this module only: the helper resolves `open` here, and a builtins patch would leak process-wide.
+        # Patched on this module only, since the helper resolves `open` here.
+        # A builtins patch would leak process-wide.
         monkeypatch.setattr(sys.modules[__name__], "open", _record_and_raise, raising=False)
         filename = b"\xff\xfe"
         with pytest.raises(pytest.skip.Exception, match="Illegal byte sequence"):

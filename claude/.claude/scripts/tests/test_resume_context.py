@@ -849,9 +849,13 @@ def _dest_path_len(tmp_path: Path) -> int:
 
 
 def _assert_src_still_dominates_dest(src: Path, dest_len: int) -> None:
-    """src_len is derived by subtracting dest_len from the row-byte cap, so src is always at
-    least as long as dest; _src_path_of_exact_length's own probe on src covers dest too."""
-    assert len(os.fsencode(src)) >= dest_len, "src no longer the longest script-side path; re-add the dest_len probe"
+    """src_len is derived by subtracting dest_len from the row-byte cap, so src is at least as long as dest.
+
+    _src_path_of_exact_length's own probe on src therefore covers dest too.
+    """
+    assert len(os.fsencode(src)) >= dest_len, (
+        "dest path is longer than src, so the PC_PATH_MAX probe on src does not cover it; probe dest_len as well"
+    )
 
 
 def _skip_if_bytes_exceed_path_max(fixture_root: Path, byte_len: int) -> None:
