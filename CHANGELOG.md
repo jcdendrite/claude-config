@@ -10,7 +10,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The `# Global Instructions` heading is now `# Agent Core`, and `## Code Comments, Documentation, and Prose` is now `### Durable text` under Prose and Output Format. References to the old name now read `§Durable text`.
   - `## Safety` and `## Working Style` each appear twice, once per group.
   - The permissions-globs rule moves out of always-loaded context:
-    - It now loads from `claude/.claude/rules/settings-json-conventions.md` on a Read-tool read of a settings file inside the project. This was observed in one-trial probes. The two-segment shape `<dir>/.claude/settings.json` matched on one pre-merge Read, but the relocated bullet's text was not present in that copy. Whether `**/settings.json` matches the project-root shape `.claude/settings.json` (one intermediate dot-directory segment) is unmeasured, so post-merge loading of the relocated text is unconfirmed.
+    - It now loads from `claude/.claude/rules/settings-json-conventions.md` on a Read-tool read of a settings file inside the project. This was observed in one-trial probes. Post-merge loading of the relocated text is unconfirmed.
     - No longer always loaded: the rationale (globs widen the surface to flag injection, command chaining and shell-expansion attacks), the two definitional examples (`Bash(pytest *)`, `Bash(npm run *)`), the exact-match alternative (`Bash(pytest)`, `Bash(npm run verify)`) and the `/review-permissions` checklist pointer.
     - A one-line stub ("No wildcards in `permissions.allow`.") stays always loaded in Agent Core.
   - The output-preferences read instruction is main-session-only.
