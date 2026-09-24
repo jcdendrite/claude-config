@@ -330,16 +330,15 @@ def _print_scan_coverage_table(
 
     No markdown parameter: the full report already discloses these facts
     per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
-    plain-text branch here would be dead code. The "(this repo, all
-    branches)" suffix on the first column is accurate regardless of
-    --branches: _scan_root_transcripts (this table's data source) is
-    slug-restricted to this repo's project dirs but never branch-filtered.
+    plain-text branch here would be dead code. The "(not branch-filtered)"
+    suffix on the first column is accurate regardless of --branches:
+    _scan_root_transcripts (this table's data source) is never branch-filtered.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
     unreadable_delimiter = "---|" if transcripts_unreadable else ""
     unreadable_cell = f" {transcripts_unreadable:,} |" if transcripts_unreadable else ""
     print(
-        "| Transcript files scanned (this repo, all branches) |"
+        "| Transcript files scanned (not branch-filtered) |"
         f"{unreadable_header} Sessions with priced turns | Priced turns |"
     )
     print(f"|---|{unreadable_delimiter}---|---|")

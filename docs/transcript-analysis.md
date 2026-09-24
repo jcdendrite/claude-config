@@ -657,7 +657,7 @@ The `--branches` filter is echoed in `--summary`'s `Scope:` caption (branch name
 
 Scope: this repository only, branch my-feature-branch. This account only, all time.
 
-| Transcript files scanned (this repo, all branches) | Of those, unreadable | Sessions with priced turns | Priced turns |
+| Transcript files scanned (not branch-filtered) | Of those, unreadable | Sessions with priced turns | Priced turns |
 |---|---|---|---|
 | 2 | 1 | 1 | 2 |
 

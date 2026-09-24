@@ -1801,7 +1801,7 @@ class TestCostMarkdownTablePrinters:
         out = capsys.readouterr().out
         assert "Of those, unreadable" not in out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "3"
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "3"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
 
@@ -1809,7 +1809,7 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "3"
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "3"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
@@ -1818,13 +1818,13 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
-        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "1,500,000"
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "1,500,000"
 
     def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
         _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
-        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "0"
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "0"
         assert coverage_cols["Sessions with priced turns"] == "0"
         assert coverage_cols["Priced turns"] == "0"
 
@@ -2046,7 +2046,9 @@ class TestCostBranchFilter:
         output -- --summary drops the diagnostic entirely, and this pins
         that removal as a standing regression guard rather than a one-time
         manual observation, since pr-cost-section.sh embeds this output
-        verbatim into a public PR."""
+        verbatim into a public PR. Also confirms the scan-coverage table's
+        first column stays at the full, unfiltered file count while the
+        --branches filter narrows its other two columns."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2064,13 +2066,19 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2))
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
         out = capsys.readouterr().out
         assert "Branch-filter exclusions" not in out
         assert "feature-a" not in out
         assert "feature-b" not in out
         assert "branch-1" not in out
         assert "branch-2" not in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "3"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_non_summary_redact_default_shows_sequential_branch_labels(self, fake_projects, capsys):
         """Non-summary, redact=True (the default, no --no-redact): excluded
@@ -2635,7 +2643,7 @@ class TestCostSummary:
 
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
-        assert coverage_cols["Transcript files scanned (this repo, all branches)"] == "2"
+        assert coverage_cols["Transcript files scanned (not branch-filtered)"] == "2"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "1"
         assert coverage_cols["Priced turns"] == "1"
