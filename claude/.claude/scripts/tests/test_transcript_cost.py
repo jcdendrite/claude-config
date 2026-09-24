@@ -2169,7 +2169,7 @@ class TestFablePricing:
 
 
 class TestOpus55Pricing:
-    """Opus 5.5 rate arithmetic against the vendor-published figures
+    """Opus 5 / 5.5 rate arithmetic against the vendor-published figures
     (platform.claude.com/docs/en/about-claude/pricing). These validate rate
     arithmetic only, never the model-ID string -- an exact-match dict test
     supplies the same key it looks up, so no test shape here can catch a
@@ -2202,6 +2202,15 @@ class TestOpus55Pricing:
         assert input_cols["$"] == "0.40"
         cache_read_cols = _table_cols(out, header_contains="Class", row_contains="cache_read", row_startswith=True)
         assert cache_read_cols["$"] == "0.04"
+
+    def test_opus_5_rates_match_vendor_table_with_standard_cache_read(self):
+        """Opus 5 (base $5, not in _CACHE_READ_MULTIPLIER_OVERRIDES) still
+        resolves cache_read at the base 0.1x multiplier ($0.50) -- proves the
+        new claude-opus-5-5 override entry is scoped to its exact key and
+        doesn't leak onto the un-suffixed sibling."""
+        rates = _mod._model_rates("claude-opus-5")
+        assert rates is not None
+        assert rates["cache_read"] == pytest.approx(0.50)
 
 
 class TestCostSummary:
