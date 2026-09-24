@@ -6,6 +6,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`claude/.claude/CLAUDE.md` widens three rules and merges two.** Consumer-visible changes:
+  - The verify rule now reads "Never assume how code or technology works … or what the environment, stack, or project conventions are", so it fires on any unchecked belief and not only when the agent feels uncertain. The separate "Before assuming anything about the environment" bullet is merged into it.
+  - The main session's walk-through rule now also applies before committing to a solution, recommendation, or finding, not only before writing code.
+  - "Understand the intent" now covers infrastructure and architecture, in addition to code and configuration.
 - **`claude/.claude/CLAUDE.md` is split into an Agent Core group and a Main session group, and subagents other than forks are told to skip Main session.** An opening line states each group's audience and translates ask/confirm/stop steps into "report it in your return" for dispatched agents. Consumer-visible changes:
   - The `# Global Instructions` heading is now `# Agent Core`, and `## Code Comments, Documentation, and Prose` is now `### Durable text` under Prose and Output Format. References to the old name now read `§Durable text`.
   - `## Safety` and `## Working Style` each appear twice, once per group.
