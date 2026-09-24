@@ -489,6 +489,11 @@ def _pretooluse_matcher_groups_for(hook: Path) -> list[str]:
 _DUAL_SURFACE_WRITE_GATE_HOOKS: tuple[str, ...] = ("enforce-marker-script-shape.sh",)
 
 
+def _matchers_spanning_edit_write_multiedit(matchers: list[str]) -> list[str]:
+    """Return the PreToolUse matchers that name Edit, Write and MultiEdit together."""
+    return [matcher for matcher in matchers if {"Edit", "Write", "MultiEdit"} <= set(matcher.split("|"))]
+
+
 @pytest.mark.parametrize("hook_name", _DUAL_SURFACE_WRITE_GATE_HOOKS)
 def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: str) -> None:
     """Both dual-surface write-gate hooks must carry a bare `Bash` PreToolUse
@@ -502,13 +507,25 @@ def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: 
     hook = _MAIN_HOOKS_DIR / hook_name
     matchers = _pretooluse_matcher_groups_for(hook)
     assert "Bash" in matchers, f"{hook_name}: not wired on a bare 'Bash' PreToolUse matcher"
-    edit_write_multiedit_matchers = [
-        matcher for matcher in matchers if {"Edit", "Write", "MultiEdit"} <= set(matcher.split("|"))
-    ]
-    assert edit_write_multiedit_matchers, (
+    assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"{hook_name}: no PreToolUse matcher spanning Edit|Write|MultiEdit "
         f"found -- closing this hook's file-write bypass class requires "
         f"both surfaces"
+    )
+
+
+def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
+    """settings.json must register ask-review-permissions.sh on a PreToolUse
+    matcher spanning Edit, Write and MultiEdit -- the hook is `informational`,
+    so the gate-only registration check does not cover it, and the
+    settings-json-conventions rule relies on it as the backstop for edits to
+    settings files.
+    """
+    matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
+    assert _matchers_spanning_edit_write_multiedit(matchers), (
+        f"ask-review-permissions.sh: no PreToolUse matcher spanning "
+        f"Edit|Write|MultiEdit in settings.json (found {matchers!r}) -- "
+        f"settings-file edits would no longer ask"
     )
 
 
