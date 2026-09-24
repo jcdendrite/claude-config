@@ -1,8 +1,8 @@
-# GH-1085 Phase 2: wording follow-ups to the global CLAUDE.md
+# GH-1085: wording follow-ups to the global CLAUDE.md after the Agent Core split (#1090)
 
 ## Context
 
-Widen and merge four rules in `claude/.claude/CLAUDE.md` without growing the file. Phase 1 (#1090) is merged; its plan `.claude/plans/claude-md-agent-core.md` is a preserved record and stays as written. GH-1085 lists these Phase 2 items: widen "understand intent" beyond code and configuration, widen "walk through approach" beyond code, generalize "verify, don't guess" to how code or technology works, and merge the "check, don't assume" cluster. The file is over its 25,600-byte cap, so `check-claude-md-length.sh` denies any commit larger than HEAD.
+Widen and merge four rules in `claude/.claude/CLAUDE.md` without growing the file. The Agent Core split (#1090) is merged; its plan `.claude/plans/claude-md-agent-core.md` is a preserved record and stays as written. GH-1085 lists these follow-up items: widen "understand intent" beyond code and configuration, widen "walk through approach" beyond code, generalize "verify, don't guess" to how code or technology works, and merge the "check, don't assume" cluster. The file is over its 25,600-byte cap, so `check-claude-md-length.sh` denies any commit larger than HEAD.
 
 ## Approach
 
@@ -144,7 +144,7 @@ Read-only references, not to be edited: `claude/.claude/hooks/tests/test_global_
 - **Preserved records** stay untouched (G2): `.claude/plans/precompact-review-snapshot.md`, `.claude/plans/claude-md-agent-core.md`, and the dated decision record. The record's re-review result goes in the PR body, not into the record.
 - **Raising `GLOBAL_CLAUDE_MD_BYTE_LIMIT`** is excluded (G1).
 - **The decision record's dangling-phrase follow-ups and the `advance-past-commit-stall.sh` forward pointer** go in a separate PR (row 30).
-- **Trims D and F** from the candidate list (D drops the "test is the source of truth" clause at line 189; F drops "regardless of how the target was determined" at line 21) were offered and not chosen.
+- **Two other trims** were offered and not chosen: dropping the "test is the source of truth" clause at line 189, and dropping "regardless of how the target was determined" at line 21.
 - **Tightening the newly worded bullets to save bytes** is excluded, because the engineer asked for trims from elsewhere.
 - **A `_PLACEMENTS` row in `test_global_claude_md_groups.py` pinning the merged bullet in Agent Core** is excluded. The old lines 32 and 64 were unpinned, so this change loses no coverage, and the group test is a read-only reference for this plan. Adding the pin is a separate decision.
 - **README's "exactly three levels deep" worktree claim** (`README.md:520`) is wrong for a slash-in-branch worktree. Fixing it is unrelated to this change.
