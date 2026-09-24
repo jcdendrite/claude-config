@@ -46,9 +46,9 @@ The shipping clause ("any fork or subagent returns its work to its dispatcher ra
 - The commit, push and PR-creation gates are review-state gates that apply to every caller.
 - Those gates have documented bypass shapes and a marker read not tied to a session.
 - They therefore pass a fork that follows a main-session review at HEAD.
-- `deny-reviewer-tree-mutation.sh` keys on `agent_type` for the closed review-only set; its header is the canonical list of what it covers and its Known gaps.
+- `deny-reviewer-tree-mutation.sh` keys on `agent_type` for the closed review-only set. It does not gate `gh pr create` or `gh pr merge`, and its Bash arm passes `touch`, `rm`, `dd`, interpreter file writes and `2>` (its header lists the rest).
 - No gate keyed on caller identity covers a fork, `code-writer` or `general-purpose`, and a fork runs in the parent's process identity, so nothing can tell it from the main session.
-- Extending the identity-keyed hook to other non-fork subagents is a follow-up candidate. The gap predates this restructure.
+- Extending the identity-keyed hook to other non-fork subagents, with a PR-creation arm, is a follow-up candidate. The gap predates this restructure.
 
 Four readings of the clause still let a fork or subagent ship:
 
@@ -78,7 +78,7 @@ The "Don't add globs" bullet lives in `claude/.claude/rules/settings-json-conven
   - None of these tests cover when the rule loads.
 - A permission deny rule for Bash reads of settings files was considered and advised against by `plan-architect`. A narrow pattern misses `settings.local.json`, `sed`, `jq`, `head` and `grep`. A broad one also blocks `git diff` on settings paths and any `git commit -m` that names the file. It teaches the agent nothing, and it does not reach an out-of-project `~/.claude/settings.json`.
 
-Known gaps. Gap (d), Bash-mediated writes, is an accepted risk. The other gaps are open. The always-loaded stub keeps the prohibition in context for all of them:
+Known gaps. Gap (d), Bash-mediated writes, is an accepted risk on the basis that the always-loaded stub keeps the prohibition in context. The other gaps are open:
 
 - (a) Advice given without any settings file being opened or created, which neither the rule nor the hook reaches.
 - (b) A Write that creates a new settings file gets the hook's generic ask, but may not get the rule's guidance before the content is written.
@@ -122,11 +122,9 @@ Follow-ups for dangling phrases left by verbatim moves:
 - The Prose section scope line's "the section below", which now points at a subsection.
 - The Durable text scope line "This section governs comments and durable docs only", which is ambiguous inside Prose.
 
-Tracker: not yet filed.
-
 ## Forward pointer
 
-`advance-past-commit-stall.sh` cites the shipping-clause as "CLAUDE.md's Shipping section". That clause now sits in Working Style, so the citation needs a follow-up. Tracker: not yet filed.
+`advance-past-commit-stall.sh` cites the shipping-clause as "CLAUDE.md's Shipping section". That clause now sits in Working Style, so the citation needs a follow-up.
 
 ## Byte margin
 
