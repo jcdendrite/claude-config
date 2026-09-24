@@ -50,7 +50,7 @@ _PROCEED_CLAUSE = f"Do not {_PROCEED_CLAUSE_FRAGMENT}"
 # distinctive to its bullet, and must occur on exactly one line.
 # "core" bullets must precede the Main session heading; "main" bullets must follow it.
 _PLACEMENTS = [
-    # Prose-backed rules with no hook backstop.
+    # Core rules that rest at least partly on prose; some also have a hook backstop.
     ("no-autonomous-installs", "Installing new software autonomously is strictly prohibited", "core"),
     ("package-naming", "**Name every new package before it is fetched.**", "core"),
     ("secret-commits", "Never commit secrets, credentials, API keys", "core"),

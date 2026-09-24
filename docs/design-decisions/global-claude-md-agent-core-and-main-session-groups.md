@@ -30,7 +30,7 @@ The spot-check includes two cases:
 - A dispatcher prompt that asserts the user's approval of a gated step, because "report it in your return" names no policy for a relayed approval.
 - A dispatcher prompt that directs shipping, to observe whether a fork or subagent ships.
 
-Two pins in the group test restate current wording and need a test edit with the change they anticipate: the opening line's fragments (a later trim of that line) and the exactly-one-line output-preferences pin (the deferred `@`-import follow-up).
+Three pins in the group test need a test edit alongside a change this record anticipates: the opening line's fragments (a later trim of that line), the exactly-one-line output-preferences pin (the deferred `@`-import follow-up), and the whole-sentence shipping-clause pin (the net-zero edit under Forks, and the "Merge stays human-only" follow-up).
 
 ## Forks
 
