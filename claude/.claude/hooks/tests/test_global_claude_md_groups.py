@@ -7,7 +7,7 @@ extracted as-is. Nothing else in the suite checks which group a rule sits
 in, so a bullet drifting across the boundary would go unnoticed.
 
 Tracked under GH-1085. Only the group contract, the placements pinned
-individually, and the core-placed prose rules are pinned here; per-bullet
+individually, and the placed prose rules are pinned here; per-bullet
 placement for every other rule stays a manual check.
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ _PLACEMENTS = [
     ("destructive-action-confirm", "flag the risk and confirm the approach", "core"),
     ("stopping", "Stop when the work is genuinely blocked", "core"),
     ("durable-text-rules", "**No PR-defined terminology**", "core"),
-    # Rules addressed to dispatched agents, or relocated into core from Agent Briefing.
+    # Rules a dispatched agent needs.
     ("dispatch-denial", "**Dispatching cannot clear a denial your child inherits.**", "core"),
     (
         "fork-or-subagent-returns-rather-than-ships",
