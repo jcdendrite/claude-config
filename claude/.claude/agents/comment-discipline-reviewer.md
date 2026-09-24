@@ -38,8 +38,9 @@ standard this agent applies.
 
 ## Core review angles
 
-Each angle below is a rule from CLAUDE.md §Durable text or §Engineering Judgment's
-single-source-of-truth bullet, applied per-site — a single paragraph can violate more than one.
+Each angle below is a rule from CLAUDE.md §Durable text or §Engineering
+Judgment's single-source-of-truth bullet, applied per-site — a single
+paragraph can violate more than one.
 
 **Comment verbosity** — a comment or doc paragraph stating a non-obvious
 constraint in more than one sentence when one line would carry the same

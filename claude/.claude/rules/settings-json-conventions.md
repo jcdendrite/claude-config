@@ -13,4 +13,8 @@ paths:
   `enabledPlugins[name]: false` only for plugins with a genuine
   re-enable case; remove entries with none, rather than leaving a
   `false` placeholder that implies future re-enable.
-- Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
+- Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to
+  `permissions.allow`. Globs widen the surface to flag injection, command
+  chaining, and shell-expansion attacks — see
+  `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9.
+  Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.

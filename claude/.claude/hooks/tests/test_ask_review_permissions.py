@@ -42,10 +42,17 @@ class TestAskReviewPermissions:
             "/some/project/package.json",
             "/some/project/.claude/CLAUDE.md",
             "/some/project/.claude/skills/foo.md",
+            "/some/project/.claude/mysettings.json",
+            "/some/project/.claude/settings/x.json",
         ],
     )
-    def test_non_settings_paths_allowed(self, path):
-        assert run_hook(REVIEW_PERMS_HOOK, edit_input(path)) == "allow"
+    @pytest.mark.parametrize(
+        "build_input",
+        [edit_input, write_input, multiedit_input],
+        ids=["edit", "write", "multiedit"],
+    )
+    def test_non_settings_paths_allowed(self, build_input, path):
+        assert run_hook(REVIEW_PERMS_HOOK, build_input(path)) == "allow"
 
     def test_bash_tool_allowed(self):
         assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"

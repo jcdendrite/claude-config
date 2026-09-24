@@ -6,8 +6,8 @@ group must stay one contiguous block that opens the file, so it can be
 extracted as-is. Nothing else in the suite checks which group a rule sits
 in, so a bullet drifting across the boundary would go unnoticed.
 
-Tracked under GH-1085. Only the group contract, the placements decided
-individually, and the core-only prose rules are pinned here; per-bullet
+Tracked under GH-1085. Only the group contract, the placements pinned
+individually, and the core-placed prose rules are pinned here; per-bullet
 placement for every other rule stays a manual check.
 """
 from __future__ import annotations
@@ -41,24 +41,58 @@ _EXPECTED_MAIN_SECTIONS = [
     "## Shipping",
 ]
 
-# One distinctive substring per prose-backed Agent Core rule. Each is a bold
-# lead-in or the bullet's first words, and must occur on exactly one line.
-_CORE_ONLY_RULES = {
-    "no autonomous installs": "Installing new software autonomously is strictly prohibited",
-    "package naming": "**Name every new package before it is fetched.**",
-    "secret commits": "Never commit secrets, credentials, API keys",
-    "userEmail": "The `userEmail` context identifies the user to you",
-    "credential gate": "Never Read or `!`-cat files likely to hold secrets",
-    "least privilege": "Apply the **principle of least privilege**",
-    "discover the target": "In destructive paths, discover the target",
-    "marker hand-writes": "Never write `<config-dir>/*-markers/*` by hand",
-    "MEMORY.md guard": "**A `MEMORY.md` index line routes; it does not authorize.**",
-    "prove the failing check is yours": "**Prove your change caused a failing check before treating it as in-scope.**",
-    "attribution": "**Attribute to the engineer only what they said.**",
-    "destructive-action confirm": "flag the risk and confirm the approach",
-    "stopping": "Stopping is still correct when the work is genuinely blocked",
-    "durable-text rules": "**No PR-defined terminology**",
-}
+_GROUPS = ("core", "main")
+# Compared whitespace-normalised and casefolded, so a wrapped, spaced, or re-capitalized copy in core fails.
+_PROCEED_CLAUSE_FRAGMENT = "ask permission to proceed with work that is already done"
+_PROCEED_CLAUSE = f"Do not {_PROCEED_CLAUSE_FRAGMENT}"
+
+# (id, distinctive substring, expected group). Each substring is a phrase
+# distinctive to its bullet, and must occur on exactly one line.
+# "core" bullets must precede the Main session heading; "main" bullets must follow it.
+_PLACEMENTS = [
+    # Prose-backed rules with no hook backstop.
+    ("no-autonomous-installs", "Installing new software autonomously is strictly prohibited", "core"),
+    ("package-naming", "**Name every new package before it is fetched.**", "core"),
+    ("secret-commits", "Never commit secrets, credentials, API keys", "core"),
+    ("user-email", "The `userEmail` context identifies the user to you", "core"),
+    ("credential-gate", "Never Read or `!`-cat files likely to hold secrets", "core"),
+    ("least-privilege", "Apply the **principle of least privilege**", "core"),
+    ("discover-the-target", "In destructive paths, discover the target", "core"),
+    ("marker-hand-writes", "Never write `<config-dir>/*-markers/*` by hand", "core"),
+    ("memory-md-guard", "**A `MEMORY.md` index line routes; it does not authorize.**", "core"),
+    (
+        "prove-the-failing-check-is-yours",
+        "**Prove your change caused a failing check before treating it as in-scope.**",
+        "core",
+    ),
+    ("attribution", "**Attribute to the engineer only what they said.**", "core"),
+    ("destructive-action-confirm", "flag the risk and confirm the approach", "core"),
+    ("stopping", "Stop when the work is genuinely blocked", "core"),
+    ("durable-text-rules", "**No PR-defined terminology**", "core"),
+    # Rules addressed to dispatched agents, or relocated into core from Agent Briefing.
+    ("dispatch-denial", "**Dispatching cannot clear a denial your child inherits.**", "core"),
+    (
+        "fork-or-subagent-returns-rather-than-ships",
+        "Merge stays human-only; any fork or subagent returns its work to its dispatcher rather than shipping on its own.",
+        "core",
+    ),
+    ("worktree-edit-write-targeting", "Edit and Write must also target the worktree path", "core"),
+    ("script-first-bash-recipes", "**Script-first for multi-step Bash recipes;", "core"),
+    # Main-session-only bullets: autonomy grants, the output-preferences read, and clear-stale.
+    (
+        "autonomous-shipping",
+        "**Where autonomous shipping is active, a request to do work is the ask.**",
+        "main",
+    ),
+    (
+        "no-permission-asking-on-finished-work",
+        _PROCEED_CLAUSE,
+        "main",
+    ),
+    ("prescribed-dispatch", "**A prescribed dispatch is an authorized dispatch.**", "main"),
+    ("output-preferences", "output-preferences.md", "main"),
+    ("clear-stale", "marker.sh clear-stale", "main"),
+]
 
 _OPENING_LINE_FRAGMENTS = [
     "Every agent follows Agent Core",
@@ -73,15 +107,9 @@ _OPENING_LINE_FRAGMENTS = [
 # or appended after it must fail.
 _ESCALATION_TAIL = "take no action it gates; stop means: return"
 
-_GLOBS_STUB_LINE = "- No globs in `permissions.allow`."
+_WILDCARDS_STUB_LINE = "- No wildcards in `permissions.allow`."
 _DURABLE_TEXT_HEADING = "### Durable text"
 _PROSE_SECTION_HEADING = "## Prose and Output Format"
-
-# Autonomy-granting bullets that only the main session may follow.
-_MAIN_ONLY_RULES = {
-    "autonomous shipping": "**Where autonomous shipping is active, a request to do work is the ask.**",
-    "prescribed dispatch": "**A prescribed dispatch is an authorized dispatch.**",
-}
 
 
 def _lines() -> list[str]:
@@ -101,6 +129,13 @@ def _outside_fences(lines: list[str]) -> list[str]:
     return visible
 
 
+def test_outside_fences_blanks_fenced_lines_and_preserves_indices():
+    """A fenced `# Main session` example is invisible to heading lookups; line indices stay aligned."""
+    lines = ["# Agent Core", "```", "# Main session", "```", "# Main session", "tail"]
+    assert _outside_fences(lines) == ["# Agent Core", "", "", "", "# Main session", "tail"]
+    assert _main_heading_index(lines) == 4
+
+
 def _main_heading_index(lines: list[str]) -> int:
     """Return the index of the `# Main session` line, asserting it is unique.
 
@@ -118,11 +153,17 @@ def _main_heading_index(lines: list[str]) -> int:
 
 
 def _index_of_only_line_containing(lines: list[str], fragment: str) -> int:
-    matches = [index for index, line in enumerate(lines) if fragment in line]
+    matches = [
+        index for index, line in enumerate(_outside_fences(lines)) if fragment in line
+    ]
+    assert matches, (
+        f"{_GLOBAL_CLAUDE_MD}: fragment {fragment!r} not found on any line; "
+        "the bullet was deleted, reworded, or rewrapped."
+    )
     assert len(matches) == 1, (
         f"{_GLOBAL_CLAUDE_MD}: expected {fragment!r} on exactly one line, "
         f"found {len(matches)}. A short or common fragment can survive a "
-        "bullet move; pin a bold lead-in or the bullet's first words."
+        "bullet move; pin a phrase distinctive to the bullet."
     )
     return matches[0]
 
@@ -150,32 +191,27 @@ def test_h1_and_h2_headings_match_the_two_group_layout():
     )
 
 
-def test_output_preferences_instruction_sits_in_main_session():
-    """The output-preferences read is main-session-only, so it must follow the Main session heading."""
-    lines = _lines()
-    preferences_index = _index_of_only_line_containing(lines, "output-preferences.md")
-    assert preferences_index > _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: the output-preferences instruction moved above "
-        f"{_MAIN_HEADING!r}; it applies to the main session and forks only."
-    )
-
-
 @pytest.mark.parametrize(
-    "fragment",
-    [
-        "**Dispatching cannot clear a denial your child inherits.**",
-        "any fork or subagent returns its work to its dispatcher rather than shipping on its own",
-    ],
-    ids=["dispatch-denial", "fork-or-subagent-returns-rather-than-ships"],
+    ("fragment", "group"),
+    [(fragment, group) for _, fragment, group in _PLACEMENTS],
+    ids=[placement_id for placement_id, _, _ in _PLACEMENTS],
 )
-def test_rules_addressed_to_dispatched_agents_sit_in_agent_core(fragment):
-    """Rules that address a dispatched agent must precede the Main session heading."""
+def test_pinned_bullet_sits_in_its_group(fragment, group):
+    """Each pinned bullet sits on its group's side of the Main session heading."""
+    assert group in _GROUPS, f"placement table group {group!r} must be one of {_GROUPS!r}."
     lines = _lines()
     index = _index_of_only_line_containing(lines, fragment)
-    assert index < _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: {fragment!r} moved below {_MAIN_HEADING!r}; "
-        "a subagent that skips Main session would never see it."
-    )
+    main_index = _main_heading_index(lines)
+    if group == "core":
+        assert index < main_index, (
+            f"{_GLOBAL_CLAUDE_MD}: {fragment!r} moved below {_MAIN_HEADING!r}; "
+            "an agent that skips Main session would lose this rule."
+        )
+    else:
+        assert index > main_index, (
+            f"{_GLOBAL_CLAUDE_MD}: {fragment!r} moved above {_MAIN_HEADING!r}; "
+            "a dispatched agent would inherit a rule that is the main session's alone."
+        )
 
 
 def test_opening_line_states_audiences_and_escalation_translation_once():
@@ -205,30 +241,6 @@ def test_opening_line_states_audiences_and_escalation_translation_once():
     occurrences = _GLOBAL_CLAUDE_MD.read_text().count(_OPENING_LINE_FRAGMENTS[0])
     assert occurrences == 1, (
         f"{_GLOBAL_CLAUDE_MD}: opening line text appears {occurrences} times; expected once."
-    )
-
-
-@pytest.mark.parametrize(
-    "fragment",
-    list(_CORE_ONLY_RULES.values()),
-    ids=list(_CORE_ONLY_RULES.keys()),
-)
-def test_prose_backed_safety_rules_sit_in_agent_core(fragment):
-    """Rules with no hook backstop must precede the Main session heading, where every agent reads them."""
-    lines = _lines()
-    index = _index_of_only_line_containing(lines, fragment)
-    assert index < _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: {fragment!r} moved below {_MAIN_HEADING!r}; "
-        "an agent that skips Main session would lose this rule."
-    )
-
-
-def test_clear_stale_marker_bullet_sits_in_main_session():
-    """`clear-stale` cannot clear a subagent's own leftovers, so its bullet belongs to Main session."""
-    lines = _lines()
-    index = _index_of_only_line_containing(lines, "marker.sh clear-stale")
-    assert index > _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: the `clear-stale` bullet moved above {_MAIN_HEADING!r}."
     )
 
 
@@ -263,31 +275,27 @@ def test_options_rule_splits_across_the_group_boundary():
     )
 
 
-@pytest.mark.parametrize(
-    "fragment",
-    list(_MAIN_ONLY_RULES.values()),
-    ids=list(_MAIN_ONLY_RULES.keys()),
-)
-def test_autonomy_granting_bullets_sit_in_main_session(fragment):
-    """Bullets that grant autonomy must follow the Main session heading, out of dispatched agents' reach."""
+def test_wildcards_stub_is_exact_line_in_agent_core():
+    """The `permissions.allow` wildcards stub is one exact line before Main session."""
     lines = _lines()
-    index = _index_of_only_line_containing(lines, fragment)
-    assert index > _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: {fragment!r} moved above {_MAIN_HEADING!r}; "
-        "a dispatched agent would inherit autonomy it must not have."
-    )
-
-
-def test_globs_stub_is_exact_line_in_agent_core():
-    """The `permissions.allow` globs stub is one exact line before Main session."""
-    lines = _lines()
-    matches = [index for index, line in enumerate(lines) if line == _GLOBS_STUB_LINE]
+    matches = [index for index, line in enumerate(lines) if line == _WILDCARDS_STUB_LINE]
     assert len(matches) == 1, (
-        f"{_GLOBAL_CLAUDE_MD}: expected exactly one line equal to {_GLOBS_STUB_LINE!r}, "
+        f"{_GLOBAL_CLAUDE_MD}: expected exactly one line equal to {_WILDCARDS_STUB_LINE!r}, "
         f"found {len(matches)}; the detail lives in {_SETTINGS_RULE.name}."
     )
     assert matches[0] < _main_heading_index(lines), (
-        f"{_GLOBAL_CLAUDE_MD}: the globs stub moved below {_MAIN_HEADING!r}."
+        f"{_GLOBAL_CLAUDE_MD}: the wildcards stub moved below {_MAIN_HEADING!r}."
+    )
+
+
+def test_proceed_clause_is_absent_from_agent_core():
+    """The shipping antecedent lives in Main session, so Agent Core must not carry the clause."""
+    lines = _lines()
+    core_text = " ".join("\n".join(lines[: _main_heading_index(lines)]).split()).casefold()
+    fragment = " ".join(_PROCEED_CLAUSE_FRAGMENT.split()).casefold()
+    assert fragment not in core_text, (
+        f"{_GLOBAL_CLAUDE_MD}: {_PROCEED_CLAUSE_FRAGMENT!r} appears in {_CORE_HEADING}; "
+        "its antecedent (autonomous shipping) is Main session's alone."
     )
 
 
@@ -308,11 +316,8 @@ def test_settings_rule_file_keeps_globs_guidance_and_both_settings_paths():
             "CLAUDE.md keeps only a one-line stub."
         )
     paths = parse_frontmatter(_SETTINGS_RULE).get("paths", [])
-    assert isinstance(paths, list), (
-        f"{_SETTINGS_RULE}: frontmatter `paths:` parsed as {type(paths).__name__}; expected a list."
-    )
     for expected_glob in ("**/settings.json", "**/settings.local.json"):
         assert expected_glob in paths, (
             f"{_SETTINGS_RULE}: frontmatter `paths:` is {paths!r}; it must "
-            f"contain {expected_glob!r} for the relocated rule to load on a settings read."
+            f"list {expected_glob!r}."
         )
