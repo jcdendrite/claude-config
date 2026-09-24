@@ -156,67 +156,14 @@ _guard_staged_vs_unstaged() {
   fi
 }
 
-# MARKER_TEST_FIXTURE: hash-staged-diff — start
-# _HASH_STAGED_DIFF_RC_EMPTY: distinguished return code from
-# _hash_staged_diff for "git succeeded and the diff is empty", kept apart
-# from the bare 1 used for "git itself could not be trusted" (non-zero
-# exit, or an empty hash despite a zero exit).
-readonly _HASH_STAGED_DIFF_RC_EMPTY=3
 # The well-known SHA-256 digest of empty input, computed once here via a
 # subprocess rather than hardcoded -- a raw 64-character hex literal in the
 # source trips the redaction hook's long-hex-identifier detector (see
 # docs/private-project-redaction.md). Computed once at script load, not per
-# call, since the digest is algorithm-fixed and _hash_staged_diff must not
+# call, since the digest is algorithm-fixed and every caller below must not
 # pay a second sha256sum call per invocation.
-_HASH_STAGED_DIFF_EMPTY_DIGEST="$(printf '' | sha256sum | awk '{print $1}')"
-readonly _HASH_STAGED_DIFF_EMPTY_DIGEST
-
-# _hash_staged_diff CAP_MODE REPO_ROOT [PATHSPEC...]
-# Hashes the staged diff (optionally scoped to PATHSPEC) via
-# `git diff --cached | sha256sum`, printing the hash and returning 0 on
-# real (non-empty) content. CAP_MODE is "capped" to run the git call through
-# _lib_capped's 5s timeout, or "uncapped" to run it directly -- write call
-# sites run uncapped since they run once per completed review, while
-# status/check call sites cap it since they run on every invocation.
-# pipefail is scoped to just this call: a timed-out (or otherwise failed)
-# git leaves sha256sum hashing empty stdin, which succeeds and yields a real
-# (non-empty) hash, so an emptiness check alone can't catch it -- git's own
-# exit status has to gate the hash instead.
-# Prints nothing and returns 1 on failure (non-zero git exit, or an empty
-# hash despite a zero exit).
-# Prints nothing and returns $_HASH_STAGED_DIFF_RC_EMPTY when git succeeded
-# but the diff is empty, classified by comparing the hashed digest itself
-# against $_HASH_STAGED_DIFF_EMPTY_DIGEST.
-# Not a second, separately-timed `git diff --cached --quiet` probe run
-# ahead of the hash -- two decoupled git calls can diverge under transient
-# contention (an index lock, a background git process), and classifying
-# the same digest that gets hashed avoids that TOCTOU race by construction.
-_hash_staged_diff() {
-  local cap_mode="$1" repo_root="$2"; shift 2
-  local -a diff_args=(-C "$repo_root" diff --cached)
-  # -- only when PATHSPECs are given, matching each call site's own
-  # pre-refactor invocation exactly (a bare `diff --cached --` is equivalent
-  # to `diff --cached` to git, but the two are different argv shapes).
-  [ "$#" -gt 0 ] && diff_args+=(-- "$@")
-  local -a diff_cmd
-  case "$cap_mode" in
-    capped) diff_cmd=(_lib_capped git "${diff_args[@]}") ;;
-    uncapped) diff_cmd=(git "${diff_args[@]}") ;;
-    *)
-      printf '_hash_staged_diff: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
-      return 2
-      ;;
-  esac
-  local hash git_exit
-  set -o pipefail
-  hash=$("${diff_cmd[@]}" | sha256sum | awk '{print $1}')
-  git_exit=$?
-  set +o pipefail
-  [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1
-  [ "$hash" = "$_HASH_STAGED_DIFF_EMPTY_DIGEST" ] && return "$_HASH_STAGED_DIFF_RC_EMPTY"
-  printf '%s' "$hash"
-}
-# MARKER_TEST_FIXTURE: hash-staged-diff — end
+_STAGED_DIFF_EMPTY_DIGEST="$(printf '' | sha256sum | awk '{print $1}')"
+readonly _STAGED_DIFF_EMPTY_DIGEST
 
 # _status_glob_has_match DIR PREFIX
 # True iff some file in DIR whose name begins with PREFIX exists, regardless
@@ -296,9 +243,9 @@ _status_report_active_bypass() {
 # Prints TARGET's mtime as a Unix epoch, GNU stat first then BSD/macOS stat --
 # same probe order as ask-new-dependency-disclosure.sh's _file_size (not
 # shared via _lib.sh; that hook's comment names this as the canonical form).
-# Capped at 5s via _lib_capped_for, matching _hash_staged_diff capped's own
-# rationale: a check call (unlike write) reads state it doesn't control, so
-# a stalled stat must not hang the gate it's backing.
+# Capped at 5s via _lib_capped_for, the same rationale _lib_staged_diff_hash's
+# own _lib_capped wrapping carries: a check call (unlike write) reads state
+# it doesn't control, so a stalled stat must not hang the gate it's backing.
 _marker_mtime_epoch() {
   local target="$1"
   _lib_capped_for 5 stat -c%Y -- "$target" 2>/dev/null || _lib_capped_for 5 stat -f%m -- "$target" 2>/dev/null
@@ -446,13 +393,13 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # $_HASH_STAGED_DIFF_EMPTY_DIGEST only equals sha256("") here when
+        # $_STAGED_DIFF_EMPTY_DIGEST only equals sha256("") here when
         # GATE_DIFF_BASE is empty (no trusted in-progress state) and the
         # plain staged diff is itself empty -- a mid-operation degenerate-
         # empty-diff case binds to GATE_DIFF_BASE's own identity instead (see
         # _lib_code_review_marker_value), so this check can't misfire on
         # that case.
-        if [ "$MARKER_VALUE" = "$_HASH_STAGED_DIFF_EMPTY_DIGEST" ]; then
+        if [ "$MARKER_VALUE" = "$_STAGED_DIFF_EMPTY_DIGEST" ]; then
           printf 'marker.sh: staged diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
           exit 0
         fi
@@ -469,19 +416,31 @@ case "$SUBCOMMAND" in
         # require-skill-review.sh checks at commit time. SKILL_REVIEW_PATHSPECS is
         # the module-level constant defined near the top of this file.
         _guard_staged_vs_unstaged "$REPO_ROOT" skill-review "${SKILL_REVIEW_PATHSPECS[@]}"
-        RC=0
-        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}") || RC=$?
-        case "$RC" in
-          0) ;;
-          "$_HASH_STAGED_DIFF_RC_EMPTY")
-            printf 'marker.sh: staged SKILL.md diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
-            exit 0
-            ;;
-          *)
-            printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2
-            exit 2
-            ;;
-        esac
+        # Resolved once and threaded into _lib_staged_diff_hash below, so the
+        # marker records the same novel-content preimage require-skill-review.sh
+        # reads -- a mismatch between write-side and read-side base recipes
+        # would mean a marker written here can never match on the read side.
+        # Mid-revert this excludes (empty stdout), unlike code-review's
+        # GATE_DIFF_BASE above -- see
+        # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+        SKILL_REVIEW_BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
+        # Compute before redirecting: `>` truncates the marker before the
+        # pipeline runs, so a failed hash would destroy a valid marker and
+        # silently force a re-review. Same shape as the code-review arm above.
+        MARKER_VALUE=$(_lib_staged_diff_hash "$REPO_ROOT" "$SKILL_REVIEW_BASE" "${SKILL_REVIEW_PATHSPECS[@]}")
+        if [ -z "$MARKER_VALUE" ]; then
+          printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2
+          exit 2
+        fi
+        # Unlike the code-review arm above, no GATE_DIFF_BASE-identity
+        # binding: skill-review disarms rather than falling through to a
+        # marker comparison on an empty base-relative diff, so it has no
+        # sentinel to reconstruct and a plain sha256("") comparison is
+        # correct in every state.
+        if [ "$MARKER_VALUE" = "$_STAGED_DIFF_EMPTY_DIGEST" ]; then
+          printf 'marker.sh: staged SKILL.md diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
+          exit 0
+        fi
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID"
@@ -765,11 +724,15 @@ case "$SUBCOMMAND" in
 
     printf 'Completion markers (this repo):\n'
 
-    # Resolved once for this subcommand arm and reused by every value below
-    # that needs it -- code-review and plan-review both thread it in
-    # directly; skill-review computes its own hash back to back, since it
-    # does not consume this base. A resolution per value would multiply the
-    # merge-tree cost for the same result.
+    # Resolved once for this subcommand arm and reused by code-review and
+    # plan-review below -- both thread it in directly. skill-review resolves
+    # its own base separately (below) rather than reusing this one: it
+    # excludes revert while this GATE_DIFF_BASE does not, so the two answers
+    # can differ. See
+    # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+    # The extra resolution runs on every status call, including the handoff and ready-for-review skills' calls.
+    # Mid-merge/cherry-pick/rebase it roughly doubles the base resolution's ~7 git spawns and its `merge-tree --write-tree` object writes.
+    # That cost is bounded, so it is accepted.
     GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
 
     # code-review: hash of the whole-repo staged diff, same recipe as the
@@ -785,7 +748,7 @@ case "$SUBCOMMAND" in
     if [ -n "$GATE_DIFF_BASE" ]; then
       CODE_REVIEW_EMPTY_DIFF_HASH=$(_lib_hash_diff_text "$(_lib_code_review_empty_base_sentinel "$GATE_DIFF_BASE")")
     else
-      CODE_REVIEW_EMPTY_DIFF_HASH="$_HASH_STAGED_DIFF_EMPTY_DIGEST"
+      CODE_REVIEW_EMPTY_DIFF_HASH="$_STAGED_DIFF_EMPTY_DIGEST"
     fi
     [ "$CODE_REVIEW_VALUE" = "$CODE_REVIEW_EMPTY_DIFF_HASH" ] && CODE_REVIEW_VALUE=""
     if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
@@ -793,8 +756,13 @@ case "$SUBCOMMAND" in
     fi
 
     # skill-review: same recipe as the `write skill-review` arm above,
-    # scoped to the SKILL.md/ROUTING.md pathspecs and gated the same way.
-    SKILL_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
+    # scoped to the SKILL.md/ROUTING.md pathspecs. No GATE_DIFF_BASE-identity
+    # binding to exclude here (unlike code-review above): skill-review has
+    # no sentinel to reconstruct, so a plain sha256("") comparison is
+    # unconditional, not gated on a non-empty base.
+    SKILL_REVIEW_BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
+    SKILL_REVIEW_VALUE=$(_lib_staged_diff_hash "$REPO_ROOT" "$SKILL_REVIEW_BASE" "${SKILL_REVIEW_PATHSPECS[@]}")
+    [ "$SKILL_REVIEW_VALUE" = "$_STAGED_DIFF_EMPTY_DIGEST" ] && SKILL_REVIEW_VALUE=""
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"
     fi
@@ -885,7 +853,7 @@ case "$SUBCOMMAND" in
         if [ -n "$GATE_DIFF_BASE" ]; then
           EMPTY_DIFF_HASH=$(_lib_hash_diff_text "$(_lib_code_review_empty_base_sentinel "$GATE_DIFF_BASE")")
         else
-          EMPTY_DIFF_HASH="$_HASH_STAGED_DIFF_EMPTY_DIGEST"
+          EMPTY_DIFF_HASH="$_STAGED_DIFF_EMPTY_DIGEST"
         fi
         if [ "$MARKER_VALUE" = "$EMPTY_DIFF_HASH" ]; then
           printf 'no-match\n'

@@ -5880,6 +5880,46 @@ class TestGateDiffBaseSha256ObjectFormat:
         _assert_valid_tree_oid(repo, result.stdout)
 
 
+class TestGateDiffBaseAnchorNamespaceShadow:
+    """A local branch or tag literally named `origin/<default>` outranks the
+    remote-tracking ref under git's short-name resolution, so the anchor
+    check must use the fully-qualified refs/remotes/ path."""
+
+    @pytest.mark.parametrize("shadow_kind", ["branch", "tag"])
+    @pytest.mark.parametrize("has_remote_tracking_ref", [True, False])
+    @pytest.mark.parametrize("state", ["merge", "cherry-pick"])
+    def test_local_ref_named_like_remote_tracking_ref_is_not_the_anchor(
+        self, tmp_path: Path, shadow_kind: str, has_remote_tracking_ref: bool, state: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "f.txt").write_text("unreviewed\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "unreviewed commit")
+        unreviewed_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        if has_remote_tracking_ref:
+            _run_git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        if shadow_kind == "branch":
+            _run_git(repo, "branch", "origin/main", unreviewed_oid)
+        else:
+            _run_git(repo, "tag", "origin/main", unreviewed_oid)
+        _forge_state_marker(repo / ".git", state, unreviewed_oid)
+
+        # Precondition: the short name resolves to the shadow, so the test
+        # fails against an anchor spelled `origin/<default>`.
+        shadowed_oid = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "origin/main"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert shadowed_oid == unreviewed_oid
+
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
 class TestGateDiffBaseUntrustedAnchor:
     def test_reaches_neither_anchor_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         """A cherry-pick whose source was never pushed anywhere over-gates
@@ -6610,3 +6650,43 @@ class TestStagedDiffHash:
         result = _staged_diff_hash(repo, "", env=env, timeout=30)
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+# --- Cross-copy parity of the shared gate-base closure -----------------------
+
+_SHARED_CLOSURE_FUNCTIONS = [
+    "_lib_capped",
+    "_lib_capped_for",
+    "_lib_default_branch_from_origin_head",
+    "_lib_default_branch_or_guess",
+    "_lib_git_inprogress_state",
+    "_lib_gate_diff_base",
+    "_lib_skill_review_diff_base",
+    "_lib_staged_diff_hash",
+    "_lib_marker_value_present",
+]
+
+
+def _declared_function_body(lib_path: Path, function_name: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", '. "$1"; declare -f "$2"', "bash", str(lib_path), function_name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0 and result.stdout, (
+        f"{function_name} is not defined by {lib_path}: {result.stderr}"
+    )
+    return result.stdout
+
+
+@pytest.mark.parametrize("function_name", _SHARED_CLOSURE_FUNCTIONS)
+def test_shared_closure_function_is_identical_across_stowed_and_plugin_lib(
+    function_name: str,
+) -> None:
+    """The plugin cannot source the stowed _lib.sh, so it carries copies of the
+    gate-base closure. The marker recipe and the anchor check must not drift
+    between them: a marker written under one recipe would never match the
+    other side, or one copy would carry a weaker anchor."""
+    assert _declared_function_body(_LIB_SH, function_name) == _declared_function_body(
+        _SKILL_MANAGEMENT_PLUGIN_LIB, function_name
+    )

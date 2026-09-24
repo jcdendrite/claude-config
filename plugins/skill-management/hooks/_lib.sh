@@ -290,7 +290,7 @@ _lib_gate_diff_base() {
   local default_branch anchor_reached=1
   default_branch=$(_lib_default_branch_or_guess "$repo_root")
   if [ -n "$default_branch" ] \
-    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "origin/$default_branch" >/dev/null 2>&1
+    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "refs/remotes/origin/$default_branch" >/dev/null 2>&1
   then
     anchor_reached=0
   elif _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" HEAD >/dev/null 2>&1; then

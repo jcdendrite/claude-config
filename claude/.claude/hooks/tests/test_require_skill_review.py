@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -11,14 +12,18 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    SCRIPTS_DIR,
     _make_git_exiting_with_status,
     _make_git_recording_argv,
     absolute_git_dir,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_cherry_pick,
     build_conflicted_merge,
+    build_conflicted_merge_via_origin_with_upstream_skill_edit,
     build_conflicted_revert,
+    build_octopus_merge_conflict,
     edit_input,
     extract_skill_command,
     push_conflicting_edit_to_origin,
@@ -26,6 +31,7 @@ from helpers import (
     run_hook_reason,
     run_skill_command,
     skill_review_marker_path,
+    staged_diff_hash_at_base,
     write_skill_review_marker,
 )
 
@@ -2533,3 +2539,1737 @@ class TestCorpusBudgetWarning:
             )
             == "allow"
         )
+
+
+def _build_reported_bug_fixture_in_linked_worktree(tmp_path):
+    """Linked-worktree variant of
+    build_conflicted_merge_via_origin_with_upstream_skill_edit (helpers.py):
+    the local commit, the fetch/merge, and the resolution all happen inside
+    a linked worktree rather than the main clone. Duplicated rather than
+    adding a workdir parameter to the shared helper --
+    push_conflicting_edit_to_origin only rewrites one file per call, and
+    this fixture's upstream commit edits two (the conflict file and
+    SKILL.md) in the same commit, so the push side can't be expressed
+    through that shared helper either way.
+
+    The worktree's own local branch is named "wt-branch" because "main" is
+    already checked out in `clone`. Every push below still targets origin's
+    "main" ref (`wt-branch:main`), not a same-named "wt-branch" ref on
+    origin, because _lib_default_branch_or_guess resolves "main" as the
+    default branch (bare_remote_with_default_branch's own origin/HEAD) and
+    the anchor check needs content reachable from origin/main specifically."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    worktree = tmp_path / "linked-worktree-reported-bug"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "wt-branch", str(worktree)], cwd=clone, check=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
+
+    skill_rel_path = "claude-skills/skills/example-skill/SKILL.md"
+    skill_path = worktree / skill_rel_path
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("base skill\n")
+    subprocess.run(["git", "add", skill_rel_path], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=worktree, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "wt-branch:main"], cwd=worktree, check=True)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=worktree, check=True)
+
+    (worktree / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=worktree, check=True)
+
+    push_clone = tmp_path / "_push_upstream_skill_edit_linked_worktree"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / "f").write_text("origin-edit\n")
+    (push_clone / skill_rel_path).write_text("upstream edited skill\n")
+    subprocess.run(["git", "add", "f", skill_rel_path], cwd=push_clone, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "origin edits f and SKILL.md"], cwd=push_clone, check=True
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=worktree, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=worktree, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(worktree) / "MERGE_HEAD").exists()
+    (worktree / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=worktree, check=True)
+    return worktree
+
+
+def _build_armed_fixture(tmp_path):
+    """The armed fixture named in Dispatch B's Verification section: gated
+    file Y (claude-skills/skills/untouched-skill/SKILL.md) arrives
+    untouched from upstream, so its base-relative diff is empty, while the
+    resolution adds a different gated file X
+    (claude-skills/skills/resolved-skill/SKILL.md), entirely absent from
+    both sides of the merge and so genuinely novel relative to the base --
+    the HEAD-relative gated set is {Y, X} and the base-relative one is {X},
+    provably differing. The conflict itself is engineered in an unrelated
+    file ("f"), so MERGE_HEAD persists to a resolvable state."""
+    repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(
+        tmp_path, skill_name="untouched-skill"
+    )
+    x_dir = repo / "claude-skills" / "skills" / "resolved-skill"
+    x_dir.mkdir(parents=True)
+    (x_dir / "SKILL.md").write_text("---\nname: resolved-skill\ndescription: ok\n---\n# body\n")
+    subprocess.run(
+        ["git", "add", "claude-skills/skills/resolved-skill/SKILL.md"], cwd=repo, check=True
+    )
+    return repo
+
+
+def _assert_armed_fixture_preimages_differ(repo, pathspecs=None):
+    """Precondition every marker-behavior test on this fixture asserts, per
+    Dispatch B's Verification section: oracle(base="") != oracle(base)."""
+    pathspecs = pathspecs or ()
+    base = _merge_tree_base(repo)
+    head_relative = staged_diff_hash_at_base(repo, "", *pathspecs)
+    base_relative = staged_diff_hash_at_base(repo, base, *pathspecs)
+    assert head_relative != base_relative, (
+        "armed fixture is not actually armed: HEAD-relative and "
+        "base-relative preimages are identical"
+    )
+
+
+_WELL_FORMED_SKILL_MD = "---\nname: clean\ndescription: ok\n---\n# body\n"
+_BROKEN_SKILL_MD = "---\nname: broken\ndescription: [unclosed\n---\n# body\n"
+
+_MARKER_PATHSPECS = (
+    "claude-skills/skills/**/SKILL.md",
+    "plugins/*/skills/**/SKILL.md",
+    "skills/**/SKILL.md",
+    ".claude/skills/**/SKILL.md",
+    "claude-skills/skills/plan-review/ROUTING.md",
+)
+
+
+class TestSkillReviewGateMergeAwareVerdict:
+    """The gate's verdict, end to end, mid-merge -- the fix for GH-1076
+    (the reported bug) plus the still-armed and marker-agreement proofs
+    that pin it does not over-disarm."""
+
+    @pytest.mark.parametrize("fixture_kind", ["plain_clone", "linked_worktree"])
+    def test_reported_bug_upstream_skill_edit_allows_with_no_marker(
+        self, isolated_home, tmp_path, fixture_kind
+    ):
+        """The reported bug, end to end: upstream edits a gated SKILL.md the
+        local branch never touched, the conflict is engineered in an
+        unrelated file, and the commit that completes the resolved merge
+        allows with no marker on disk. Three preconditions checked through
+        primitives so this cannot pass vacuously. Parametrized over a plain
+        clone and a linked worktree, since this repo enforces worktree
+        discipline (CLAUDE.md's worktree-enforcement section) and
+        contributors hit GH-1076 from inside one, not the main checkout."""
+        repo = (
+            build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+            if fixture_kind == "plain_clone"
+            else _build_reported_bug_fixture_in_linked_worktree(tmp_path)
+        )
+
+        # Precondition 1: the fixture reaches a trusted anchor.
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip(), (
+            f"fixture did not reach a trusted anchor: rc={base_result.returncode} "
+            f"stdout={base_result.stdout!r}"
+        )
+        # Precondition 2: the HEAD-relative gated set is non-empty -- the
+        # old gate would have fired.
+        head_relative_diff = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--",
+             "claude-skills/skills/**/SKILL.md"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert head_relative_diff.strip(), "precondition failed: HEAD-relative gated set is empty"
+        # Precondition 3: the base-relative one is empty.
+        base_relative_diff = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", base_result.stdout.strip(), "--",
+             "claude-skills/skills/**/SKILL.md"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert base_relative_diff.strip() == "", (
+            "precondition failed: base-relative gated set is not empty"
+        )
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="reported-bug-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_resolution_editing_a_second_skill_md_still_denies(self, isolated_home, tmp_path):
+        """Still armed where it must be: a resolution that edits a gated
+        SKILL.md (even one entirely separate from the untouched-upstream
+        file) denies."""
+        repo = _build_armed_fixture(tmp_path)
+        _assert_armed_fixture_preimages_differ(repo, _MARKER_PATHSPECS)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="still-armed-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_resolution_editing_routing_md_still_denies(self, isolated_home, tmp_path):
+        """Still armed where it must be, ROUTING_DIFF arm: ROUTING_DIFF and
+        SKILL_DIFF are separate variables feeding different downstream
+        consumers, so this is checked independently of the SKILL.md arm
+        above."""
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        routing_dir = repo / "claude-skills" / "skills" / "plan-review"
+        routing_dir.mkdir(parents=True)
+        (routing_dir / "ROUTING.md").write_text("# routing\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/plan-review/ROUTING.md"], cwd=repo, check=True
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="still-armed-routing-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_revert_stays_armed_with_gated_removal(self, isolated_home, git_repo):
+        """Revert stays armed (M-8): mid-conflicted-revert with a gated
+        removal in the index, the gate denies with the marker-gate reason,
+        and the same fixture's _lib_gate_diff_base is asserted to return a
+        tree -- so the deny is the exclusion firing, not an anchor
+        failure."""
+        skill_dir = git_repo / "claude-skills" / "skills" / "revert-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# revert skill\noriginal content\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/revert-skill/SKILL.md"], cwd=git_repo, check=True
+        )
+        subprocess.run(["git", "commit", "-qm", "seed skill"], cwd=git_repo, check=True)
+        skill_md.write_text("# revert skill\nremoved line replaced\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/revert-skill/SKILL.md"], cwd=git_repo, check=True
+        )
+        subprocess.run(["git", "commit", "-qm", "edit skill"], cwd=git_repo, check=True)
+        skill_edit_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        skill_md.write_text("# revert skill\nyet another edit\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/revert-skill/SKILL.md"], cwd=git_repo, check=True
+        )
+        subprocess.run(["git", "commit", "-qm", "edit skill again"], cwd=git_repo, check=True)
+        revert_result = subprocess.run(
+            ["git", "revert", "--no-edit", skill_edit_oid],
+            cwd=git_repo, capture_output=True, text=True,
+        )
+        assert revert_result.returncode != 0, revert_result.stdout + revert_result.stderr
+        assert (absolute_git_dir(git_repo) / "REVERT_HEAD").exists()
+        skill_md.write_text("# revert skill\nresolved by keeping a removal\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/revert-skill/SKILL.md"], cwd=git_repo, check=True
+        )
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip(), (
+            "precondition failed: _lib_gate_diff_base did not return a tree mid-revert"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m revert", session_id="revert-armed-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_a_cherry_pick_allow_deny_pair(self, isolated_home, tmp_path):
+        """A cherry-pick allow/deny pair, since the hook's code past the
+        base is state-agnostic and one non-merge state suffices to prove
+        cherry-pick reaches the same disarm/arm machinery as merge."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        skill_rel = "claude-skills/skills/cherry-skill/SKILL.md"
+        skill_path = clone / skill_rel
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("base skill\n")
+        subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed skill"], cwd=clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+        (clone / "local.txt").write_text("ours\n")
+        subprocess.run(["git", "add", "local.txt"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "local commit"], cwd=clone, check=True)
+
+        push_clone = tmp_path / "_push_cherry_pick_skill_edit"
+        subprocess.run(
+            ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+        )
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+        (push_clone / skill_rel).write_text("upstream edited skill\n")
+        subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "origin edits SKILL.md"], cwd=push_clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+        # Allow arm: `-e` with a failing GIT_EDITOR stops the pick after it
+        # cleanly applies and stages the change, leaving CHERRY_PICK_HEAD in
+        # place the way an interrupted pick does -- plain `-n` does NOT
+        # leave CHERRY_PICK_HEAD behind on a clean, non-conflicting apply
+        # (confirmed empirically), so it cannot anchor this fixture.
+        pick_result = subprocess.run(
+            ["git", "cherry-pick", "-e", "origin/main"],
+            cwd=clone, capture_output=True, text=True,
+            env={**os.environ, "GIT_EDITOR": "false"},
+        )
+        assert pick_result.returncode != 0, pick_result.stdout + pick_result.stderr
+        assert (absolute_git_dir(clone) / "CHERRY_PICK_HEAD").exists()
+        assert (clone / skill_rel).read_text() == "upstream edited skill\n"
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m cherry-pick-allow", session_id="cherry-pick-allow"),
+                cwd=clone,
+            )
+            == "allow"
+        )
+
+        # Deny arm: same state, plus a second, genuinely novel gated file
+        # added to the staged resolution.
+        second_dir = clone / "claude-skills" / "skills" / "cherry-second"
+        second_dir.mkdir(parents=True)
+        (second_dir / "SKILL.md").write_text("# second\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/cherry-second/SKILL.md"], cwd=clone, check=True
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m cherry-pick-deny", session_id="cherry-pick-deny"),
+            cwd=clone,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+
+class TestSkillReviewGateMarkerAgreement:
+    """Write / read agreement on the armed fixture: a marker built from the
+    correct base-relative oracle allows, one built from the stale
+    HEAD-relative oracle denies, and outside any in-progress state the old
+    HEAD-relative preimage still allows -- proving no marker on disk
+    invalidates when this ships."""
+
+    def test_old_head_relative_marker_denies_mid_merge(self, isolated_home, tmp_path):
+        repo = _build_armed_fixture(tmp_path)
+        _assert_armed_fixture_preimages_differ(repo, _MARKER_PATHSPECS)
+        old_value = staged_diff_hash_at_base(repo, "", *_MARKER_PATHSPECS)
+        marker = skill_review_marker_path(isolated_home, repo, session_id="old-marker-session")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(old_value + "\n")
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="old-marker-session"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_new_base_relative_marker_allows_mid_merge(self, isolated_home, tmp_path):
+        repo = _build_armed_fixture(tmp_path)
+        _assert_armed_fixture_preimages_differ(repo, _MARKER_PATHSPECS)
+        base = _merge_tree_base(repo)
+        new_value = staged_diff_hash_at_base(repo, base, *_MARKER_PATHSPECS)
+        marker = skill_review_marker_path(isolated_home, repo, session_id="new-marker-session")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(new_value + "\n")
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="new-marker-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_old_head_relative_marker_still_allows_outside_any_state(
+        self, isolated_home, git_repo
+    ):
+        """What proves no marker on disk invalidates when this ships: the
+        old HEAD-relative preimage is still exactly what's checked outside
+        any trusted in-progress state (BASE resolves empty), so an
+        already-existing marker keeps matching."""
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+
+def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_resolution(
+    tmp_path,
+):
+    """Direction 1's armed fixture: gated file Y arrives malformed from
+    upstream, untouched by the resolution (its base-relative diff must
+    stay empty, so it cannot be malformed by editing it after the merge --
+    the malformed content has to originate in the upstream commit itself);
+    gated file X is well-formed and novel to the resolution."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    y_rel = "claude-skills/skills/malformed-untouched-skill/SKILL.md"
+    y_path = clone / y_rel
+    y_path.parent.mkdir(parents=True)
+    y_path.write_text(_WELL_FORMED_SKILL_MD)
+    subprocess.run(["git", "add", y_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "_push_malformed_untouched_skill"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / "f").write_text("origin-edit\n")
+    (push_clone / y_rel).write_text(_BROKEN_SKILL_MD)
+    subprocess.run(["git", "add", "f", y_rel], cwd=push_clone, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "origin edits f and malforms SKILL.md"], cwd=push_clone, check=True
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+
+    x_dir = clone / "claude-skills" / "skills" / "novel-well-formed-skill"
+    x_dir.mkdir(parents=True)
+    (x_dir / "SKILL.md").write_text(_WELL_FORMED_SKILL_MD)
+    subprocess.run(
+        ["git", "add", "claude-skills/skills/novel-well-formed-skill/SKILL.md"],
+        cwd=clone, check=True,
+    )
+    return clone
+
+
+class TestSkillReviewGateStructuralValidatorScoping:
+    """M-4: the structural validator's input is scoped to the base-relative
+    path list, both directions, non-vacuously."""
+
+    def test_malformed_untouched_upstream_file_does_not_deny(self, isolated_home, tmp_path):
+        """Direction 1: gated file Y arrives malformed from upstream and
+        untouched by the resolution; gated file X is well-formed and novel
+        to the resolution. With an oracle-seeded marker covering X's own
+        base-relative content, the commit allows -- Y's malformed content
+        never reaches the validator since it isn't in the base-relative
+        path list, and it also can't reach the marker hash (which is also
+        base-relative), so X's own marker is what has to authorize this."""
+        repo = _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_resolution(
+            tmp_path
+        )
+        base = _merge_tree_base(repo)
+        marker = skill_review_marker_path(isolated_home, repo, session_id="malformed-y-session")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(staged_diff_hash_at_base(repo, base, *_MARKER_PATHSPECS) + "\n")
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="malformed-y-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_malformed_untouched_upstream_file_with_no_marker_denies_the_gate_not_the_validator(
+        self, isolated_home, tmp_path
+    ):
+        """Same fixture, no marker: the deny still names the skill-review
+        gate, not the structural validator -- proving Y's malformed
+        content is excluded from the validator's input regardless of
+        marker state."""
+        repo = _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_resolution(
+            tmp_path
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="malformed-y-no-marker"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "skill-review gate" in reason
+        assert "structural validator" not in reason
+
+    def test_malformed_resolution_edit_denies_naming_only_that_file(
+        self, isolated_home, tmp_path
+    ):
+        """Direction 2: the resolution also malforms a *different* gated
+        file X; the deny names X's repo-relative path and does not name Y
+        -- Y's absence is what distinguishes base-relative from
+        HEAD-relative validator input."""
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        x_dir = repo / "claude-skills" / "skills" / "malformed-resolution-skill"
+        x_dir.mkdir(parents=True)
+        (x_dir / "SKILL.md").write_text(_BROKEN_SKILL_MD)
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/malformed-resolution-skill/SKILL.md"],
+            cwd=repo, check=True,
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="malformed-x-session"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "structural validator" in reason
+        assert "claude-skills/skills/malformed-resolution-skill/SKILL.md" in reason
+        assert "claude-skills/skills/example-skill/SKILL.md" not in reason
+
+
+class TestSkillReviewGateStatusVisibility:
+    """Status 2 (the base could not be computed) is visible in the deny
+    text and changes no verdict."""
+
+    def test_undetermined_base_denies_and_names_it_mid_merge(self, isolated_home, tmp_path):
+        import shutil
+
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        x_dir = repo / "claude-skills" / "skills" / "undetermined-base-skill"
+        x_dir.mkdir(parents=True)
+        (x_dir / "SKILL.md").write_text("# novel\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/undetermined-base-skill/SKILL.md"],
+            cwd=repo, check=True,
+        )
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="undetermined-base-session"),
+            cwd=repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None
+        assert "skill-review gate" in reason
+        assert "gated against HEAD" in reason
+
+    def test_undetermined_base_allows_with_head_relative_marker(self, isolated_home, tmp_path):
+        import shutil
+
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        x_dir = repo / "claude-skills" / "skills" / "undetermined-base-skill-allow"
+        x_dir.mkdir(parents=True)
+        (x_dir / "SKILL.md").write_text("# novel\n")
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/undetermined-base-skill-allow/SKILL.md"],
+            cwd=repo, check=True,
+        )
+        marker = skill_review_marker_path(
+            isolated_home, repo, session_id="undetermined-base-allow-session"
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(staged_diff_hash_at_base(repo, "", *_MARKER_PATHSPECS) + "\n")
+
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "git commit -m merge", session_id="undetermined-base-allow-session"
+                ),
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "allow"
+        )
+
+
+class TestSkillReviewGateNoCapBinaryAndHashFailure:
+    """G-5, row 17: with neither timeout(1) nor gtimeout(1) on PATH, the
+    base resolves uncapped and the disarm still fires. Row 24: a hash
+    computation failure denies, never allows."""
+
+    def test_no_cap_binary_on_path_mid_merge_allows(self, isolated_home, tmp_path):
+        import shutil
+
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        bin_dir = tmp_path / "bin-without-timeout"
+        bin_dir.mkdir()
+        for cmd in (
+            "git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname",
+            "mkdir", "rm", "cat", "python3",
+        ):
+            cmd_path = shutil.which(cmd)
+            if not cmd_path:
+                pytest.skip(f"{cmd} not found in PATH")
+            (bin_dir / cmd).symlink_to(cmd_path)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="no-cap-binary-session"),
+                cwd=repo,
+                extra_env={"PATH": str(bin_dir)},
+            )
+            == "allow"
+        )
+
+    def test_broken_sha256sum_denies_mid_merge(self, isolated_home, tmp_path):
+        repo = _build_armed_fixture(tmp_path)
+        bin_dir = tmp_path / "bin-broken-sha256sum"
+        bin_dir.mkdir()
+        broken = bin_dir / "sha256sum"
+        broken.write_text("#!/bin/bash\nexit 1\n")
+        broken.chmod(0o755)
+        extra_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="broken-sha256sum-session"),
+            cwd=repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+
+def _build_unpushed_local_branch_merge_with_untouched_gated_skill(
+    tmp_path, skill_name="anchor-skill"
+):
+    """Same shape as build_conflicted_merge_via_origin_with_upstream_skill_edit
+    (helpers.py) -- gated content arrives untouched by the resolution, the
+    conflict is engineered in an unrelated file -- except "theirs" is a
+    LOCAL branch that is never pushed. _lib_gate_diff_base's anchor check
+    requires the in-progress state's OID to be an ancestor of
+    origin/<default> or of HEAD; an unpushed local branch tip is neither,
+    so this reaches no trusted anchor. If the anchor check were skipped,
+    this fixture would disarm exactly like the trusted via-origin one --
+    proving the allow in that sibling test depends on the anchor check,
+    not merely on "the gate is off mid-merge"."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_rel = f"claude-skills/skills/{skill_name}/SKILL.md"
+    skill_path = clone / skill_rel
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("base skill\n")
+    subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    subprocess.run(["git", "checkout", "-qb", "theirs"], cwd=clone, check=True)
+    (clone / "f").write_text("theirs-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    skill_path.write_text("theirs edited skill\n")
+    subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "theirs edits f and skill"], cwd=clone, check=True)
+
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=clone, check=True)
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+
+    result = subprocess.run(
+        ["git", "merge", "-q", "theirs"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    return clone
+
+
+class TestSkillReviewGateAnchorRejection:
+    """Anchor rejection at verdict level: the deny counter to the allow
+    proven by test_reported_bug_upstream_skill_edit_allows_with_no_marker,
+    and the only place M-1's central closure-copy claim (that a forged or
+    untrusted anchor cannot release the gate) is tested end to end rather
+    than against the primitive directly."""
+
+    def test_unpushed_local_branch_merge_denies_with_untouched_gated_skill(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_unpushed_local_branch_merge_with_untouched_gated_skill(tmp_path)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 1 and base_result.stdout == "", (
+            f"precondition failed: unpushed local-branch merge unexpectedly "
+            f"reached a trusted anchor: rc={base_result.returncode} "
+            f"stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="unpushed-branch-anchor-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_fabricated_remote_tracking_ref_denies_with_gated_content_staged(
+        self, isolated_home, tmp_path
+    ):
+        """A fabricated refs/remotes/origin/<name> ref pointing at an
+        unreachable commit must not anchor the gate --
+        _lib_default_branch_or_guess's candidate probe is deliberately
+        narrow (exactly main/master/develop) and never resolves to this
+        name. Mirrors
+        test_lib.py::TestGateDiffBaseUntrustedAnchor.test_reachable_only_from_fabricated_remote_tracking_ref_still_falls_back
+        at verdict level, with genuinely staged gated content in the index
+        so the deny proves the anchor rejection rather than an
+        accidentally-empty diff."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        subprocess.run(["git", "checkout", "-qb", "side"], cwd=clone, check=True)
+        skill_rel = "claude-skills/skills/fabricated-anchor-skill/SKILL.md"
+        skill_path = clone / skill_rel
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("side content\n")
+        subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "side commit"], cwd=clone, check=True)
+        side_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=clone, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=clone, check=True)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/totally-not-the-default", side_oid],
+            cwd=clone,
+            check=True,
+        )
+        (absolute_git_dir(clone) / "MERGE_HEAD").write_text(side_oid + "\n")
+        _stage_skill_change(clone)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(clone))
+        assert base_result.returncode == 1 and base_result.stdout == "", (
+            f"precondition failed: fabricated remote-tracking ref unexpectedly "
+            f"reached a trusted anchor: rc={base_result.returncode} "
+            f"stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="fabricated-anchor-session"),
+            cwd=clone,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    @pytest.mark.parametrize("shadow_kind", ["branch", "tag"])
+    @pytest.mark.parametrize("has_remote_tracking_ref", [True, False])
+    def test_local_ref_named_like_remote_tracking_ref_denies_with_gated_content_staged(
+        self, isolated_home, tmp_path, shadow_kind, has_remote_tracking_ref
+    ):
+        """A local branch or tag named `origin/main` resolves ahead of the
+        real remote-tracking ref under git's short-name rules, so an anchor
+        spelled `origin/<default>` would trust a MERGE_HEAD pointing at an
+        unreviewed commit. Mirrors
+        test_lib.py::TestGateDiffBaseAnchorNamespaceShadow at verdict level."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "f").write_text("seed\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+        subprocess.run(["git", "checkout", "-qb", "side"], cwd=repo, check=True)
+        # The side commit carries the exact skill content later staged on
+        # main, so a trusted shadow anchor would read it as already reviewed
+        # and disarm the gate.
+        _stage_skill_change(repo)
+        subprocess.run(["git", "commit", "-qm", "unreviewed skill commit"], cwd=repo, check=True)
+        unreviewed_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+        if has_remote_tracking_ref:
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+            )
+        subprocess.run(["git", shadow_kind, "origin/main", unreviewed_oid], cwd=repo, check=True)
+        (absolute_git_dir(repo) / "MERGE_HEAD").write_text(unreviewed_oid + "\n")
+        _stage_skill_change(repo)
+
+        shadowed_oid = subprocess.run(
+            ["git", "rev-parse", "origin/main"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert shadowed_oid == unreviewed_oid, "precondition: the short name must resolve to the shadow"
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 1 and base_result.stdout == "", (
+            f"precondition failed: shadow ref reached a trusted anchor: "
+            f"rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="shadow-anchor-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_non_hex_state_ref_denies_with_gated_content_staged(self, isolated_home, git_repo):
+        """A state ref file is plain, unauthenticated content anyone with
+        filesystem access could write directly. Writing the literal text
+        "HEAD" -- syntactically a valid revision, trivially its own
+        ancestor -- must not anchor the gate absent state_oid's own
+        40/64-hex shape check. Mirrors
+        test_lib.py::TestGateDiffBaseUntrustedAnchor.test_resolvable_non_hex_state_ref_falls_back
+        at verdict level."""
+        (absolute_git_dir(git_repo) / "MERGE_HEAD").write_text("HEAD\n")
+        _stage_skill_change(git_repo)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
+        assert base_result.returncode == 1 and base_result.stdout == "", (
+            f"precondition failed: non-hex state ref unexpectedly reached a "
+            f"trusted anchor: rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="non-hex-anchor-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+    def test_octopus_merge_head_denies_with_gated_content_staged(self, isolated_home, git_repo):
+        """A genuine two-line MERGE_HEAD, the shape a real octopus-merge
+        attempt leaves, must not anchor the gate -- state_oid's shape
+        validation rejects the multi-line value outright. Mirrors
+        test_lib.py::TestGateDiffBaseTopologyFallback.test_octopus_merge_falls_back_to_empty_base
+        at verdict level."""
+        build_octopus_merge_conflict(git_repo)
+        _stage_skill_change(git_repo)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
+        assert base_result.returncode == 1 and base_result.stdout == "", (
+            f"precondition failed: octopus MERGE_HEAD unexpectedly reached a "
+            f"trusted anchor: rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="octopus-anchor-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+
+def _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path, name="repo"):
+    """Reproduces the forged-anchor residual with git-CLI-only forgery: no
+    real `git merge`, no `commit-tree`, no object the actor didn't already
+    have -- the same construction
+    test_require_plan_review.py::_build_hand_forged_anchor_no_real_merge uses
+    for the plan-review gate's own forged-anchor residual, adapted for a
+    base-relative git-diff gate rather than an active-plan-set one.
+    MERGE_HEAD and refs/remotes/origin/main are hand-written to the same
+    sibling-branch commit OID, so "is $state_oid an ancestor of origin/main"
+    holds trivially (a commit is its own ancestor) with no real merge, push,
+    or fetch involved. The sibling commit edits only an unrelated file, so
+    the forged base carries no gated content of its own -- the deny arm
+    stages a genuinely novel gated SKILL.md edit on top of this same
+    fixture."""
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f").write_text("seed\n")
+    subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+
+    subprocess.run(["git", "checkout", "-q", "-b", "sibling"], cwd=repo, check=True)
+    (repo / "f").write_text("sibling edits an unrelated file\n")
+    subprocess.run(["git", "commit", "-qam", "sibling edits f"], cwd=repo, check=True)
+    sibling_oid = subprocess.run(
+        ["git", "rev-parse", "sibling"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+    (absolute_git_dir(repo) / "MERGE_HEAD").write_text(sibling_oid + "\n")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", sibling_oid], cwd=repo, check=True
+    )
+    return repo
+
+
+class TestSkillReviewGateForgedAnchorResidual:
+    """The forged-anchor residual G-3 accepts, pinned both ways in
+    test_require_plan_review.py::test_hand_forged_anchor_no_real_merge_allows_unrelated_write's
+    style: the same forged anchor allows absent any gated content, and
+    denies the moment gated content is genuinely staged, so a later
+    tightening or loosening of the residual shows up as a visible test
+    change rather than a silent one."""
+
+    def test_hand_forged_anchor_no_real_merge_no_gated_content_allows(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip(), (
+            f"precondition failed: forged anchor did not reach a trusted "
+            f"anchor: rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id="forged-anchor-allow-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_with_gated_edit_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Guards against the allow above passing only because the gate is
+        simply off for this fixture's state: a gated SKILL.md staged on top
+        of the same forged anchor is novel relative to it and still demands
+        a review."""
+        repo = _build_hand_forged_anchor_no_real_merge_skill_review(tmp_path)
+        _stage_skill_change(repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id="forged-anchor-deny-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+
+
+def _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path):
+    """Row 16: the conflict IS the gated SKILL.md itself, left unresolved
+    and unstaged (a `UU` index entry) rather than resolved and re-staged --
+    proving gated_paths_at_base's `--name-only` listing still reports the
+    gated path while it is an unmerged index entry, keeping the gate armed
+    until it is resolved and staged. Unlike
+    build_conflicted_merge_via_origin_with_upstream_skill_edit (helpers.py),
+    whose conflict is engineered in an unrelated file so SKILL.md
+    auto-merges cleanly, this fixture puts the conflict in SKILL.md
+    itself."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_rel = "claude-skills/skills/unresolved-conflict-skill/SKILL.md"
+    skill_path = clone / skill_rel
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("base skill\n")
+    subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    skill_path.write_text("ours-edit\n")
+    subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits SKILL.md"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "_push_unresolved_skill_conflict"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / skill_rel).write_text("origin-edit\n")
+    subprocess.run(["git", "add", skill_rel], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin edits SKILL.md"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    # Deliberately left unresolved and unstaged -- the point of this fixture.
+    return clone
+
+
+class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
+    """Row 16, pinned at two layers: the git-primitive fact that
+    `--name-only` still lists an unmerged path against a tree argument (not
+    just bare HEAD), and the hook-verdict consequence -- a conflicted gated
+    file that is still unmerged and unstaged keeps the gate armed."""
+
+    def test_unmerged_gated_path_still_lists_under_name_only_against_a_tree(self, tmp_path):
+        """Unit layer, modeled on
+        test_lib.py::test_git_diff_cached_against_unresolved_conflict_git_primitive_fact:
+        gated_paths_at_base's own invocation shape (`--name-only`, a tree
+        argument, a pathspec) still reports an unmerged path, so a
+        conflicted SKILL.md is not silently dropped from the base-relative
+        listing merely because it carries a tree argument."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        skill_rel = "claude-skills/skills/conflicted-skill/SKILL.md"
+        skill_path = repo / skill_rel
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("base\n")
+        subprocess.run(["git", "add", skill_rel], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+        base_oid = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        subprocess.run(["git", "checkout", "-qb", "theirs"], cwd=repo, check=True)
+        skill_path.write_text("theirs\n")
+        subprocess.run(["git", "commit", "-qam", "theirs edits skill"], cwd=repo, check=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+        skill_path.write_text("ours\n")
+        subprocess.run(["git", "commit", "-qam", "ours edits skill"], cwd=repo, check=True)
+        result = subprocess.run(
+            ["git", "merge", "-q", "theirs"], cwd=repo, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (absolute_git_dir(repo) / "MERGE_HEAD").exists()
+
+        listing = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--cached", "--name-only", base_oid, "--", skill_rel],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert skill_rel in listing.splitlines()
+
+    def test_unmerged_gated_conflict_stays_armed_and_denies(self, isolated_home, tmp_path):
+        """Verdict layer: mid-conflicted-merge with a gated file itself
+        conflicted and unstaged, the gate denies -- with the trusted-anchor
+        precondition asserted, so the deny is the unmerged-path listing
+        keeping the gate armed rather than the anchor check itself
+        failing."""
+        repo = _build_conflicted_merge_via_origin_with_unresolved_skill_conflict(tmp_path)
+
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip(), (
+            f"precondition failed: fixture did not reach a trusted anchor: "
+            f"rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="unmerged-conflict-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+
+def _listing_only_failure_shim_env(tmp_path):
+    """A git shim that fails only a `--name-only`-shaped call --
+    gated_paths_at_base's own invocation, and the only closure/wrapper call
+    site that passes that flag. `_lib_skill_review_diff_base`'s own
+    resolution (rev-parse, merge-base --is-ancestor, merge-tree
+    --write-tree) and `_lib_staged_diff_hash`'s later hash call never pass
+    `--name-only`, so neither is affected by this shim."""
+    import shutil
+
+    bin_dir = tmp_path / "bin-name-only-failure"
+    _make_git_exiting_with_status(bin_dir, "--name-only", 1)
+    return {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+
+
+_LISTING_FAILURE_TOKEN = "could not list the staged skill files"
+
+_NAME_ONLY_LISTING = '[[ " $* " == *" --name-only "* ]]'
+_ROUTING_PATHSPEC_LISTING = f'{_NAME_ONLY_LISTING} && [[ "$*" == *ROUTING.md* ]]'
+_SKILL_PATHSPEC_LISTING = f'{_NAME_ONLY_LISTING} && [[ "$*" != *ROUTING.md* ]]'
+
+
+class TestSkillReviewGateListingOnlyFailureBackstop:
+    """A listing-only failure -- gated_paths_at_base's own git call fails,
+    independent of _lib_skill_review_diff_base's resolution and the later
+    hash call -- must deny, never silently disarm the gate or skip the
+    structural validator."""
+
+    def test_non_chained_commit_denies_with_listing_failure_reason(
+        self, isolated_home, tmp_path
+    ):
+        """Reusing the ordinary disarm fixture proves this non-vacuously:
+        unshimmed it allows, and under this shim the same fixture denies."""
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        extra_env = _listing_only_failure_shim_env(tmp_path)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="listing-failure-session"),
+            cwd=repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+    def test_chained_form_denies_and_marker_write_still_computes_correct_marker(
+        self, isolated_home, tmp_path
+    ):
+        """The listing-failure deny precedes the in-chain marker-write
+        bypass, so the chained form denies too. The marker script's `write
+        skill-review`, run under the identical shim, still computes the same
+        base-relative digest an unshimmed run would: its own git calls never
+        pass `--name-only`, so this listing failure cannot weaken it into
+        writing an empty or wrong marker."""
+        repo = _build_armed_fixture(tmp_path)
+        _assert_armed_fixture_preimages_differ(repo, _MARKER_PATHSPECS)
+        extra_env = _listing_only_failure_shim_env(tmp_path)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(
+                "~/.claude/scripts/marker.sh write skill-review && git commit -m merge",
+                session_id="listing-failure-chained-session",
+            ),
+            cwd=repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+        sid = "listing-failure-chained-write-session"
+        _seed_session(isolated_home, sid)
+        result = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "skill-review"],
+            cwd=repo,
+            env={**os.environ, "HOME": str(isolated_home), **extra_env},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+        base = _merge_tree_base(repo)
+        expected = staged_diff_hash_at_base(repo, base, *_MARKER_PATHSPECS)
+        marker = skill_review_marker_path(isolated_home, repo, session_id=sid)
+        assert marker.read_text().strip() == expected
+
+    @pytest.mark.parametrize(
+        ("failing_listing", "listing_predicate"),
+        [("routing", _ROUTING_PATHSPEC_LISTING), ("skill", _SKILL_PATHSPEC_LISTING)],
+    )
+    def test_either_listing_failing_alone_denies_instead_of_disarming(
+        self, isolated_home, tmp_path, git_timeout_shim, failing_listing, listing_predicate
+    ):
+        """Each listing's status is checked on its own: the other listing
+        succeeds and reports empty, so only the failed one's status clause
+        keeps the disarm fixture (which allows unshimmed) from disarming."""
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        env = git_timeout_shim(listing_predicate, exit_status=1)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id=f"{failing_listing}-listing-session"),
+            cwd=repo,
+            extra_env=env,
+        )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        ("failing_listing", "listing_predicate"),
+        [
+            ("routing", _ROUTING_PATHSPEC_LISTING),
+            ("skill", _SKILL_PATHSPEC_LISTING),
+            ("both", _NAME_ONLY_LISTING),
+        ],
+    )
+    def test_listing_failure_denies_invalid_frontmatter_despite_matching_marker(
+        self, isolated_home, git_repo, git_timeout_shim, failing_listing, listing_predicate
+    ):
+        """An empty STAGED_SKILL_PATHS would skip the structural validator,
+        and the matching marker would then release the commit. The listing
+        token in the reason distinguishes this deny from the validator's."""
+        broken_skill = git_repo / "claude-skills" / "skills" / "broken" / "SKILL.md"
+        broken_skill.parent.mkdir(parents=True)
+        broken_skill.write_text(_BROKEN_SKILL_MD)
+        subprocess.run(
+            ["git", "add", "claude-skills/skills/broken/SKILL.md"], cwd=git_repo, check=True
+        )
+        session_id = f"{failing_listing}-listing-marker-session"
+        marker = skill_review_marker_path(isolated_home, git_repo, session_id=session_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(staged_diff_hash_at_base(git_repo, "", *_MARKER_PATHSPECS) + "\n")
+        env = git_timeout_shim(listing_predicate, exit_status=1)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m broken", session_id=session_id),
+            cwd=git_repo,
+            extra_env=env,
+        )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+    @pytest.mark.parametrize("chained", [False, True], ids=["plain", "chained"])
+    def test_non_ascii_skill_path_with_invalid_frontmatter_denies_despite_matching_marker(
+        self, isolated_home, git_repo, chained
+    ):
+        """A directory name with non-ASCII bytes lists C-quoted under the
+        default core.quotepath, `git show :<quoted>` fails, and a skipped
+        validator would let a matching marker (or the in-chain marker write)
+        release invalid frontmatter. The same file under an ASCII directory
+        denies from the validator, so this must too."""
+        skill_rel = "claude-skills/skills/caf\u00e9/SKILL.md"
+        broken_skill = git_repo / skill_rel
+        broken_skill.parent.mkdir(parents=True)
+        broken_skill.write_text(_BROKEN_SKILL_MD)
+        subprocess.run(["git", "add", skill_rel], cwd=git_repo, check=True)
+        session_id = f"non-ascii-{'chained' if chained else 'plain'}-session"
+        marker = skill_review_marker_path(isolated_home, git_repo, session_id=session_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(staged_diff_hash_at_base(git_repo, "", *_MARKER_PATHSPECS) + "\n")
+        command = "git commit -m broken"
+        if chained:
+            command = f"~/.claude/scripts/marker.sh write skill-review && {command}"
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id=session_id),
+            cwd=git_repo,
+        )
+        assert reason is not None
+        # A token only the validator emits: with core.quotepath unset the
+        # reason is the unreadable-path deny instead.
+        assert _VALIDATOR_YAML_TOKEN in reason
+
+    @pytest.mark.parametrize("chained", [False, True], ids=["plain", "chained"])
+    def test_non_ascii_skill_path_with_valid_frontmatter_allows_with_matching_marker(
+        self, isolated_home, git_repo, chained
+    ):
+        """Only core.quotepath=false makes a non-ASCII directory list
+        unquoted; without it the valid skill would be falsely denied as
+        unreadable."""
+        skill_rel = "claude-skills/skills/café/SKILL.md"
+        _stage_gated_file(git_repo, skill_rel, _WELL_FORMED_SKILL_MD)
+        session_id = f"non-ascii-valid-{'chained' if chained else 'plain'}-session"
+        _write_matching_marker(isolated_home, git_repo, session_id)
+
+        verdict = run_hook(
+            SKILL_REVIEW_HOOK,
+            bash_input(_commit_command(chained), session_id=session_id),
+            cwd=git_repo,
+        )
+        assert verdict == "allow"
+
+    @pytest.mark.parametrize("chained", [False, True], ids=["plain", "chained"])
+    def test_tab_in_skill_directory_name_denies_as_unreadable_despite_matching_marker(
+        self, isolated_home, git_repo, chained
+    ):
+        """git lists a tab-bearing name C-quoted even under
+        core.quotepath=false. Without the unreadable-path deny, that path
+        would skip the validator and a matching marker would release the
+        invalid frontmatter."""
+        skill_rel = "claude-skills/skills/ta\tb/SKILL.md"
+        _stage_gated_file(git_repo, skill_rel, _BROKEN_SKILL_MD)
+        session_id = f"tab-{'chained' if chained else 'plain'}-session"
+        _write_matching_marker(isolated_home, git_repo, session_id)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(_commit_command(chained), session_id=session_id),
+            cwd=git_repo,
+        )
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+    def test_non_deleted_listing_failing_alone_denies_despite_matching_marker(
+        self, isolated_home, git_repo, git_timeout_shim
+    ):
+        """The `--diff-filter=d` listing feeds the validator's path list, so
+        its failure must deny rather than leave the list empty."""
+        _stage_gated_file(git_repo, "claude-skills/skills/broken/SKILL.md", _BROKEN_SKILL_MD)
+        _write_matching_marker(isolated_home, git_repo, "non-deleted-listing-session")
+        env = git_timeout_shim('[[ "$*" == *--diff-filter=d* ]]', exit_status=1)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m broken", session_id="non-deleted-listing-session"),
+            cwd=git_repo,
+            extra_env=env,
+        )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+    @pytest.mark.timing
+    def test_hung_listings_are_capped_and_deny(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """Both `--name-only` listings hang past the 5s cap. Without
+        _lib_capped on gated_paths_at_base the shim's sleep ends, git runs
+        for real, both listings report empty, and the disarm fixture allows."""
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        env = git_timeout_shim(_NAME_ONLY_LISTING)
+
+        with assert_cap_engaged(tmp_path, production_cap=5, killed_calls=2):
+            reason = run_hook_reason(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="hung-listing-session"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+    @pytest.mark.timing
+    def test_hung_per_path_git_show_is_capped_and_denies_despite_matching_marker(
+        self, isolated_home, tmp_path, git_repo, git_timeout_shim
+    ):
+        """Only the per-path `git show` hangs. Without _lib_capped on it, the
+        shim's sleep ends, git runs for real, and the invalid-YAML path
+        reaches the validator instead of the unreadable deny."""
+        _stage_gated_file(git_repo, "claude-skills/skills/broken/SKILL.md", _BROKEN_SKILL_MD)
+        _write_matching_marker(isolated_home, git_repo, "hung-show-session")
+        env = git_timeout_shim('[[ " $* " == *" show "* ]]')
+
+        with assert_cap_engaged(tmp_path, production_cap=5, killed_calls=1):
+            reason = run_hook_reason(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m broken", session_id="hung-show-session"),
+                cwd=git_repo,
+                extra_env=env,
+            )
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+    @pytest.mark.timing
+    def test_hung_non_deleted_listing_is_capped_and_denies_despite_matching_marker(
+        self, isolated_home, tmp_path, git_repo, git_timeout_shim
+    ):
+        """Only the `--diff-filter=d` listing hangs, so the two `--name-only`
+        listings that run first succeed. Without _lib_capped on that call
+        alone, the shim's sleep ends, git runs for real, and the invalid-YAML
+        path reaches the validator instead of the listing-failure deny."""
+        _stage_gated_file(git_repo, "claude-skills/skills/broken/SKILL.md", _BROKEN_SKILL_MD)
+        _write_matching_marker(isolated_home, git_repo, "hung-non-deleted-listing-session")
+        env = git_timeout_shim('[[ "$*" == *--diff-filter=d* ]]')
+
+        with assert_cap_engaged(tmp_path, production_cap=5, killed_calls=1):
+            reason = run_hook_reason(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "git commit -m broken", session_id="hung-non-deleted-listing-session"
+                ),
+                cwd=git_repo,
+                extra_env=env,
+            )
+        assert reason is not None and _LISTING_FAILURE_TOKEN in reason
+
+
+_UNREADABLE_PATH_TOKEN = "could not read the staged content"
+_VALIDATOR_YAML_TOKEN = "frontmatter is not strict YAML"
+_MARKER_GATE_TOKEN = "have not been audited"
+
+
+def _stage_gated_file(repo, skill_rel, content):
+    path = repo / skill_rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    subprocess.run(["git", "add", skill_rel], cwd=repo, check=True)
+
+
+def _write_matching_marker(isolated_home, repo, session_id):
+    marker = skill_review_marker_path(isolated_home, repo, session_id=session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(staged_diff_hash_at_base(repo, "", *_MARKER_PATHSPECS) + "\n")
+
+
+def _commit_command(chained):
+    command = "git commit -m change"
+    if chained:
+        return f"~/.claude/scripts/marker.sh write skill-review && {command}"
+    return command
+
+
+class TestSkillReviewGateStagedRemovalReachesMarkerCheck:
+    """A staged deletion or move-out of a gated SKILL.md has no index entry,
+    so there is no blob for the structural validator; the removal is covered
+    by the marker hash instead of being denied as unreadable."""
+
+    _SKILL_REL = "claude-skills/skills/doomed/SKILL.md"
+
+    def _commit_gated_skill_then_stage_removal(self, repo, removal):
+        _stage_gated_file(repo, self._SKILL_REL, _WELL_FORMED_SKILL_MD)
+        subprocess.run(["git", "commit", "-qm", "add skill"], cwd=repo, check=True)
+        if removal == "rm":
+            subprocess.run(["git", "rm", "-q", self._SKILL_REL], cwd=repo, check=True)
+        else:
+            (repo / "docs").mkdir()
+            subprocess.run(
+                ["git", "mv", self._SKILL_REL, "docs/doomed.md"], cwd=repo, check=True
+            )
+
+    @pytest.mark.parametrize("chained", [False, True], ids=["plain", "chained"])
+    @pytest.mark.parametrize("removal", ["rm", "mv_out_of_gated_dir"])
+    def test_removal_with_matching_marker_allows(
+        self, isolated_home, git_repo, removal, chained
+    ):
+        self._commit_gated_skill_then_stage_removal(git_repo, removal)
+        session_id = f"removal-{removal}-{'chained' if chained else 'plain'}-session"
+        _write_matching_marker(isolated_home, git_repo, session_id)
+
+        verdict = run_hook(
+            SKILL_REVIEW_HOOK,
+            bash_input(_commit_command(chained), session_id=session_id),
+            cwd=git_repo,
+        )
+        assert verdict == "allow"
+
+    @pytest.mark.parametrize("removal", ["rm", "mv_out_of_gated_dir"])
+    def test_removal_without_marker_denies_at_marker_gate_not_as_unreadable(
+        self, isolated_home, git_repo, removal
+    ):
+        self._commit_gated_skill_then_stage_removal(git_repo, removal)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m change", session_id=f"removal-{removal}-nomarker"),
+            cwd=git_repo,
+        )
+        assert reason is not None
+        assert _MARKER_GATE_TOKEN in reason
+        assert _UNREADABLE_PATH_TOKEN not in reason
+
+
+
+def _git_precomposes_argv(probe_repo):
+    """True when git, under core.precomposeunicode=true, rewrites an NFD path
+    argument to NFC (Apple's git does; upstream Linux builds do not)."""
+    probe_repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=probe_repo, check=True)
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=probe_repo,
+        input="probe\n",
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        [
+            "git", "-c", "core.precomposeunicode=true",
+            "update-index", "--add", "--cacheinfo", f"100644,{blob},cafe\u0301",
+        ],
+        cwd=probe_repo,
+        check=True,
+    )
+    listed = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "ls-files"],
+        cwd=probe_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return listed == "caf\u00e9"
+
+
+class TestSkillReviewGateValidatorSkipsOnlyDiffDeletions:
+    """The validator skips a path only on the diff's own D status; every other
+    listed path must be readable, and an unreadable one denies."""
+
+    _DELETED_REL = "claude-skills/skills/doomed/SKILL.md"
+    _BROKEN_REL = "claude-skills/skills/broken/SKILL.md"
+
+    def _deny_reason(self, isolated_home, repo, session_id):
+        _write_matching_marker(isolated_home, repo, session_id)
+        return run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m change", session_id=session_id),
+            cwd=repo,
+        )
+
+    def _index_info(self, repo, *lines):
+        subprocess.run(
+            ["git", "update-index", "--index-info"],
+            cwd=repo,
+            input="".join(f"{line}\n" for line in lines),
+            text=True,
+            check=True,
+        )
+
+    def _hash_object(self, repo, content):
+        return subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=content,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+    def test_nfd_named_index_entry_under_precomposeunicode_denies_despite_matching_marker(
+        self, isolated_home, tmp_path, git_repo
+    ):
+        """core.precomposeunicode rewrites the argv name to NFC, so a
+        name-keyed lookup of an NFD index entry finds nothing. The path must
+        not read as a deletion: it denies as unreadable. Only git builds that
+        precompose argv (Apple's) reproduce this, so the test skips elsewhere
+        rather than passing on the validator branch, which does not exercise
+        the name-keyed lookup."""
+        if not _git_precomposes_argv(tmp_path / "precompose-probe"):
+            pytest.skip("this git build does not precompose argv under core.precomposeunicode")
+        nfd_rel = "claude-skills/skills/cafe\u0301/SKILL.md"
+        subprocess.run(
+            ["git", "config", "core.precomposeunicode", "true"], cwd=git_repo, check=True
+        )
+        blob = self._hash_object(git_repo, _BROKEN_SKILL_MD)
+        self._index_info(git_repo, f"100644 {blob} 0\t{nfd_rel}")
+
+        reason = self._deny_reason(isolated_home, git_repo, "nfd-session")
+
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+    def test_mixed_deleted_and_invalid_yaml_staging_denies_at_validator(
+        self, isolated_home, git_repo
+    ):
+        _stage_gated_file(git_repo, self._DELETED_REL, _WELL_FORMED_SKILL_MD)
+        subprocess.run(["git", "commit", "-qm", "add skill"], cwd=git_repo, check=True)
+        subprocess.run(["git", "rm", "-q", self._DELETED_REL], cwd=git_repo, check=True)
+        _stage_gated_file(git_repo, self._BROKEN_REL, _BROKEN_SKILL_MD)
+
+        reason = self._deny_reason(isolated_home, git_repo, "mixed-session")
+
+        assert reason is not None and _VALIDATOR_YAML_TOKEN in reason
+
+    def test_rename_to_invalid_content_gated_destination_denies_at_validator(
+        self, isolated_home, git_repo
+    ):
+        """Overwriting the moved file drops similarity below git's rename
+        threshold, so this stages a D plus an A rather than an R; the two
+        rename-status tests below cover R."""
+        _stage_gated_file(git_repo, self._DELETED_REL, _WELL_FORMED_SKILL_MD)
+        subprocess.run(["git", "commit", "-qm", "add skill"], cwd=git_repo, check=True)
+        (git_repo / "claude-skills" / "skills" / "moved").mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "mv", self._DELETED_REL, "claude-skills/skills/moved/SKILL.md"],
+            cwd=git_repo,
+            check=True,
+        )
+        _stage_gated_file(git_repo, "claude-skills/skills/moved/SKILL.md", _BROKEN_SKILL_MD)
+
+        reason = self._deny_reason(isolated_home, git_repo, "rename-session")
+
+        assert reason is not None and _VALIDATOR_YAML_TOKEN in reason
+
+    _RENAMED_REL = "claude-skills/skills/moved/SKILL.md"
+
+    def _stage_move(self, repo):
+        (repo / "claude-skills" / "skills" / "moved").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "mv", self._DELETED_REL, self._RENAMED_REL], cwd=repo, check=True)
+
+    def _assert_reported_as_rename(self, repo):
+        name_status = subprocess.run(
+            ["git", "diff", "--cached", "--name-status", "--", "claude-skills"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert name_status.startswith("R"), f"precondition failed: not a rename: {name_status!r}"
+
+    def test_exact_rename_of_invalid_skill_to_gated_destination_denies_at_validator(
+        self, isolated_home, git_repo
+    ):
+        """R100: the destination blob is byte-identical to the source, so only
+        a listing that keeps R status reaches the validator with it."""
+        _stage_gated_file(git_repo, self._DELETED_REL, _BROKEN_SKILL_MD)
+        subprocess.run(["git", "commit", "-qm", "add invalid skill"], cwd=git_repo, check=True)
+        self._stage_move(git_repo)
+        self._assert_reported_as_rename(git_repo)
+
+        reason = self._deny_reason(isolated_home, git_repo, "exact-rename-session")
+
+        assert reason is not None and _VALIDATOR_YAML_TOKEN in reason
+
+    def test_near_exact_rename_with_invalid_frontmatter_denies_at_validator(
+        self, isolated_home, git_repo
+    ):
+        """R09x: a large body with only the frontmatter broken stays above the
+        rename threshold, so git reports R for the destination."""
+        long_body = "".join(f"body line {number}\n" for number in range(200))
+        _stage_gated_file(
+            git_repo, self._DELETED_REL, _WELL_FORMED_SKILL_MD.replace("# body\n", long_body)
+        )
+        subprocess.run(["git", "commit", "-qm", "add long skill"], cwd=git_repo, check=True)
+        self._stage_move(git_repo)
+        _stage_gated_file(
+            git_repo, self._RENAMED_REL, _BROKEN_SKILL_MD.replace("# body\n", long_body)
+        )
+        self._assert_reported_as_rename(git_repo)
+
+        reason = self._deny_reason(isolated_home, git_repo, "near-rename-session")
+
+        assert reason is not None and _VALIDATOR_YAML_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        "stages", [(1, 2, 3), (2,)], ids=["stages-1-2-3", "stage-2-only"]
+    )
+    def test_unmerged_index_entry_denies_as_unreadable_despite_matching_marker(
+        self, isolated_home, git_repo, stages
+    ):
+        blob = self._hash_object(git_repo, _BROKEN_SKILL_MD)
+        self._index_info(
+            git_repo, *(f"100644 {blob} {stage}\t{self._BROKEN_REL}" for stage in stages)
+        )
+
+        reason = self._deny_reason(isolated_home, git_repo, "unmerged-session")
+
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+
+class TestSkillReviewGateAliasedIndexEntryResidual:
+    """A documented residual, not a control. The validator reads each listed
+    path's staged content by re-resolving the name string, so a hand-built
+    index holding an invalid entry plus a valid twin whose name equals the
+    invalid entry's C-quoted rendering makes `git show` return the twin's blob
+    and skips the invalid entry's validation. Pinned as the current allow so a
+    later change to how blobs are read shows up as a visible test change."""
+
+    _INVALID_REL = "claude-skills/skills/ta\tb/SKILL.md"
+    # A real path whose literal name is the invalid entry's C-quoted form; it
+    # starts with a quote, so it matches no gated pathspec and is never listed.
+    _TWIN_REL = '"claude-skills/skills/ta\\tb/SKILL.md"'
+
+    def _cacheinfo(self, repo, content, name):
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=content,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}"],
+            cwd=repo,
+            check=True,
+        )
+
+    def test_invalid_entry_with_quoted_name_twin_allows_with_matching_marker(
+        self, isolated_home, git_repo
+    ):
+        self._cacheinfo(git_repo, _BROKEN_SKILL_MD, self._INVALID_REL)
+        self._cacheinfo(git_repo, _WELL_FORMED_SKILL_MD, self._TWIN_REL)
+        _write_matching_marker(isolated_home, git_repo, "aliased-index-session")
+
+        verdict = run_hook(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m aliased", session_id="aliased-index-session"),
+            cwd=git_repo,
+        )
+        assert verdict == "allow"
+
+    def test_invalid_entry_alone_still_denies(self, isolated_home, git_repo):
+        """Guards the allow above against passing because the gate is off:
+        without the twin the same invalid entry denies as unreadable."""
+        self._cacheinfo(git_repo, _BROKEN_SKILL_MD, self._INVALID_REL)
+        _write_matching_marker(isolated_home, git_repo, "aliased-index-control-session")
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m aliased", session_id="aliased-index-control-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _UNREADABLE_PATH_TOKEN in reason
+
+
+class TestSkillReviewGateDenyAndTraceText:
+    """Distinctive tokens, not full strings, so wording edits elsewhere in
+    the text do not break these."""
+
+    def test_armed_mid_merge_deny_carries_novel_content_base_note(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_armed_fixture(tmp_path)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="armed-note-session"),
+            cwd=repo,
+        )
+        assert reason is not None and "novel-content base" in reason
+        assert "gated against HEAD" not in reason
+
+    def test_armed_mid_merge_deny_recovery_names_reload_and_git_pull(
+        self, isolated_home, tmp_path
+    ):
+        """A shell-run plugin install does not reach the open session, so the
+        recovery sentence must name /reload-plugins, and the other skew
+        direction needs git pull."""
+        repo = _build_armed_fixture(tmp_path)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="armed-recovery-session"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "/reload-plugins" in reason
+        assert "git pull" in reason
+
+    def test_ordinary_no_state_deny_carries_neither_base_note(self, isolated_home, git_repo):
+        """Status 1 (no in-progress state) is neither an armed base nor an
+        undetermined one, so neither note may appear; the undetermined-base
+        note would tell the reader a real review gap is expected."""
+        skill_rel = "claude-skills/skills/plain-unreviewed/SKILL.md"
+        skill_file = git_repo / skill_rel
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("---\nname: plain-unreviewed\ndescription: x\n---\n\n# x\n")
+        subprocess.run(["git", "add", skill_rel], cwd=git_repo, check=True)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m plain", session_id="ordinary-deny-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and "skill-review gate" in reason
+        assert "gated against HEAD" not in reason
+        assert "novel-content base" not in reason
+
+    def test_disarm_under_non_empty_base_traces_to_stderr(self, isolated_home, tmp_path):
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="disarm-trace-session"),
+            repo,
+        )
+        assert result.returncode == 0 and result.stdout == ""
+        assert "gate disarmed" in result.stderr
+
+    def test_ordinary_no_state_exit_is_silent(self, isolated_home, git_repo):
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m plain", session_id="silent-exit-session"),
+            git_repo,
+        )
+        assert result.returncode == 0 and result.stdout == ""
+        assert result.stderr == ""
+
+
+class TestSkillReviewPathspecParity:
+    """The hook's MARKER_PATHSPECS and the marker script's
+    SKILL_REVIEW_PATHSPECS are separate literals; a drift makes markers for
+    the changed layout never match."""
+
+    @staticmethod
+    def _array_literal(text: str, name: str) -> list[str]:
+        match = re.search(rf"^{name}=\((.*)\)$", text, re.MULTILINE)
+        assert match, f"{name} literal not found"
+        return re.findall(r"'([^']*)'", match.group(1))
+
+    def test_hook_and_marker_script_pathspec_sets_are_equal(self):
+        hook_text = SKILL_REVIEW_HOOK.read_text()
+        marker_text = (SCRIPTS_DIR / "marker.sh").read_text()
+
+        hook_pathspecs = self._array_literal(
+            hook_text, "SKILL_CONTENT_PATHSPECS"
+        ) + re.findall(r"^ROUTING_PATHSPEC='([^']*)'$", hook_text, re.MULTILINE)
+        marker_pathspecs = self._array_literal(marker_text, "SKILL_REVIEW_PATHSPECS")
+
+        assert len(hook_pathspecs) == 5
+        assert hook_pathspecs == marker_pathspecs

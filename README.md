@@ -161,7 +161,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
+| `require-skill-review.sh` | `git commit` — see [`docs/hooks.md`](docs/hooks.md)'s `require-skill-review.sh` bullet for the exact (base-relative) trigger | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
