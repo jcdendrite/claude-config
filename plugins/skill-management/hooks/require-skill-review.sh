@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /skill-review before git commit when SKILL.md files are staged,
 # verified via marker file.
 #

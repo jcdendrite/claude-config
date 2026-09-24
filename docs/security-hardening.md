@@ -811,10 +811,9 @@ to hold PII/PHI or live credentials:
   `eval "git commit ..."`) is invisible to arm 2's count — a two-commit
   chain where either commit is wrapped this way evades both arms, e.g.
   `git commit -m "fix" && bash -c "git add secret && git commit -m y"`.
-  Accepted under this repo's cooperative-agent threat model (see
-  `require-respond-pr.sh`'s own "Threat model" comment for the same
-  posture stated elsewhere): these hooks assume a cooperative agent, not
-  one deliberately constructing shell indirection to evade a gate.
+  Accepted under this repo's cooperative-agent threat model (see `docs/hooks.md` § "Threat-model tiers"): these hooks assume a
+  cooperative agent, not one deliberately constructing shell indirection
+  to evade a gate.
 - The backslash-escape removal above strips a backslash before *any*
   character universally, including inside what bash would treat as a
   single-quoted region (where bash itself preserves the backslash

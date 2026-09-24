@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: deny `git commit` when the commit's content — added lines of the
 # staged diff, the commit message, or a referenced commit-message file —
 # contains personally-identifying or protected health information (PII/PHI),

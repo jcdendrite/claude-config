@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /respond-pr when fetching or posting PR comments.
 #
 # Why: Claude habitually fetches only inline file comments

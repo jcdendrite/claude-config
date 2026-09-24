@@ -193,8 +193,9 @@ GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 
 # test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
 # builds its corpus via REPO_ROOT.rglob("*.md") reading file content, the
-# same dependency GLOBAL_CLAUDE_MD cites above. Unlike that file, no test
-# reads this one by path, so only HOOKS_TESTS_DIR is implicated.
+# same dependency GLOBAL_CLAUDE_MD cites above. test_hook_alignment.py
+# (HOOKS_TESTS_DIR) and SKILLS_TESTS_DIR's test_skills.py also read this one
+# by path, but only HOOKS_TESTS_DIR is selected.
 ROOT_CLAUDE_MD = "CLAUDE.md"
 
 # test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this directory

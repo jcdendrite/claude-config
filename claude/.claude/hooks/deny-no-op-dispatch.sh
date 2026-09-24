@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse: deny a no-op Agent/Task dispatch -- a subagent spawned solely
 # to wait, occupy the turn, or report back immediately while other
 # dispatches are in flight -- at the tool-call boundary. See

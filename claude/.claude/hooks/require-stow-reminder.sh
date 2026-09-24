@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: when a PR being opened/edited against claude-config introduces a
 # new top-level entry under `claude/.claude/`, OR changes `install.sh`
 # (GH-465), require the PR body (or a referenced body-source file, or a

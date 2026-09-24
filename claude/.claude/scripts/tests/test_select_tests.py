@@ -930,9 +930,10 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_root_claude_md_change_selects_hooks_tests(self):
-        """No test reads the repo-root CLAUDE.md by path -- unlike
-        GLOBAL_CLAUDE_MD, it has no SKILLS_TESTS_DIR reader. It's still
-        picked up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
+        """test_skills.py (SKILLS_TESTS_DIR) reads the repo-root CLAUDE.md by
+        path, but only HOOKS_TESTS_DIR is selected -- the accepted
+        under-selection ROOT_CLAUDE_MD's comment records. It's also picked
+        up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
         (HOOKS_TESTS_DIR) repo-wide rglob("*.md") content scan."""
         result = _mod.select_pytest_targets([_mod.ROOT_CLAUDE_MD])
         assert result.is_full_suite is False

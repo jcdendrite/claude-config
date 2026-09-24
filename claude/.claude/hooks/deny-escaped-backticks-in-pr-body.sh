@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: reject `gh pr create` and `gh pr edit` commands whose body
 # content (inline --body "..." or body-source file) contains literal
 # backslash-backtick sequences (\`). Those sequences appear when a

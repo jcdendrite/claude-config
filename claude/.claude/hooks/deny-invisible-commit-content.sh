@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: denies a Bash `git commit` whose actually-committed content cannot
 # be described by the `git diff --cached` snapshot every other commit gate
 # reads at PreToolUse time — closing a time-of-check-to-time-of-use gap

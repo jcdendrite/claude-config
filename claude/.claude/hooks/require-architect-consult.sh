@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse: deny a reviewer-persona Agent/Task spawn when this branch is
 # entering a new reviewed state beyond the round-state cap without a
 # recent `plan-architect MODE=consult`. The cap is resolved by _lib.sh's

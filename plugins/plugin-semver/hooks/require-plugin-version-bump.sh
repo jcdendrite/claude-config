@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require a plugin's .claude-plugin/plugin.json `version` to be
 # strictly increased before git commit when staged changes touch any file
 # inside that plugin's directory tree.

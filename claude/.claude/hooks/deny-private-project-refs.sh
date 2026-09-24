@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
 # create`, `gh issue comment`, `gh issue edit`, and mutating `gh api`
 # calls if their content (staged diff, commit message, PR/issue
