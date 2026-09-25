@@ -147,7 +147,9 @@ class TestAskReviewPermissions:
     )
     def test_aliased_or_case_varied_settings_path_asks(self, file_path):
         """Pins that the hook's regex is case-insensitive and
-        alias-normalized (gap (h)): a doubled slash, `.`/`..` segment, or a
+        alias-normalized (gap (h) — see
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Known gaps list): a doubled slash, `.`/`..` segment, or a
         case variant still asks. The alias decorations sit between `.claude`
         and `settings` specifically, so the raw string doesn't already
         contain the literal `.claude/settings` substring — a decoration
@@ -186,17 +188,9 @@ class TestAskReviewPermissions:
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(str(file_path))) == "ask"
 
     def test_settings_path_through_symlinked_claude_ancestor_allow_control(self, tmp_path):
-        """Allow-path pairing for the regression control above: the same
-        symlinked-`.claude`-ancestor construction, but a filename that still
-        reaches `_lib_realpath_m` and the anchored regex instead of exiting
-        at the cheap prefilter. `old-settings-archive.json` contains
-        "settings" and ends `.json`, so it passes the `*settings*.json`
-        prefilter. Its basename doesn't start with "settings", so the
-        anchored `settings[^/]*\\.json$` match fails both before and after
-        symlink resolution. A plain non-settings filename like CLAUDE.md
-        would instead exit at the prefilter without ever calling
-        `_lib_realpath_m`, so it wouldn't prove the symlink resolution isn't
-        over-firing."""
+        """`old-settings-archive.json` passes the `*settings*.json` prefilter
+        but fails the anchored `settings[^/]*\\.json$` match both before and
+        after symlink resolution."""
         real_target = tmp_path / "dotfiles" / "claude"
         real_target.mkdir(parents=True)
         project_dir = tmp_path / "project"
@@ -282,13 +276,10 @@ class TestAskReviewPermissions:
         self, tmp_path, config_dir_name, near_miss_dir_name
     ):
         """Extends the dot-escaping test above to the escape class's other
-        members (`s/[.[\\*^$()+?{|]/\\&/g`): `+` (the hook's own comment's
-        motivating `work+2024` case), `*`, `?`, `{}` interval syntax, and `|`
-        alternation. Each near-miss directory name is the string an
-        unescaped interpretation of the metacharacter would incorrectly
-        match against the fixed config-dir pattern -- e.g. unescaped `+`
-        (one-or-more) would match `workk2024` against a `work+2024` pattern,
-        which the escaped literal `+` correctly rejects."""
+        members (`s/[.[\\*^$()+?{|]/\\&/g`): `+`, `*`, `?`, `{}` interval
+        syntax, and `|` alternation. Each near-miss directory name is the
+        string an unescaped interpretation of the metacharacter would
+        incorrectly match against the fixed config-dir pattern."""
         config_dir = tmp_path / config_dir_name
         exact_match_path = config_dir / "settings.json"
         assert (
@@ -324,30 +315,9 @@ class TestAskReviewPermissions:
         )
 
     def test_partial_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks(self, tmp_path):
-        """ask-review-permissions.sh:61-72 documents that when only one of
-        the two `_lib_realpath_m` calls (FILE_PATH's or CONFIG_DIR's)
-        succeeds, the hook falls back to comparing the raw file path against
-        the raw config dir rather than mixing a normalized side with a raw
-        one. This forces exactly that partial failure: FILE_PATH's own call
-        fails on a dangling symlink, the same failure shape test_lib.py's
-        TestLibRealpathM pins for _lib_realpath_m's manual fallback loop.
-
-        CONFIG_DIR's own call succeeds, but from a raw string decorated with
-        a `/./` segment that `_lib_realpath_m` collapses away, so its
-        normalized form differs from its raw form as a string. That
-        difference is what makes the both-succeed guard load-bearing here: a
-        guard that used each side's own normalized-or-raw value
-        independently, instead of requiring both sides to succeed before
-        using either normalized form, would compare the raw file path
-        against CONFIG_DIR's *normalized* form and no longer match, since
-        the raw file path still carries the `/./` segment. Both calls are
-        routed through the manual fallback loop by a PATH-shimmed `realpath`
-        that disables the native `-m` fast path, the same technique
-        test_lib.py's forced-fallback shim uses.
-
-        The raw file path is built from the same decorated CONFIG_DIR string
-        plus `/settings.json`, so the raw-vs-raw comparison the guard's else
-        branch performs still asks."""
+        """Pins that when only one of the two `_lib_realpath_m` calls
+        succeeds, the hook compares raw-vs-raw rather than mixing a
+        normalized side with a raw one (the both-succeed guard)."""
         config_dir_real = tmp_path / "claude-accounts" / "work"
         config_dir_real.mkdir(parents=True)
         config_dir_raw = f"{config_dir_real.parent}/./work"

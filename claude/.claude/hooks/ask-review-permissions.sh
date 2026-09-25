@@ -2,10 +2,10 @@
 # hook-class: informational
 # Gate: ask before editing .claude/settings*.json.
 #
-# Matches three shapes:
+# Case-folding applies before all three shapes. Matches:
 # - a literal `.claude/settings*.json` substring
-# - that same shape after case-folding and `_lib_realpath_m` alias
-#   normalization, closing gap (h) (see
+# - that same shape after `_lib_realpath_m` alias normalization,
+#   closing gap (h) (see
 #   docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
 #   Known gaps list)
 # - a settings file at the resolved config-dir root with no `.claude/`
@@ -79,9 +79,6 @@ if [ "$MATCHED" -eq 0 ]; then
             COMPARE_PATH="$FOLDED_RAW_PATH"
             COMPARE_CONFIG_DIR="$CONFIG_DIR"
           fi
-          # Escaping every ERE metacharacter is required for correctness, not just
-          # hardening: an unescaped legitimate config-dir segment like `work+2024` would
-          # otherwise reach grep -E as a malformed pattern and silently fail to match.
           # DEFER: `[ \ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
           # are session-level trusted config rather than attacker-controlled input. Of these,
           # `(`/`)` are the most practically plausible to hit in a real config-dir name (e.g. "Work (2024)").
