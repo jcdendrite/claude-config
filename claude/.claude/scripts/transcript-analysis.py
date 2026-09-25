@@ -122,6 +122,7 @@ from transcript_analysis.render import (
     _strip_task_notifications,
 )
 from transcript_analysis.review_rounds import (
+    _SLASH_COMMAND_RE,
     # REVIEW_SKILLS is read bare by this file's own still-monolithic
     # cmd_judgment_pair (its own --skills default) -- the one-directional
     # exception documented in docs/transcript-analysis-architecture.md.
@@ -1729,7 +1730,7 @@ def _review_trace_session_events(
             # (transcript-analysis.py:2412-2416).
             content_raw = (rec.get("message") or {}).get("content", "")
             content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
-            for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
+            for m in _SLASH_COMMAND_RE.finditer(content_str):
                 raw_skill_name = m.group(1)
                 matched_skill_name = _round_skill_name(raw_skill_name)
                 if matched_skill_name not in REVIEW_TRACE_SKILLS:

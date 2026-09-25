@@ -3654,10 +3654,9 @@ class TestReviewTrace:
 
     def test_skill_invocation_worktree_qualified_spelling_matches_review_trace_skills(self):
         """A worktree-path-qualified spelling matches REVIEW_TRACE_SKILLS
-        membership. The trailing ":"-strip alone already reduces this
-        spelling to the bare name. The leading "/"-strip is redundant for
-        every real fixture shape this codebase produces. This test
-        therefore does not isolate the "/"-strip branch."""
+        membership; this test doesn't isolate the leading "/"-strip branch,
+        since the trailing ":"-strip alone already reduces every real
+        fixture shape to the bare name."""
         records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
@@ -3719,9 +3718,9 @@ class TestReviewTrace:
         assert events[0]["skill"] == "claude:skill-review"
 
     def test_slash_invocation_appears_in_output(self):
-        """A /slash-invoked review skill (<command-name> tag on a user record,
-        no Skill tool_use) produces a 'skill' event — the review-round-cost
-        parity regression this fix closes."""
+        """A /slash-invoked review skill (`<command-name>` tag on a user
+        record, no Skill tool_use block) produces a 'skill' event, matching
+        review-round-cost's own detection of the same shape."""
         records = [
             _user_msg("<command-name>/code-review</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
@@ -3794,8 +3793,8 @@ class TestReviewTrace:
 
     def test_slash_invocation_of_non_review_trace_skill_produces_no_event(self):
         """A /slash-command tag for a skill outside REVIEW_TRACE_SKILLS (e.g.
-        /handoff) produces no skill event — the new branch must not over-match
-        every slash invocation."""
+        /handoff) produces no skill event — the user-record slash-detection
+        branch must not over-match every slash invocation."""
         records = [
             _user_msg("<command-name>/handoff</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
@@ -3821,6 +3820,61 @@ class TestReviewTrace:
         )
         assert len(events) == 1
         assert events[0]["kind"] == "skill"
+
+    def test_skill_tool_use_and_slash_invocation_both_produce_events(self):
+        """A Skill tool_use record and a `<command-name>` slash tag for two
+        different REVIEW_TRACE_SKILLS members both produce 'skill' events,
+        each attributed to its own record's branch, with the slash event
+        keeping the model carried forward from the last assistant record."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _user_msg("<command-name>/plan-review</command-name>", branch="fix",
+                       ts="2026-05-19T10:01:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        skill_event = next(e for e in events if e["skill"] == "code-review")
+        slash_event = next(e for e in events if e["skill"] == "plan-review")
+        assert skill_event["kind"] == "skill"
+        assert skill_event["branch"] == "feat"
+        assert skill_event["model"] == "opus"
+        assert slash_event["kind"] == "skill"
+        assert slash_event["branch"] == "fix"
+        assert slash_event["model"] == "opus"
+
+    def test_multiple_slash_tags_in_one_user_record_produce_two_events(self):
+        """Two `<command-name>` tags for two different REVIEW_TRACE_SKILLS
+        members in a single user record both produce 'skill' events, mirroring
+        cmd_skill_invocation's own test_multiple_slash_tags_in_one_user_record
+        but for the review-trace path."""
+        records = [
+            _user_msg(
+                "<command-name>/plan-it</command-name>\n<command-name>/code-review</command-name>",
+                branch="main", ts="2026-05-19T10:00:00.000Z",
+            ),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        assert {e["skill"] for e in events} == {"plan-it", "code-review"}
+
+    def test_whitespace_only_command_name_tag_produces_no_event(self):
+        """A `<command-name>` tag whose captured name is whitespace-only
+        normalizes to a string that isn't a REVIEW_TRACE_SKILLS member, so it
+        produces no event — pins the current safe-by-construction behavior."""
+        records = [
+            _user_msg("<command-name>/ </command-name>", branch="main",
+                       ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
 
     def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
