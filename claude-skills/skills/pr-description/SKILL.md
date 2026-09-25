@@ -78,7 +78,7 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
-This block is pre-cleared for publication, so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
+When the script below exits 0, its block is pre-cleared for publication (the account's `pr-cost-disclosure` sentinel is the standing approval), so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
 
 Resolve the section with a single script call:
 
@@ -106,8 +106,8 @@ Resolves that one config-dir path only — never unions it with `$HOME/.claude`,
 **One deliberate narrowing:** a sentinel consisting of a blank line followed by `dollars` reads as
 two lines and is judged disabled, where a whitespace-collapsing read would have judged it enabled
 — in the direction this gate already prefers (under-disclosing over guessing). Session/turn counts,
-per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch counts are not
-neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
+per-model-ID dollars, per-review-skill round counts, per-agent-type dispatch counts, and the branch
+name in the `Scope:` caption are not neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
 under an account that opted in; it is not a property of the output format, and an account enabling
 this for one engagement should not assume the fields are harmless in another.
 

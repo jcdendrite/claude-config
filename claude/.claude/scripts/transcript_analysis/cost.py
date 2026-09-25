@@ -309,9 +309,10 @@ def _accumulate_per_account_turn(
 def _summary_scope_branch_clause(branch_filter: set[str] | None) -> str:
     """Render --summary's Scope caption's repo/branch-restriction clause.
 
-    branch_filter is scope._branch_filter's parsed --branches set (or None
-    when --branches was not given). Sorted for deterministic output -- the
-    underlying set carries no ordering guarantee.
+    branch_filter is scope._branch_filter's parsed --branches set. It is None
+    when --branches was absent or an empty string, and an empty set when it
+    held only empty segments (e.g. ","). Sorted for deterministic output --
+    the underlying set carries no ordering guarantee.
     """
     if branch_filter is None:
         return "all branches"
@@ -330,15 +331,16 @@ def _print_scan_coverage_table(
 
     No markdown parameter: the full report already discloses these facts
     per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
-    plain-text branch here would be dead code. The "(not branch-filtered)"
-    suffix on the first column is accurate regardless of --branches:
-    _scan_root_transcripts (this table's data source) is never branch-filtered.
+    plain-text branch here would be dead code. _scan_root_transcripts feeds
+    only the first two columns (files scanned, unreadable) and applies neither
+    --branches nor --since, so the header suffix holds regardless of those
+    flags; the last two columns are filtered by both --branches and --since.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
     unreadable_delimiter = "---|" if transcripts_unreadable else ""
     unreadable_cell = f" {transcripts_unreadable:,} |" if transcripts_unreadable else ""
     print(
-        "| Transcript files scanned (not branch-filtered) |"
+        "| Transcript files scanned (before branch/date filters) |"
         f"{unreadable_header} Sessions with priced turns | Priced turns |"
     )
     print(f"|---|{unreadable_delimiter}---|---|")

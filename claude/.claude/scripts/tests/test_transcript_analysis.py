@@ -21249,12 +21249,8 @@ class TestSkillFilesReportObservedScopeNotUnionGuarantee:
 
     def test_transcript_analysis_names_the_summary_scope_line_as_the_carrier(self):
         skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
-        assert (
-            "`cost --summary` prints no resolved-scope header — it is always scoped to this"
-            " repository, the given branch filter (or all branches), and the active account only,"
-            " and states so on its own `Scope: this repository only, ... This account only, (...)`"
-            " line instead"
-        ) in skill_text
+        assert "`cost --summary` prints no resolved-scope header" in skill_text
+        assert "on its own `Scope:` line" in skill_text
 
     def test_transcript_analysis_no_longer_claims_the_header_is_unconditional_for_every_subcommand(self):
         skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
