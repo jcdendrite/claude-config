@@ -49,6 +49,12 @@ separate, unrelated mechanism and stands unchanged.
 `promptCacheTtl` is unset again, per
 [`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
 
+**2026-09-25 follow-up:** a corrected 30-day `cache-rebuild --ttl-verdict`
+run returns `decline` for both buckets — `main` favoring the one-hour tier,
+the everything-else bucket the five-minute tier — so neither settings key
+is set, per
+[`design-decisions/main-bucket-prompt-cache-ttl-stays-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-stays-unset.md).
+
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
 | Lever | Verdict | Measured reason |

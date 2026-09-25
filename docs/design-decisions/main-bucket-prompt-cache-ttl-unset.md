@@ -2,6 +2,8 @@
 
 *2026-09-21.*
 
+**Superseded by [main-bucket-prompt-cache-ttl-stays-unset.md](main-bucket-prompt-cache-ttl-stays-unset.md) (2026-09-25):** this entry's Revisit clause fired — a corrected run returns a single-direction `main` verdict. `promptCacheTtl` stays unset, on that entry's reasoning and Revisit triggers.
+
 **What changed.** [main-bucket-prompt-cache-ttl-5m.md](main-bucket-prompt-cache-ttl-5m.md)'s own Revisit clause — "a later `cache-rebuild --ttl-verdict` run inverts the `main`-bucket verdict" — fired. `cache-rebuild --ttl-verdict`'s accounting carried two biases, both pushing the 1h-to-5m verdict toward `adopt`:
 
 - An idle-band check that used a write-tier-qualified cause value where a pure gap test was needed, undercounting the `Z` (rescued-warm-read) accumulator and the 1h-to-5m expiry-cost term.
