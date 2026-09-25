@@ -27,7 +27,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
 **What `--this-repo` does not cover, and the documented fallback:**
 
-- **Other clones of this repo.** `git worktree list` enumerates the linked worktrees of the checkout you ran it from — a second, independent clone of the same repo elsewhere on the machine is correctly outside that set. There is no fallback for this; it is not this checkout's data. The exception is any checkout, of this repo or not, whose path maps to the same project-directory slug as one of this checkout's worktrees, such as `/w/app.v2` and `/w/app-v2`. Its sessions share that project directory, so `--this-repo` reads them as this repo's, and `cost --summary` counts them under its `this repository only` caption, subject to that run's branch and date filters.
+- **Other clones of this repo.** `git worktree list` enumerates the linked worktrees of the checkout you ran it from — a second, independent clone of the same repo elsewhere on the machine is correctly outside that set. There is no fallback for this; it is not this checkout's data. The exception is any checkout, of this repo or not, whose path maps to the same project-directory slug as one of this checkout's worktrees, such as `/w/app.v2` and `/w/app-v2`. Its sessions share that project directory, so `--this-repo` reads them as this repo's, and `cost --summary` counts them under its `this repository only` caption. Its scanned-files count includes them whatever the branch and date filters, while priced sessions, priced turns, tokens, and dollars include only their turns whose branch and timestamp match those filters.
 - **A session started in a repo subdirectory.** Claude Code slugs a project directory from the session's *startup cwd*, not the repo root — replacing `/` and `.` with `-` — so a session started inside a subdirectory of a worktree has a slug that is string-unequal to that worktree's own slug — `--this-repo`'s exact-identity match excludes it. The fallback is a prefix glob derived from `--git-common-dir`, not `pwd` (`--git-common-dir` resolves to the main repo's `.git` from inside any worktree, so the prefix is stable regardless of which worktree the session started in):
 
   ```bash
@@ -661,6 +661,7 @@ The echo carries these hazards:
 - `pr-cost-section.sh` takes the name from the local git HEAD (`git rev-parse --abbrev-ref HEAD`).
 - That name is usually the PR's own head ref but can differ from the pushed head ref, for example after `git push origin local:remote`.
 - Git's ref-name rules (`git check-ref-format`) bar ASCII whitespace and ASCII control characters, so the name contains no newline and the echo stays on the single `Scope:` line of the body's source text.
+- A ref name containing non-UTF-8 bytes is legal in git, and its outcome depends on the locale. Under strict UTF-8 stdout the caption print raises and the wrapper exits 3, so the cost block is omitted. Under `LC_ALL=C` or `PYTHONUTF8=1` the raw byte is emitted.
 - Everything else git allows renders as-is. Examples, not an exhaustive list: HTML tags, `@user` and `@org/team` mentions, bare `www.` and email autolinks, non-ASCII invisible or line-separator characters, and long names.
 - A hand-typed `--branches` value is not covered by the publication pre-clearance, so review hand-run output before pasting it into a public artifact.
 

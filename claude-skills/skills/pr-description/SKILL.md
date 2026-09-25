@@ -110,7 +110,8 @@ per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch
 neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
 under an account that opted in; it is not a property of the output format, and an account enabling
 this for one engagement should not assume the fields are harmless in another.
-The `Scope:` caption also prints the local branch name. A name containing a comma is split into separate entries.
+
+The `Scope:` caption also prints the local branch name. See `docs/transcript-analysis.md` § "cost" for the echo's hazards.
 
 ## Prose tightening pass
 
