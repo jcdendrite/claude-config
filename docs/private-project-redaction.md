@@ -173,21 +173,18 @@ and publishes nothing. The owner can release it for one specific
 figure. Propose the figure, the exact command that produced it, and
 the artifact it would appear in. Publish only after an explicit,
 in-session yes. Cite that authorization beside the figure, naming
-what was proposed, the timestamp of the yes, and a verifiable anchor
-for it — the session or transcript identifier the yes occurred in. A
-bare claim that approval occurred, with nothing to check it against,
-is not a citation. A timestamp alone is not a citation either: a
-human reviewer needs an anchor they can actually open, not just a
-time to take on faith. A recalled yes from another transcript or
-artifact does not count; only a live answer in the current session
-does. This matches the standard set by "New figures against the
-grandfathered set" below. The command is cited so a reader can
-re-run the measurement. Unlike the single-account case above,
-authorization guarantees nothing about scope by itself; it is the
-whole control. That is why it is granted per figure and left as a
-citable trace. The mechanical backstop is this repository's own
-human-only merge gate: the owner reviews every PR before it merges
-and can catch a citation for a yes that was never given.
+what was proposed and the timestamp of the yes. A bare claim that
+approval occurred, with nothing to check it against, is not a
+citation. A recalled yes from another transcript or artifact does
+not count; only a live answer in the current session does. This
+matches the standard set by "New figures against the grandfathered
+set" below. The command is cited so a reader can re-run the
+measurement. Unlike the single-account case above, authorization
+guarantees nothing about scope by itself; it is the whole control.
+That is why it is granted per figure and left as a citable trace.
+The mechanical backstop is this repository's own human-only merge
+gate: the owner reviews every PR before it merges and can catch a
+citation for a yes that was never given.
 
 An authorization covers the figure, the command, and the artifact it
 named. The following each count as a fresh ask:

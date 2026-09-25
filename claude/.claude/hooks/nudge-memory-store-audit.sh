@@ -1,8 +1,10 @@
 #!/bin/bash
 # hook-class: informational
 # SessionStart hook (matcher startup only): measures the total byte size of
-# every auto-memory store on the machine and nudges /memory-store-audit once
-# that total outgrows one session's documented MEMORY.md load budget per store.
+# every auto-memory store on the machine (topic files included, which sessions
+# load only on demand) and nudges /memory-store-audit once that total reaches
+# a count-scaled threshold: MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES (default in
+# docs/memory-audit-nudge.md) per store.
 # Never blocks, never edits, and never names a project or a path.
 # See docs/memory-audit-nudge.md for the threshold derivation, the count-scaled
 # formula, the re-arm band, the state-file and log formats, and the scan's
@@ -13,25 +15,39 @@
 # clear/compact/resume — the same argument check-branch-divergence.sh makes for
 # its own startup-only matcher.
 #
-# Order: source _lib.sh -> timeout-binary precondition -> .source filter ->
-# _lib_config_dir -> kill-switch -> override-parsing -> glob-and-measure ->
-# threshold -> re-arm band -> fire.
+# Order: source _lib.sh -> .source filter -> _lib_config_dir -> kill-switch ->
+# override-parsing -> glob-and-measure -> threshold -> re-arm band -> fire.
 # Exits 0 on every path.
 #
-# Kill-switch: delegates to _config_enabled's memory_audit_nudge schema row
-# (presence-disables, default true), checked before any filesystem scan.
+# Kill-switch: delegates to _config_enabled's memory_audit_nudge schema row,
+# checked before any filesystem scan; grammar in docs/memory-audit-nudge.md
+# "How to disable".
 # The legacy file <config-dir>/.memory-audit-nudge-disabled still works via
 # the schema's legacy-import path.
 #
-# The timeout-binary precondition runs immediately after sourcing _lib.sh,
-# before any jq/filesystem call. Nothing below it ever runs uncapped as a
-# result. See docs/memory-audit-nudge.md's Known limitations section for why
-# that placement matters.
+# Latency bound: the settings.json registration's "timeout" is the only bound
+# on the whole process; whether the harness cancels a stalled SessionStart hook
+# at that value is unverified.
+# With timeout(1) or gtimeout(1) on PATH, _lib_capped caps each find, awk, and
+# jq process it wraps, and without either those calls run uncapped.
+# A cap signals only the wrapped process, so the wc that find -exec spawns can
+# outlive it when it ignores or cannot honour SIGTERM.
+# The hook makes up to four sequential capped calls (jq parse, find, awk, and
+# fire-time jq), so their cumulative worst case can exceed one cap and the
+# registration timeout.
+# The projects glob, mkdir -p, state and log redirects, config reads, and the
+# stdin read are not under any cap.
+#
+# A scan whose find or awk was killed by its cap is discarded: exit 0 with the
+# state file, log, and output untouched.
 #
 # Out of scope, each an accepted limitation rather than an oversight:
 #   - No mid-session firing: the nudge arrives at the next session start.
 #   - No --check query mode: nothing consumes this hook's number.
 #   - No log rotation: the log is append-only, one line per fire.
+#   - The state-file read-then-write is unlocked, so concurrent session starts
+#     can double-fire; the hook is informational-class and loses no data.
+#   - Paths containing a newline are skipped, so their bytes are not counted.
 #
 # Fail-open everywhere: a missing jq, an unresolvable config dir, an unreadable
 # projects tree, or malformed stdin exits 0 with no stdout.
@@ -46,23 +62,15 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-_lib_timeout_binary_available || exit 0
-
 INPUT=$(cat 2>/dev/null)
 SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then .source else empty end' 2>/dev/null)
 [ "$SOURCE" = "startup" ] || exit 0
 
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
-# Exit 2 can't reach here: CONFIG_DIR is already resolved above.
-# Exit 3 (config-keys.psv missing or unreadable) and exit 4 (schema
-# readable but this key's row is absent or malformed) both fall through
-# the same `case` as 2, since neither matches the sole `1)` arm.
-# Result: the nudge stays enabled on a schema-read failure -- that is
-# memory_audit_nudge's documented fail-open direction, not an omission.
-# _config.sh's own contract treats 3 and 4 identically; this comment names
-# both so a future edit that adds a `4)` arm with different handling
-# doesn't silently diverge from that contract.
+# A schema-read failure (exit 3, or 4 for an absent or malformed row) leaves
+# the nudge enabled: that is memory_audit_nudge's documented fail-open direction.
+# _config.sh treats exits 3 and 4 identically, so keep them in one arm.
 _config_enabled memory_audit_nudge
 case "$?" in
   1) exit 0 ;;
@@ -73,7 +81,8 @@ esac
 # 9+ digits) fall back to the shipped default, reusing HANDOFF_NUDGE_ABS_CAP's
 # guard shape in nudge-handoff-near-context-cap.sh.
 # A value degraded toward 0 would fire on every session.
-# A 9+ digit value risks wrapping negative in bash's signed 64-bit arithmetic.
+# The 9-digit cutoff is a sanity bound on a plausible per-store byte size, not
+# an arithmetic-wrap guard.
 case "${MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES:-}" in
   ''|0|*[!0-9]*|0[0-9]*|?????????*) PER_PROJECT_BYTES=25600 ;;
   *) PER_PROJECT_BYTES=$MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES ;;
@@ -99,15 +108,16 @@ set -- "$CONFIG_DIR"/projects/*/memory
 if [ "$NULLGLOB_WAS_SET" -eq 0 ]; then shopt -u nullglob; fi
 if [ "$NOGLOB_WAS_SET" -eq 1 ]; then set -f; fi
 
+NEWLINE=$'\n'
 WC_OUTPUT=""
 if [ "$#" -gt 0 ]; then
-  # If a `memory` glob match is itself a symlink to a directory, BSD/macOS
-  # `find` produces no output for it.
-  # This is untested on GNU `find`, whose default command-line-argument
-  # symlink handling can differ.
-  # That project's bytes silently drop out of TOTAL_BYTES rather than
-  # erroring.
-  WC_OUTPUT=$(_lib_capped_for 5 find "$@" -type f -exec wc -c {} + 2>/dev/null)
+  # -H follows a symlinked `memory` start point but no symlink met during traversal.
+  # A path containing a newline is pruned, since it would forge extra `wc` rows below.
+  # 5s is _lib_capped's shared default (guard-settings-session-keys.sh precedent).
+  WC_OUTPUT=$(_lib_capped find -H "$@" -path "*$NEWLINE*" -prune -o -type f -exec wc -c {} + 2>/dev/null)
+  FIND_STATUS=$?
+  # A cap-killed find leaves a partial listing, so the measurement is discarded.
+  if _lib_status_consistent_with_cap_kill "$FIND_STATUS"; then exit 0; fi
 fi
 
 # HOOK_TEST_FIXTURE: wc-total-row-awk — start
@@ -116,15 +126,12 @@ fi
 # Keep both lines.
 # See docs/memory-audit-nudge.md for why a batched `find -exec ... {} +` can
 # emit more than one "total" row.
-# A per-file line's path always contains "/". A "total" row's remaining text
-# (the bare word "total") never does, which is what `index(path, "/") == 0`
-# below discriminates on.
-# Buckets the project-store count by the text up to the rightmost "/memory/"
-# in each per-file path. Computed in the same awk pass as the byte-total
-# sum — see docs/memory-audit-nudge.md for the batching/bucketing rationale.
-# Prints two lines: the byte total, then the project-store count.
+# A per-file line's path always contains "/"; a "total" row's remaining text
+# (the bare word "total") never does, which `index(path, "/") == 0` discriminates on.
+# Prints two lines: the byte total, then the project-store count bucketed by
+# the text up to the rightmost "/memory/" in each path.
 # shellcheck disable=SC2016 # single-quoted on purpose: $1/$0 are awk field variables, not shell variables; double-quoting would expand them in the shell before awk sees them.
-TOTAL_AND_COUNT=$(_lib_capped_for 5 awk '
+TOTAL_AND_COUNT=$(_lib_capped awk '
   {
     count = $1
     path = $0
@@ -139,21 +146,17 @@ TOTAL_AND_COUNT=$(_lib_capped_for 5 awk '
   }
 ' <<< "$WC_OUTPUT" 2>/dev/null)
 # HOOK_TEST_FIXTURE: wc-total-row-awk — end
+AWK_STATUS=$?
+if _lib_status_consistent_with_cap_kill "$AWK_STATUS"; then exit 0; fi
 
-# Malformed or empty awk output (a killed-by-timeout pass, though the
-# precondition above guarantees timeout(1)/gtimeout(1) is on PATH) falls back
-# to 0 for both.
-# The store-count-must-be-positive check below already treats a
-# PROJECT_STORE_COUNT of 0 as nothing to audit.
+# Malformed or empty awk output falls back to 0 for both values; a zero store count exits below.
 TOTAL_BYTES="${TOTAL_AND_COUNT%%$'\n'*}"
 PROJECT_STORE_COUNT="${TOTAL_AND_COUNT#*$'\n'}"
 case "$TOTAL_BYTES" in ''|*[!0-9]*) TOTAL_BYTES=0 ;; esac
 case "$PROJECT_STORE_COUNT" in ''|*[!0-9]*) PROJECT_STORE_COUNT=0 ;; esac
 
 # No memory content anywhere on the machine means nothing to audit.
-# The count-scaled threshold below is undefined at N=0, though not because
-# of a division.
-# A store-count of zero must never itself be read as "already over budget".
+# A store count of zero must never itself be read as "already over threshold".
 [ "$PROJECT_STORE_COUNT" -gt 0 ] || exit 0
 
 THRESHOLD=$(( PER_PROJECT_BYTES * PROJECT_STORE_COUNT ))
@@ -163,18 +166,13 @@ if [ "$TOTAL_BYTES" -lt "$THRESHOLD" ] 2>/dev/null; then
 fi
 
 STATE_FILE="$CONFIG_DIR/.memory-audit-nudge-fired"
-# This read-then-write is unlocked, so two near-simultaneous session starts
-# can double-fire or stomp each other's high-water mark -- low severity for
-# this informational-class hook (no data loss), so left unfixed.
+# Unlocked read-then-write; concurrent starts can double-fire (see header).
 RECORDED_TOTAL=""
 if [ -f "$STATE_FILE" ]; then
   IFS= read -r RECORDED_TOTAL < "$STATE_FILE" 2>/dev/null || RECORDED_TOTAL=""
 fi
 # Same malformed-value guard shape as the override guards above.
-# A literal "0" is never a value this hook itself would have written, since
-# a real fire only ever happens at TOTAL_BYTES >= THRESHOLD > 0.
-# It is treated as no prior record rather than a real recorded total, which
-# fails toward firing rather than toward silent suppression.
+# A literal "0" is never a value this hook wrote, so it reads as no prior record and fails toward firing.
 case "$RECORDED_TOTAL" in ''|0|*[!0-9]*|0[0-9]*|?????????*) RECORDED_TOTAL="" ;; esac
 
 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
@@ -192,21 +190,17 @@ if [ -n "$RECORDED_TOTAL" ] && [ "$TOTAL_BYTES" -lt "$(( RECORDED_TOTAL + REARM_
   exit 0
 fi
 
-# Fire: build the nudge JSON first and only write the state file/log if it
-# actually produced output.
-# This mirrors nudge-handoff-near-context-cap.sh's own build-before-write
-# ordering.
-# A jq failure this way can't burn the session's one shot with nothing to
-# show for it.
+# Fire: build the JSON before writing state/log so a jq failure cannot consume the fire.
 # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq filter reference, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 OUTPUT=$(_lib_jq -n \
   --argjson total "$TOTAL_BYTES" \
   --argjson projects "$PROJECT_STORE_COUNT" \
   --argjson threshold "$THRESHOLD" \
+  --argjson per_store "$PER_PROJECT_BYTES" \
   '{
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: ("This machine'\''s Claude Code auto-memory stores now hold " + ($total|tostring) + " bytes across " + ($projects|tostring) + " project store(s), past the " + ($threshold|tostring) + "-byte per-session load-budget threshold. Consider running /memory-store-audit to migrate durable, standing facts into version-controlled docs and prune what'\''s already covered elsewhere.")
+      additionalContext: ("This machine'\''s Claude Code auto-memory stores now hold " + ($total|tostring) + " bytes across " + ($projects|tostring) + " project store(s), past the " + ($threshold|tostring) + "-byte size threshold (" + ($per_store|tostring) + " bytes per store; topic files load only on demand). Consider running /memory-store-audit to migrate durable, standing facts into version-controlled docs and prune what'\''s already covered elsewhere.")
     }
   }' 2>/dev/null)
 

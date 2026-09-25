@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 16 keys in `config-keys.psv`, this table traces the
+For every one of the 17 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -165,7 +165,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining eleven keys
+## Remaining twelve keys
 
 ### `permission_prompt_tracking`
 
@@ -304,12 +304,12 @@ Column legend:
 
 ### `memory_audit_nudge`
 
-- Call site: `nudge-memory-store-audit.sh:55,62` (two read sites — a
-  script-level `CONFIG_DIR` resolution, and `_config_enabled
-  memory_audit_nudge` gating the scan itself).
+- Call site: `nudge-memory-store-audit.sh` (two read sites — the
+  script-level `CONFIG_DIR=$(_lib_config_dir)` resolution, and
+  `_config_enabled memory_audit_nudge` gating the scan itself).
 - Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`
   resolves the config dir directly and exits open on failure before
-  `_config_enabled memory_audit_nudge` (line 62, later in the same script)
+  `_config_enabled memory_audit_nudge` (later in the same script)
   is ever reached, so that call always sees an already-resolved config dir.
   `memory_audit_nudge`'s schema row carries `config-dir` — no `$HOME`
   union arm.
@@ -320,6 +320,12 @@ Column legend:
 - Fail direction on resolution failure: the kill switch reads as absent
   (nudge behaves as enabled/undisabled) — an unresolvable config dir
   already exited the whole script before the kill switch is checked.
+- Fail direction on schema-read failure: **enabled**. An unreadable
+  `config-keys.psv`, an absent `memory_audit_nudge` row, or a truncated row
+  keeps the nudge firing, since every `_config_enabled` status other than the
+  disabled one falls through enabled.
+- Malformed-value grammar: a non-bare value such as a quoted `"false"` is a
+  skipped line, so the nudge keeps firing.
 
 ### `consume_durable_continuity`
 

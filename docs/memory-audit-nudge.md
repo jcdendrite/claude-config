@@ -24,7 +24,7 @@ memory content)`. What counts as a project store "holding content":
 - An empty or absent `memory/` directory does not count.
 
 Malformed override values (empty, a literal zero, non-digit, zero-padded, or
-10+ digits) fall back to the shipped default rather than letting the
+9+ digits) fall back to the shipped default rather than letting the
 threshold degrade toward zero or negative.
 
 **Why this threshold.** The single primary source available is Anthropic's
@@ -37,16 +37,17 @@ own memory documentation:
 
 — [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
 
-That sentence fixes 25 KB as the amount of memory content a session
-actually loads, and establishes that everything past `MEMORY.md` reaches a
-session only through an explicit recall read. A store holding more than one
-load budget's worth of content is, by construction, mostly content not
-paying its way through the load path. 25600 is 25 × 1024; the quoted "25KB"
+That sentence fixes 25 KB as the amount of `MEMORY.md` content a session
+loads at startup, and establishes that topic files reach a session only
+through an explicit recall read. The hook sums every file in a store, topic
+files included, so it measures accumulated store size rather than what any
+one session loads: a store holding more than 25 KB is, by construction,
+mostly content that never loads at startup. 25600 is 25 × 1024; the quoted "25KB"
 carries no unit definition, so 25000 would also be a defensible reading —
 the ~2.4% spread between the two is immaterial at this granularity, but it
 is a choice, not something the source specifies. The scaling by project
 count (rather than a single fixed byte threshold) makes the rule read as
-"the average store has outgrown one session's memory budget," not "you have
+"the average store has outgrown one startup load's worth of memory," not "you have
 many projects" — a fixed machine-wide threshold would fire earlier the more
 projects a machine accumulates, punishing breadth rather than bloat.
 
@@ -72,8 +73,24 @@ carries its own project's memory directory as a prefix
 that prefix to count which project stores hold at least one file. This
 avoids a separate per-project-directory `grep` pass, which would scale with
 project count rather than file count.
-A symlink inside a `memory/` directory is skipped: `find`'s default
-(non-`-L`) `-type f` test does not match a symlink, only a real file.
+`find -H` follows a `memory` start point that is itself a symlink to a
+directory, so a store kept behind a symlink still counts. A symlink met
+during traversal is skipped: without `-L`, the `-type f` test matches only a
+real file. A path containing a newline is pruned, because `wc` prints paths
+verbatim and a newline in one would let a directory name forge extra rows in
+the byte total.
+
+The project-store count buckets each file by the text up to its rightmost
+`/memory/`, on the assumption that a store is flat. A store containing a
+subdirectory literally named `memory` therefore counts as two stores.
+
+A `find` or `awk` pass killed by its 5s cap (`_lib.sh`'s cap-kill statuses)
+is discarded: the hook exits without touching the state file, the log, or
+stdout. Any other nonzero `find` status, such as an unreadable or vanished
+file, keeps the measurement. That partial listing can undercount and lower the
+recorded high-water mark, which causes one extra fire on the next session
+start. A `find` that dies on a signal outside the cap-kill statuses (exit 129,
+130, or 141) is not discarded either, and can undercount the same way. The 5 seconds is `_lib_capped`'s shared default.
 
 A machine-global state file, `<config-dir>/.memory-audit-nudge-fired`,
 records the byte total at the last fire. The hook re-arms once the current
@@ -99,7 +116,46 @@ Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.m
 printf 'memory_audit_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-The hook checks this key before any filesystem scan.
+The hook checks this key before any filesystem scan. The grammar:
+
+- `memory_audit_nudge = false` disables the nudge.
+- With no row for the key, the legacy `<config-dir>/.memory-audit-nudge-disabled` file disables it.
+- An explicit `memory_audit_nudge = true` row beats the legacy file, so the re-enable recipe above (which appends `true`) also switches the legacy file off.
+- A non-bare value such as `"false"` is a malformed line, and the nudge keeps firing.
+- A schema-read failure (unreadable, absent, or truncated `config-keys.psv` row) keeps the nudge enabled.
+
+## Why the filing rules are shaped this way
+
+`memory-store-audit/SKILL.md` Step 4 states each rule; the reasons live here.
+
+- **Body by file.** `--body-file` makes the bytes the engineer approved, the
+  bytes the redaction gate scans, and the bytes GitHub receives the same
+  bytes, and no memory-derived text passes through shell interpretation.
+- **Flag order (`--body-file` before `--title`).** Per
+  `claude/.claude/hooks/deny-private-project-refs.sh`'s own header bullet on
+  xargs tokenization failure, `extract_body_source_paths`'s `xargs -n1`
+  tokenizer drops only the paths after a failing token, so `--body-file` goes
+  first to stay read even when a newline in the title later breaks
+  tokenization.
+- **Title allowlist.** The title has to sit inside a single-quoted shell
+  argument, so allowing only ASCII letters, digits, spaces, and `-_.,:/`
+  rules out quote, backtick, `$`, backslash, and control-character injection.
+- **Started inside the checkout, no `cd` or `-R`.** The redaction gate scopes
+  itself by the hook process's cwd, so a chained `cd` or a `-R` aimed at the
+  checkout from outside it escapes the scan.
+- **`GH_REPO` check.** `GH_REPO` retargets `gh issue create` but not
+  `gh repo view`, so the approval prompt's repo line can name a repo other
+  than the one that receives the issue.
+- **Showing the login.** The authenticated login tells the engineer which
+  account the issue will be filed under before they approve it.
+- **No retry.** `gh issue create` has no dedupe flag, so retrying a failed
+  call can create a duplicate issue.
+- **Temp directory.** `mktemp -d` gives each item an unpredictable,
+  per-item directory outside the checkout, so no other file or process can
+  pre-place or share the body path.
+
+Quarantine is not deletion: a memory file that holds a credential stays on
+disk under `<config-dir>/.memory-audit-quarantine/` until the engineer removes it.
 
 ## Log location
 
@@ -123,31 +179,62 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
 - **No `--check` query mode.** Nothing consumes this hook's number
   programmatically, unlike the handoff nudge's `--check`, which `plan-it`
   and the `handoff` skill call mid-session.
-- **The nudge never fires on a machine with neither `timeout(1)` nor
-  `gtimeout(1)` on `PATH`.** Stock macOS without Homebrew coreutils is the
-  common case. Rather than let `_lib_capped_for` run the find+wc measurement
-  uncapped — which for this `SessionStart` hook risks holding session start
-  itself open on a stalled filesystem, with no bound — the hook checks
-  `_lib_timeout_binary_available` immediately after sourcing `_lib.sh`,
-  before even the `.source` filter, and exits 0 before the scan when
-  neither binary resolves: no scan, no log line, no state-file write.
-  `install.sh`'s existing coreutils hint (printed at
-  onboarding) does not name this hook or this consequence — it describes
-  hooks that run *uncapped*, not one that stops firing *entirely*.
+- **The scan is uncapped without `timeout(1)` or `gtimeout(1)`.** Stock macOS
+  without Homebrew coreutils is the common case. The scan then runs `find` and
+  `awk` uncapped, as `_lib_capped_for` does for every other hook. A persistent
+  stall then costs up to the registration timeout at every session start, with
+  no log line and no state write. `install.sh`'s generic coreutils hint does
+  not name this hook.
+- **The `"timeout": 10` registration is the only whole-process bound.**
+  The value is a repo-chosen ceiling above the 7 s single-cap worst case (5 s
+  cap plus 2 s kill grace). Setting it lowers the harness's command-hook
+  default. Its unit is seconds, per the
+  [hooks reference](https://code.claude.com/docs/en/hooks). Whether the harness cancels a stalled `SessionStart` hook at that value is
+  unverified. The hook fails open on every path.
+  `_lib_capped` caps the `find`, `awk`, and `jq` processes it wraps, and it
+  signals only that process. The `wc` that `find -exec wc -c {} +` spawns is a
+  grandchild holding the capture pipe, so a `wc` that ignores or cannot honour
+  SIGTERM, such as one stuck in uninterruptible I/O on a hung mount, is not
+  bounded by the cap. Such a `wc` keeps the hook alive past every cap. The
+  hook makes up to four sequential capped calls (jq parse, `find`, `awk`,
+  fire-time `jq`), so the cumulative worst case can exceed one 5 s cap and the
+  10 s registration timeout. The initial `projects/*/memory` glob,
+  `mkdir -p`, the state and log redirects, the in-shell config reads, and the
+  stdin read are not under any cap.
+- **A stalled or cap-killed scan is silent.** A run that stalls past the
+  registration bound, or whose `find` or `awk` an inner cap kills, yields no
+  nudge, no log line, and no state change. The state file is untouched, so the
+  next session start retries the scan, and a persistent stall repeats at every
+  session start with no signal. Silence cannot distinguish an under-threshold
+  run from a discarded one. Running the hook by hand against the real config
+  dir would write the state file and log when over threshold and consume the
+  re-arm band, so check without side effects instead: run the hook with
+  `CLAUDE_CONFIG_DIR` set to a throwaway directory whose `projects` entry is a
+  symlink to the real `<config-dir>/projects`, and pass `{"source":"startup"}`
+  on stdin (an empty stdin exits in about 1 s without scanning and looks
+  healthy). Treat a run that takes 5 s or longer, or never returns, as a stall.
+  A stall can outlast every cap, as the timeout item above describes. The
+  kill-switch is the remedy.
+- **A stale peak delays the first re-crossing by one band.** The state file is
+  rewritten only on a fire or a shrink, never on a below-threshold scan. After
+  an audit drops the total below threshold, the old peak persists, so the next
+  crossing is absorbed by the shrink rewrite and the nudge fires one
+  `REARM_BYTES` of growth later.
 - **Threshold tuning is analytic, not corpus-derived.** See "Why this
   threshold" above — no percentile or measured figure from this machine's
   own memory stores can appear here without carrying private-corpus
   provenance into a public repo.
-- **Issue filing and deletion approval are session-instruction-gated, not
-  hook-enforced.** `/memory-store-audit` pauses on a blocking
-  `AskUserQuestion` immediately before each `gh api` issue-filing call and
-  each memory-file quarantine move, but no hook or marker makes either pause
-  unskippable — nothing in this repo enforces it. Deletion bounds a skipped
-  pause's blast radius structurally: an approved file moves to
-  `<config-dir>/.memory-audit-quarantine/` rather than being removed, so a
-  skipped approval costs a quarantined file, not an unrecoverable one. No
-  equivalent bound exists for a skipped issue-filing pause.
-- **Step 2's cross-file isolation is prose-only.** `/memory-store-audit`'s
-  per-file classification instruction (pinned by
-  `test_step_2_forbids_cross_file_blending`) is the only enforcement —
-  nothing checks it under a real multi-project pass.
+- **The audit's approval pauses and cross-file isolation are prose-only.** No
+  hook enforces them; `memory-store-audit/SKILL.md`'s Step 7 "What holds these
+  gates" is their single home.
+- **Issue filing rests on live per-item approval inside the skill.** No hook
+  enforces that pause. Deletion moves an approved file to
+  `<config-dir>/.memory-audit-quarantine/` rather than removing it, which
+  bounds the blast radius of a skipped approval without new enforcement
+  machinery.
+- **Quarantined files are restored by hand and never purged automatically.**
+  To restore a file, move it from
+  `<config-dir>/.memory-audit-quarantine/<audit-start-UTC-timestamp>/<project-dir-name>/`
+  back into `<config-dir>/projects/<project-dir-name>/memory/` and re-add its
+  `MEMORY.md` index line. Nothing removes the quarantine directory; delete old
+  timestamp directories by hand once they are no longer needed.

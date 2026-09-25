@@ -155,7 +155,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/nudge-memory-store-audit.sh"
+            "command": "~/.claude/hooks/nudge-memory-store-audit.sh",
+            "timeout": 10
           }
         ]
       },

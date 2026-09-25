@@ -1206,8 +1206,8 @@ _config_scaffold() {
   local schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
   local already excluded present_key
   # One pass over config-keys.psv, not a per-key _config_schema_field call
-  # inside this loop (which would re-read this 16-row file once per key,
-  # 16 total re-reads for one scaffold call) -- same field list as
+  # inside this loop (which would re-read this file once per key, one
+  # re-read per row for one scaffold call) -- same field list as
   # _config_schema_field's own read, so key and default come off the same
   # line here instead of a second file scan.
   while IFS='|' read -r schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do

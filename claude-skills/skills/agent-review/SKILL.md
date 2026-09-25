@@ -121,7 +121,7 @@ An agent file earns its description budget only through what frontmatter buys th
 
 **An agent whose only dispatch site is one skill's one step is presumed wrong** — fold it into that skill, with a `general-purpose` dispatch carrying an explicit `model:` only if the step still needs its own context.
 
-Two questions decide whether an exception holds; answer both in the PR and record a surviving exception in `docs/design-decisions.md`:
+Two questions decide whether an exception holds; answer both in the PR and record a surviving exception as a new `docs/design-decisions/<slug>.md` file:
 
 1. Is the privilege cap load-bearing? A read-only cap on a dispatch that was never going to act, inside a workflow whose acting session holds `Bash`/`Write` anyway, constrains nothing.
 2. Does the call site fire often enough to amortize an always-loaded description? `plan-architect` (`docs/design-decisions.md` §30/§37) is the standing exception because every `/plan-it` run reaches it; a periodic maintenance workflow does not.
@@ -172,4 +172,4 @@ Do not duplicate this section into `subagent-delegation` or `skill-review` — t
 
 17. **`effort` field discipline** — check against `~/.claude/CLAUDE.md` "Model & Effort Routing" for the current per-agent effort-tier policy, not this line — that policy can change independently of this checklist. `Explore`'s `low` pin is the canonical fast-lookup case; an agent with no `effort:` pin at all silently inherits whatever effort the invoking session runs at, so every agent in the roster should carry an explicit pin unless a documented reason exists to leave it unset.
 
-18. **Existence test** — if the agent's only dispatch site is one skill's one step, apply §7. Fold it into the calling skill unless both §7 questions answer yes, with the surviving exception recorded in `docs/design-decisions.md`.
+18. **Existence test** — if the agent's only dispatch site is one skill's one step, apply §7. Fold it into the calling skill unless both §7 questions answer yes, with the surviving exception recorded as a `docs/design-decisions/<slug>.md` file.

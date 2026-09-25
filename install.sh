@@ -597,7 +597,7 @@ _config_key_source() {
 
 # Schema-driven, replacing the old scope=machine-promptable/machine/account
 # reporters: every key's effective value now resolves through
-# _config_value, so one function reports all sixteen. For a
+# _config_value, so one function reports all seventeen. For a
 # config-dir-or-home key (worktree_required, autonomous_shipping), also
 # prints $HOME/.claude's own value/source alongside the resolved config
 # dir's when the two differ -- the union means either can be the reason a
@@ -975,10 +975,6 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in either message.
   printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq and git checks (e.g. the agent-reviews/ ignore-state check) without timeout protection.\n' >&2
-  # shellcheck disable=SC2016 # single-quoted for literal display text — the
-  # backtick-quoted tokens are markdown-style formatting, not command
-  # substitution; there is no shell expansion intended in this message.
-  printf '[install] warning: the memory-store-audit nudge hook does not merely run uncapped without `timeout`/`gtimeout` — it refuses to scan at all and stops firing entirely, permanently, with no other signal, until one of those binaries is installed.\n' >&2
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in this message.

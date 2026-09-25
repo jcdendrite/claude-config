@@ -866,6 +866,76 @@ def test_lib_capped_for_kills_a_sigterm_immune_child_via_the_grace(tmp_path: Pat
     assert elapsed < 15, f"SIGTERM-immune child took {elapsed:.1f}s — the -k grace did not fire"
 
 
+@pytest.mark.parametrize("cap_kill_status", ["124", "137", "143"])
+def test_status_consistent_with_cap_kill_accepts_cap_kill_statuses(cap_kill_status: str) -> None:
+    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {cap_kill_status}", env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "" and result.stderr == ""
+
+
+@pytest.mark.parametrize("other_status", ["0", "1", "2", "125", "126", "127", "130"])
+def test_status_consistent_with_cap_kill_rejects_other_statuses(other_status: str) -> None:
+    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {other_status}", env=dict(os.environ))
+    assert result.returncode == 1, repr(result)
+    assert result.stdout == "" and result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "_lib_status_consistent_with_cap_kill",
+        "_lib_status_consistent_with_cap_kill ''",
+        "_lib_status_consistent_with_cap_kill abc",
+    ],
+    ids=["absent", "empty", "non-numeric"],
+)
+def test_status_consistent_with_cap_kill_rejects_absent_empty_and_non_numeric_under_set_u(call: str) -> None:
+    """Returns exactly 1 with no output, and a shell under `set -u` reaches the next statement."""
+    result = _run_lib_call(f"set -u; {call}; echo reached-$?", env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "reached-1\n", repr(result.stdout)
+    assert result.stderr == ""
+
+
+def _cap_fire_path_env(tmp_path: Path) -> dict:
+    """A PATH holding only the real timeout(1) and the tools _lib.sh and the composition cases need."""
+    for name in ("timeout", "bash", "sleep", "dirname"):
+        real_path = shutil.which(name)
+        if not real_path:
+            pytest.skip(f"{name} not found in PATH")
+        (tmp_path / name).symlink_to(real_path)
+    return {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+
+
+@pytest.mark.timing
+def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_cap_fire(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 1 sleep 5; _lib_status_consistent_with_cap_kill $?; echo classified-$?", env=env
+    )
+    assert result.stdout == "classified-0\n", repr(result)
+
+
+@pytest.mark.timing
+def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_immune_cap_fire(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'; "
+        "_lib_status_consistent_with_cap_kill $?; echo classified-$?",
+        env=env,
+    )
+    assert result.stdout == "classified-0\n", repr(result)
+
+
+def test_status_consistent_with_cap_kill_rejects_a_child_that_exits_one(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 5 bash -c 'exit 1'; _lib_status_consistent_with_cap_kill $?; echo classified-$?",
+        env=env,
+    )
+    assert result.stdout == "classified-1\n", repr(result)
+
+
 def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
     """An empty or unset SECONDS -- e.g. _lib_capped_for "$UNSET_VAR" cmd --
     hard-aborts the sourcing script via bash's ${1:?msg} rather than falling
@@ -886,37 +956,6 @@ def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
     assert "SHOULD_NOT_REACH" not in result.stdout, repr(result.stdout)
     assert "should-not-run" not in result.stdout, repr(result.stdout)
     assert "_lib_capped_for requires a seconds argument" in result.stderr, repr(result.stderr)
-
-
-def _extract_fn_slice(lib_sh_text: str, fn_name: str) -> str:
-    """Slice _lib.sh from `fn_name()`'s definition to its closing brace."""
-    lines = lib_sh_text.splitlines()
-    start = next(i for i, line in enumerate(lines) if re.match(rf"^{re.escape(fn_name)}\(\)", line))
-    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
-    return "\n".join(lines[start : end + 1])
-
-
-def _extract_command_v_targets(fn_slice: str) -> list[str]:
-    """The `command -v <binary>` targets referenced in a function body, in
-    order of appearance."""
-    return re.findall(r"command -v (\S+)", fn_slice)
-
-
-def test_capped_for_and_timeout_binary_available_probe_the_same_binaries() -> None:
-    """_lib_capped_for's embedded timeout(1)/gtimeout(1) probe and
-    _lib_timeout_binary_available's independent reimplementation (both
-    functions' header comments call for keeping the two in sync by hand)
-    must check the same binaries in the same order, or the two functions'
-    fallback predictions silently diverge."""
-    lib_sh_text = _LIB_SH.read_text()
-    capped_for_targets = _extract_command_v_targets(_extract_fn_slice(lib_sh_text, "_lib_capped_for"))
-    binary_available_targets = _extract_command_v_targets(
-        _extract_fn_slice(lib_sh_text, "_lib_timeout_binary_available")
-    )
-
-    assert capped_for_targets == ["timeout", "gtimeout"]
-    assert binary_available_targets == ["timeout", "gtimeout"]
-    assert capped_for_targets == binary_available_targets
 
 
 def test_missing_emit_deny_loud_fail() -> None:

@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -1501,10 +1500,9 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
     return outputs
 
 
-def build_path_without(binaries: str | Iterable[str], farm_dir: Path) -> str:
+def build_path_without(binary: str, farm_dir: Path) -> str:
     """Build a PATH string mirroring the real PATH via a symlink farm, with
-    `binaries` (a single name, or any iterable of names) omitted, inside the
-    caller-supplied (already-created) `farm_dir`.
+    `binary` omitted, inside the caller-supplied (already-created) `farm_dir`.
 
     A full mirror (not a hand-picked minimal tool subset) is deliberate:
     under-symlinking is a silent false pass here — a hook denying because
@@ -1517,7 +1515,6 @@ def build_path_without(binaries: str | Iterable[str], farm_dir: Path) -> str:
     session-scoped memoization) — this function only builds the farm once
     per call.
     """
-    excluded = {binaries} if isinstance(binaries, str) else set(binaries)
     seen: set[str] = set()
     for real_dir in os.environ.get("PATH", "").split(os.pathsep):
         if not real_dir:
@@ -1527,7 +1524,7 @@ def build_path_without(binaries: str | Iterable[str], farm_dir: Path) -> str:
         except OSError:
             continue
         for name in entries:
-            if name in excluded or name in seen:
+            if name == binary or name in seen:
                 continue
             src = Path(real_dir) / name
             try:
@@ -1541,10 +1538,9 @@ def build_path_without(binaries: str | Iterable[str], farm_dir: Path) -> str:
             except OSError:
                 continue
     path_str = str(farm_dir)
-    for binary in excluded:
-        assert shutil.which(binary, path=path_str) is None, (
-            f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
-        )
+    assert shutil.which(binary, path=path_str) is None, (
+        f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
+    )
     return path_str
 
 

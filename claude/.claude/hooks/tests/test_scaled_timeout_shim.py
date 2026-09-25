@@ -17,7 +17,6 @@ import inspect
 import os
 import shutil
 import subprocess
-import time
 from collections import Counter
 from pathlib import Path
 
@@ -74,20 +73,10 @@ def test_scaled_shim_kills_a_real_hung_command_and_records_both_directions(tmp_p
     bin_dir.mkdir()
     assert write_scaled_timeout_shim(bin_dir) is True
 
-    start = time.monotonic()
     killed = subprocess.run(
         [str(bin_dir / "timeout"), "5", "sleep", "3"], capture_output=True, text=True, check=False
     )
-    elapsed = time.monotonic() - start
     assert killed.returncode == 124, repr(killed)
-    # 10.0, not a tighter bound close to the 1.666s theoretical cap: this
-    # subprocess run was reproducibly measured at 4.53s-7.70s under real
-    # host contention (shared host, other processes -- not an xdist-worker
-    # effect, since it reproduces serially too). The returncode assertion
-    # above already proves the kill fired; this bound only catches a
-    # regression to the uncapped fallback, which would run past `sleep 3`'s
-    # own 3s.
-    assert elapsed < 10.0, f"the scaled ~1.67s cap should kill `sleep 3` well before the full 3s, took {elapsed:.2f}s"
     assert caps_that_fired(bin_dir) == Counter({"5 sleep": 1})
 
     completed = subprocess.run(

@@ -50,6 +50,8 @@
 #   a marker behind one does not satisfy the gate.
 # - A body source that is not a regular file (device, FIFO, directory) is
 #   likewise skipped, not read.
+# - A body source whose capped read is killed by the timeout (exit 124) is
+#   skipped too, so a marker behind it does not satisfy the gate.
 #
 # Known gaps (documented, not closed):
 # - `gh pr create --body "$(cat file)"` or backtick command substitution

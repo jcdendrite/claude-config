@@ -17,11 +17,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without
+from helpers import HOOKS_DIR, assert_cap_engaged, build_path_without
+
+from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-memory-store-audit.sh"
 
@@ -57,9 +60,7 @@ def _write_memory_file(home: Path, project: str, filename: str, size_bytes: int)
     return path
 
 
-def _run_hook(
-    payload: dict, home: Path, extra_env: dict | None = None, timeout: float | None = None
-) -> subprocess.CompletedProcess:
+def _run_hook(payload: dict, home: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
@@ -71,7 +72,6 @@ def _run_hook(
         text=True,
         env=env,
         check=False,
-        timeout=timeout,
     )
 
 
@@ -118,6 +118,24 @@ def _extract_wc_total_row_awk_program() -> str:
     program_start = block.index("awk '") + len("awk '")
     program_end = block.index("'", program_start)
     return block[program_start:program_end]
+
+
+def _write_shim(shim_dir: Path, name: str, body: str) -> None:
+    """Write an executable `name` shim into shim_dir (created if absent)."""
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / name
+    shim.write_text(f"#!/bin/bash\n{body}\n")
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+
+
+def _write_state_toml(home: Path, content: str) -> None:
+    """Write <config-dir>/claude-config.toml with the given content."""
+    _config_dir(home).mkdir(parents=True, exist_ok=True)
+    (_config_dir(home) / "claude-config.toml").write_text(content)
+
+
+def _path_with_shims(shim_dir: Path) -> str:
+    return f"{shim_dir}{os.pathsep}{os.environ['PATH']}"
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +230,108 @@ class TestNudgeMemoryStoreAudit:
         assert result.stdout.strip() != "", "schema-unreadable must not suppress the nudge"
 
     @pytest.mark.parametrize(
+        "corrupted_row",
+        [None, "memory_audit_nudge|bool"],
+        ids=["row-absent", "row-truncated"],
+    )
+    def test_corrupted_schema_row_keeps_nudge_enabled(self, tmp_path, corrupted_row):
+        """A config-keys.psv with the memory_audit_nudge row absent or
+        truncated to two fields is a schema-read failure, which leaves the
+        nudge enabled -- even beside a legacy kill-switch file."""
+        isolated_hook = _isolated_hooks_dir(tmp_path)
+        kept_rows = [
+            line
+            for line in (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+            if not line.startswith("memory_audit_nudge|")
+        ]
+        if corrupted_row is not None:
+            kept_rows.append(corrupted_row)
+        (isolated_hook.parent / "config-keys.psv").write_text("\n".join(kept_rows) + "\n")
+        _config_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+        (_config_dir(tmp_path) / ".memory-audit-nudge-disabled").touch()
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-corrupt-schema", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
+        )
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            [str(isolated_hook)],
+            input=json.dumps(_base_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", "a corrupted schema row must not suppress the nudge"
+
+    def test_toml_false_suppresses_before_the_scan_runs(self, tmp_path):
+        """memory_audit_nudge = false suppresses before any scan: a recording
+        find shim on PATH is never invoked, so this cannot pass for a check
+        that ran after the scan."""
+        _write_state_toml(tmp_path, "memory_audit_nudge = false\n")
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-toml-false", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 5
+        )
+        invocation_record = tmp_path / "find-invocations"
+        shim_dir = tmp_path / "shims"
+        _write_shim(shim_dir, "find", f'echo invoked >> "{invocation_record}"\nexit 0')
+        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert not invocation_record.exists()
+        assert not _log_path(tmp_path).exists()
+        assert not _state_file(tmp_path).exists()
+
+    def test_find_shim_records_invocation_when_enabled(self, tmp_path):
+        """Control for the recording shim above: with the nudge enabled the
+        shim is invoked, so the never-invoked assertion is meaningful."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-shim-control", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
+        )
+        invocation_record = tmp_path / "find-invocations"
+        shim_dir = tmp_path / "shims"
+        _write_shim(shim_dir, "find", f'echo invoked >> "{invocation_record}"\nexit 0')
+        _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        assert invocation_record.exists()
+
+    def test_explicit_true_row_beats_legacy_disabled_file(self, tmp_path):
+        """An explicit memory_audit_nudge = true row wins over the legacy
+        sentinel file, so the documented re-enable recipe also switches the
+        legacy file off."""
+        _write_state_toml(tmp_path, "memory_audit_nudge = true\n")
+        (_config_dir(tmp_path) / ".memory-audit-nudge-disabled").touch()
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-true-over-legacy", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 2
+        )
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    def test_legacy_disabled_file_alone_suppresses(self, tmp_path):
+        """With no memory_audit_nudge row in the config file, the legacy
+        sentinel file alone disables the nudge."""
+        _write_state_toml(tmp_path, "# no memory_audit_nudge row\n")
+        (_config_dir(tmp_path) / ".memory-audit-nudge-disabled").touch()
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-legacy-only", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 2
+        )
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_non_bare_false_value_is_malformed_and_nudge_fires(self, tmp_path):
+        """A quoted "false" is a malformed line for a bool key, so the nudge
+        keeps firing."""
+        _write_state_toml(tmp_path, 'memory_audit_nudge = "false"\n')
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-quoted-false", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 2
+        )
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+
+    @pytest.mark.parametrize(
         "payload",
         [
             _base_payload(source="clear"),
@@ -248,6 +368,24 @@ class TestNudgeMemoryStoreAudit:
         # N=1 project store at exactly DEFAULT_PER_PROJECT_BYTES: total and
         # threshold are both the shipped default.
         assert str(DEFAULT_PER_PROJECT_BYTES) in ctx
+
+    def test_fire_reports_distinct_total_projects_and_threshold(self, tmp_path):
+        """Two stores holding 70000 bytes give total=70000, projects=2, and
+        threshold=51200 -- all distinct, so swapping any pair in the log line
+        or the message fails."""
+        _write_memory_file(tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-pin-a", "MEMORY.md", 40000)
+        _write_memory_file(tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-pin-b", "MEMORY.md", 30000)
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "now hold 70000 bytes across 2 project store(s), past the 51200-byte" in context
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert fields == {
+            "total": "70000",
+            "projects": "2",
+            "threshold": "51200",
+            "source": "startup",
+        }
 
     # -- Re-arm band and shrink rewrite -------------------------------------
 
@@ -301,19 +439,15 @@ class TestNudgeMemoryStoreAudit:
 
     @pytest.mark.parametrize(
         "override_value",
-        ["", "0", "abc", "0100", "123456789", "1234567890"],
-        ids=["empty", "zero", "non-digit", "zero-padded", "nine-digits", "ten-plus-digits"],
+        ["", "0", "abc", "0100"],
+        ids=["empty", "zero", "non-digit", "zero-padded"],
     )
-    def test_malformed_per_project_bytes_override_falls_back_to_default(
+    def test_degenerate_per_project_bytes_override_falls_back_to_default(
         self, tmp_path, override_value
     ):
         """A malformed MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES override falls
         back to the shipped 25600 default rather than degrading the
-        threshold toward 0 or negative.
-
-        The "nine-digits" case pins the glob pattern's actual rejection
-        boundary (`?????????*` matches 9+ characters), not just an
-        arbitrarily-longer 10-digit value."""
+        threshold toward 0 -- one byte under the default stays silent."""
         _write_memory_file(
             tmp_path,
             f"{SYNTHETIC_PROJECT_PREFIX}-override",
@@ -326,15 +460,38 @@ class TestNudgeMemoryStoreAudit:
             extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": override_value},
         )
         assert result.returncode == 0
-        # Still below the correctly-applied 25600 default -- a leaked
-        # malformed override (toward 0) would fire here instead.
         assert result.stdout.strip() == ""
 
+    @pytest.mark.parametrize(
+        "override_value",
+        ["123456789", "1234567890"],
+        ids=["nine-digits", "ten-digits"],
+    )
+    def test_oversized_per_project_bytes_override_falls_back_to_default(
+        self, tmp_path, override_value
+    ):
+        """A 9+ digit override is rejected by the `?????????*` arm. A store
+        sized exactly at the shipped default fires only if the fallback
+        applied; an honored huge override would keep it silent."""
+        _write_memory_file(
+            tmp_path,
+            f"{SYNTHETIC_PROJECT_PREFIX}-oversized",
+            "MEMORY.md",
+            DEFAULT_PER_PROJECT_BYTES,
+        )
+        result = _run_hook(
+            _base_payload(),
+            tmp_path,
+            extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": override_value},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert fields["threshold"] == str(DEFAULT_PER_PROJECT_BYTES)
+
     def test_eight_digit_per_project_bytes_override_is_honored(self, tmp_path):
-        """Positive control for the boundary above: an 8-digit override is
-        the accepted side of the glob's 9+-digit rejection cutoff, so it
-        must be honored rather than falling back to the 25600 default."""
-        override_value = "10000000"  # smallest 8-digit value
+        """Positive control for the 9+-digit rejection above: an 8-digit
+        override is honored, so a store past the 25600 default stays silent."""
         _write_memory_file(
             tmp_path,
             f"{SYNTHETIC_PROJECT_PREFIX}-eightdigit",
@@ -344,17 +501,14 @@ class TestNudgeMemoryStoreAudit:
         result = _run_hook(
             _base_payload(),
             tmp_path,
-            extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": override_value},
+            extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": "10000000"},  # smallest 8-digit value
         )
         assert result.returncode == 0
-        # Above the 25600 default (a fallback would fire here) but far below
-        # the correctly-applied 8-digit override's threshold.
         assert result.stdout.strip() == ""
 
     def test_no_override_uses_shipped_default_threshold(self, tmp_path):
-        """Positive control for the malformed-override table above: with no
-        override set at all, the fired threshold is exactly the shipped
-        default (25600 x 1 project) -- not merely "a bad string is ignored"."""
+        """With no override set at all, the fired threshold is exactly the
+        shipped default (25600 x 1 project)."""
         _write_memory_file(
             tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-defaultcontrol", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
         )
@@ -364,120 +518,59 @@ class TestNudgeMemoryStoreAudit:
         fields = _parse_log_line(_log_path(tmp_path).read_text())
         assert fields["threshold"] == str(DEFAULT_PER_PROJECT_BYTES)
 
-    @pytest.mark.parametrize(
-        "override_value",
-        ["", "0", "abc", "0100", "123456789", "1234567890"],
-        ids=["empty", "zero", "non-digit", "zero-padded", "nine-digits", "ten-plus-digits"],
-    )
-    def test_malformed_rearm_bytes_override_falls_back_to_default(self, tmp_path, override_value):
-        """A malformed MEMORY_AUDIT_NUDGE_REARM_BYTES override falls back to
-        the shipped 25600 default at the re-arm boundary, rather than
-        degrading it toward 0 and re-firing before the real band is
-        crossed.
-
-        The "nine-digits" case pins the glob pattern's actual rejection
-        boundary (`?????????*` matches 9+ characters), not just an
-        arbitrarily-longer 10-digit value."""
-        project = f"{SYNTHETIC_PROJECT_PREFIX}-rearm-override"
-        extra_env = {"MEMORY_AUDIT_NUDGE_REARM_BYTES": override_value}
+    def _fire_then_grow_by_default_band(self, tmp_path, project, extra_env):
+        """First fire at the shipped threshold, then grow the store by exactly
+        DEFAULT_REARM_BYTES; returns the second run's result."""
         _write_memory_file(tmp_path, project, "MEMORY.md", DEFAULT_PER_PROJECT_BYTES)
         first = _run_hook(_base_payload(), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
+        _write_memory_file(tmp_path, project, "topic.md", DEFAULT_REARM_BYTES)
+        return _run_hook(_base_payload(), tmp_path, extra_env=extra_env)
 
+    @pytest.mark.parametrize(
+        "override_value",
+        ["", "0", "abc", "0100"],
+        ids=["empty", "zero", "non-digit", "zero-padded"],
+    )
+    def test_degenerate_rearm_bytes_override_falls_back_to_default(self, tmp_path, override_value):
+        """A malformed MEMORY_AUDIT_NUDGE_REARM_BYTES override falls back to
+        the shipped 25600 band rather than degrading toward 0 -- growth one
+        byte short of the band stays silent."""
+        project = f"{SYNTHETIC_PROJECT_PREFIX}-rearm-override"
+        extra_env = {"MEMORY_AUDIT_NUDGE_REARM_BYTES": override_value}
+        _write_memory_file(tmp_path, project, "MEMORY.md", DEFAULT_PER_PROJECT_BYTES)
+        assert _run_hook(_base_payload(), tmp_path, extra_env=extra_env).stdout.strip() != ""
         _write_memory_file(tmp_path, project, "topic.md", DEFAULT_REARM_BYTES - 1)
         result = _run_hook(_base_payload(), tmp_path, extra_env=extra_env)
         assert result.returncode == 0
-        # Still below the correctly-applied 25600 re-arm default -- a leaked
-        # malformed override (toward 0) would fire here instead.
         assert result.stdout.strip() == ""
 
-    # -- Timeout-binary precondition ------------------------------------------
-
-    def test_no_fire_when_neither_timeout_nor_gtimeout_present(self, tmp_path):
-        """The scan is skipped entirely -- no stdout, no log line, no
-        state-file write -- when neither timeout(1) nor gtimeout(1) resolves,
-        even against a store well past threshold."""
-        _write_memory_file(
-            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-notimeout", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 5
+    @pytest.mark.parametrize(
+        "override_value",
+        ["123456789", "1234567890"],
+        ids=["nine-digits", "ten-digits"],
+    )
+    def test_oversized_rearm_bytes_override_falls_back_to_default(self, tmp_path, override_value):
+        """A 9+ digit re-arm override is rejected: growth of exactly the
+        shipped band fires again only if the fallback applied."""
+        result = self._fire_then_grow_by_default_band(
+            tmp_path,
+            f"{SYNTHETIC_PROJECT_PREFIX}-rearm-oversized",
+            {"MEMORY_AUDIT_NUDGE_REARM_BYTES": override_value},
         )
-        fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
-        fake_bin.mkdir()
-        restricted_path = build_path_without({"timeout", "gtimeout"}, fake_bin)
-        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": restricted_path})
-        assert result.returncode == 0
-        assert result.stdout.strip() == ""
-        assert not _log_path(tmp_path).exists()
-        assert not _state_file(tmp_path).exists()
-
-    def test_fires_when_a_timeout_binary_is_present(self, tmp_path):
-        """With a timeout-shaped binary resolvable on PATH, the same
-        over-threshold tree fires -- pins the precondition's ordering (it
-        precedes the scan, the same ordering property the kill-switch has)."""
-        _write_memory_file(
-            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-withtimeout", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
-        )
-        fake_bin = tmp_path / "fakebin-with-timeout"
-        fake_bin.mkdir()
-        restricted_path = build_path_without({"timeout", "gtimeout"}, fake_bin)
-        timeout_target = shutil.which("timeout") or shutil.which("gtimeout")
-        assert timeout_target is not None, (
-            "no timeout-shaped binary found on this machine to exercise the "
-            "precondition's positive branch"
-        )
-        (fake_bin / "timeout").symlink_to(timeout_target)
-        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": restricted_path})
         assert result.returncode == 0
         assert result.stdout.strip() != ""
 
-    def test_hanging_jq_never_invoked_when_no_timeout_binary_present(self, tmp_path):
-        """Pins the actual property the timeout-binary-precondition reorder
-        fixes, not just its net observable effect: with neither timeout(1)
-        nor gtimeout(1) resolvable, the hook must return quickly even with a
-        hanging jq on PATH. A fast-but-silent jq would also produce empty
-        stdout, so asserting only that (as the sibling no-timeout-binary
-        test does) can't distinguish 'jq ran fast' from 'jq never ran' --
-        this test's timeout on the subprocess call itself is what proves
-        the .source filter's jq call is never reached.
-
-        Uses Popen directly rather than _run_hook's subprocess.run, so a
-        caught regression (the hanging jq stub actually invoked) can be
-        killed via proc.kill() instead of leaving the 30s sleep as an
-        orphaned process for the rest of the test run -- same pattern as
-        test_nudge_handoff_near_context_cap.py::test_does_not_read_stdin
-        and test_lib_worktree_collision_guard.py's concurrent-race tests."""
-        _write_memory_file(
-            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-hangingjq", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 5
+    def test_eight_digit_rearm_bytes_override_is_honored(self, tmp_path):
+        """Positive control for the 9+-digit rejection above: an 8-digit
+        re-arm band is honored, so growth of the default band stays silent."""
+        result = self._fire_then_grow_by_default_band(
+            tmp_path,
+            f"{SYNTHETIC_PROJECT_PREFIX}-rearm-eightdigit",
+            {"MEMORY_AUDIT_NUDGE_REARM_BYTES": "10000000"},  # smallest 8-digit value
         )
-        farm_dir = tmp_path / "path-without-timeout-binaries-or-jq"
-        farm_dir.mkdir()
-        restricted_path = build_path_without({"timeout", "gtimeout", "jq"}, farm_dir)
-        hanging_jq_dir = tmp_path / "hanging-jq-bin"
-        hanging_jq_dir.mkdir()
-        hanging_jq = hanging_jq_dir / "jq"
-        hanging_jq.write_text("#!/bin/bash\nsleep 30\n")
-        hanging_jq.chmod(0o755)
-        full_path = f"{hanging_jq_dir}{os.pathsep}{restricted_path}"
-        env = {**os.environ, "HOME": str(tmp_path), "PATH": full_path}
-        env.pop("CLAUDE_CONFIG_DIR", None)
-        proc = subprocess.Popen(
-            [str(NUDGE_HOOK)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        try:
-            stdout, _ = proc.communicate(input=json.dumps(_base_payload()), timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            pytest.fail(
-                "hook did not return within 5s -- the hanging jq stub was invoked, "
-                "meaning the timeout-binary precondition did not run before it"
-            )
-        assert proc.returncode == 0
-        assert stdout.strip() == ""
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
 
     # -- wc-total-row-and-project-count awk program -------------------------
 
@@ -540,24 +633,35 @@ class TestNudgeMemoryStoreAudit:
         assert result.stderr.strip() == ""
 
     def test_missing_lib_sh_sibling_fails_open(self, tmp_path):
-        """Run a copy of the hook with no _lib.sh sibling in its directory --
-        the `source` at the top of the script fails and the hook must exit 0
-        with no output, not error."""
-        isolated_hook_dir = tmp_path / "isolated-hooks"
-        isolated_hook_dir.mkdir()
-        isolated_hook = isolated_hook_dir / NUDGE_HOOK.name
-        isolated_hook.write_text(NUDGE_HOOK.read_text())
-        isolated_hook.chmod(0o755)
-        home = tmp_path / "home-no-lib"
-        home.mkdir()
-        result = subprocess.run(
-            [str(isolated_hook)],
-            input=json.dumps(_base_payload()),
-            capture_output=True,
-            text=True,
-            env={**os.environ, "HOME": str(home)},
-            check=False,
+        """A copy of the hook with no _lib.sh sibling exits 0 with no output
+        rather than erroring. A control with the siblings present and the same
+        over-threshold store fires, so the silence is attributable to the
+        missing sibling and not to an empty store."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-no-lib", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
         )
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        def run_copy(hook_path: Path) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [str(hook_path)],
+                input=json.dumps(_base_payload()),
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+
+        control = run_copy(_isolated_hooks_dir(tmp_path))
+        assert control.stdout.strip() != "", "control with siblings present must fire"
+
+        bare_dir = tmp_path / "bare-hooks"
+        bare_dir.mkdir()
+        bare_hook = bare_dir / NUDGE_HOOK.name
+        bare_hook.write_text(NUDGE_HOOK.read_text())
+        bare_hook.chmod(0o755)
+        result = run_copy(bare_hook)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
@@ -607,16 +711,17 @@ class TestNudgeMemoryStoreAudit:
         log_text = _log_path(tmp_path).read_text()
         assert distinctive_name not in log_text
 
-    def test_scan_scope_excludes_sibling_transcript_file(self, tmp_path):
-        """A large sibling file directly under projects/<project>/ (outside
-        memory/) is never counted -- pins the .../memory glob start-point
-        form against a regression to a `-path '*/memory/*'` walk of the
-        whole projects tree."""
+    def test_scan_scope_excludes_files_outside_the_store_root(self, tmp_path):
+        """Large files beside the store (a sibling transcript, and a `memory`
+        directory nested under another project subdirectory) are never
+        counted: only `projects/*/memory` start points are walked."""
         project = f"{SYNTHETIC_PROJECT_PREFIX}-scanscope"
         _write_memory_file(tmp_path, project, "MEMORY.md", DEFAULT_PER_PROJECT_BYTES - 1)
         project_dir = _config_dir(tmp_path) / "projects" / project
-        sibling = project_dir / f"{project}-transcript.jsonl"
-        sibling.write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 10))
+        (project_dir / f"{project}-transcript.jsonl").write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 10))
+        other_memory_dir = project_dir / "other-session" / "memory"
+        other_memory_dir.mkdir(parents=True)
+        (other_memory_dir / "big.md").write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 10))
         result = _run_hook(_base_payload(), tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
@@ -640,10 +745,9 @@ class TestNudgeMemoryStoreAudit:
         reason="root bypasses discretionary file-permission bits, so chmod(0o000) "
         "would not actually make the directory unreadable",
     )
-    def test_unreadable_project_memory_dir_exits_cleanly(self, tmp_path):
-        """One synthetic project's memory/ directory is unreadable
-        (permission-denied mid-scan); the hook must still exit 0 with no
-        crash and, if it emits anything, well-formed JSON."""
+    def test_unreadable_project_memory_dir_is_skipped_and_readable_store_still_measured(self, tmp_path):
+        """find exits nonzero on a permission-denied directory; that benign
+        status must not discard the measurement of the readable store."""
         _write_memory_file(
             tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-readable", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
         )
@@ -655,9 +759,8 @@ class TestNudgeMemoryStoreAudit:
         finally:
             unreadable_memory_dir.chmod(0o755)
         assert result.returncode == 0
-        if result.stdout.strip():
-            payload = json.loads(result.stdout)
-            assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert (fields["total"], fields["projects"]) == (str(DEFAULT_PER_PROJECT_BYTES), "1")
 
     def test_corrupted_state_file_fires_rather_than_suppresses(self, tmp_path):
         """A non-numeric state-file record must trigger a fire (the inverse
@@ -716,26 +819,201 @@ class TestNudgeMemoryStoreAudit:
             "N or contribute bytes -- find's default -type f test skips it"
         )
 
-    def test_symlinked_memory_dir_itself_is_undercounted_on_bsd_find(self, tmp_path):
-        """When a project's `memory` glob match is itself a symlink to
-        another directory (not a file inside it), BSD/macOS `find
-        <symlink-to-dir> -type f` produces no output at all for that
-        argument -- the project's bytes silently drop out of the total
-        rather than erroring. Documents the hook's actual current behavior
-        (see the one-line comment above the `find` call in the hook); GNU
-        `find`'s own command-line-argument symlink handling is untested
-        here."""
+    def test_symlinked_memory_dir_counts_toward_total_and_store_count(self, tmp_path):
+        """A project's `memory` glob match that is itself a symlink to a
+        directory is followed (find -H), so its bytes and its store both count."""
         project = f"{SYNTHETIC_PROJECT_PREFIX}-symlinked-memory-dir"
         project_dir = _config_dir(tmp_path) / "projects" / project
         project_dir.mkdir(parents=True)
         real_target = tmp_path / "real-memory-target"
         real_target.mkdir()
-        (real_target / "MEMORY.md").write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 5))
+        (real_target / "MEMORY.md").write_bytes(b"x" * DEFAULT_PER_PROJECT_BYTES)
         (project_dir / "memory").symlink_to(real_target, target_is_directory=True)
         result = _run_hook(_base_payload(), tmp_path)
         assert result.returncode == 0
-        assert result.stdout.strip() == "", (
-            "a project whose memory/ directory is itself a symlink must not "
-            "count toward N or contribute bytes on this platform's find -- "
-            "see the one-line comment above the find call in the hook"
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert (fields["total"], fields["projects"]) == (str(DEFAULT_PER_PROJECT_BYTES), "1")
+
+    def test_symlinked_directory_inside_memory_dir_is_not_followed(self, tmp_path):
+        """-H follows only command-line symlinks: a symlink to a directory met
+        during traversal contributes no bytes."""
+        project = f"{SYNTHETIC_PROJECT_PREFIX}-inner-dir-symlink"
+        memory_dir = _memory_dir(tmp_path, project)
+        (memory_dir / "MEMORY.md").write_bytes(b"x" * DEFAULT_PER_PROJECT_BYTES)
+        outside_dir = tmp_path / "outside-dir"
+        outside_dir.mkdir()
+        (outside_dir / "big.md").write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 5))
+        (memory_dir / "linked-dir").symlink_to(outside_dir, target_is_directory=True)
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert fields["total"] == str(DEFAULT_PER_PROJECT_BYTES)
+
+    # -- Newline-bearing paths ------------------------------------------------
+
+    def test_newline_in_directory_name_cannot_forge_wc_rows(self, tmp_path):
+        """`wc` prints a path verbatim, so a directory named
+        `d<LF>99999999 x` would otherwise add a forged 99999999-byte row.
+        Such paths are pruned: the total stays the real files' bytes."""
+        project = f"{SYNTHETIC_PROJECT_PREFIX}-newline"
+        memory_dir = _memory_dir(tmp_path, project)
+        (memory_dir / "MEMORY.md").write_bytes(b"x" * DEFAULT_PER_PROJECT_BYTES)
+        forging_dir = memory_dir / "d\n99999999 x"
+        forging_dir.mkdir()
+        (forging_dir / "f.md").write_bytes(b"x" * 10)
+        (memory_dir / "g\n5 y.md").write_bytes(b"x" * 10)
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert (fields["total"], fields["projects"]) == (str(DEFAULT_PER_PROJECT_BYTES), "1")
+
+    # -- Cap-killed and benign-nonzero measurement statuses -------------------
+
+    def _seed_high_water_mark(self, tmp_path, project, recorded_total):
+        _write_memory_file(tmp_path, project, "MEMORY.md", DEFAULT_PER_PROJECT_BYTES)
+        _state_file(tmp_path).write_text(f"{recorded_total}\n")
+
+    @pytest.mark.parametrize("killed_status", [124, 137, 143])
+    def test_cap_killed_find_discards_partial_measurement(self, tmp_path, killed_status):
+        """A find killed by its cap after partial output leaves the recorded
+        high-water mark, the log, and stdout untouched."""
+        self._seed_high_water_mark(tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-killed-find", 600000)
+        shim_dir = tmp_path / "shims"
+        _write_shim(
+            shim_dir,
+            "find",
+            f"printf '40000 /x/projects/p/memory/a.md\\n40000 /x/projects/p/memory/b.md\\n'\nexit {killed_status}",
         )
+        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert _state_file(tmp_path).read_text().strip() == "600000"
+        assert not _log_path(tmp_path).exists()
+
+    @pytest.mark.parametrize("killed_status", [124, 137, 143])
+    def test_cap_killed_awk_discards_partial_measurement(self, tmp_path, killed_status):
+        """An awk killed by its cap leaves the recorded high-water mark, the
+        log, and stdout untouched, even though it printed a total first."""
+        self._seed_high_water_mark(tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-killed-awk", 600000)
+        shim_dir = tmp_path / "shims"
+        _write_shim(shim_dir, "awk", f"printf '80000\\n1\\n'\nexit {killed_status}")
+        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert _state_file(tmp_path).read_text().strip() == "600000"
+        assert not _log_path(tmp_path).exists()
+
+    def _install_stalling_shim(self, tmp_path, binary, match_condition, project):
+        """Seed a high-water mark and install a shim that stalls `binary` past its
+        scaled cap when `match_condition` holds; returns the shim dir. Skips
+        without a GNU-coreutils timeout, like git_timeout_shim."""
+        if not _real_timeout_is_gnu_coreutils():
+            pytest.skip("neither timeout(1) nor gtimeout(1) is GNU coreutils")
+        real_binary = shutil.which(binary)
+        assert real_binary is not None
+        self._seed_high_water_mark(tmp_path, project, 600000)
+        shim_dir = tmp_path / "shims"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(shim_dir, binary, real_binary, match_condition)
+        return shim_dir
+
+    def _assert_silent_and_stateless(self, tmp_path, result):
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert _state_file(tmp_path).read_text().strip() == "600000"
+        assert not _log_path(tmp_path).exists()
+
+    @pytest.mark.timing
+    @pytest.mark.parametrize("stalled_binary", ["find", "awk"])
+    def test_stalled_scan_binary_is_capped_and_discards_the_measurement(self, tmp_path, stalled_binary):
+        """A `find` or `awk` that stalls is killed by the real scaled cap, so the
+        hook exits 0 with no stdout, no log line, and the state file untouched."""
+        shim_dir = self._install_stalling_shim(
+            tmp_path, stalled_binary, "true", f"{SYNTHETIC_PROJECT_PREFIX}-stalled-{stalled_binary}"
+        )
+        with assert_cap_engaged(shim_dir, production_cap=5, command=stalled_binary):
+            result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        self._assert_silent_and_stateless(tmp_path, result)
+
+    @pytest.mark.timing
+    def test_stalled_source_parse_jq_is_capped_and_exits_silently(self, tmp_path):
+        """A `jq` that stalls on the `.source` parse is killed by the cap, leaving
+        SOURCE empty, so the hook exits 0 with no output before any scan."""
+        shim_dir = self._install_stalling_shim(
+            tmp_path, "jq", '[ "$1" = "-r" ]', f"{SYNTHETIC_PROJECT_PREFIX}-stalled-jq"
+        )
+        with assert_cap_engaged(shim_dir, production_cap=5, command="jq"):
+            result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        self._assert_silent_and_stateless(tmp_path, result)
+
+    def test_benign_nonzero_find_status_keeps_the_measurement(self, tmp_path):
+        """A find that exits 1 (unreadable or vanished file) after a complete
+        listing is not a cap kill: the measurement stands and fires."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-benign-find", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
+        )
+        real_find = shutil.which("find")
+        assert real_find is not None
+        shim_dir = tmp_path / "shims"
+        _write_shim(shim_dir, "find", f'{real_find} "$@"\nexit 1')
+        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": _path_with_shims(shim_dir)})
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert fields["total"] == str(DEFAULT_PER_PROJECT_BYTES)
+
+    def test_scan_runs_uncapped_when_neither_timeout_nor_gtimeout_is_on_path(self, tmp_path):
+        """Without timeout(1) and gtimeout(1) the scan runs uncapped, bounded
+        only by the settings.json registration, and still measures and fires."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-no-timeout", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES
+        )
+        farm_dir = tmp_path / "path-without-timeout"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("timeout", farm_dir)
+        # build_path_without omits one binary; the hook probes both spellings.
+        (farm_dir / "gtimeout").unlink(missing_ok=True)
+        assert shutil.which("timeout", path=restricted_path) is None
+        assert shutil.which("gtimeout", path=restricted_path) is None
+        result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": restricted_path})
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] != ""
+
+    def test_message_states_the_effective_per_store_bytes_under_override(self, tmp_path):
+        """The nudge message derives its per-store figure from the effective
+        override, not a fixed literal."""
+        _write_memory_file(tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-message-override", "MEMORY.md", 5000)
+        result = _run_hook(
+            _base_payload(),
+            tmp_path,
+            extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": "4000"},
+        )
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "past the 4000-byte size threshold (4000 bytes per store;" in context
+        assert "25 KB" not in context
+        assert "startup-load size" not in context
+
+
+class TestMemoryAuditGitignoreEntries:
+    """The memory-audit runtime files and the quarantine directory are all
+    git-ignored; the quarantine holds unredacted memory files."""
+
+    @pytest.mark.parametrize(
+        "ignored_path",
+        [
+            "claude/.claude/.memory-audit-nudge-fired",
+            "claude/.claude/.memory-audit-nudge.log",
+            "claude/.claude/.memory-audit-nudge-disabled",
+            "claude/.claude/.memory-audit-quarantine/2000-01-01T00-00-00Z/project/topic.md",
+        ],
+    )
+    def test_memory_audit_path_is_git_ignored(self, ignored_path):
+        repo_root = HOOKS_DIR.parents[2]
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", ignored_path],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{ignored_path} is not git-ignored"
