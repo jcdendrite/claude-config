@@ -47,21 +47,30 @@
 # - The structural validator's path list excludes deletions by the diff's own status
 #   (`--diff-filter=d`), and a staged deletion reaches the marker check, which covers
 #   it through the base-relative hash.
-# - With a non-empty base, a HEAD-relative `-G` scan of the gated pathspecs
-#   hard-denies a staged file that still carries conflict-marker lines: mid-merge
-#   the base tree holds conflict-marker blobs, so an unresolved file can read as
-#   already reviewed. See "Conflict-marker hard deny" in
+# - With a non-empty base, a HEAD-relative scan of the gated pathspecs
+#   (`git diff -G`, then `git grep` on the staged blobs) hard-denies a staged
+#   file that carries column-0 conflict-marker lines and whose staged change
+#   touches such a line: mid-merge the base tree holds conflict-marker blobs,
+#   so an unresolved file can read as already reviewed. See "Conflict-marker hard deny" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Fail-closed denies, each rather than disarming or skipping the structural
-#   validator: a failed conflict-marker scan or staged-path listing (the scan or
-#   any of the three listings), and a listed non-deleted path whose blob
-#   cannot be read (unmerged, corrupt index, a name git still lists C-quoted, or
-#   an argv name normalization mismatch).
+#   validator:
+#   - the conflict-marker scan fails.
+#   - any of the three staged-path listings fails.
+#   - a listed non-deleted path's blob cannot be read: it is unmerged, the
+#     index is corrupt, git still lists its name C-quoted, or its name does
+#     not survive argv normalization.
 # - Known gap: with neither timeout nor gtimeout on PATH, every _lib_capped
-#   site runs uncapped: the listings, the per-path `git show`, the marker hash,
-#   the validator, the advisory corpus scan (_lib_capped_for 10), and the base
-#   resolution. A stalled git then exits only via the harness's own hook
-#   timeout, which releases the commit (fail-open) rather than blocking it.
+#   site runs uncapped, and a stalled git then exits only via the harness's own
+#   hook timeout, which releases the commit (fail-open) rather than blocking it.
+#   The uncapped sites are:
+#   - the conflict-marker scan's two git calls.
+#   - the three staged-path listings.
+#   - the per-path `git show`.
+#   - the marker hash.
+#   - the validator.
+#   - the advisory corpus scan (_lib_capped_for 10).
+#   - the base resolution.
 # - Known gap: the validator reads each listed path's blob by re-resolving its name,
 #   so a hand-built index with aliased entry names leaves an invalid entry
 #   unvalidated; see "Known residual: aliased index entries" in
@@ -142,32 +151,20 @@ fi
 
 # Resolved once per invocation and threaded through the trigger, the
 # structural validator's path list, and the marker hash below.
-# Status 1: no in-progress state was trusted, or the state is a revert
-# (_lib_skill_review_diff_base excludes it; see the header comment above).
-# Status 2: the base could not be computed.
-# Either way BASE is empty and every consumer below runs a plain
-# `git diff --cached` with no base argument, which is HEAD-relative.
-# Each capped git call is 5s plus a 2s kill grace.
-# A PreToolUse hook that times out does not block the call, so the whole-hook
-# worst case must stay under the harness's hook timeout (hooks.json sets none,
-# so the 600s default applies), sized in
-# docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+# BASE empty means every consumer below diffs HEAD-relative: status 1 is no
+# trusted in-progress state or a revert, status 2 is a failed base computation.
+# Worst-case sizing: docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md, "Latency".
 BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
 BASE_STATUS=$?
 
 # gated_paths_at_base REPO_ROOT BASE DIFF_FILTER PATHSPEC...
 # `git diff --cached --name-only`, restricted to PATHSPEC and, when BASE is
-# non-empty, diffed against it instead of HEAD. A non-empty DIFF_FILTER is
-# passed as `--diff-filter=<DIFF_FILTER>`; `d` excludes deletions. Capped via _lib_capped (the
-# same 5s+2s-grace wrapper _lib_staged_diff_hash uses for its own `git diff
-# --cached` call) -- an uncapped git call here would be fail-open: a hang
-# only resolves via the harness's own PreToolUse timeout, which lets the
-# commit through rather than denying it. Returns git's own exit status, or a
-# distinguishable nonzero status (124/137/143 -- see _lib_capped_for's
-# header) when the cap kills it. A non-zero status denies the commit below.
-# core.quotepath=false keeps non-ASCII paths unquoted so `git show :<path>`
-# resolves them; paths git still quotes (embedded quote, tab, newline) fail
-# that `git show` and deny below.
+# non-empty, diffed against it instead of HEAD.
+# A non-empty DIFF_FILTER is passed as `--diff-filter=<DIFF_FILTER>`; `d` excludes deletions.
+# Runs under _lib_capped and returns git's own exit status, or the cap-kill
+# status (124/137/143, see _lib_capped_for's header). A non-zero status denies below.
+# core.quotepath=false keeps non-ASCII paths unquoted so `git show :<path>` resolves them.
+# Paths git still quotes (embedded quote, tab, newline) fail that `git show` and deny below.
 gated_paths_at_base() {
   local repo_root="$1" base="$2" diff_filter="$3"
   shift 3
@@ -187,19 +184,43 @@ MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
 
 # Mid-merge, `merge-tree --write-tree` puts conflict-marker blobs in the base
 # tree, so a staged gated blob equal to the base can be an unresolved conflict
-# rather than reviewed upstream content. HEAD-relative, because the base-relative
-# diff of such a path is empty and hides it both at the disarm exit below and
-# among resolved paths. `-a --no-textconv` keep a `-diff`/`binary` attribute or
-# a textconv driver from hiding a marker line from `-G`.
+# rather than reviewed upstream content.
+# The scan is HEAD-relative, because the base-relative diff of such a path is empty.
+# Call A lists the non-deleted gated paths whose HEAD-relative diff has a marker
+# line on either side (`-G` also matches removed lines). Call B keeps only those
+# whose staged blob still has a column-0 marker line, so a marker line HEAD
+# carries can be indented or removed to clear the deny.
+# Both calls emit path lists only, so no diff or grep presentation config
+# (color, external diff) changes the verdict.
+# `-a --no-textconv` keep a `-diff`/`binary` attribute or a textconv driver
+# from hiding a marker line.
+# B runs `-L` (files without a match) so a path A and B name differently
+# stays in the deny set.
+CONFLICT_MARKER_REGEX='^(<<<<<<<|>>>>>>>)( |$)'
 if [ -n "$BASE" ]; then
-  CONFLICT_MARKER_PATHS=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false diff --cached -a --no-textconv --name-only -G '^(<<<<<<<|>>>>>>>)( |$)' -- "${MARKER_PATHSPECS[@]}")
-  CONFLICT_MARKER_STATUS=$?
-  if [ "$CONFLICT_MARKER_STATUS" -ne 0 ]; then
-    emit_deny "Commit blocked by skill-review gate: could not scan the staged skill files for conflict markers (git diff --cached -G failed or timed out). Retry the commit; if it keeps failing, check that git is responsive in this repository."
+  CONFLICT_MARKER_CANDIDATES=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false diff --cached --no-color --name-only --diff-filter=d -a --no-textconv -G "$CONFLICT_MARKER_REGEX" -- "${MARKER_PATHSPECS[@]}")
+  CONFLICT_MARKER_SCAN_STATUS=$?
+  CONFLICT_MARKER_PATHS=""
+  if [ "$CONFLICT_MARKER_SCAN_STATUS" -eq 0 ] && [ -n "$CONFLICT_MARKER_CANDIDATES" ]; then
+    # `git grep -L` exits 0 when it lists a file and 1 when it lists none.
+    MARKER_FREE_PATHS=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false grep --cached --no-color --no-recurse-submodules -L -a --no-textconv -E "$CONFLICT_MARKER_REGEX" -- "${MARKER_PATHSPECS[@]}")
+    CONFLICT_MARKER_SCAN_STATUS=$?
+    [ "$CONFLICT_MARKER_SCAN_STATUS" -eq 1 ] && CONFLICT_MARKER_SCAN_STATUS=0
+    if [ "$CONFLICT_MARKER_SCAN_STATUS" -eq 0 ]; then
+      while IFS= read -r candidate_path; do
+        case $'\n'"$MARKER_FREE_PATHS"$'\n' in
+          *$'\n'"$candidate_path"$'\n'*) ;;
+          *) CONFLICT_MARKER_PATHS+="${CONFLICT_MARKER_PATHS:+$'\n'}$candidate_path" ;;
+        esac
+      done <<< "$CONFLICT_MARKER_CANDIDATES"
+    fi
+  fi
+  if [ "$CONFLICT_MARKER_SCAN_STATUS" -ne 0 ]; then
+    emit_deny "Commit blocked by skill-review gate: could not scan the staged skill files for conflict markers (a git diff or git grep call failed or timed out). Retry the commit; if it keeps failing, check that git is responsive in this repository."
     exit 0
   fi
   if [ -n "$CONFLICT_MARKER_PATHS" ]; then
-    emit_deny "Commit blocked by skill-review gate: the staged gated file(s) still contain unresolved conflict-marker lines (${CONFLICT_MARKER_PATHS//$'\n'/, }): column-0 lines starting <<<<<<< or >>>>>>>. If a conflict is unresolved, resolve it and stage the resolution. If the lines are legitimate content, such as a documented example, indent them so they no longer start at column 0 and restage; the gate then reviews the edited file."
+    emit_deny "Commit blocked by skill-review gate: the staged gated file(s) still contain unresolved conflict-marker lines (${CONFLICT_MARKER_PATHS//$'\n'/, }): column-0 lines starting <<<<<<< or >>>>>>> in a file whose staged change touches such a line. If a conflict is unresolved, resolve it and stage the resolution. If the lines are legitimate content, such as a documented example, indent every such line and restage; the gate then reviews the edited file."
     exit 0
   fi
 fi
@@ -371,12 +392,10 @@ fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 # Same argv as marker.sh's `write skill-review`/`status` arms: both call
-# _lib_staged_diff_hash with the same REPO_ROOT and BASE. MARKER_PATHSPECS
-# here and SKILL_REVIEW_PATHSPECS in marker.sh are separate literals kept in
-# step by hand; a test pins their equality. An empty CURRENT_HASH (git or sha256sum
-# failed, or the base-bearing diff call itself failed) reaches the
-# terminal deny below through the existing "no match" path, with no new
-# branch needed for that failure.
+# _lib_staged_diff_hash with the same REPO_ROOT and BASE.
+# MARKER_PATHSPECS here and SKILL_REVIEW_PATHSPECS in marker.sh are separate
+# literals kept in step by hand, and a test pins their equality.
+# An empty CURRENT_HASH reaches the terminal deny through the "no match" path.
 CURRENT_HASH=$(_lib_staged_diff_hash "$REPO_ROOT" "$BASE" "${MARKER_PATHSPECS[@]}")
 
 # Fail closed: an unresolvable config dir must deny the gate, not silently

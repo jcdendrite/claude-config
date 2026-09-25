@@ -432,11 +432,7 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # Unlike the code-review arm above, no GATE_DIFF_BASE-identity
-        # binding: skill-review disarms rather than falling through to a
-        # marker comparison on an empty base-relative diff, so it has no
-        # sentinel to reconstruct and a plain sha256("") comparison is
-        # correct in every state.
+        # No empty-base sentinel here; see docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md, "Why no empty-base sentinel exists here".
         if [ "$MARKER_VALUE" = "$_STAGED_DIFF_EMPTY_DIGEST" ]; then
           printf 'marker.sh: staged SKILL.md diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
           exit 0
@@ -730,7 +726,6 @@ case "$SUBCOMMAND" in
     # excludes revert while this GATE_DIFF_BASE does not, so the two answers
     # can differ. See
     # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
-    # The extra resolution's cost on every status call is accepted; see that doc's "Latency" section.
     GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
 
     # code-review: hash of the whole-repo staged diff, same recipe as the
@@ -754,10 +749,7 @@ case "$SUBCOMMAND" in
     fi
 
     # skill-review: same recipe as the `write skill-review` arm above,
-    # scoped to the SKILL.md/ROUTING.md pathspecs. No GATE_DIFF_BASE-identity
-    # binding to exclude here (unlike code-review above): skill-review has
-    # no sentinel to reconstruct, so a plain sha256("") comparison is
-    # unconditional, not gated on a non-empty base.
+    # scoped to the SKILL.md/ROUTING.md pathspecs. No empty-base sentinel; see docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md, "Why no empty-base sentinel exists here".
     SKILL_REVIEW_BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
     SKILL_REVIEW_VALUE=$(_lib_staged_diff_hash "$REPO_ROOT" "$SKILL_REVIEW_BASE" "${SKILL_REVIEW_PATHSPECS[@]}")
     [ "$SKILL_REVIEW_VALUE" = "$_STAGED_DIFF_EMPTY_DIGEST" ] && SKILL_REVIEW_VALUE=""

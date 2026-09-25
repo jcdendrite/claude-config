@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 
@@ -300,7 +301,7 @@ class TestRequireSkillReview:
             cwd=git_repo,
         )
         assert reason is not None, "hook allowed silently; expected deny"
-        assert "Commit blocked by skill-review gate" in reason
+        assert _MARKER_GATE_TOKEN in reason
         assert "structural validator" not in reason
 
     def test_marker_under_another_repo_hash_does_not_authorize(
@@ -2541,7 +2542,7 @@ class TestCorpusBudgetWarning:
         )
 
 
-def _build_reported_bug_fixture_in_linked_worktree(tmp_path):
+def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     """Linked-worktree variant of
     build_conflicted_merge_via_origin_with_upstream_skill_edit (helpers.py):
     the local commit, the fetch/merge, and the resolution all happen inside
@@ -2559,7 +2560,7 @@ def _build_reported_bug_fixture_in_linked_worktree(tmp_path):
     default branch (bare_remote_with_default_branch's own origin/HEAD) and
     the anchor check needs content reachable from origin/main specifically."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
-    worktree = tmp_path / "linked-worktree-reported-bug"
+    worktree = tmp_path / "linked-worktree-upstream-skill-edit"
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "wt-branch", str(worktree)], cwd=clone, check=True
     )
@@ -2652,15 +2653,16 @@ _MARKER_PATHSPECS = (
 
 
 class TestSkillReviewGateMergeAwareVerdict:
-    """The gate's verdict, end to end, mid-merge -- the fix for GH-1076
-    (the reported bug) plus the still-armed and marker-agreement proofs
-    that pin it does not over-disarm."""
+    """The gate's verdict, end to end, mid-merge (GH-1076): an
+    upstream-reviewed SKILL.md edit allows with no marker, plus the
+    still-armed and marker-agreement proofs that pin it does not
+    over-disarm."""
 
     @pytest.mark.parametrize("fixture_kind", ["plain_clone", "linked_worktree"])
-    def test_reported_bug_upstream_skill_edit_allows_with_no_marker(
+    def test_upstream_skill_edit_mid_merge_allows_with_no_marker(
         self, isolated_home, tmp_path, fixture_kind
     ):
-        """The reported bug, end to end: upstream edits a gated SKILL.md the
+        """Upstream edits a gated SKILL.md the
         local branch never touched, the conflict is engineered in an
         unrelated file, and the commit that completes the resolved merge
         allows with no marker on disk. Three preconditions checked through
@@ -2671,7 +2673,7 @@ class TestSkillReviewGateMergeAwareVerdict:
         repo = (
             build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
             if fixture_kind == "plain_clone"
-            else _build_reported_bug_fixture_in_linked_worktree(tmp_path)
+            else _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path)
         )
 
         # Precondition 1: the fixture reaches a trusted anchor.
@@ -2680,8 +2682,8 @@ class TestSkillReviewGateMergeAwareVerdict:
             f"fixture did not reach a trusted anchor: rc={base_result.returncode} "
             f"stdout={base_result.stdout!r}"
         )
-        # Precondition 2: the HEAD-relative gated set is non-empty -- the
-        # old gate would have fired.
+        # Precondition 2: the HEAD-relative gated set is non-empty -- a
+        # HEAD-relative gate would fire here.
         head_relative_diff = subprocess.run(
             ["git", "diff", "--cached", "--name-only", "--",
              "claude-skills/skills/**/SKILL.md"],
@@ -2701,7 +2703,7 @@ class TestSkillReviewGateMergeAwareVerdict:
         assert (
             run_hook(
                 SKILL_REVIEW_HOOK,
-                bash_input("git commit -m merge", session_id="reported-bug-session"),
+                bash_input("git commit -m merge", session_id="upstream-skill-edit-session"),
                 cwd=repo,
             )
             == "allow"
@@ -3245,7 +3247,7 @@ def _build_unpushed_local_branch_merge_with_untouched_gated_skill(
 
 class TestSkillReviewGateAnchorRejection:
     """Anchor rejection at verdict level: the deny counter to the allow
-    proven by test_reported_bug_upstream_skill_edit_allows_with_no_marker,
+    proven by test_upstream_skill_edit_mid_merge_allows_with_no_marker,
     and the only place the closure-copy claim (that a forged or
     untrusted anchor cannot release the gate) is tested end to end rather
     than against the primitive directly."""
@@ -3616,6 +3618,9 @@ class TestSkillReviewGateUnmergedGatedConflictStaysArmed:
 
 _CONFLICT_MARKER_TOKEN = "still contain unresolved conflict-marker lines"
 _CONFLICT_MARKER_SCAN_FAILURE_TOKEN = "could not scan the staged skill files"
+# `git diff -G` (candidates) then `git grep -L` (clean-blob proof).
+_CONFLICT_MARKER_SCAN_CAPPED_CALLS = 2
+_TWO_MARKER_LINES_BODY = "```\n<<<<<<< HEAD\nexample\n```\n```\n>>>>>>> other\n```"
 
 
 def _skill_body(name, body_line):
@@ -3684,16 +3689,41 @@ def _build_merge_conflicting_in_two_gated_skills(
     return clone, skill_paths
 
 
+def _build_conflict_free_merge_over_seeded_skill(tmp_path, skill_rel, seeded_content):
+    """A gated file seeded on both sides at `seeded_content`, a local commit
+    and an upstream commit touching unrelated files, and a conflict-free
+    `git merge --no-commit` left in progress, so the base is non-empty and
+    the gated file is untouched by the merge itself."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / skill_rel).parent.mkdir(parents=True)
+    (clone / skill_rel).write_text(seeded_content)
+    subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+    (clone / "local-only.txt").write_text("ours\n")
+    subprocess.run(["git", "add", "local-only.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits unrelated file"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "upstream-only.txt", "theirs\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    subprocess.run(["git", "merge", "--no-commit", "origin/main"], cwd=clone, check=True)
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    return clone
+
+
 class TestSkillReviewGateConflictMarkerHardDeny:
     """A staged gated blob that still carries conflict-marker lines denies
     mid-merge regardless of how the merge named its target: with a full OID,
     git's conflict labels equal the ones `merge-tree --write-tree` writes into
     the base tree, so the unresolved blob reads as identical to the base."""
 
+    @pytest.mark.parametrize("chained", [False, True], ids=["plain-commit", "chained-marker-write"])
     @pytest.mark.parametrize("merge_target", ["ref", "oid"])
     def test_unresolved_markers_staged_with_add_all_deny(
-        self, isolated_home, tmp_path, merge_target
+        self, isolated_home, tmp_path, merge_target, chained
     ):
+        """The chained form must deny too: an unresolved file equal to the base
+        blob leaves the marker diff empty, so `marker.sh` exits 0 and the `&&`
+        chain would otherwise reach the commit."""
         repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
             tmp_path, merge_target=merge_target
         )
@@ -3708,7 +3738,7 @@ class TestSkillReviewGateConflictMarkerHardDeny:
 
         reason = run_hook_reason(
             SKILL_REVIEW_HOOK,
-            bash_input("git commit -m merge", session_id=f"markers-{merge_target}-session"),
+            bash_input(_commit_command(chained), session_id=f"markers-{merge_target}-session"),
             cwd=repo,
         )
         assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
@@ -3752,6 +3782,174 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         )
         assert reason is not None and _CONFLICT_MARKER_SCAN_FAILURE_TOKEN in reason
 
+    def test_failed_second_scan_call_denies_with_the_scan_reason(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """Only the `git grep` call fails (status 128, not the 0/1 it uses to
+        report listed/unlisted), on a fixture where the `git diff -G` call has
+        candidates. It must deny rather than read the empty listing as no
+        marker."""
+        repo, _ = _build_merge_conflicting_in_two_gated_skills(tmp_path, merge_target="oid")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        env = git_timeout_shim(_CONFLICT_MARKER_BLOB_SCAN, exit_status=128)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-grep-failure-session"),
+            cwd=repo,
+            extra_env=env,
+        )
+        assert reason is not None and _CONFLICT_MARKER_SCAN_FAILURE_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        "presentation_config",
+        ["color-ui-always", "diff-external-config", "git-external-diff-env", "diff-driver-command"],
+    )
+    def test_unresolved_markers_deny_under_diff_presentation_config(
+        self, isolated_home, tmp_path, presentation_config
+    ):
+        """The verdict must not depend on how `git diff` renders a patch:
+        color, an external diff program, or a diff driver command each replace
+        or decorate patch text, and none may hide a marker line."""
+        silent_external_diff = shutil.which("true") or "/usr/bin/true"
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path,
+            merge_target="oid",
+            gitattributes="*.md diff=silent-driver\n" if presentation_config == "diff-driver-command" else None,
+        )
+        extra_env = None
+        config = {
+            "color-ui-always": [("color.ui", "always")],
+            "diff-external-config": [("diff.external", silent_external_diff)],
+            "git-external-diff-env": [],
+            "diff-driver-command": [("diff.silent-driver.command", silent_external_diff)],
+        }[presentation_config]
+        for key, value in config:
+            subprocess.run(["git", "config", key, value], cwd=repo, check=True)
+        if presentation_config == "git-external-diff-env":
+            extra_env = {"GIT_EXTERNAL_DIFF": silent_external_diff}
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-presentation-config-session"),
+            cwd=repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-a"] in reason and skill_paths["skill-b"] in reason
+
+    @pytest.mark.parametrize(
+        "gated_path",
+        [
+            "claude-skills/skills/skill with space/SKILL.md",
+            "claude-skills/skills/skill-caf\u00e9/SKILL.md",
+        ],
+        ids=["space-in-name", "non-ascii-nfc-name"],
+    )
+    def test_unresolved_markers_in_an_unusually_named_gated_path_deny_despite_a_recorded_marker(
+        self, isolated_home, tmp_path, gated_path
+    ):
+        """The deny set is the `git diff --name-only` listing minus the
+        `git grep -L` listing by exact line match, so a name the two calls
+        render differently must fail toward deny, never clear the file."""
+        repo, gated = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid", gated_paths={"gated": gated_path}
+        )
+        (repo / gated["gated"]).write_text(_skill_body("gated", "<<<<<<< HEAD"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-odd-name-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+
+    @pytest.mark.parametrize("pattern_type", ["fixed", "basic"])
+    def test_unresolved_markers_deny_under_a_user_grep_pattern_type(
+        self, isolated_home, tmp_path, pattern_type
+    ):
+        """`git grep -L` lists files with no match, so a regex dialect that
+        stops matching the marker regex reads every candidate as clean and
+        allows. The scan's explicit `-E` must win over `grep.patternType`."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        subprocess.run(["git", "config", "grep.patternType", pattern_type], cwd=repo, check=True)
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "resolved line"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", "<<<<<<< HEAD"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-pattern-type-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
+
+    def test_indented_marker_line_allows_under_a_user_grep_pattern_type(
+        self, isolated_home, tmp_path
+    ):
+        """Allow-side control: a candidate whose staged blob is clean (the
+        marker line HEAD carried is now indented) still clears under
+        `grep.patternType=fixed`."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path,
+            skill_rel,
+            _skill_body("documented-skill", "```\n<<<<<<< HEAD\nexample\n```"),
+        )
+        subprocess.run(["git", "config", "grep.patternType", "fixed"], cwd=repo, check=True)
+        _stage_gated_file(
+            repo,
+            skill_rel,
+            _skill_body("documented-skill", "```\n <<<<<<< HEAD\nexample\n```"),
+        )
+        write_skill_review_marker(isolated_home, repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-pattern-type-allow-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_conflict_marker_scan_issues_exactly_the_documented_number_of_capped_git_calls(
+        self, isolated_home, tmp_path
+    ):
+        """`_DOCUMENTED_HOOK_WORST_CASE_SECONDS` budgets one cap per scan call
+        (`_CONFLICT_MARKER_SCAN_CAPPED_CALLS`). Counting the scan's real
+        invocations makes an added or removed scan call fail here until the
+        constant and the design doc's "Latency" section are updated."""
+        repo, _ = _build_merge_conflicting_in_two_gated_skills(tmp_path, merge_target="oid")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        invocation_log = tmp_path / "git-invocations.log"
+        bin_dir = tmp_path / "bin-counting-git"
+        bin_dir.mkdir()
+        shim = bin_dir / "git"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'if {_CONFLICT_MARKER_SCAN} || {_CONFLICT_MARKER_BLOB_SCAN}; then echo scan >> "{invocation_log}"; fi\n'
+            'exec "$REAL_GIT" "$@"\n'
+        )
+        shim.chmod(0o755)
+        env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-call-count-session"),
+            cwd=repo,
+            extra_env=env,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert len(invocation_log.read_text().splitlines()) == _CONFLICT_MARKER_SCAN_CAPPED_CALLS
+
     def test_resolved_conflict_with_a_recorded_marker_still_allows(self, isolated_home, tmp_path):
         """Control for the deny cases: once every marker is resolved, the
         marker-based allow path is untouched."""
@@ -3777,8 +3975,10 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         [
             "claude-skills/skills/plan-review/ROUTING.md",
             "plugins/demo-plugin/skills/demo-skill/SKILL.md",
+            "skills/demo-skill/SKILL.md",
+            ".claude/skills/demo-skill/SKILL.md",
         ],
-        ids=["routing-md", "plugin-skill"],
+        ids=["routing-md", "plugin-skill", "root-skills", "dot-claude-skills"],
     )
     def test_unresolved_markers_in_each_gated_pathspec_arm_deny(
         self, isolated_home, tmp_path, gated_path
@@ -3854,6 +4054,311 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         assert skill_rel in reason
         assert "legitimate content" in reason and "indent" in reason
 
+        # Follow the way out: indent the example, restage, record a marker.
+        _stage_gated_file(
+            clone,
+            skill_rel,
+            _skill_body("documented-skill", "```\n <<<<<<< HEAD\nexample\n```"),
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-legitimate-example-session"),
+            cwd=clone,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+        assert _CONFLICT_MARKER_TOKEN not in reason
+        write_skill_review_marker(isolated_home, clone)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-legitimate-example-session"),
+                cwd=clone,
+            )
+            == "allow"
+        )
+
+    def test_marker_lines_in_a_non_gated_staged_file_do_not_deny(self, isolated_home, tmp_path):
+        """The scan is scoped to the gated pathspecs: a docs or fixture file
+        that shows a conflict at column 0 must not hard-deny a merge whose
+        gated files are resolved."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        for name, skill_rel in skill_paths.items():
+            (repo / skill_rel).write_text(_skill_body(name, "resolved line"))
+        (repo / "notes.txt").write_text("<<<<<<< HEAD\nexample\n>>>>>>> other\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-non-gated-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_unresolved_markers_in_a_textconv_driven_file_deny(self, isolated_home, tmp_path):
+        """A textconv driver that indents column-0 marker lines hides them from
+        `-G` unless the scan passes `--no-textconv`."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid", gitattributes="*.md diff=indent-markers\n"
+        )
+        subprocess.run(
+            [
+                "git", "config", "diff.indent-markers.textconv",
+                r"sed 's/^\([<>]\)/ \1/'",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-textconv-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-a"] in reason
+
+    def test_a_lone_closing_marker_line_in_an_edited_file_denies(self, isolated_home, tmp_path):
+        """The `>>>>>>>` alternative: a half-resolved file that kept only the
+        closing line differs from the base, so only the scan can stop it."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "resolved line"))
+        (repo / skill_paths["skill-b"]).write_text(
+            _skill_body("skill-b", ">>>>>>> 0123456789abcdef")
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-closing-only-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
+
+    def test_a_bare_opening_marker_line_in_an_edited_file_denies(self, isolated_home, tmp_path):
+        """The `$` alternative of `( |$)`: a `<<<<<<<` line with no label still
+        counts as a marker line."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "resolved line"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", "<<<<<<<"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-bare-opening-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
+
+    def test_an_eight_character_marker_run_is_not_a_marker_line(self, isolated_home, tmp_path):
+        """The `( |$)` boundary: a `<<<<<<<<` heading is not a conflict marker."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "<<<<<<<< heading"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", ">>>>>>>>"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-eight-char-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "restaged_body",
+        [
+            "```\n <<<<<<< HEAD\nexample\n```",
+            "```\nexample\n```",
+        ],
+        ids=["indented", "removed"],
+    )
+    def test_a_marker_line_head_already_carries_does_not_deny_once_restaged(
+        self, isolated_home, tmp_path, restaged_body
+    ):
+        """A column-0 marker line HEAD already has takes the ordinary marker
+        path once the staged blob indents or removes it, and allows once a
+        marker is recorded."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path,
+            skill_rel,
+            _skill_body("documented-skill", "```\n<<<<<<< HEAD\nexample\n```"),
+        )
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip(), (
+            f"precondition failed: fixture did not reach a trusted anchor: "
+            f"rc={base_result.returncode} stdout={base_result.stdout!r}"
+        )
+        _stage_gated_file(repo, skill_rel, _skill_body("documented-skill", restaged_body))
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-head-carries-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+        assert _CONFLICT_MARKER_TOKEN not in reason
+
+        write_skill_review_marker(isolated_home, repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-head-carries-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_indenting_one_of_two_head_marker_lines_denies_until_both_are_indented(
+        self, isolated_home, tmp_path
+    ):
+        """The staged blob still carries a column-0 marker line after the
+        first is indented, so the deny stands; indenting the second converges
+        on the ordinary marker path."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path, skill_rel, _skill_body("documented-skill", _TWO_MARKER_LINES_BODY)
+        )
+        _stage_gated_file(
+            repo,
+            skill_rel,
+            _skill_body("documented-skill", _TWO_MARKER_LINES_BODY.replace("<<<<<<< HEAD", " <<<<<<< HEAD")),
+        )
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-two-head-lines-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_rel in reason
+
+        _stage_gated_file(
+            repo,
+            skill_rel,
+            _skill_body(
+                "documented-skill",
+                _TWO_MARKER_LINES_BODY.replace("<<<<<<< HEAD", " <<<<<<< HEAD").replace(
+                    ">>>>>>> other", " >>>>>>> other"
+                ),
+            ),
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-two-head-lines-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+        assert _CONFLICT_MARKER_TOKEN not in reason
+        write_skill_review_marker(isolated_home, repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-two-head-lines-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_removing_one_of_two_head_marker_lines_while_the_other_stays_denies(
+        self, isolated_home, tmp_path
+    ):
+        """`git diff -G` selects the file through the removed marker line, but
+        the staged blob still carries the other column-0 one."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path, skill_rel, _skill_body("documented-skill", _TWO_MARKER_LINES_BODY)
+        )
+        _stage_gated_file(
+            repo,
+            skill_rel,
+            _skill_body("documented-skill", _TWO_MARKER_LINES_BODY.replace("<<<<<<< HEAD\n", "")),
+        )
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-remove-one-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_rel in reason
+
+    def test_deleting_a_gated_file_whose_head_version_has_marker_lines_is_allowed(
+        self, isolated_home, tmp_path
+    ):
+        """`--diff-filter=d` keeps a staged deletion out of the scan: the
+        removed lines that select the file under `-G` leave no staged blob
+        to carry a marker line."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path, skill_rel, _skill_body("documented-skill", _TWO_MARKER_LINES_BODY)
+        )
+        subprocess.run(["git", "rm", "-q", skill_rel], cwd=repo, check=True)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-delete-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+        assert _CONFLICT_MARKER_TOKEN not in reason
+
+        write_skill_review_marker(isolated_home, repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-delete-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_a_newly_added_column_zero_marker_line_still_denies(self, isolated_home, tmp_path):
+        """Counterpart of the HEAD-carries case: a marker line the staged
+        file adds denies even though HEAD carries a different marker line."""
+        skill_rel = "claude-skills/skills/documented-skill/SKILL.md"
+        repo = _build_conflict_free_merge_over_seeded_skill(
+            tmp_path,
+            skill_rel,
+            _skill_body("documented-skill", "```\n<<<<<<< HEAD\nexample\n```"),
+        )
+        _stage_gated_file(
+            repo,
+            skill_rel,
+            _skill_body(
+                "documented-skill",
+                "```\n<<<<<<< HEAD\nexample\n```\n```\n>>>>>>> other\n```",
+            ),
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-added-marker-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_rel in reason
+
     def test_plain_commit_with_marker_like_line_is_not_hard_denied_by_the_scan(
         self, isolated_home, git_repo
     ):
@@ -3895,8 +4400,8 @@ class TestSkillReviewGateConflictMarkerHardDeny:
 
 def _listing_only_failure_shim_env(tmp_path):
     """A git shim that fails only a `--name-only` call without `-G` --
-    gated_paths_at_base's own invocation. The conflict-marker scan also
-    passes `--name-only`, so `-G` excludes it. `_lib_skill_review_diff_base`'s
+    gated_paths_at_base's own invocation. The `-G` exclusion keeps the
+    conflict-marker scan out of it. `_lib_skill_review_diff_base`'s
     own resolution (rev-parse, merge-base --is-ancestor, merge-tree
     --write-tree) and `_lib_staged_diff_hash`'s later hash call never pass
     `--name-only`, so neither is affected by this shim."""
@@ -3918,6 +4423,7 @@ _LISTING_FAILURE_TOKEN = "could not list the staged skill files"
 
 _NAME_ONLY_LISTING = '[[ " $* " == *" --name-only "* ]] && [[ " $* " != *" -G "* ]]'
 _CONFLICT_MARKER_SCAN = '[[ " $* " == *" -G "* ]]'
+_CONFLICT_MARKER_BLOB_SCAN = '[[ " $* " == *" grep "* ]]'
 _ROUTING_PATHSPEC_LISTING = f'{_NAME_ONLY_LISTING} && [[ "$*" == *ROUTING.md* ]]'
 _SKILL_PATHSPEC_LISTING = f'{_NAME_ONLY_LISTING} && [[ "$*" != *ROUTING.md* ]]'
 
@@ -4670,7 +5176,7 @@ class TestSkillReviewPathspecParity:
 _DOCUMENTED_HOOK_WORST_CASE_SECONDS = (
     5  # `_lib_jq` input parse
     + 70  # base resolution: 5 cap hits x 7s + 7 non-hit calls x 5s
-    + 7  # conflict-marker scan
+    + _CONFLICT_MARKER_SCAN_CAPPED_CALLS * 7  # conflict-marker scan calls, 7s each
     + 3 * 7  # staged-path listings
     + 12  # structural validator: 10s cap + 2s grace
     + 12  # corpus-budget scan: 10s cap + 2s grace
