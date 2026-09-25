@@ -19,9 +19,17 @@ from helpers import (
     write_input,
 )
 
-from .test_agent_roster import CANARY_AGENTS
+from .test_agent_roster import (
+    CANARY_AGENTS,
+    SCRATCH_LINK_SENTENCE,
+    SCRATCH_NEW_NAME_SENTENCE,
+)
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
+
+# Pinned verbatim in SANCTIONED_ALTERNATIVE. The persona-side counterpart is
+# _SCRATCH_RULE_SENTENCES["no-retry"] in test_agent_roster.py.
+_NO_RETRY_SENTENCE = "Do not retry a denied write through a script, another command form, or another tool."
 
 
 @pytest.fixture
@@ -106,11 +114,23 @@ class TestFileWriteTools:
     def test_agent_type_general_purpose_allows_write(self):
         assert run_hook(HOOK, write_input("/repo/src/main.py", agent_type="general-purpose")) == "allow"
 
-    def test_deny_reason_names_sanctioned_alternative(self):
-        reason = run_hook_reason(HOOK, write_input("/repo/src/main.py", agent_type="staff-sdet"))
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            write_input("/repo/src/main.py", agent_type="staff-sdet"),
+            bash_input("sed -i s/a/b/ src/x", agent_type="staff-sdet"),
+            bash_input("cat > src/x", agent_type="staff-sdet"),
+        ],
+        ids=["write-arm", "bash-arm", "raw-write-target-arm"],
+    )
+    def test_deny_reason_names_sanctioned_alternative(self, payload):
+        reason = run_hook_reason(HOOK, payload)
         assert reason is not None
-        assert "/tmp" in reason
-        assert "agent-reviews" in reason
+        assert SCRATCH_LINK_SENTENCE in reason, "denial reason lost the link-hazard sentence"
+        assert SCRATCH_NEW_NAME_SENTENCE in reason, "denial reason lost the new-name sentence"
+        assert _NO_RETRY_SENTENCE in reason, "denial reason lost the no-retry sentence"
+        assert "agent-reviews" in reason, "denial reason lost the findings-file path"
+        assert "copy the file" not in reason, "denial reason sanctions a /tmp copy"
 
     def test_skill_fidelity_reviewer_write_to_findings_allowed(self, repo_ignoring_agent_reviews):
         """skill-fidelity-reviewer is a Write-only reviewer (no Bash/Edit) added
@@ -568,8 +588,7 @@ class TestRawWriteTargetGap:
         assert run_hook(HOOK, bash_input("echo x | tee src/x", agent_type="staff-sdet")) == "deny"
 
     def test_reviewer_cp_to_tmp_allowed(self):
-        # The sanctioned reviewer workflow: copy the file to /tmp and
-        # mutate the copy there — must never be denied by this gate.
+        # Copying one file into a /tmp scratch directory is the persona scratch-execution workflow; this gate must never deny it.
         assert run_hook(HOOK, bash_input("cp src/x /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_redirect_to_tmp_allowed(self):
@@ -830,6 +849,21 @@ class TestKnownGapBypass:
         # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
+
+    # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
+    # for the /tmp link gap in the header's known-gaps list. The hook matches
+    # `/tmp/*` as literal text and never resolves links, so each form launders
+    # a write onto a file outside /tmp. When GH-1103 closes the gap, flip the
+    # matching assertion to "deny" instead of silently accepting it.
+    def test_reviewer_hard_link_into_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("ln src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"
+
+    def test_reviewer_file_symlink_into_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("ln -s src/x /tmp/y", agent_type="ciso-reviewer")) == "allow"
+
+    def test_reviewer_write_through_directory_symlink_allowed(self):
+        assert run_hook(HOOK, bash_input("ln -s src /tmp/d", agent_type="ciso-reviewer")) == "allow"
+        assert run_hook(HOOK, write_input("/tmp/d/file", agent_type="ciso-reviewer")) == "allow"
 
 
 class TestChainOperators:

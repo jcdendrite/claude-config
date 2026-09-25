@@ -909,3 +909,191 @@ class TestCisoReviewerSecurityBulletsPin:
             "ciso-reviewer.md is missing its pinned provider-setting-scope "
             f"sentence verbatim:\n{_CISO_PROVIDER_SETTING_SCOPE_SENTENCE!r}"
         )
+
+
+# Pinned verbatim in each persona's Scratch execution section and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
+SCRATCH_LINK_SENTENCE = (
+    "A write through a symlink or hard link changes the linked file, "
+    "wherever it lives, so a /tmp path can still change a file outside /tmp."
+)
+
+# Pinned verbatim in each persona's Scratch execution section and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
+SCRATCH_NEW_NAME_SENTENCE = (
+    "Never overwrite or replace an existing path, even one you created; "
+    "write a new file under a new name instead."
+)
+
+# Each incident-critical rule of the Scratch execution section, pinned verbatim.
+# The byte-identical test only catches divergence between personas, so these
+# catch a rule deleted from every persona at once.
+_SCRATCH_RULE_SENTENCES = {
+    "no-retry": (
+        "Never retry the denied action through a script, another command form, "
+        "or another tool."
+    ),
+    "variable-path-denial-is-not-a-retry": (
+        "A denial for an unresolved variable in a /tmp path is fixed by "
+        "spelling the path out literally, per the next rule, and is not a "
+        "retry of a forbidden action."
+    ),
+    "mktemp-scratch-directory": (
+        "Work in one fresh directory created with "
+        "`mktemp -d /tmp/<name>.XXXXXX`"
+    ),
+    "literal-scratch-path": (
+        "Spell its printed path out literally in every later command"
+    ),
+    "never-create-a-link": "Never create a link.",
+    "plain-cp-only": (
+        "The only sanctioned copy is plain `cp <file> <new-name>` with no options."
+    ),
+    "home-directory-writes": (
+        "Run no program that writes through your home directory or another "
+        "environment-derived path, whatever directory you run it from."
+    ),
+}
+
+_SCRATCH_EXECUTION_POINTER = (
+    "The tree under review is read-only: the only write you make into it is "
+    "the `findings_path` file. Before you run anything, follow "
+    "`## Scratch execution` below."
+)
+
+_CISO_NO_LIVE_ATTACK_SENTENCE = (
+    "Never carry out the attack you are testing for — no exploit, payload, "
+    "or attempt to evade a hook or gate that governs you — because a probe "
+    "that succeeds compromises the machine you run on."
+)
+
+_CISO_TRACING_RECONCILIATION_SENTENCES = (
+    "Feeding a crafted input to the code under review and reading its "
+    "verdict is tracing, and follows `## Scratch execution`. Probing a "
+    "scratch copy of a hook or gate is tracing, never the live one."
+)
+
+# Any reviewer holding Bash carries the Scratch execution section. Derived from
+# each canary agent's own tools: frontmatter, like DIFF_INPUT_NO_BASH_AGENTS's
+# completeness test, rather than from a second hand-maintained list.
+SCRATCH_SECTION_AGENTS = [
+    name
+    for name in CANARY_AGENTS
+    if "Bash" in (parse_frontmatter(AGENTS_DIR / name).get("tools") or "")
+]
+
+# A phrasing that sanctions copying a file, repo, or tree into /tmp.
+_TMP_COPY_SANCTION_PATTERN = re.compile(
+    r"\bcopy (?:the |a |your )?(?:whole |entire )?"
+    r"(?:file|repo|repository|tree|project|checkout|worktree|directory)s? "
+    r"(?:in)?to\b",
+    re.IGNORECASE,
+)
+
+
+class TestScratchExecutionSection:
+    """Every Bash-holding reviewer persona carries a byte-identical
+    '## Scratch execution' section and an intro pointer to it."""
+
+    @staticmethod
+    def _extract_scratch_execution_section(path) -> str:
+        """Extract from the '## Scratch execution' heading line (inclusive) up
+        to, but excluding, the next line starting with '## '."""
+        lines = path.read_text().splitlines(keepends=True)
+        in_section = False
+        section_lines = []
+        for line in lines:
+            if line.rstrip("\n") == "## Scratch execution":
+                in_section = True
+            elif in_section and line.startswith("## "):
+                break
+            if in_section:
+                section_lines.append(line)
+        assert section_lines, f"{path.name}: '## Scratch execution' section not found."
+        return "".join(section_lines)
+
+    def test_every_reviewer_persona_holds_bash(self):
+        without_bash = [
+            name
+            for name in REVIEWER_AGENTS
+            if name not in SCRATCH_SECTION_AGENTS
+        ]
+        assert not without_bash, (
+            f"REVIEWER_AGENTS without a Bash grant: {without_bash}. The "
+            "Scratch execution tests assume every specialist reviewer holds "
+            "Bash; a persona that lost it belongs in DIFF_INPUT_NO_BASH_AGENTS."
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS[1:])
+    def test_section_byte_identical_to_canonical(self, name):
+        canonical_name = SCRATCH_SECTION_AGENTS[0]
+        canonical = self._extract_scratch_execution_section(AGENTS_DIR / canonical_name)
+        assert self._extract_scratch_execution_section(AGENTS_DIR / name) == canonical, (
+            f"{name}: '## Scratch execution' section differs from "
+            f"{canonical_name}'s. Agent bodies load verbatim with no "
+            "include mechanism, so the section must be duplicated byte for "
+            f"byte. If every other persona agrees with {name}, {canonical_name} "
+            "is the outlier."
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_section_carries_pinned_sentences(self, name):
+        section = self._extract_scratch_execution_section(AGENTS_DIR / name)
+        assert SCRATCH_LINK_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the link-hazard "
+            f"sentence verbatim:\n{SCRATCH_LINK_SENTENCE!r}"
+        )
+        assert SCRATCH_NEW_NAME_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the new-name "
+            f"sentence verbatim:\n{SCRATCH_NEW_NAME_SENTENCE!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    @pytest.mark.parametrize("rule", _SCRATCH_RULE_SENTENCES)
+    def test_section_carries_incident_critical_rules(self, name, rule):
+        section = self._extract_scratch_execution_section(AGENTS_DIR / name)
+        assert _SCRATCH_RULE_SENTENCES[rule] in section, (
+            f"{name}: Scratch execution section is missing its {rule} rule "
+            f"verbatim:\n{_SCRATCH_RULE_SENTENCES[rule]!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_intro_carries_pointer(self, name):
+        assert _SCRATCH_EXECUTION_POINTER in (AGENTS_DIR / name).read_text(), (
+            f"{name}: intro is missing the pointer to '## Scratch execution' "
+            f"verbatim:\n{_SCRATCH_EXECUTION_POINTER!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_no_copy_into_tmp_sanction_wording(self, name):
+        path = AGENTS_DIR / name
+        assert "copy the file into" not in path.read_text(), (
+            f"{name}: carries the superseded 'copy the file into' /tmp sanction."
+        )
+        section = self._extract_scratch_execution_section(path)
+        match = _TMP_COPY_SANCTION_PATTERN.search(section)
+        assert match is None, (
+            f"{name}: Scratch execution section sanctions a file, repo, or "
+            f"tree copy ({match.group(0)!r}); only plain `cp <file> <new-name>` "
+            "is allowed."
+        )
+
+
+class TestCisoReviewerNoLiveAttackPin:
+    """ciso-reviewer.md must carry its pinned never-carry-out-the-attack
+    sentence and the tracing sentences that reconcile it with reviewing gates,
+    verbatim -- see _CISO_NO_LIVE_ATTACK_SENTENCE and
+    _CISO_TRACING_RECONCILIATION_SENTENCES."""
+
+    def test_pinned_no_live_attack_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_NO_LIVE_ATTACK_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned no-live-attack "
+            f"sentence verbatim:\n{_CISO_NO_LIVE_ATTACK_SENTENCE!r}"
+        )
+
+    def test_pinned_tracing_reconciliation_sentences_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_TRACING_RECONCILIATION_SENTENCES in content, (
+            "ciso-reviewer.md is missing the sentences that let it probe a "
+            "scratch copy of a gate without carrying out an attack, "
+            f"verbatim:\n{_CISO_TRACING_RECONCILIATION_SENTENCES!r}"
+        )

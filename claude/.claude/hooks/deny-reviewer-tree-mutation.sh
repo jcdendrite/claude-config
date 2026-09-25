@@ -57,6 +57,10 @@
 #     stays allowed as read-only linting.
 #
 # Known gaps (what this model does NOT close):
+#   - The Bash arm denies only the shapes this header names, so any other
+#     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
+#     interpreter write such as `python3 -c`, a tool's own output flag) is
+#     not inspected, and GH-1103 tracks the structural fix.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
 #     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
 #     fragment's sole or first command; a target behind a bare `&`
@@ -69,16 +73,20 @@
 #     _fragment_raw_write_targets's own docstring below for its other
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
-#   - A Bash-created symlink that launders the /tmp exemption
-#     (`ln -s src/x /tmp/link`, then a Write to `/tmp/link`) — the
-#     file-write arm matches the literal `/tmp/*` path and does not resolve
-#     symlinks, so the OS write lands on the tracked file. Bounded, and
-#     could in principle be closed by resolving the path (realpath) before
-#     the match — but that closure would itself resolve `/tmp` to
-#     `/private/tmp` on macOS and false-deny every legitimate reviewer
-#     /tmp write (see the macOS `/tmp` note below), so it is deliberately
-#     left conceded; the vector also requires a deliberate two-step setup
-#     no cooperative reviewer performs by accident.
+#     Its symlinks entry is the /tmp link gap below.
+#   - A symlink or hard link under /tmp launders the /tmp exemption, and
+#     GH-1103 tracks the structural fix. The facts of this one gap:
+#       - Both arms match the literal `/tmp/*` text without resolving links.
+#       - A write through such a link changes the linked file, which can be any
+#         file the user can write, not only a tracked one.
+#       - Resolving the path before the match would false-deny every legitimate
+#         macOS /tmp write, because /tmp is a symlink to /private/tmp there
+#         (see the macOS `/tmp` note below).
+#       - A cooperative reviewer can do this without noticing, so this gap is not waived on cooperative grounds.
+#       - Each Bash-holding persona's "## Scratch execution" section is the
+#         current mitigation.
+#       - Tests in test_deny_reviewer_tree_mutation.py pin this gap's current
+#         allow verdicts.
 #   - Combined short-option clusters (`sed -ni`, `perl -pi`) and GNU sed's
 #     `--in-place` long form are not matched by the `-i`-prefix check below
 #     — only literal `-i`/`-i<suffix>` tokens are, a missed mutation for the
@@ -158,7 +166,7 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to eval
 # review-only set pass through unconditionally regardless of tool or command.
 _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
-SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. To verify a claim empirically, copy the file to /tmp and mutate the copy there. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
+SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Do not retry a denied write through a script, another command form, or another tool. Use Read, Grep, or Glob for a read the hook misjudges. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
 # Local to this hook, not _lib.sh: this -i-prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.
