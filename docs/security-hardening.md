@@ -247,7 +247,7 @@ Observed on 2026-09-24 and 2026-09-25, Claude Code 2.1.282, `auto` mode (status 
 - A `permissions.ask` rule `Edit(//**/.claude/probe-settings*.json)` prompted on Edit in-project and on Write out-of-project, with the user's regular hooks and the throwaway hook also active. A rule written `Edit(/tmp/...)` in project settings did not match.
 - With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on Edit of an out-of-project `.claude/settings.json`, on Write creating an out-of-project `settings.local.json`, and on Write creating an in-project `settings.local.json`. An in-project Edit of a settings file with the shipped pattern alone was not run.
 - The Edit tool refused to write through a symbolic link and named the target path. In a stow layout the target sits under a `.claude/` segment and so plausibly matches the pattern (inference; Write through a symlink is untested).
-- No run removed the rule on a `.claude/` path, which Claude Code prompts on natively (permission-modes "Protected paths"). The auto-mode prompts above therefore do not isolate the rule's effect, and its auto-mode behavior rests on the Documented list.
+- No run removed the rule on a `.claude/` path, which Claude Code already treats as a protected path (permission-modes "Protected paths"). The auto-mode prompts above therefore do not isolate the rule's effect, and its auto-mode behavior rests on the Documented list.
 
 Documented in Anthropic's permissions and permission-modes pages (re-read 2026-09-25):
 
@@ -257,7 +257,7 @@ Documented in Anthropic's permissions and permission-modes pages (re-read 2026-0
 - `//path` is an absolute filesystem path.
 - `/path` anchors at the settings source, which is the project root in project settings and the user config directory in user settings.
 
-Untested: `bypassPermissions` for the rule, MultiEdit, case variants, Bash-mediated writes, Write through a symlink, headless `-p` runs, older Claude Code versions, and the shipped hook's reason text in any configuration.
+Untested: `bypassPermissions` for the rule, the rule after the session-wide approval to edit Claude's own settings, MultiEdit, case variants, Bash-mediated writes, Write through a symlink, headless `-p` runs, older Claude Code versions, and the shipped hook's reason text in any configuration.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a

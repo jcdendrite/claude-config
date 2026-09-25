@@ -8,8 +8,6 @@ and the [permission modes reference](https://code.claude.com/docs/en/permission-
 for how the two-layer pipeline works. For the high-level overview of what this
 repo adds on top, see the [README](../README.md#auto-mode).
 
-A hook `ask` and a `permissions.ask` rule each reached a human in an observed auto-mode session (one machine, Claude Code 2.1.282; a throwaway hook's reason text was not shown); see `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected".
-
 ## Requirements
 
 - **Plan:** Available on every plan — this is feature eligibility, not

@@ -552,13 +552,13 @@ _SETTINGS_FILE_ASK_RULE = "Edit(//**/.claude/settings*.json)"
 def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() -> None:
     """The declared `permissions.ask` entry that makes settings-file edits ask.
 
-    This pins the declared entry only. Live-session verification is recorded
+    This pins the declared entry only. Live-session observations and their limits are recorded
     in `docs/security-hardening.md`, in the section titled
-    "WebFetch domain allowlisting — considered and rejected". The pattern was
-    observed matching Edit and Write with hooks disabled, in auto mode.
+    "WebFetch domain allowlisting — considered and rejected".
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
-    assert _SETTINGS_FILE_ASK_RULE in settings.get("permissions", {}).get("ask", []), (
+    ask_rules = settings.get("permissions", {}).get("ask", [])
+    assert isinstance(ask_rules, list) and _SETTINGS_FILE_ASK_RULE in ask_rules, (
         f"'{_SETTINGS_FILE_ASK_RULE}' missing from permissions.ask in "
         f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — settings-file edits would no longer ask "
         f"through the harness's own rule matching"
