@@ -16907,13 +16907,12 @@ class TestSkillInvocationRepoScope:
 
     def test_scope_matches_by_literal_name_not_glob(self, tmp_path, monkeypatch, capsys):
         """A derived slug is matched as a literal directory name, not a glob. A
-        slug containing a glob metacharacter (from a `*`/`?`/`[` in the home or
-        username path) must not widen the read to a sibling project dir the
-        wildcard would otherwise match — string equality does not; Path.glob
-        would."""
+        slug containing a glob metacharacter (`*`/`?`/`[` in any path component)
+        must not widen the read to a sibling project dir the wildcard would
+        otherwise match — string equality does not; Path.glob would."""
         projects = tmp_path / "projects"
-        mine = projects / "-home-u-r*-main"       # in-scope slug carries a '*'
-        theirs = projects / "-home-u-rX-main"     # a wildcard on 'mine' would match this
+        mine = projects / "-r*-main"       # in-scope slug carries a '*'
+        theirs = projects / "-rX-main"     # a wildcard on 'mine' would match this
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
         monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
@@ -16923,17 +16922,17 @@ class TestSkillInvocationRepoScope:
         _write_jsonl(theirs / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y2", "plan-review")]),
         ])
-        # The real _path_to_project_slug maps "/home/u/r*/main" -> "-home-u-r*-main"
+        # The real _path_to_project_slug maps "/r*/main" -> "-r*-main"
         # ('/' and '.' -> '-'; the '*' is preserved), so no monkeypatch is needed —
         # letting it run is what makes this a real test of the '*' surviving into a
         # slug and still being matched literally.
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/home/u/r*/main")
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/r*/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/home/u/r*/main"), "")
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/r*/main"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
-            return subprocess.CompletedProcess(cmd, 0, "/home/u/r*/main\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "/r*/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
