@@ -1116,6 +1116,26 @@ class TestReviewLedgerMtimeSweep:
 
         assert fresh.exists(), "append's sweep must not remove a file younger than 30 days"
 
+    def test_append_sweep_ignores_a_widened_cleanup_period_days(self, isolated_home, git_repo):
+        """append's best-effort sweep always uses the fixed 30-day floor,
+        never _ledger_sweep_window_days' dynamic settings.json read -- unlike
+        clear-stale, which does widen with a custom cleanupPeriodDays (see
+        TestReviewLedgerSweepWindowFromSettings below)."""
+        (isolated_home / ".claude" / "settings.json").write_text(
+            json.dumps({"cleanupPeriodDays": 60})
+        )
+        _seed_session(isolated_home, SID)
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        stale = ledger_dir / ("0" * 64 + ".other-session.jsonl")
+        self._make_stale(stale)
+
+        _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert not stale.exists(), (
+            "append's sweep must evict a 31-day-old file even when "
+            "cleanupPeriodDays=60 would otherwise keep it fresh"
+        )
+
     def test_clear_stale_dry_run_reports_without_removing(self, isolated_home, git_repo):
         ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
         stale = ledger_dir / ("0" * 64 + ".other-session.jsonl")

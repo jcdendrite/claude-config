@@ -933,6 +933,25 @@ class TestOrderingAndUndecidable:
         assert sum(result["outcomes"].values()) == 0
         assert result["data_quality"][ao._DQ_UNDECIDABLE] == 0
 
+    def test_dispatch_with_missing_tool_use_id_is_excluded_and_counted(self, fake_projects):
+        """A malformed dispatch block with no `id` can't be paired to a
+        tool_result, so it must not silently vanish from dispatch counting --
+        it needs its own data-quality counter, distinct from _DQ_UNDECIDABLE
+        (which tracks a well-formed dispatch missing its completion)."""
+        session_id = "sess-1"
+        malformed_dispatch = _agent_use("", "code-writer")
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[malformed_dispatch]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert sum(result["outcomes"].values()) == 0
+        assert result["data_quality"][ao._DQ_MALFORMED_DISPATCH_ID] == 1
+        assert result["data_quality"][ao._DQ_UNDECIDABLE] == 0
+        # data_quality is a Counter, which accepts any key -- pin the bucket
+        # into the tuple the printed report actually iterates over.
+        assert ao._DQ_MALFORMED_DISPATCH_ID in ao._DATA_QUALITY_KEYS
+
 
 class TestInlineAndCoAuthored:
     def test_session_with_no_agent_dispatch_contributes_zero_dispatches(self, fake_projects):

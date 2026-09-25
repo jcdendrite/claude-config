@@ -63,9 +63,11 @@ _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match 
 _DQ_LEDGER_POSSIBLY_SWEPT = "sessions with a code-review round but no ledger file, cold enough to be swept"
 _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
+_DQ_MALFORMED_DISPATCH_ID = "dispatches with a missing or empty tool_use_id"
 _DATA_QUALITY_KEYS = (
     _DQ_CO_AUTHORED_ROUNDS, _DQ_KILL_SWITCH_INFERRED_CLEAN, _DQ_ROUND_NUMBER_MISMATCH,
     _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
+    _DQ_MALFORMED_DISPATCH_ID,
 )
 
 # review-narrative-ledger's own directory name, one level under a Claude
@@ -406,7 +408,9 @@ def _classify_round(
     return _OUTCOME_UNATTRIBUTED, matching
 
 
-def _agent_dispatch_tool_use_ids(records: list[dict], agent_type: str) -> list[tuple[str, int]]:
+def _agent_dispatch_tool_use_ids(
+    records: list[dict], agent_type: str, data_quality: Counter,
+) -> list[tuple[str, int]]:
     """Every (tool_use_id, record_idx) for an Agent/Task dispatch of
     `agent_type` on the main thread, in record order."""
     dispatches: list[tuple[str, int]] = []
@@ -423,6 +427,7 @@ def _agent_dispatch_tool_use_ids(records: list[dict], agent_type: str) -> list[t
                 continue
             tool_use_id = block.get("id") or ""
             if not tool_use_id:
+                data_quality[_DQ_MALFORMED_DISPATCH_ID] += 1
                 continue
             dispatches.append((tool_use_id, idx))
     return dispatches
@@ -528,7 +533,7 @@ def compute_author_outcomes(
                 "unfiltered_dispatch_count": 0,
             }
 
-        for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(records, agent_type):
+        for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(records, agent_type, data_quality):
             # dispatch_idx is the dispatch's start (Agent/Task tool_use) record, so --since
             # filters by the dispatch's start timestamp, not its completion timestamp.
             ts = corpus._parse_ts(records[dispatch_idx].get("timestamp"))
