@@ -245,7 +245,10 @@ Observed on 2026-09-24 and 2026-09-25, Claude Code 2.1.282, `auto` mode (status 
 - A throwaway hook returning `permissionDecision: "ask"` for one file prompted a human. That throwaway hook's reason text did not appear in the dialog. The shipped `ask-review-permissions.sh` was not tested for reason-text rendering, alone or together with the rule.
 - An ordinary file with no hook was edited silently after "Allowed by auto mode classifier".
 - A `permissions.ask` rule `Edit(//**/.claude/probe-settings*.json)` prompted on Edit in-project and on Write out-of-project, with the user's regular hooks and the throwaway hook also active. A rule written `Edit(/tmp/...)` in project settings did not match.
-- With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on Edit of an out-of-project `.claude/settings.json`, on Write creating an out-of-project `settings.local.json`, and on Write creating an in-project `settings.local.json`. An in-project Edit of a settings file with the shipped pattern alone was not run.
+- With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on all three of the following. An in-project Edit of a settings file with the shipped pattern alone was not run.
+  - Edit of an out-of-project `.claude/settings.json`.
+  - Write creating an out-of-project `settings.local.json`.
+  - Write creating an in-project `settings.local.json`.
 - The Edit tool refused to write through a symbolic link and named the target path. In a stow layout the target sits under a `.claude/` segment and so plausibly matches the pattern (inference; Write through a symlink is untested).
 - No run removed the rule on a `.claude/` path, which Claude Code already treats as a protected path (permission-modes "Protected paths"). The auto-mode prompts above therefore do not isolate the rule's effect, and its auto-mode behavior rests on the Documented list.
 

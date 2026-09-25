@@ -549,11 +549,14 @@ _SETTINGS_FILE_ASK_RULE = "Edit(//**/.claude/settings*.json)"
 
 
 def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() -> None:
-    """The declared `permissions.ask` entry that makes settings-file edits ask.
+    """The declared `permissions.ask` entry backing the settings-file-edit ask rule.
 
-    This pins the declared entry only. Live-session observations and their limits are recorded
-    in `docs/security-hardening.md`, in the section titled
-    "WebFetch domain allowlisting — considered and rejected".
+    This proves the *declared* config state — `Edit(//**/.claude/settings*.json)`
+    is in `permissions.ask` — not that the harness actually asks on the edit at
+    runtime. Live-session observations and their limits are recorded in
+    `docs/security-hardening.md`, in the section titled "WebFetch domain
+    allowlisting — considered and rejected"; this test only pins the
+    declaration so a future edit can't drop it silently.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
     ask_rules = settings.get("permissions", {}).get("ask", [])
