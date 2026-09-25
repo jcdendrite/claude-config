@@ -255,9 +255,18 @@ Documented in Anthropic's permissions and permission-modes pages (re-read 2026-0
 - Auto mode still shows prompts forced by an ask rule or by a hook. The permission-modes page (code.claude.com/docs/en/permission-modes) says "because auto mode still shows you those prompts" and "Explicit ask rules still force a prompt".
 - A matching ask rule still prompts even when a hook returned `allow` or `ask`.
 - `//path` is an absolute filesystem path.
-- `/path` anchors at the settings source, which is the project root in project settings and the user config directory in user settings.
 
-Untested: `bypassPermissions` for the rule, the rule after the session-wide approval to edit Claude's own settings, MultiEdit, case variants, Bash-mediated writes, Write through a symlink, headless `-p` runs, older Claude Code versions, and the shipped hook's reason text in any configuration.
+Untested:
+
+- `bypassPermissions` for the rule.
+- The rule after the session-wide approval to edit Claude's own settings.
+- MultiEdit.
+- Case variants.
+- Bash-mediated writes.
+- Write through a symlink.
+- Headless `-p` runs.
+- Older Claude Code versions.
+- The shipped hook's reason text in any configuration.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
