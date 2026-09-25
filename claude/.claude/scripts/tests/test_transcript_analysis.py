@@ -22098,6 +22098,106 @@ class TestSessionMatchesRearmScope:
         assert _mod._session_matches_rearm_scope(records, None, {"main"}) is True
 
 
+class TestRearmBacktestLogSizeLines:
+    """Pure unit tests against _rearm_backtest_log_size_lines: plain
+    (Path, size-or-None) tuples in, no filesystem or report-rendering
+    plumbing."""
+
+    def test_single_root_prints_account_n_label_and_byte_count(self):
+        root = Path("/fake/config-dir/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root, 12_345)], multi_root=False, redact=True,
+            redact_ordinals={root.resolve(): 1},
+        )
+        assert lines == ["  account-1 nudge log: 12,345 bytes"]
+
+    def test_single_root_no_redact_prints_raw_path(self):
+        root = Path("/fake/config-dir/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root, 100)], multi_root=False, redact=False,
+            redact_ordinals={root.resolve(): 1},
+        )
+        assert lines == [f"  {root.parent / '.handoff-nudge.log'} nudge log: 100 bytes"]
+
+    def test_single_root_over_cap_flags_truncated(self):
+        root = Path("/fake/config-dir/projects")
+        oversized = _mod._NUDGE_LOG_MAX_READ + 1
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root, oversized)], multi_root=False, redact=True,
+            redact_ordinals={root.resolve(): 1},
+        )
+        assert lines == [
+            f"  account-1 nudge log: {oversized:,} bytes [truncated -- oldest lines dropped]"
+        ]
+
+    def test_single_root_at_exactly_the_cap_is_not_flagged_truncated(self):
+        root = Path("/fake/config-dir/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root, _mod._NUDGE_LOG_MAX_READ)], multi_root=False, redact=True,
+            redact_ordinals={root.resolve(): 1},
+        )
+        assert lines == [f"  account-1 nudge log: {_mod._NUDGE_LOG_MAX_READ:,} bytes"]
+
+    def test_single_root_unreadable_prints_no_byte_count(self):
+        root = Path("/fake/config-dir/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root, None)], multi_root=False, redact=True,
+            redact_ordinals={root.resolve(): 1},
+        )
+        assert lines == ["  account-1 nudge log: unreadable"]
+
+    def test_multi_root_pools_bytes_with_no_per_root_breakdown(self):
+        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root_a, 100), (root_b, 200)], multi_root=True, redact=True,
+            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
+        )
+        assert lines == ["  nudge logs across every resolved root: 300 bytes"]
+        assert "account-" not in lines[0]
+
+    def test_multi_root_flags_truncated_count_without_naming_the_root(self):
+        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
+        oversized = _mod._NUDGE_LOG_MAX_READ + 1
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root_a, oversized), (root_b, 10)], multi_root=True, redact=True,
+            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
+        )
+        assert lines == [
+            f"  nudge logs across every resolved root: {oversized + 10:,} bytes"
+            " (1 truncated -- oldest lines dropped)"
+        ]
+
+    def test_multi_root_flags_unreadable_count_and_excludes_it_from_the_total(self):
+        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root_a, None), (root_b, 500)], multi_root=True, redact=True,
+            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
+        )
+        assert lines == ["  nudge logs across every resolved root: 500 bytes (1 unreadable)"]
+
+    def test_multi_root_combines_truncated_and_unreadable_in_expected_order(self):
+        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
+        oversized = _mod._NUDGE_LOG_MAX_READ + 1
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root_a, oversized), (root_b, None)], multi_root=True, redact=True,
+            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
+        )
+        assert lines == [
+            f"  nudge logs across every resolved root: {oversized:,} bytes"
+            " (1 truncated -- oldest lines dropped) (1 unreadable)"
+        ]
+
+    def test_multi_root_at_three_roots_still_prints_exactly_one_line(self):
+        roots = [Path(f"/fake/{n}/projects") for n in "abc"]
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(roots[0], 10), (roots[1], 20), (roots[2], 30)], multi_root=True, redact=True,
+            redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
+        )
+        assert len(lines) == 1
+        assert "account-" not in lines[0]
+        assert lines[0] == "  nudge logs across every resolved root: 60 bytes"
+
+
 class TestRearmBacktestReport:
     """End-to-end coverage against .claude/plans/handoff-nudge-rearm-backtest.md's
     Verification section -- items 2, 4, and 5, encoded as pytests against a
@@ -22364,76 +22464,12 @@ class TestRearmBacktestReport:
         _mod._rearm_backtest_report(
             _rearm_backtest_args(), date(2026, 8, 2), roots=[acct_b_root, fake_projects.parent]
         )
-        out, err = capsys.readouterr()
+        out, _err = capsys.readouterr()
         assert str(acct_b) not in out
-        # Guards a not-yet-existing stderr-writing path on this code branch;
-        # currently vacuous under redact=True, kept for forward safety.
-        assert str(acct_b) not in err
         assert "account-" not in out  # no per-account byte-size breakdown under multi-root scope
         assert (
             f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes (1 unreadable)" in out
         )
-
-    def test_truncated_and_unreadable_roots_combine_in_one_note_in_expected_order(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys, monkeypatch
-    ):
-        """A truncated root and a separately-unreadable root in the same
-        multi-root run must both surface in the pooled note, truncated
-        clause first -- the two clauses are built independently and are
-        otherwise only ever exercised one at a time."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        monkeypatch.setattr(_mod, "_NUDGE_LOG_MAX_READ", 10)
-
-        acct_b = fake_config_dir_factory("acct-b")
-        acct_b_root = acct_b / "projects"
-        unreadable_log = acct_b / ".handoff-nudge.log"
-        unreadable_log.write_text(
-            "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        real_exists = Path.exists
-
-        def fake_exists(self, *args, **kwargs):
-            if self == unreadable_log:
-                raise OSError(errno.ESTALE, "Stale file handle")
-            return real_exists(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "exists", fake_exists)
-
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b_root]
-        )
-        out = capsys.readouterr().out
-        assert "account-" not in out
-        assert (
-            f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes"
-            " (1 truncated -- oldest lines dropped) (1 unreadable)" in out
-        )
-
-    def test_oversized_root_log_is_flagged_truncated_in_the_size_line(
-        self, fake_projects, tmp_path, capsys, monkeypatch
-    ):
-        """A root's log over _NUDGE_LOG_MAX_READ prints a [truncated
-        -- oldest lines dropped] note next to its byte count. Without it,
-        a reader has no way to tell that the root's action=block line may
-        have been tail-truncated while its later handoff line survived,
-        short of comparing the printed size against an unprinted
-        constant."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        monkeypatch.setattr(_mod, "_NUDGE_LOG_MAX_READ", 10)
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "[truncated -- oldest lines dropped]" in out
 
     def test_truncation_can_drop_an_early_block_line_causing_real_misclassification(
         self, fake_projects, tmp_path, capsys, monkeypatch
@@ -22466,27 +22502,6 @@ class TestRearmBacktestReport:
         cols = _table_cols(out, header_contains="Bucket", row_contains="voluntary")
         assert cols["Count"] == "1"
 
-    def test_log_at_exactly_the_cap_is_not_flagged_truncated(
-        self, fake_projects, tmp_path, capsys, monkeypatch
-    ):
-        """The truncation note's condition is a strict `>`, matching
-        _read_bounded_log_lines' own trigger -- a log at exactly
-        _NUDGE_LOG_MAX_READ does not truncate and must not print the note,
-        pinning the boundary direction against an off-by-one (`>=`)
-        regression that would silently mislabel every log sized exactly at
-        the cap."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        monkeypatch.setattr(_mod, "_NUDGE_LOG_MAX_READ", log_path.stat().st_size)
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "[truncated" not in out
-
     def test_single_root_byte_size_line_prints_the_real_ordinal_and_byte_count(
         self, fake_projects, tmp_path, capsys
     ):
@@ -22503,62 +22518,6 @@ class TestRearmBacktestReport:
         out = capsys.readouterr().out
         ordinal = _mod._redaction_ordinals([fake_projects.parent])[fake_projects.parent.resolve()]
         assert f"account-{ordinal} nudge log: {log_path.stat().st_size:,} bytes" in out
-
-    def test_multi_root_log_sizes_are_pooled_no_per_account_breakdown(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
-    ):
-        """Sizes are pooled into one aggregate line; no per-root/account
-        breakdown is printed (a per-root byte count is a per-account
-        figure, prohibited by `docs/private-project-redaction.md`'s
-        Account-cardinality bar). No raw config-dir path is printed
-        either."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_a = tmp_path / ".handoff-nudge.log"
-        log_a.write_text("schema-drift session=x event=Stop\n")
-        acct_b = fake_config_dir_factory("acct-b")
-        log_b = acct_b / ".handoff-nudge.log"
-        log_b.write_text("schema-drift session=y event=Stop\n")
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2),
-            roots=[fake_projects.parent, acct_b / "projects"],
-        )
-        out = capsys.readouterr().out
-        assert "account-" not in out
-        assert str(acct_b) not in out
-        assert "acct-b" not in out
-        total = log_a.stat().st_size + log_b.stat().st_size
-        assert f"nudge logs across every resolved root: {total:,} bytes" in out
-
-    def test_multi_root_byte_size_output_carries_no_per_account_figure_at_three_roots(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
-    ):
-        """Under multi-root, redact=True scope, at most one nudge-log
-        byte-size figure (the pooled aggregate) is printed and zero are
-        root-keyed."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_a = tmp_path / ".handoff-nudge.log"
-        log_a.write_text("schema-drift session=x event=Stop\n")
-        acct_b = fake_config_dir_factory("acct-b")
-        log_b = acct_b / ".handoff-nudge.log"
-        log_b.write_text("schema-drift session=y event=Stop\n")
-        acct_c = fake_config_dir_factory("acct-c")
-        log_c = acct_c / ".handoff-nudge.log"
-        log_c.write_text("schema-drift session=z event=Stop -- extra bytes\n")
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2),
-            roots=[fake_projects.parent, acct_b / "projects", acct_c / "projects"],
-        )
-        out = capsys.readouterr().out
-        assert out.count("nudge log") == 1  # exactly one byte-size figure, the pooled aggregate
-        assert "account-" not in out
-        assert str(acct_b) not in out
-        assert str(acct_c) not in out
-        total = log_a.stat().st_size + log_b.stat().st_size + log_c.stat().st_size
-        assert f"nudge logs across every resolved root: {total:,} bytes" in out
 
     def test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts(
         self, fake_projects, tmp_path, capsys
@@ -22619,7 +22578,7 @@ class TestRearmBacktestReport:
         assert _table_cols(out, header_contains="Bucket", row_contains="no-compliance-observed")["Count"] == "7"
         assert "Conversion rate (voluntary + forced / fired): 37.5% (6/16)" in out
         assert "Block-reach rate (forced + blocked-no-handoff / fired): 25.0% (4/16)" in out
-        assert "Join validity (handoff lines matching an in-scope fired session): 6" in out
+        assert "Join validity (fired sessions with a matching handoff line): 6" in out
         assert (
             "Re-arms tolerated at voluntary compliance: median ignored=3 across 1 voluntary session(s)"
             " (4 voluntary session(s) missing ignored=)" in out
@@ -22646,7 +22605,7 @@ class TestRearmBacktestReport:
         )
         _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
-        assert "Join validity (handoff lines matching an in-scope fired session): 0" in out
+        assert "Join validity (fired sessions with a matching handoff line): 0" in out
 
     def test_zero_fired_sessions_prints_the_degenerate_conversion_branch_text(self, fake_projects, capsys):
         """No .handoff-nudge.log at all (an account that has never fired a

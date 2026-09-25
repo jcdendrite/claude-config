@@ -11568,6 +11568,48 @@ def _session_matches_rearm_scope(
     )
 
 
+def _rearm_backtest_log_size_lines(
+    per_root_sizes: Sequence[tuple[Path, int | None]],
+    *,
+    multi_root: bool,
+    redact: bool,
+    redact_ordinals: dict[Path, int],
+) -> list[str]:
+    """Render the nudge-log byte-size disclosure line(s) for
+    _rearm_backtest_report from each root's already-resolved byte size
+    (None means unreadable). Multi-root scope pools every root into one
+    aggregate line: a per-root byte count is itself a per-account figure,
+    which docs/private-project-redaction.md's Account-cardinality bar
+    prohibits. Single-root scope prints that root's own account-N-labeled
+    (or raw path under --no-redact) line directly.
+
+    Pure over already-resolved sizes so it's unit-testable without a
+    filesystem.
+    """
+    if multi_root:
+        total_bytes = sum(size for _root, size in per_root_sizes if size is not None)
+        truncated_count = sum(
+            1 for _root, size in per_root_sizes if size is not None and size > _NUDGE_LOG_MAX_READ
+        )
+        unreadable_count = sum(1 for _root, size in per_root_sizes if size is None)
+        note = ""
+        if truncated_count:
+            note += f" ({truncated_count} truncated -- oldest lines dropped)"
+        if unreadable_count:
+            note += f" ({unreadable_count} unreadable)"
+        return [f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}"]
+
+    # multi_root=False implies exactly one entry: the sole caller derives
+    # multi_root from the same scan_roots that produced per_root_sizes.
+    root, size = per_root_sizes[0]
+    log_path = root.parent / ".handoff-nudge.log"
+    root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
+    if size is None:
+        return [f"  {root_label} nudge log: unreadable"]
+    truncated_note = " [truncated -- oldest lines dropped]" if size > _NUDGE_LOG_MAX_READ else ""
+    return [f"  {root_label} nudge log: {size:,} bytes{truncated_note}"]
+
+
 def cmd_rearm_backtest(args: argparse.Namespace) -> None:
     """CLI entry point for the rearm-backtest subcommand.
 
@@ -11669,43 +11711,21 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     # join avoids biasing lag/conversion toward one account while
     # session_traces spans every root.
     log_entries_by_root: dict[Path, list[dict]] = {}
-    if multi_root:
-        # A per-root byte count is a per-account figure
-        # (docs/private-project-redaction.md's Account-cardinality bar), so
-        # pool it into one aggregate line rather than one line per root.
-        total_bytes = 0
-        truncated_count = 0
-        unreadable_count = 0
-        for root in scan_roots:
-            log_path = root.parent / ".handoff-nudge.log"
-            log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
-            try:
-                log_size = log_path.stat().st_size if log_path.exists() else 0
-            except OSError:
-                unreadable_count += 1
-                continue
-            if log_size > _NUDGE_LOG_MAX_READ:
-                truncated_count += 1
-            total_bytes += log_size
-        note = ""
-        if truncated_count:
-            note += f" ({truncated_count} truncated -- oldest lines dropped)"
-        if unreadable_count:
-            note += f" ({unreadable_count} unreadable)"
-        print(f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}")
-    else:
-        redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
-        root = scan_roots[0]
+    per_root_sizes: list[tuple[Path, int | None]] = []
+    for root in scan_roots:
         log_path = root.parent / ".handoff-nudge.log"
         log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
-        root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
         try:
             log_size = log_path.stat().st_size if log_path.exists() else 0
         except OSError:
-            print(f"  {root_label} nudge log: unreadable")
-        else:
-            truncated_note = " [truncated -- oldest lines dropped]" if log_size > _NUDGE_LOG_MAX_READ else ""
-            print(f"  {root_label} nudge log: {log_size:,} bytes{truncated_note}")
+            per_root_sizes.append((root, None))
+            continue
+        per_root_sizes.append((root, log_size))
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    for line in _rearm_backtest_log_size_lines(
+        per_root_sizes, multi_root=multi_root, redact=redact, redact_ordinals=redact_ordinals
+    ):
+        print(line)
     log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
@@ -11806,7 +11826,7 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
         f" ({block_reach:,}/{fired:,})"
     )
     print(
-        "Join validity (handoff lines matching an in-scope fired session):"
+        "Join validity (fired sessions with a matching handoff line):"
         f" {conversion['join_validity']:,}"
     )
 

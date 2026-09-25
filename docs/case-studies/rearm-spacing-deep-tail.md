@@ -63,13 +63,14 @@ pre-registered replication rule only requires a second corpus when a
 change is recommended, and this run recommended none. The run pooled several accounts on this
 machine, with no per-account breakdown in any figure below. See
 [`handoff-nudge-deep-tail-lever.md:142–182`](../../.claude/plans/handoff-nudge-deep-tail-lever.md)
-for the full output. The owner reviewed this run's pooled figures in
-session and approved publishing the session count, lag-sample count,
-lag median, join-validity count, per-candidate dollar/`C_bar` table,
-and the nudge→handoff conversion, block-reach, and re-arms-tolerated
-figures at this granularity on 2026-09-14 — excluding the same run's
-per-account nudge-log byte sizes, which carried a per-account
-breakdown and were withheld rather than approved. See
+for the full output. The owner approved this run's pooled figures for
+the plan file on 2026-09-14, and separately approved republishing the
+same figure set in this case study on 2026-09-15. Both approvals
+cover: session count, lag-sample count, lag median, join-validity
+count, per-candidate dollar/`C_bar` table, and the nudge→handoff
+conversion, block-reach, and re-arms-tolerated figures. Both exclude
+the same run's per-account nudge-log byte sizes, which carried a
+per-account breakdown and were withheld rather than approved. See
 `docs/private-project-redaction.md`'s "The owner can authorize one
 figure, case by case" section for the mechanism.
 
@@ -97,8 +98,7 @@ declined for reasons unrelated to `REARM_SPACING`'s cost or margin:
   price exists for the build, since today's log carries one advisory
   severity and no historical fire can be classified tier-1 vs. tier-2.
 - **Nudge-phrasing change** — declined; the current phrasing already
-  clears its own pre-registered adherence thresholds at 89.4%
-  conversion.
+  clears its own pre-registered conversion thresholds at 89.4%.
 
 Neither is covered here; see [`cost-levers-considered.md`](../cost-levers-considered.md)'s
 register entry and [`handoff-nudge-deep-tail-lever.md`](../../.claude/plans/handoff-nudge-deep-tail-lever.md)
@@ -110,8 +110,9 @@ for both.
   subcommand, run against this repo's own transcript corpus, Linux
   machine, 2026-09-14. This invocation has no flag that restricts its
   output to a single account, and pooled several accounts as a result.
-  The owner reviewed and approved publishing this study's figures at
-  their pooled granularity in session on 2026-09-14 — see
+  The owner approved publishing these figures at their pooled
+  granularity for the plan file on 2026-09-14, and separately approved
+  republishing them in this case study on 2026-09-15 — see
   `docs/private-project-redaction.md`'s "The owner can authorize one
   figure, case by case" section for the mechanism.
 - **`.claude/plans/handoff-nudge-deep-tail-lever.md`** — this study's own

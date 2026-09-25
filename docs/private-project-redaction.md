@@ -199,7 +199,16 @@ named. The following each count as a fresh ask:
 
 Cite each authorized figure on its own — one citation spanning
 several figures does not establish that each was individually
-proposed and approved. Before citing an authorized figure, check
+proposed and approved.
+
+A report printed by one command invocation, shown to the owner as a
+whole and approved together, is not "several figures" in this rule's
+sense. Every value the report contains shares the same proposal and
+the same yes. Cite the whole report's approval once, beside the
+artifact that reproduces it, rather than restating each contained
+figure as its own ask.
+
+Before citing an authorized figure, check
 whether it composes with an already-published rate or count to
 reconstruct a calendar-time series or narrow a boundary. That
 comparison source can be the grandfathered set below or an earlier
@@ -281,11 +290,6 @@ own accumulating totals — the owner has weighed that once (see
 "Remediation") and it is not re-litigated per publication.
 
 ### Remediation
-
-This section covers two distinct categories, kept in separate lists
-below: content that predates this bar, and a new figure the owner
-reviews and approves in session going forward. Conflating the two would
-misstate the second category as a pre-existing exemption it isn't.
 
 Content published before this bar took effect stays as published. The
 grandfathered set, computed over a machine-wide, multi-account corpus,
