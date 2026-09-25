@@ -4,7 +4,7 @@
 
 Goal: remove the home-rooted-path detector matches from the four tracked files that still carry them outside `claude/.claude/hooks/tests/**`, so a conflicted sync-merge is no longer denied at `git commit` by the redaction gate's home-rooted-path detector because of any of them. The long-hex detector still matches every other line of the three fixtures (70 lines). A merge that adds a fixture wholesale, or edits another of its lines, stays denied by that detector (see Out of scope).
 
-The first two fixtures were fixed earlier. Of the eleven sites left after that, the engineer scoped out the seven `.claude/plans/*.md` files, which leaves one line in each of three eval fixtures and one hook comment. The engineer asked for the username in the fixtures and the hook comment to be replaced with a placeholder. Editing a fixture line re-scans it in full, so the plan also neutralizes the UUID-shaped values on that line (row 18).
+The engineer scoped out the seven `.claude/plans/*.md` files, which leaves four sites: one line in each of three eval fixtures and one hook comment. The engineer asked for the username in the fixtures and the hook comment to be replaced with a placeholder. Editing a fixture line re-scans it in full, so the plan also neutralizes the UUID-shaped values on that line (row 18).
 
 ## Approach
 
@@ -71,7 +71,7 @@ Alternatives considered:
     - It skips the scan when nothing is staged (`:513`).
     - It accepts a bare `{"tool_name":"Bash","tool_input":{"command":…}}` stdin payload, as its own tests do (`test_deny_private_project_refs.py:478-492`).
 
-    Whether this worktree's origin URL contains `claude-config` is `[unverified; Verification step 5a checks it first, because otherwise the probe allows vacuously]`. The rest is `[verified]`.
+    Whether this worktree's origin URL contains `claude-config` is `[unverified; Verification step 5.1 checks it first, because otherwise the probe allows vacuously]`. The rest is `[verified]`.
 13. `deny-invisible-commit-content.sh` denies any Bash call that carries both a commit-shaped fragment and an execution wrapper such as `python -c` (`:218`). So the probe's payload goes into a file written with the Write tool, and no Bash command line carries commit text. `[verified: :218]`
 14. `evals/fixtures/*.jsonl` matches no `DOMAIN_RULES` or `CROSS_DOMAIN_EXCEPTIONS` predicate (`claude/.claude/scripts/select-tests.py:373-382`, `:477-509`). So `select-tests.py` selects the full suite on its own, with reason `unmatched-path` (`:553-554`). This is CLAUDE.md's first legitimate full-suite case. The full suite includes `test_shellcheck.py`, which lints every tracked shell script (`select-tests.py:418-419`). `[verified]`
 15. The gate also scans the `gh pr` command string (`:565`) and a `--body-file` body (`:587`). A commit message or PR body that quotes any removed value is denied just like a fixture line would be. That includes the hook comment's old example. `[verified]`
@@ -91,7 +91,7 @@ Alternatives considered:
 - **M-3: In the hook's line-255 comment, change only the example's home segment**, from the placeholder word `user` to `<username>`, with the Edit tool. The old text is itself a placeholder, so it is safe to show. No rewrap is needed. `anchors: row8, row10, row17`
 - **M-4: Probe the real gate against the staged diff before committing** (Verification step 5). This reuses the gate rather than re-implementing its detectors, its quote-stripped pass, and its blocklist read. `anchors: G-3, row6, row11, row12, row13`
 - **M-5: Never print fixture content.** That rules out `Read`, `cat`, and plain `git diff` or `git show` on the three fixtures; use `--numstat`, `-c`, and count-only checks instead. The `-` side of the fixture diff carries the removed values. `code-writer`'s mandatory self-review runs `git diff -- <paths>` on each modified pre-existing file, which would print them. So the dispatch prompt overrides that step for the three fixture paths: Verification step 3's booleans stand in for the diff, and the return must not quote fixture lines. The session tells `/code-review` reviewers to pathspec-exclude `evals/fixtures/` when printing any diff and to use `--numstat` for those paths. `anchors: root, row11`
-- **M-6: Describe the change in the commit message and PR body without quoting any removed value.** That includes the hook comment's old example and every UUID. If a path shape must appear, write `/home/<u>/…`. Describe the `session_id`/`uuid` edit as gate-driven replacement of synthetic constants, not as removal of real identifiers. State that the change unblocks the gate and is not an exposure-removal control. The removed values stay in history, and the seven plan files and the test-directory matches still carry the home path. `anchors: row15`
+- **M-6: Describe the change in the commit message and PR body without quoting any removed value.** That includes the hook comment's old example and every UUID. If a path shape must appear, write `/home/<u>/…`. Describe the `session_id`/`uuid` edit as gate-driven replacement of the values on that line. State that the change unblocks the gate and is not an exposure-removal control. The removed values stay in history, and the seven plan files and the test-directory matches still carry the home path. `anchors: row15`
 
 ## Critical files
 
