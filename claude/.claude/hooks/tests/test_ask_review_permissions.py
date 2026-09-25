@@ -152,9 +152,10 @@ class TestAskReviewPermissions:
         Known gaps list): a doubled slash, `.`/`..` segment, or a
         case variant still asks. The alias decorations sit between `.claude`
         and `settings` specifically, so the raw string doesn't already
-        contain the literal `.claude/settings` substring — a decoration
-        elsewhere in the path (e.g. before `.claude`) would pass even
-        without normalization, since the substring survives intact."""
+        contain the literal `.claude/settings` substring. A decoration
+        elsewhere in the path, e.g. before `.claude`, would already pass
+        without normalization since the substring survives intact — this
+        test doesn't cover that shape."""
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
 
     def test_aliased_nested_settings_path_stays_allowed(self):
