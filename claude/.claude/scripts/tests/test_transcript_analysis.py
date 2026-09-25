@@ -24786,7 +24786,6 @@ class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
         PR_COST_LEDGER_PATH's raw value, so this catch must not forward
         str(exc) to stderr. Mirrors pr-cost-export's identical no-raw-value
         discipline for its own copy of this catch."""
-        _enable_pr_cost(tmp_path)
         monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
@@ -28523,16 +28522,39 @@ class TestPrCostExportOrdinalsAndOrder:
 
 
 class TestPrCostExportOptIn:
-    def test_account_without_sentinel_contributes_no_rows_and_is_counted(
+    def test_missing_sentinel_and_empty_ledger_accounts_are_skipped_without_renumbering(
         self, tmp_path, monkeypatch, capsys,
     ):
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        acct_a, acct_b = roots[0].parent, roots[1].parent
+        """declared=4, opted_in=3, skipped_not_opted_in=1, and
+        len(formatted_rows)=2 are all pairwise distinct, so a swap between
+        any two of them -- e.g. opted_in/declared in the stdout summary
+        f-string, or opted_in/skipped_not_opted_in at the
+        _pr_cost_export_provenance_line call site -- changes the output
+        instead of passing undetected."""
+        acct_a = tmp_path / "acct-a"
+        (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
         _mod._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
-        # acct_b: no sentinel, but a ledger present -- must still contribute
-        # zero rows and must not renumber acct_a's own ordinal.
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        (acct_b / ".pr-cost-enabled").touch()
         _mod._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        acct_c = tmp_path / "acct-c"
+        (acct_c / "projects").mkdir(parents=True)
+        (acct_c / ".pr-cost-enabled").touch()
+        # acct_c: opted in, but a header-only (never captured) ledger --
+        # must count toward opted_in without contributing a row.
+        _mod._write_pr_cost_ledger_file(acct_c / "pr-cost-ledger.tsv", [])
+        acct_d = tmp_path / "acct-d"
+        (acct_d / "projects").mkdir(parents=True)
+        # acct_d: no sentinel, but a ledger present -- must still contribute
+        # zero rows and must not renumber any other account's own ordinal.
+        _mod._write_pr_cost_ledger_file(acct_d / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=4)])
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n{acct_c}\n{acct_d}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
@@ -28540,15 +28562,16 @@ class TestPrCostExportOptIn:
 
         text = out_path.read_text()
         rows = text.splitlines()[2:]
-        assert len(rows) == 1
-        assert rows[0].split("\t")[0] == "account-1"  # not renumbered despite acct_b's skip
+        assert len(rows) == 2
+        # not renumbered despite acct_c's zero-row ledger and acct_d's skip
+        assert [row.split("\t")[0] for row in rows] == ["account-1", "account-2"]
         provenance = text.splitlines()[0]
-        assert "declared=2" in provenance
-        assert "opted_in=1" in provenance
+        assert "declared=4" in provenance
+        assert "opted_in=3" in provenance
         assert "skipped_not_opted_in=1" in provenance
         out = capsys.readouterr().out
         assert str(out_path) in out
-        assert "wrote 1 row(s) from 1 of 2 declared account(s)" in out
+        assert "wrote 2 row(s) from 3 of 4 declared account(s)" in out
         assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
 
     def test_fully_skipped_run_with_no_opted_in_account_exits_0_with_header_only_file(

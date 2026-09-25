@@ -9926,7 +9926,8 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     # lexists() here buys nothing over exists(): resolve() above already
     # followed every symlink, so this is a UX-only fast path that fails
     # fast on the common case. The actual symlink defense is below, at the
-    # unresolved open_path + os.O_EXCL open.
+    # unresolved open_path + os.link publish step, which raises
+    # FileExistsError on an existing destination rather than dereferencing it.
     if os.path.lexists(str(resolved_out)):
         print(
             f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
