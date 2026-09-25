@@ -730,9 +730,7 @@ case "$SUBCOMMAND" in
     # excludes revert while this GATE_DIFF_BASE does not, so the two answers
     # can differ. See
     # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
-    # The extra resolution runs on every status call, including the handoff and ready-for-review skills' calls.
-    # Mid-merge/cherry-pick/rebase it roughly doubles the base resolution's ~7 git spawns and its `merge-tree --write-tree` object writes.
-    # That cost is bounded, so it is accepted.
+    # The extra resolution's cost on every status call is accepted; see that doc's "Latency" section.
     GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
 
     # code-review: hash of the whole-repo staged diff, same recipe as the

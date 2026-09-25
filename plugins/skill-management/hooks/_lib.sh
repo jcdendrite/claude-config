@@ -408,7 +408,9 @@ _lib_skill_review_diff_base() {
 # relative to the caller's cwd -- every current call site already validates
 # REPO_ROOT, but this is a shared primitive future callers may not.
 # A no-op GIT_EXTERNAL_DIFF/diff.external driver makes a genuinely-staged
-# change hash as empty here, an accepted, untested residual.
+# change hash as empty here, an accepted residual pinned by
+# test_git_external_diff_noop_misclassifies_staged_skill_content_as_empty
+# in test_marker_script.py.
 _lib_staged_diff_hash() {
   [ "$#" -ge 2 ] || return 1
   local repo_root="$1" base="$2"

@@ -21,7 +21,7 @@ from helpers import (
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_merge_via_origin_with_upstream_skill_edit,
-    build_conflicted_revert,
+    build_conflicted_revert_with_clean_gated_removal,
     edit_input,
     git_toplevel,
     head_sha,
@@ -29,6 +29,7 @@ from helpers import (
     plant_traversal_canary,
     push_conflicting_edit_to_origin,
     read_input,
+    revert_subtraction_base,
     run_hook,
     scaled_shim_sleep,
     skill_review_marker_path,
@@ -1035,125 +1036,114 @@ class TestMarkerScriptStagedDiffStateClassification:
 
     # ── status degrades to absent/historical, not a crash ───────────────
 
-    def test_status_code_review_falls_through_to_absent_when_diff_state_is_unknown(
-        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    @staticmethod
+    def _write_failing_diff_stub(stub_dir, argument_count):
+        """A `git` stub failing only `-C <repo> diff --cached ...` calls
+        with exactly `argument_count` arguments, and delegating every other
+        call to the real git."""
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq {argument_count} ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {shutil.which("git")} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+    def _assert_status_line_live_then_historical_under_failing_diff(
+        self, repo, home, tmp_path, gh_timeout_shim, status_line_kind, failing_argument_count
     ):
-        """status calls _lib_code_review_marker_value, which is internally
-        capped, directly -- no separate probe call remains to intercept.
-        Uses the same nonzero-exit stub
-        shape as the write-arm tests above, for consistency between the
-        two arms' tests, even though this capped call could also tolerate
-        a sleep+cap stub; cap-engagement itself is already covered
-        generically by test_code_review_value_computation_times_out_gracefully.
+        """Runs `status` twice against a repo whose `status_line_kind`
+        marker already matches the staged content. Without the stub the line
+        must read live, so the fixture is not vacuously absent. With the stub
+        failing the diff call of `failing_argument_count` arguments the line
+        must read historical, not live: a seeded marker no longer provably
+        matches once the hash cannot be computed.
 
         status also computes a cumulative-review line via
         _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
         gh_timeout_shim stub keeps that call off the real, network- and
         auth-dependent `gh`."""
-        real_git = shutil.which("git")
-        stub_dir = tmp_path / "stub-bin"
-        stub_dir.mkdir()
-        stub = stub_dir / "git"
-        stub.write_text(
-            '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
-            '  exit 1\n'
-            'fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        stub.chmod(0o755)
-
-        _seed_session(isolated_home, self.SID)
         env = gh_timeout_shim(
             '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
         )
-        env["PATH"] = f"{stub_dir}:{env['PATH']}"
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env=env,
+        unstubbed = _run(["status"], cwd=repo, home=home, extra_env=env)
+        assert unstubbed.returncode == 0, unstubbed.stderr
+        assert f"{status_line_kind}: live" in unstubbed.stdout
+
+        stub_dir = tmp_path / "stub-bin"
+        self._write_failing_diff_stub(stub_dir, failing_argument_count)
+        stubbed_env = {**env, "PATH": f"{stub_dir}:{env['PATH']}"}
+        stubbed = _run(["status"], cwd=repo, home=home, extra_env=stubbed_env)
+        assert stubbed.returncode == 0, stubbed.stderr
+        assert f"{status_line_kind}: live" not in stubbed.stdout
+        assert f"{status_line_kind}: historical" in stubbed.stdout
+
+    def test_status_code_review_falls_through_to_historical_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """status calls _lib_code_review_marker_value, which is internally
+        capped, directly -- no separate probe call remains to intercept.
+        Uses the same nonzero-exit stub shape as the write-arm tests above,
+        for consistency between the two arms' tests, even though this capped
+        call could also tolerate a sleep+cap stub; cap-engagement itself is
+        already covered generically by
+        test_code_review_value_computation_times_out_gracefully. A marker
+        matching the staged diff is seeded so a non-live reading can only come
+        from the failed hash."""
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        self._assert_status_line_live_then_historical_under_failing_diff(
+            git_repo, isolated_home, tmp_path, gh_timeout_shim, "code-review", 4
         )
 
-        assert result.returncode == 0, result.stderr
-        assert "code-review: absent" in result.stdout
-
-    def test_status_skill_review_falls_through_to_absent_when_diff_state_is_unknown(
+    def test_status_skill_review_falls_through_to_historical_when_diff_state_is_unknown(
         self, isolated_home, git_repo, tmp_path, gh_timeout_shim
     ):
         """Same as the code-review case above, but matches the
         skill-review line's 5-pathspec (10-arg) hash call shape
         specifically, so it doesn't also fail the code-review line's own
-        hash call.
-
-        status also computes a cumulative-review line via
-        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
-        gh_timeout_shim stub keeps that call off the real, network- and
-        auth-dependent `gh`."""
-        real_git = shutil.which("git")
-        stub_dir = tmp_path / "stub-bin"
-        stub_dir.mkdir()
-        stub = stub_dir / "git"
-        stub.write_text(
-            '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 10 ]; then\n'
-            '  exit 1\n'
-            'fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        stub.chmod(0o755)
-
+        hash call. A gated SKILL.md is staged and its HEAD-relative marker
+        seeded, so a non-live reading can only come from the failed hash."""
+        skill_rel_path = "claude-skills/skills/test-skill/SKILL.md"
+        (git_repo / skill_rel_path).parent.mkdir(parents=True)
+        (git_repo / skill_rel_path).write_text("# test skill\n")
+        subprocess.run(["git", "add", skill_rel_path], cwd=git_repo, check=True)
         _seed_session(isolated_home, self.SID)
-        env = gh_timeout_shim(
-            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        marker = skill_review_marker_path(isolated_home, git_repo, session_id=self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            staged_diff_hash_at_base(git_repo, "", *_SKILL_REVIEW_PATHSPECS) + "\n"
         )
-        env["PATH"] = f"{stub_dir}:{env['PATH']}"
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env=env,
+        self._assert_status_line_live_then_historical_under_failing_diff(
+            git_repo, isolated_home, tmp_path, gh_timeout_shim, "skill-review", 10
         )
 
-        assert result.returncode == 0, result.stderr
-        assert "skill-review: absent" in result.stdout
-
-    def test_status_skill_review_falls_through_to_absent_when_diff_state_is_unknown_mid_merge(
+    def test_status_skill_review_falls_through_to_historical_when_diff_state_is_unknown_mid_merge(
         self, isolated_home, tmp_path, gh_timeout_shim
     ):
         """Mid-merge arm of the test above: SKILL_REVIEW_BASE is non-empty,
         so the hash call's argv gains the base-tree argument (11 args, not
-        10). status never calls _guard_staged_vs_unstaged, so no `--quiet`
-        collision guard is needed here the way the write-arm mid-merge test
-        needs one."""
-        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
-        real_git = shutil.which("git")
-        stub_dir = tmp_path / "stub-bin"
-        stub_dir.mkdir()
-        stub = stub_dir / "git"
-        stub.write_text(
-            '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 11 ]; then\n'
-            '  exit 1\n'
-            'fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        stub.chmod(0o755)
-
+        10). Uses the resolved-conflict fixture, whose base-relative gated
+        diff is non-empty, and seeds the base-relative oracle marker, so
+        a non-live reading can only come from the failed hash. status never calls
+        _guard_staged_vs_unstaged, so no `--quiet` collision guard is needed
+        here the way the write-arm mid-merge test needs one."""
+        repo = _build_conflicted_merge_via_origin_with_resolved_skill_conflict(tmp_path)
+        base = _merge_tree_base(repo)
+        base_relative_digest = staged_diff_hash_at_base(repo, base, *_SKILL_REVIEW_PATHSPECS)
+        assert base_relative_digest != staged_diff_hash_at_base(
+            repo, "", *_SKILL_REVIEW_PATHSPECS
+        ), "fixture is not armed: HEAD-relative and base-relative preimages are identical"
         _seed_session(isolated_home, self.SID)
-        env = gh_timeout_shim(
-            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        marker = skill_review_marker_path(isolated_home, repo, session_id=self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(base_relative_digest + "\n")
+        self._assert_status_line_live_then_historical_under_failing_diff(
+            repo, isolated_home, tmp_path, gh_timeout_shim, "skill-review", 11
         )
-        env["PATH"] = f"{stub_dir}:{env['PATH']}"
-        result = _run(
-            ["status"],
-            cwd=repo,
-            home=isolated_home,
-            extra_env=env,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert "skill-review: absent" in result.stdout
 
     # ── a stray empty-digest marker must not read live ──────────────────
 
@@ -1611,19 +1601,18 @@ def _build_conflicted_merge_via_origin_with_resolved_skill_conflict_in_linked_wo
     return worktree
 
 
-def _build_conflicted_revert_with_staged_skill_change(repo, skill_name="test-skill"):
-    """build_conflicted_revert's fixture, plus a staged SKILL.md addition --
-    build_conflicted_revert's own conflict file is unrelated to any gated
-    pathspec, so without this the skill-review pathspec-scoped diff would be
-    empty and `write skill-review` would exit early with no marker to
-    assert on."""
-    build_conflicted_revert(repo)
-    skill_dir = repo / "claude-skills" / "skills" / skill_name
-    skill_dir.mkdir(parents=True)
-    skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text("# test skill\n")
-    subprocess.run(["git", "add", str(skill_md.relative_to(repo))], cwd=repo, check=True)
-    return repo
+def _assert_revert_fixture_preimages_differ(repo):
+    """Precondition for the mid-revert tests: the HEAD-relative and
+    subtraction-relative gated preimages differ, so a call site resolving
+    its base through _lib_gate_diff_base rather than
+    _lib_skill_review_diff_base produces a different marker value."""
+    subtraction_base = revert_subtraction_base(repo)
+    assert staged_diff_hash_at_base(
+        repo, "", *_SKILL_REVIEW_PATHSPECS
+    ) != staged_diff_hash_at_base(repo, subtraction_base, *_SKILL_REVIEW_PATHSPECS), (
+        "revert fixture is not discriminating: HEAD-relative and "
+        "subtraction-relative preimages are identical"
+    )
 
 
 class TestMarkerScriptMergeAwareSkillReviewBase:
@@ -1738,20 +1727,27 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
         self, isolated_home, git_repo
     ):
         """Write-side counterpart to the hook's
-        test_revert_stays_armed_with_gated_removal: mid-revert, the wrapper excludes the merge-tree subtraction
-        base, so the written marker equals the HEAD-relative oracle, not
-        one built from the subtraction tree -- proving this call site uses
-        _lib_skill_review_diff_base rather than _lib_gate_diff_base
-        directly, a mistake TestSharedGateDiffBaseClosureResidual (which compares the
-        two functions directly, not through either marker.sh arm) would not
+        test_revert_stays_armed_with_gated_removal: mid-revert, the wrapper
+        excludes the merge-tree subtraction base, so the written marker
+        equals the HEAD-relative oracle, not one built from the subtraction
+        tree. The fixture's preimages differ, so this fails if the call
+        site uses _lib_gate_diff_base rather than _lib_skill_review_diff_base,
+        which TestSharedGateDiffBaseClosureResidual (comparing the two
+        functions directly, not through either marker.sh arm) would not
         catch."""
-        repo = _build_conflicted_revert_with_staged_skill_change(git_repo)
+        repo = git_repo
+        build_conflicted_revert_with_clean_gated_removal(repo)
+        _assert_revert_fixture_preimages_differ(repo)
         sid = "test-session-skill-revert-write"
         _seed_session(isolated_home, sid)
         result = _run(["write", "skill-review"], cwd=repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
 
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        assert marker_dir.exists(), (
+            "write skill-review recorded no marker mid-revert: the call site "
+            "likely resolved a base other than the HEAD-relative one"
+        )
         files = list(marker_dir.iterdir())
         assert len(files) == 1
         expected = staged_diff_hash_at_base(repo, "", *_SKILL_REVIEW_PATHSPECS)
@@ -1760,7 +1756,9 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
     def test_status_reports_live_mid_revert_for_head_relative_marker(
         self, isolated_home, git_repo
     ):
-        repo = _build_conflicted_revert_with_staged_skill_change(git_repo)
+        repo = git_repo
+        build_conflicted_revert_with_clean_gated_removal(repo)
+        _assert_revert_fixture_preimages_differ(repo)
         sid = "test-session-skill-revert-status"
         _seed_session(isolated_home, sid)
         marker = skill_review_marker_path(isolated_home, repo, session_id=sid)

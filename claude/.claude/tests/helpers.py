@@ -895,7 +895,11 @@ def push_conflicting_edit_to_origin(
 
 
 def build_conflicted_merge_via_origin_with_upstream_skill_edit(
-    tmp_path: Path, *, skill_name: str = "example-skill", conflict_file: str = "f"
+    tmp_path: Path,
+    *,
+    skill_name: str = "example-skill",
+    conflict_file: str = "f",
+    upstream_adds_skill: bool = False,
 ) -> Path:
     """Merge fixture with a nested claude-skills/skills/<skill_name>/SKILL.md
     edited only upstream, before the merge, alongside an edit to
@@ -904,7 +908,9 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     HEAD (upstream's whole contribution) but not relative to the trusted
     merge-tree base (already-reviewed content excluded). The conflict is
     engineered in `conflict_file`, unrelated to SKILL.md, so MERGE_HEAD
-    persists to a resolvable state. Mirrors
+    persists to a resolvable state. With `upstream_adds_skill`, SKILL.md does
+    not exist before the fork and upstream's commit adds it instead of
+    editing it. Mirrors
     _build_conflicted_merge_via_origin_with_upstream_plan_edit in
     test_marker_script.py for the plan-review marker kind, generalized to a
     shared helper since the skill-review gate's tests need the same shape.
@@ -913,12 +919,13 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     nested skill path."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
-    skill_path = clone / skill_rel_path
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("base skill\n")
-    subprocess.run(["git", "add", skill_rel_path], cwd=clone, check=True)
-    subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
-    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+    if not upstream_adds_skill:
+        skill_path = clone / skill_rel_path
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("base skill\n")
+        subprocess.run(["git", "add", skill_rel_path], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
 
     (clone / conflict_file).write_text("ours-edit\n")
     subprocess.run(["git", "add", conflict_file], cwd=clone, check=True)
@@ -931,6 +938,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
     (push_clone / conflict_file).write_text("origin-edit\n")
+    (push_clone / skill_rel_path).parent.mkdir(parents=True, exist_ok=True)
     (push_clone / skill_rel_path).write_text("upstream edited skill\n")
     subprocess.run(["git", "add", conflict_file, skill_rel_path], cwd=push_clone, check=True)
     subprocess.run(
@@ -1030,6 +1038,61 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     )
     assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
     return commit_a
+
+
+def build_conflicted_revert_with_clean_gated_removal(
+    repo: Path, *, skill_name: str = "revert-skill", conflict_file: str = "f"
+) -> str:
+    """Build a real conflicted revert whose gated-SKILL.md removal applies
+    cleanly: commit X edits claude-skills/skills/<skill_name>/SKILL.md and
+    `conflict_file`, commit Y edits `conflict_file` again, then `git revert
+    X` conflicts in `conflict_file` only. The SKILL.md revert is staged
+    without conflict and `conflict_file` is resolved, so the index holds a
+    gated removal that differs from HEAD but equals the revert's own
+    synthesized subtraction tree. A gate wrongly diffing against that
+    tree sees an empty gated diff; one diffing against HEAD does not.
+    Returns commit X's oid -- REVERT_HEAD's expected content."""
+    conflict_target = _seed_tracked_file(repo, conflict_file)
+    skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
+    skill_path = repo / skill_rel_path
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n")
+    _run_git(repo, "add", skill_rel_path)
+    _run_git(repo, "commit", "-qm", "seed SKILL.md")
+    skill_path.write_text("edited skill\n")
+    conflict_target.write_text("X-edit\n")
+    _run_git(repo, "add", skill_rel_path, conflict_file)
+    _run_git(repo, "commit", "-qm", "commit X")
+    commit_x = _run_git(repo, "rev-parse", "HEAD").strip()
+    conflict_target.write_text("Y-edit\n")
+    _run_git(repo, "add", conflict_file)
+    _run_git(repo, "commit", "-qm", "commit Y")
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", commit_x], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected revert conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    unmerged = _run_git(repo, "diff", "--name-only", "--diff-filter=U").split()
+    assert unmerged == [conflict_file], f"conflict must be confined to {conflict_file}: {unmerged}"
+    conflict_target.write_text("resolved\n")
+    _run_git(repo, "add", conflict_file)
+    return commit_x
+
+
+def revert_subtraction_base(repo: Path) -> str:
+    """Independently computes the tree `_lib_gate_diff_base` returns
+    mid-revert: `git merge-tree --write-tree --merge-base=<REVERT_HEAD>
+    HEAD <REVERT_HEAD>^`, with the literal OID (not a ref name) so the
+    conflict-marker labels match production's."""
+    revert_head_oid = (absolute_git_dir(repo) / "REVERT_HEAD").read_text().strip()
+    out = subprocess.run(
+        ["git", "merge-tree", "--write-tree", f"--merge-base={revert_head_oid}",
+         "HEAD", f"{revert_head_oid}^"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    ).stdout
+    return out.strip().splitlines()[0]
 
 
 def build_conflicted_rebase(

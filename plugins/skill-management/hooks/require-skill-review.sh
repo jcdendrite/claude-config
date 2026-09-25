@@ -44,33 +44,28 @@
 #   reviewed content.
 # - Known gap: a conflict-free merge/cherry-pick/revert still reaches a
 #   commit with no gate firing at all.
-# - The structural validator's path list comes from a listing that excludes
-#   deletions by the diff's own status (`--diff-filter=d`), so a path is skipped
-#   only on the diff's own D status. Every git call in the validator loop is
-#   bounded, and any nonzero status denies. A staged deletion or move-out has
-#   no blob to validate and proceeds to the marker check, which covers the
-#   removal through the base-relative hash.
-#   The lowercase filter needs git 1.8.5, the same release that added the
-#   `git -C` every call here already requires.
+# - The structural validator's path list excludes deletions by the diff's own status
+#   (`--diff-filter=d`), and a staged deletion reaches the marker check, which covers
+#   it through the base-relative hash.
+# - With a non-empty base, a HEAD-relative `-G` scan of the gated pathspecs
+#   hard-denies a staged file that still carries conflict-marker lines: mid-merge
+#   the base tree holds conflict-marker blobs, so an unresolved file can read as
+#   already reviewed. See "Conflict-marker hard deny" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Fail-closed denies, each rather than disarming or skipping the structural
-#   validator: a failed staged-path listing (either `--name-only` diff), and a
-#   listed non-deleted path whose blob cannot be read (unmerged, corrupt index,
-#   a name git still lists C-quoted, or an argv name normalization mismatch).
+#   validator: a failed conflict-marker scan or staged-path listing (the scan or
+#   any of the three listings), and a listed non-deleted path whose blob
+#   cannot be read (unmerged, corrupt index, a name git still lists C-quoted, or
+#   an argv name normalization mismatch).
 # - Known gap: with neither timeout nor gtimeout on PATH, every _lib_capped
 #   site runs uncapped: the listings, the per-path `git show`, the marker hash,
 #   the validator, the advisory corpus scan (_lib_capped_for 10), and the base
-#   resolution. A
-#   stalled git then exits only via the harness's own hook timeout, which
-#   releases the commit (fail-open) rather than blocking it.
-# - Known gap: the validator reads each listed path's staged blob by
-#   re-resolving its name (`git show :<path>`). A hand-built index holding an
-#   invalid entry plus a valid twin whose name aliases it (a C-quoted rendering,
-#   an NFD/NFC pair under core.precomposeunicode, case-differing directories)
-#   then leaves the validator reading the twin's blob, so the invalid entry is
-#   never validated. This needs a Bash-capable actor building the index by
-#   hand, which the cheaper bypasses above already dominate. The marker hash
-#   still covers the aliased entry's real blob. Reading blobs by object ID
-#   from raw diff output is the recorded alternative, not taken.
+#   resolution. A stalled git then exits only via the harness's own hook
+#   timeout, which releases the commit (fail-open) rather than blocking it.
+# - Known gap: the validator reads each listed path's blob by re-resolving its name,
+#   so a hand-built index with aliased entry names leaves an invalid entry
+#   unvalidated; see "Known residual: aliased index entries" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Known gap: an auto-merge that combines two valid gated files into one
 #   invalid tree is not caught here, since the structural validator only
 #   sees the base-relative path set -- CI catches this in claude-config
@@ -152,32 +147,11 @@ fi
 # Status 2: the base could not be computed.
 # Either way BASE is empty and every consumer below runs a plain
 # `git diff --cached` with no base argument, which is HEAD-relative.
-# The resolution makes up to 12 sequential _lib_capped calls: 2 gitdir
-# resolutions (wrapper and _lib_gate_diff_base), 1 state-ref read, 5
-# default-branch resolution calls, 2 anchor checks, and 2 merge-tree/verify
-# calls.
-# Each cap is 5s plus a 2s kill grace, so 7s.
-# The reachable worst case is 5 cap hits, because a cap hit at six of those
-# sites ends the chain. The tight bound is 5 hits x 7s + 7 non-hit calls x up
-# to 5s = ~70s.
-# A fully stalled git costs about one cap, about 7s.
-# The merge-tree object-write rationale is in
+# Each capped git call is 5s plus a 2s kill grace.
+# A PreToolUse hook that times out does not block the call, so the whole-hook
+# worst case must stay under the harness's hook timeout (hooks.json sets none,
+# so the 600s default applies), sized in
 # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
-# Base resolution spawns about 11 git processes mid-merge, cherry-pick, or
-# rebase, which is about 7 more than a plain HEAD-relative gate.
-# Outside any in-progress state it spawns about 1.
-# Mid-revert it also spawns about 1, because it short-circuits.
-# Full-hook worst case, summing each capped site's own cap (5s plus the 2s
-# grace, or 7s, except where noted): ~70s base resolution, 3 x 7s
-# gated_paths_at_base listings, 7s per staged SKILL.md `git show`, 12s
-# structural validator (10s cap plus grace), 12s corpus-budget scan, and 7s
-# marker-hash diff.
-# That totals ~122s + 7s x (staged SKILL.md count), an upper bound no run
-# reaches because a cap hit at a listing, `git show`, or validator site denies
-# and exits early.
-# hooks.json sets no `timeout`, so Claude Code's default of 600 seconds for
-# command hooks applies (https://code.claude.com/docs/en/hooks.md).
-# A PreToolUse command hook that times out does not block the call.
 BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
 BASE_STATUS=$?
 
@@ -211,6 +185,25 @@ SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**
 ROUTING_PATHSPEC='claude-skills/skills/plan-review/ROUTING.md'
 MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
 
+# Mid-merge, `merge-tree --write-tree` puts conflict-marker blobs in the base
+# tree, so a staged gated blob equal to the base can be an unresolved conflict
+# rather than reviewed upstream content. HEAD-relative, because the base-relative
+# diff of such a path is empty and hides it both at the disarm exit below and
+# among resolved paths. `-a --no-textconv` keep a `-diff`/`binary` attribute or
+# a textconv driver from hiding a marker line from `-G`.
+if [ -n "$BASE" ]; then
+  CONFLICT_MARKER_PATHS=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false diff --cached -a --no-textconv --name-only -G '^(<<<<<<<|>>>>>>>)( |$)' -- "${MARKER_PATHSPECS[@]}")
+  CONFLICT_MARKER_STATUS=$?
+  if [ "$CONFLICT_MARKER_STATUS" -ne 0 ]; then
+    emit_deny "Commit blocked by skill-review gate: could not scan the staged skill files for conflict markers (git diff --cached -G failed or timed out). Retry the commit; if it keeps failing, check that git is responsive in this repository."
+    exit 0
+  fi
+  if [ -n "$CONFLICT_MARKER_PATHS" ]; then
+    emit_deny "Commit blocked by skill-review gate: the staged gated file(s) still contain unresolved conflict-marker lines (${CONFLICT_MARKER_PATHS//$'\n'/, }): column-0 lines starting <<<<<<< or >>>>>>>. If a conflict is unresolved, resolve it and stage the resolution. If the lines are legitimate content, such as a documented example, indent them so they no longer start at column 0 and restage; the gate then reviews the edited file."
+    exit 0
+  fi
+fi
+
 # Disarm: if no SKILL.md files and no plan-review/ROUTING.md are novel
 # relative to BASE, this hook is a no-op. Commits that don't touch any
 # gated skill file are not gated by skill-review. ROUTING_DIFF is checked
@@ -229,7 +222,7 @@ if [ "$SKILL_DIFF_STATUS" -eq 0 ] && [ "$ROUTING_DIFF_STATUS" -eq 0 ] \
   # durable record. Only when BASE is non-empty -- the ordinary "nothing
   # staged" exit stays silent.
   if [ -n "$BASE" ]; then
-    printf 'skill-management: skill-review gate disarmed -- staged skill content is identical to the novel-content base (tree %s). See docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.\n' "$BASE" >&2
+    printf 'skill-management: skill-review gate disarmed -- staged skill content is identical to the novel-content base (tree %s). See docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md in the claude-config repo.\n' "$BASE" >&2
   fi
   exit 0
 fi
@@ -408,7 +401,7 @@ fi
 # characters appear in the appended note.
 DENY_REASON="Commit blocked by skill-review gate: Staged skill changes have not been audited by /skill-review. Run /skill-review on the staged SKILL.md diff; the skill must produce an explicit behavioral-equivalence table for any removed or shortened lines before committing."
 if [ -n "$BASE" ]; then
-  DENY_REASON="${DENY_REASON} Note: this commit was gated against a novel-content base (mid-merge/cherry-pick/rebase), not the full staged diff -- the stowed marker.sh and the installed skill-management plugin must both be current for a review's marker to match here. If a marker written moments ago still denies, ask the user to run 'claude plugin install skill-management@claude-config --scope project' via the ! shell escape and then /reload-plugins (or restart Claude Code), and to run 'git pull' in the claude-config checkout, then re-run /skill-review. See docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repo."
+  DENY_REASON="${DENY_REASON} Note: this commit was gated against a novel-content base (mid-merge/cherry-pick/rebase), not the full staged diff, so a marker written by an out-of-date marker.sh will not match here. If a marker written moments ago still denies, ask the user to run 'git pull' in the claude-config checkout, then re-run /skill-review. See docs/hooks.md § \"Gate deadlock recovery\" in the claude-config repo."
 elif [ "$BASE_STATUS" -eq 2 ]; then
   DENY_REASON="${DENY_REASON} Note: this commit was gated against HEAD, not a novel-content base (the base could not be computed), so a mismatch mid-merge/cherry-pick/rebase is expected here rather than a review gap."
 fi
