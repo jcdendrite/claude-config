@@ -7438,11 +7438,13 @@ def _cost_ledger_path() -> Path:
 
 
 _MACHINE_IDENTITY_FILENAME = "machine-id"
-# Deliberately narrower than _MACHINE_LABEL_RE: secrets.token_hex(4) can only
-# ever produce exactly eight lowercase hex characters, so a hand-written
-# value that is well-formed under the wider _MACHINE_LABEL_RE (e.g. "acme1")
-# is refused here rather than silently adopted. \Z (not $), matching
-# _MACHINE_LABEL_RE's own anchor, so a trailing newline doesn't slip past it.
+# Deliberately narrower than _MACHINE_LABEL_RE: a hand-written value that is
+# well-formed under the wider _MACHINE_LABEL_RE (e.g. "acme1") is refused
+# here rather than silently adopted, since secrets.token_hex(4) can only
+# produce exactly eight lowercase hex characters.
+#
+# \Z (not $), matching _MACHINE_LABEL_RE's own anchor, so a trailing newline
+# doesn't slip past it.
 _MACHINE_IDENTITY_RE = re.compile(r"^[0-9a-f]{8}\Z")
 
 
@@ -8023,11 +8025,12 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     try:
         ledger_path = _cost_ledger_path()
-    except ValueError as exc:
-        # COST_LEDGER_PATH is new, operator-set, and easy to mistype relative
-        # -- route it through this module's standard stderr+exit convention
-        # rather than letting a raw traceback reach the terminal.
-        print(f"cost-ledger: {exc}", file=sys.stderr)
+    except ValueError:
+        # Not str(exc): _cost_ledger_path's own message embeds
+        # COST_LEDGER_PATH's raw value, which can carry a home-rooted
+        # engagement path. Same discipline as pr-cost-export's identical
+        # catch.
+        print("cost-ledger: COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
         sys.exit(1)
 
     if roots is None:
@@ -9336,8 +9339,12 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
         try:
             ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError as exc:
-            print(f"pr-cost: {exc}", file=sys.stderr)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as pr-cost-export's identical
+            # catch.
+            print(f"pr-cost: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
             sys.exit(1)
 
         if not record:
@@ -9423,19 +9430,23 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             if all_accounts:
                 # account-N, not the resolved config dir, to avoid a
                 # resolved home-rooted path in output -- same discipline as
-                # the single-account refusal message below.
+                # the single-account refusal message below. Worded
+                # generically ("not opted in"), not as a missing-sentinel-
+                # file claim -- same rationale as pr-cost-export's identical
+                # message, since an explicit pr_cost_recording = false in
+                # claude-config.toml reaches this branch with no sentinel
+                # file involved at all.
                 print(
-                    f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                    f"pr-cost: account-{ordinal} is not opted in (pr_cost_recording) --"
                     " skipped, see docs/pr-cost.md",
                     file=sys.stderr,
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not the resolved config dir, to
-            # avoid a resolved home-rooted path in output -- same discipline
-            # as cost-ledger's equivalent message above.
+            # Worded generically for the same reason as the all_accounts
+            # branch above.
             print(
-                "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
+                "pr-cost: --record is not opted in (pr_cost_recording) --"
                 " see docs/pr-cost.md",
                 file=sys.stderr,
             )
@@ -9727,7 +9738,7 @@ def _redact_pr_cost_row_for_export(
 
 def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, list[str]]:
     """Read every resolved root's own pr-cost ledger. Returns
-    (formatted_rows, declared, opted_in, skipped_no_sentinel,
+    (formatted_rows, declared, opted_in, skipped_not_opted_in,
     legacy_header_accounts, legacy_machine_value_rows, corpus_identities),
     fully materialized, with no filesystem writes of its own. See
     docs/pr-cost.md's "Redacted cross-account export" section for account
@@ -9736,7 +9747,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
     ordinals = _redaction_ordinals(roots)
     root_by_resolved = {root.resolve(): root for root in roots}
     declared = len(roots)
-    opted_in = skipped_no_sentinel = legacy_header_accounts = legacy_machine_value_rows = 0
+    opted_in = skipped_not_opted_in = legacy_header_accounts = legacy_machine_value_rows = 0
     formatted_rows: list[str] = []
     corpus_identities: list[str] = []
     host_map: dict[tuple[int, str], str] = {}
@@ -9748,24 +9759,76 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         ordinal = ordinals[resolved_root]
         account_config_dir = root_by_resolved[resolved_root].parent
 
-        sentinel_path = account_config_dir / ".pr-cost-enabled"
-        if not sentinel_path.exists():
-            # account-N, not sentinel_path, to avoid a resolved home-rooted
-            # path in output -- same discipline as pr-cost's own --all-accounts
-            # skip message.
+        # Same call, and the same error handling, as --record's own opt-in
+        # gate above (see _config.py's _location_value for how
+        # claude-config.toml and the legacy sentinel resolve against
+        # each other).
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except _config.ConfigSchemaEmptyError:
             print(
-                f"pr-cost-export: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                f"pr-cost-export: account-{ordinal}: config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            print(
+                f"pr-cost-export: account-{ordinal}: pr_cost_recording's config-keys.psv row is"
+                " truncated (partial stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except KeyError as exc:
+            if _config.schema():
+                print(f"pr-cost-export: account-{ordinal}: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"pr-cost-export: account-{ordinal}: could not read config-keys.psv (partial"
+                " stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always concrete here (root.parent), so
+            # this is not expected to be reachable in practice -- see
+            # --record's identical branch above for why it's still handled
+            # explicitly rather than left to fail silently.
+            print(
+                f"pr-cost-export: account-{ordinal}'s config directory could not be resolved --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            # account-N, not account_config_dir, to avoid a resolved
+            # home-rooted path in output -- same discipline as pr-cost's own
+            # --all-accounts skip message. Worded generically ("not opted
+            # in"), not as a missing-sentinel-file claim, since an explicit
+            # pr_cost_recording = false in claude-config.toml reaches this
+            # branch with no sentinel file involved at all.
+            print(
+                f"pr-cost-export: account-{ordinal} is not opted in (pr_cost_recording) --"
                 " skipped, see docs/pr-cost.md",
                 file=sys.stderr,
             )
-            skipped_no_sentinel += 1
+            skipped_not_opted_in += 1
             continue
         opted_in += 1
 
         try:
             ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError as exc:
-            print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as this function's other
+            # account-N-only diagnostics above.
+            print(
+                f"pr-cost-export: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path",
+                file=sys.stderr,
+            )
             sys.exit(1)
         if not ledger_path.exists():
             continue
@@ -9808,13 +9871,13 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
                 sys.exit(1)
 
     return (
-        formatted_rows, declared, opted_in, skipped_no_sentinel,
+        formatted_rows, declared, opted_in, skipped_not_opted_in,
         legacy_header_accounts, legacy_machine_value_rows, corpus_identities,
     )
 
 
 def _pr_cost_export_provenance_line(
-    *, exported_at: datetime, declared: int, opted_in: int, skipped_no_sentinel: int,
+    *, exported_at: datetime, declared: int, opted_in: int, skipped_not_opted_in: int,
     legacy_header_accounts: int, legacy_machine_value_rows: int, corpus_identities: Sequence[str],
     corpus_override: bool,
 ) -> str:
@@ -9828,7 +9891,7 @@ def _pr_cost_export_provenance_line(
     return (
         "# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this"
         f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
-        f" skipped_no_sentinel={skipped_no_sentinel} legacy_header_accounts={legacy_header_accounts}"
+        f" skipped_not_opted_in={skipped_not_opted_in} legacy_header_accounts={legacy_header_accounts}"
         f" legacy_machine_value_rows={legacy_machine_value_rows}"
         f" corpus={digest} corpus_override={int(corpus_override)}"
     )
@@ -9905,44 +9968,68 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
 
     (
-        formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts,
+        formatted_rows, declared, opted_in, skipped_not_opted_in, legacy_header_accounts,
         legacy_machine_value_rows, corpus_identities,
     ) = _pr_cost_export_rows(roots)
 
     provenance_line = _pr_cost_export_provenance_line(
         exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
-        skipped_no_sentinel=skipped_no_sentinel, legacy_header_accounts=legacy_header_accounts,
+        skipped_not_opted_in=skipped_not_opted_in, legacy_header_accounts=legacy_header_accounts,
         legacy_machine_value_rows=legacy_machine_value_rows, corpus_identities=corpus_identities,
         corpus_override=declared_roots_file_is_overridden(),
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
     # The final path component is left exactly as named, unlike resolved_out
-    # above, so O_EXCL's own symlink refusal actually fires instead of
-    # silently following the link to wherever it points.
+    # above, so the publish step's own symlink refusal (below) actually
+    # fires instead of silently following the link to wherever it points.
     # The parent is still resolved, so a symlinked parent directory lands
     # inside the same target the git-tree check above already validated.
     open_path = Path(out).parent.resolve() / Path(out).name
+
+    # Materialized into a same-directory temp file first, then published into
+    # --out via a hard link, so a mid-write crash never leaves a truncated,
+    # non-empty file stuck at the operator-named path with no sign it's crash
+    # debris. Same mkstemp+os.link idiom as _resolve_machine_identity's own
+    # publish step.
+    #
+    # mkstemp creates the temp file 0600, and os.link's new name shares that
+    # same inode's mode, so --out ends up 0600 with no separate chmod needed.
+    tmp_name: str | None = None
     try:
-        fd = os.open(str(open_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except OSError:
-        print(
-            f"pr-cost-export: --out {out!r} could not be created (already exists -- possibly a"
-            " symlink -- or its parent directory is missing/unwritable); pass a new path",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    try:
-        with os.fdopen(fd, "w") as f:
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(open_path.parent), prefix=".pr-cost-export-", suffix=".tmp")
+        with os.fdopen(tmp_fd, "w") as f:
             f.write(file_text)
     except OSError:
-        with contextlib.suppress(OSError):
-            os.unlink(open_path)
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
         print(
             f"pr-cost-export: --out {out!r} could not be written -- pass a new path",
             file=sys.stderr,
         )
         sys.exit(2)
+    try:
+        try:
+            os.link(tmp_name, open_path)
+        except FileExistsError:
+            print(
+                f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        except OSError:
+            # Not over-specified to "parent directory missing or
+            # unwritable": os.link can also fail this way on EXDEV (--out on
+            # a different filesystem than the temp file) or ENOSPC.
+            print(
+                f"pr-cost-export: --out {out!r} could not be published; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
 
     print(
         f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"

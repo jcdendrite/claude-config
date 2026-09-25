@@ -12952,6 +12952,24 @@ class TestCostLedgerPathResolution:
         with pytest.raises(ValueError, match="must be an absolute path"):
             _mod._cost_ledger_path()
 
+    def test_record_with_relative_override_exits_1_with_no_raw_value(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """_cost_ledger_report's own `except ValueError` around
+        _cost_ledger_path -- that raising function's own message embeds
+        COST_LEDGER_PATH's raw value, so this catch must not forward str(exc)
+        to stderr. Mirrors pr-cost-export's identical no-raw-value discipline
+        for its own copy of this catch."""
+        monkeypatch.setenv("COST_LEDGER_PATH", "relative/cost-ledger.md")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "must be an absolute path" in err
+        assert "relative/cost-ledger.md" not in err
+
     def test_unset_falls_back_to_config_dir(self, monkeypatch, tmp_path):
         """Unset COST_LEDGER_PATH resolves against a monkeypatched
         CLAUDE_CONFIG_DIR, not this workstation's real $HOME."""
@@ -24759,6 +24777,29 @@ class TestPrCostRecordRefusesGitTrackedLedgerUnconditionally:
         assert not ledger_path.exists()
 
 
+class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
+    def test_relative_pr_cost_ledger_path_exits_1_with_no_raw_value(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """_pr_cost_report's own `except ValueError` around
+        _pr_cost_ledger_path -- that raising function's own message embeds
+        PR_COST_LEDGER_PATH's raw value, so this catch must not forward
+        str(exc) to stderr. Mirrors pr-cost-export's identical no-raw-value
+        discipline for its own copy of this catch."""
+        _enable_pr_cost(tmp_path)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        args = _pr_cost_args(record=True)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "must be an absolute path" in err
+        assert "relative/pr-cost-ledger.tsv" not in err
+
+
 class TestPrCostLedgerConcurrentWrite:
     """Genuine OS-level concurrency isn't deterministic in a unit test --
     models two sequential --record-shaped lock/write/unlock cycles against
@@ -26321,7 +26362,7 @@ class TestPrCostAllAccounts:
         assert not (acct_b / "pr-cost-ledger.tsv").exists()
 
         captured = capsys.readouterr()
-        assert "account-2 has no opt-in sentinel" in captured.err
+        assert "account-2 is not opted in (pr_cost_recording)" in captured.err
         assert "recorded 1 of 2 declared accounts (1 not opted in, 0 skipped)" in captured.out
 
     def test_record_with_zero_sentinels_present_records_nothing_and_exits_cleanly(
@@ -28504,19 +28545,11 @@ class TestPrCostExportOptIn:
         provenance = text.splitlines()[0]
         assert "declared=2" in provenance
         assert "opted_in=1" in provenance
-        assert "skipped_no_sentinel=1" in provenance
-        # This fixture's declared/opted_in/skipped split (2/1/1) is
-        # non-trivial, so the stdout summary line's counts are load-bearing
-        # here rather than degenerate (e.g. all-equal or all-zero). Unlike
-        # the sibling key=value provenance-line assertions above, this
-        # regex anchors on some of the message's literal wording ("wrote",
-        # "row(s) from", "of", "declared account(s)"), so a future
-        # rewording of that CLI copy may require updating this regex too.
+        assert "skipped_not_opted_in=1" in provenance
         out = capsys.readouterr().out
-        summary_counts = re.search(r"wrote (\d+) row\(s\) from (\d+) of (\d+) declared account\(s\)", out)
-        assert summary_counts is not None
-        assert tuple(int(n) for n in summary_counts.groups()) == (1, 1, 2)
         assert str(out_path) in out
+        assert "wrote 1 row(s) from 1 of 2 declared account(s)" in out
+        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
 
     def test_fully_skipped_run_with_no_opted_in_account_exits_0_with_header_only_file(
         self, tmp_path, fake_projects, monkeypatch,
@@ -28543,7 +28576,7 @@ class TestPrCostExportOptIn:
         parsed = dict(t.split("=", 1) for t in lines[0].split(" ")[3:])
         assert parsed["declared"] == "1"
         assert parsed["opted_in"] == "0"
-        assert parsed["skipped_no_sentinel"] == "1"
+        assert parsed["skipped_not_opted_in"] == "1"
 
     def test_symlinked_sentinel_opts_both_accounts_into_export_together(self, tmp_path, monkeypatch):
         """Mirrors pr-cost --all-accounts' own
@@ -28583,7 +28616,165 @@ class TestPrCostExportOptIn:
 
         parsed = dict(t.split("=", 1) for t in out_path.read_text().splitlines()[0].split(" ")[3:])
         assert parsed["opted_in"] == "0"
-        assert parsed["skipped_no_sentinel"] == "1"
+        assert parsed["skipped_not_opted_in"] == "1"
+
+    def test_toml_true_with_no_sentinel_file_is_included(self, tmp_path, fake_projects, monkeypatch):
+        """An account whose consent lives only in claude-config.toml (the
+        normal install.sh-prompted path today) has no .pr-cost-enabled file
+        at all -- must still be included, since --record's own opt-in gate
+        already treats this account as fully opted in via the identical
+        _config.config_enabled call."""
+        (tmp_path / "claude-config.toml").write_text("pr_cost_recording = true\n")
+        _mod._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        text = out_path.read_text()
+        assert len(text.splitlines()[2:]) == 1
+        parsed = dict(t.split("=", 1) for t in text.splitlines()[0].split(" ")[3:])
+        assert parsed["opted_in"] == "1"
+        assert parsed["skipped_not_opted_in"] == "0"
+
+    def test_toml_false_overrides_a_present_legacy_sentinel_and_is_excluded(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """Regression test: an explicit pr_cost_recording = false in
+        claude-config.toml must exclude the account even with a leftover
+        .pr-cost-enabled sentinel still present on disk (the default
+        post-migration state, since migrate-legacy-config.sh's delete offer
+        defaults to No) -- a bare sentinel_path.exists() check wrongly
+        included this account despite the explicit revocation."""
+        (tmp_path / "claude-config.toml").write_text("pr_cost_recording = false\n")
+        (tmp_path / ".pr-cost-enabled").touch()
+        _mod._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        text = out_path.read_text()
+        assert text.splitlines()[2:] == []
+        parsed = dict(t.split("=", 1) for t in text.splitlines()[0].split(" ")[3:])
+        assert parsed["opted_in"] == "0"
+        assert parsed["skipped_not_opted_in"] == "1"
+
+    def test_config_dir_unresolvable_exits_1_with_its_own_diagnostic(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """_config.config_enabled("pr_cost_recording", ...) returning None --
+        distinct from a resolved account simply not being opted in. Not
+        reachable through account_config_dir itself (root.parent is always a
+        concrete Path, per this call site's own comment), so this forces the
+        condition directly through _config.config_enabled rather than
+        through any real config-dir input. Mirrors
+        TestPrCostRecordingConfigDirUnresolvable's identical coverage of
+        --record's own sibling branch."""
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording":
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        assert "account-1's config directory could not be resolved" in capsys.readouterr().err
+
+
+class TestPrCostExportConfigSchemaErrors:
+    """_pr_cost_export_rows's own copy of --record's config-schema error
+    handling around _config.config_enabled("pr_cost_recording", ...) --
+    forces each branch directly, mirroring TestPrCostRecordingKeyError's
+    forcing technique. Covers only this export-path copy of the branches;
+    --record's own identical-shaped branches are a separate, pre-existing
+    coverage gap."""
+
+    def test_config_schema_empty_error_exits_1_naming_the_account(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_schema_empty(key, config_dir_override=None):
+            raise _mod._config.ConfigSchemaEmptyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_schema_empty)
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        assert "account-1: config-keys.psv empty or malformed" in capsys.readouterr().err
+
+    def test_config_schema_row_truncated_error_exits_1_naming_the_account(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_schema_truncated(key, config_dir_override=None):
+            raise _mod._config.ConfigSchemaRowTruncatedError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_schema_truncated)
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1: pr_cost_recording's config-keys.psv row is" in err
+        assert "truncated" in err
+
+    def test_reports_unknown_key_when_key_error_and_schema_populated(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1: unknown config key" in err
+        assert "pr_cost_recording" in err
+
+    def test_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        assert "account-1: could not read config-keys.psv" in capsys.readouterr().err
 
 
 class TestPrCostExportEmptyLedger:
@@ -28742,7 +28933,7 @@ class TestPrCostExportProvenanceLine:
         tokens = provenance.split(" ")[3:]
         parsed = dict(t.split("=", 1) for t in tokens)
         assert set(parsed) == {
-            "exported_at", "declared", "opted_in", "skipped_no_sentinel", "legacy_header_accounts",
+            "exported_at", "declared", "opted_in", "skipped_not_opted_in", "legacy_header_accounts",
             "legacy_machine_value_rows", "corpus", "corpus_override",
         }
         assert lines[1] == _mod._PR_COST_EXPORT_HEADER_LINE
@@ -28914,7 +29105,7 @@ class TestPrCostExportRefusals:
         assert out_path.read_text() == "preexisting content\n"
         err = capsys.readouterr().err
         assert str(out_path) in err
-        assert "no opt-in sentinel" not in err
+        assert "is not opted in" not in err
         assert "pass a new path" in err
 
     def test_out_inside_a_git_working_tree_refuses(self, tmp_path, fake_projects, monkeypatch, capsys):
@@ -28944,6 +29135,27 @@ class TestPrCostExportRefusals:
         err = capsys.readouterr().err
         assert str(roots[0]) not in err
         assert str(roots[1]) not in err
+
+    def test_relative_pr_cost_ledger_path_exits_1_naming_account_with_no_raw_value(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """_pr_cost_export_rows's own account-level `except ValueError` around
+        _pr_cost_ledger_path -- that raising function has no dedicated unit
+        test of its own anywhere, so this test exercises this catch-and-
+        report branch's exit code and account attribution directly."""
+        _enable_pr_cost(tmp_path)
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", "relative/pr-cost-ledger.tsv")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1" in err
+        assert "relative/pr-cost-ledger.tsv" not in err
 
     def test_malformed_ledger_exits_1_naming_account_with_no_path_or_raw_value_and_no_partial_file(
         self, tmp_path, fake_projects, monkeypatch, capsys,
@@ -29105,15 +29317,15 @@ class TestPrCostExportSymlinks:
         err = capsys.readouterr().err
         assert str(live_link) in err
         assert "real.tsv" not in err  # the resolved target's own path never leaks
-        assert "no opt-in sentinel" not in err  # caught before _pr_cost_export_rows ever ran
+        assert "is not opted in" not in err  # caught before _pr_cost_export_rows ever ran
 
-    def test_dangling_symlink_at_out_skips_the_early_check_and_refuses_via_o_excl(
+    def test_dangling_symlink_at_out_skips_the_early_check_and_refuses_at_publish(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
         # No .pr-cost-enabled sentinel on purpose: its own skip stderr line
         # proves execution reached _pr_cost_export_rows, i.e. that the early
         # lexists check did NOT fire for this dangling symlink -- only the
-        # terminal os.open's O_EXCL is left to catch it.
+        # terminal os.link publish step is left to catch it.
         dangling_link = tmp_path / "dangling-link.tsv"
         dangling_link.symlink_to(tmp_path / "does-not-exist.tsv")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -29124,7 +29336,7 @@ class TestPrCostExportSymlinks:
         assert exc_info.value.code == 2
         assert not (tmp_path / "does-not-exist.tsv").exists()
         err = capsys.readouterr().err
-        assert "no opt-in sentinel" in err
+        assert "is not opted in" in err
 
     def test_out_whose_parent_is_a_symlink_into_a_git_working_tree_refuses(
         self, tmp_path, fake_projects, monkeypatch, capsys,
@@ -29144,12 +29356,13 @@ class TestPrCostExportSymlinks:
         assert "git working tree" in capsys.readouterr().err
 
 
-class TestPrCostExportOExclBackstop:
-    def test_o_excl_refuses_even_when_the_early_lexists_check_is_bypassed(
+class TestPrCostExportPublishBackstop:
+    def test_publish_link_refuses_even_when_the_early_lexists_check_is_bypassed(
         self, tmp_path, fake_projects, monkeypatch,
     ):
-        """Without this, a later refactor that drops the atomic open in
-        favour of the early check alone would pass every other test here."""
+        """Without this, a later refactor that drops the atomic os.link
+        publish in favour of the early check alone would pass every other
+        test here."""
         _enable_pr_cost(tmp_path)
         out_path = tmp_path / "export.tsv"
         out_path.write_text("preexisting\n")
@@ -29161,16 +29374,43 @@ class TestPrCostExportOExclBackstop:
 
         assert exc_info.value.code == 2
         assert out_path.read_text() == "preexisting\n"
+        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
+
+    def test_publish_generic_oserror_exits_2_and_never_creates_out_or_leaves_a_temp_file(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """os.link raising a generic OSError (e.g. EXDEV, a permission
+        failure) at publish time is distinct from the FileExistsError branch
+        covered above -- must still clean up the temp file and never leave
+        --out created."""
+        _enable_pr_cost(tmp_path)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        def fake_link(src, dst):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(os, "link", fake_link)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 2
+        assert not out_path.exists()
+        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
+        err = capsys.readouterr().err
+        assert f"--out {str(out_path)!r} could not be published" in err
 
 
 class TestPrCostExportWriteOSError:
-    def test_write_oserror_exits_2_and_unlinks_the_just_created_out_file(
+    def test_write_oserror_exits_2_and_never_creates_out_or_leaves_a_temp_file(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        """The write-time OSError (f.write raising after os.open's O_EXCL
-        has already created --out) is distinct from the open-time OSError
-        the O_EXCL backstop above covers -- it must still unlink the
-        just-created file rather than leave a truncated one behind."""
+        """The write-time OSError (f.write raising into the same-directory
+        temp file, before --out itself is ever touched) is distinct from the
+        publish-time OSError TestPrCostExportPublishBackstop above covers --
+        it must clean up the temp file rather than leave a truncated one
+        behind, and must never create --out at all."""
         _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
@@ -29186,7 +29426,7 @@ class TestPrCostExportWriteOSError:
                 raise OSError("disk full")
 
         def fake_fdopen(fd, mode):
-            os.close(fd)  # avoid leaking the real fd os.open already created
+            os.close(fd)  # avoid leaking the real fd mkstemp already created
             return _WriteFailsFile()
 
         monkeypatch.setattr(os, "fdopen", fake_fdopen)
@@ -29196,6 +29436,7 @@ class TestPrCostExportWriteOSError:
 
         assert exc_info.value.code == 2
         assert not out_path.exists()
+        assert list(tmp_path.glob(".pr-cost-export-*.tmp")) == []
         err = capsys.readouterr().err
         assert f"--out {str(out_path)!r} could not be written" in err
 
