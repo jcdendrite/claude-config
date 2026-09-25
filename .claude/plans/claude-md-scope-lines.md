@@ -2,13 +2,13 @@
 
 ## Context
 
-Goal: make the two scope pointers in `claude/.claude/CLAUDE.md` that the Agent Core move left dangling resolve correctly, without growing a file that is already over its byte ceiling.
+Goal: make the two scope pointers in `claude/.claude/CLAUDE.md` that the Agent Core restructure (#1090, planned in `.claude/plans/claude-md-agent-core.md`) left dangling resolve correctly, without growing a file that is already over its byte ceiling.
 
-The move put the comments section under `### Durable text` inside `## Prose and Output Format`. "the section below" at :100 now points at a subsection, and "This section governs" at :121 can be read as all of Prose. The record-followups PR (#1096, merged) left both for this follow-up. The opening line (:3), "Merge stays human-only" (:96) and "the rules above" (:141, tracked in GH-1091) stay untouched.
+That restructure put the comments section under `### Durable text` inside `## Prose and Output Format`. "the section below" at :100 now points at a subsection, and "This section governs" at :121 can be read as all of Prose. The record-followups PR (#1096, merged) left both for this follow-up. The opening line (:3), "Merge stays human-only" (:96) and "the rules above" (:141, tracked in GH-1091) stay untouched.
 
 ## Approach
 
-Replace each position-relative pointer with the section's name, `§Durable text`. At :100, "in the section below" becomes "in §Durable text". At :121, "This section governs" becomes "§Durable text governs". The net change is −1 byte and 0 lines. In the same commit, delete the two resolved bullets (:128-129, the ones quoting "the section below" and "This section governs") from the decision record's follow-up list so it stops listing them as open.
+Replace each position-relative pointer with the section's name, `§Durable text`. At :100, "in the section below" becomes "in §Durable text". At :121, "This section governs" becomes "§Durable text governs". The net change is −1 byte and 0 lines. In the same commit, delete the two resolved bullets (:128-129, the ones quoting "the section below" and "This section governs") from the decision record's (`docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md`) follow-up list so it stops listing them as open.
 
 Two edits are the minimum, because two separate references each need re-pointing. The `§` sigil is deliberate: bare "Durable text" is a generic noun phrase in both citing sentences.
 - At :100, bare "in Durable text" lands right after "durable in-repo docs", so "constraints in durable text" parses as a generic noun phrase and stops working as a pointer.
