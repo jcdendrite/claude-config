@@ -19,9 +19,8 @@ from helpers import HOOKS_DIR
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
-# Independently derived from the allowlist's documented character set
-# (bash 3.2's `case` glob under _lib.sh is the thing under test, so this must
-# not be copied from that glob's own literal text).
+# Derived independently from the documented character set.
+# It must not copy the literal text of the `case` glob in `_lib.sh`, because that glob is the code under test.
 _EXPECTED_ALLOWED_BYTES = frozenset((string.ascii_letters + string.digits + "._/@+-").encode("ascii"))
 
 _REQUIRE_FUNCTION_DEFINED = "declare -F _lib_passes_path_char_allowlist >/dev/null || exit 91; "
@@ -73,7 +72,9 @@ def _run_sweep(values: list[bytes], locale: str) -> bytes:
 
 def _en_us_utf8_exhibits_locale_sensitive_bracket_matching() -> bool:
     """True only when this runner's en_US.UTF-8 makes bracket ranges locale-sensitive;
-    if it collapses to C, the en_US params cannot guard the LC_ALL=C pin."""
+    if it collapses to C, the en_US params cannot guard the LC_ALL=C pin.
+    set-session-title-from-branch.sh's header comment is the canonical description
+    of the locale-sensitive bracket-range hazard."""
     probe = subprocess.run(
         [b"/bin/bash", b"-c", b"[[ \xc3\xa9 == [a-z] ]]"],
         capture_output=True,
@@ -91,11 +92,20 @@ def utf8_locale_is_functional() -> bool:
     return _en_us_utf8_exhibits_locale_sensitive_bracket_matching()
 
 
+def _bin_bash_version() -> str:
+    result = subprocess.run(
+        [b"/bin/bash", b"-c", b"printf %s \"$BASH_VERSION\""],
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout.decode(errors="replace")
+
+
 def _skip_if_utf8_locale_not_functional(locale: str, utf8_locale_is_functional: bool) -> None:
     if locale != "C" and not utf8_locale_is_functional:
         pytest.skip(
-            "en_US.UTF-8 locale is not installed on this runner, or this bash already does "
-            "ASCII-only bracket ranges (expected on bash 5), so the LC_ALL=C pin is invisible here"
+            f"Under /bin/bash {_bin_bash_version()}, LC_ALL=en_US.UTF-8 did not make `[a-z]` match "
+            "an accented letter, so the LC_ALL=C pin is invisible here."
         )
 
 

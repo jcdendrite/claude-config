@@ -343,7 +343,9 @@ class TestAnnounceResumeCommand:
         reaches the output.
 
         Uses a PATH-stubbed git because the CANDIDATE_ROOT call site never validates
-        the path is a real directory, so it is platform-independent."""
+        the path is a real directory, so it is platform-independent.
+        A real `git worktree add` with a newline in the path depends on the local git
+        accepting such paths, so the stub avoids that dependency."""
         malicious_root = "linked\n\nSENTINEL-INJECT\n\nwt"
         stub_env, stub_bin = _stub_git_linked_worktree(tmp_path, malicious_root)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
