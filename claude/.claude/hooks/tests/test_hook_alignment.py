@@ -533,15 +533,37 @@ def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: 
 def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
     """settings.json must register ask-review-permissions.sh on a PreToolUse
     matcher spanning Edit, Write and MultiEdit -- the hook is `informational`,
-    so the gate-only registration check does not cover it, and the
-    settings-json-conventions rule relies on it as the backstop for edits to
-    settings files.
+    so the gate-only registration check does not cover it. The hook and the
+    `permissions.ask` entry (pinned by
+    test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings)
+    are independent layers, and the hook is the only layer known to cover
+    MultiEdit.
     """
     matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
     assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"ask-review-permissions.sh: no PreToolUse matcher spanning "
         f"Edit|Write|MultiEdit in settings.json (found {matchers!r}) -- "
-        f"settings-file edits would no longer ask"
+        f"the hook would stop asking on at least one of those tools, "
+        f"including MultiEdit, which only the hook is known to cover"
+    )
+
+
+_SETTINGS_FILE_ASK_RULE = "Edit(//**/.claude/settings*.json)"
+
+
+def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() -> None:
+    """The declared `permissions.ask` entry that makes settings-file edits ask.
+
+    This pins the declared entry only. Live-session verification is recorded
+    in `docs/security-hardening.md`, in the section titled
+    "WebFetch domain allowlisting — considered and rejected". The pattern was
+    observed matching Edit and Write with hooks disabled, in auto mode.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert _SETTINGS_FILE_ASK_RULE in settings.get("permissions", {}).get("ask", []), (
+        f"'{_SETTINGS_FILE_ASK_RULE}' missing from permissions.ask in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — settings-file edits would no longer ask "
+        f"through the harness's own rule matching"
     )
 
 

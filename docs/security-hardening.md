@@ -210,14 +210,13 @@ document a native, lighter primitive for exactly this: `permissions.deny` on
 allow rules — no hook script, no `python3` dependency, no separate additions
 file. That native rule was the right primitive to reach for first per this
 repo's own "default-suspect over-powered primitives" standard, and it avoids
-the custom hook's specific defects (a hand-rolled host parser, a `python3`
-hard dependency, an ask-under-auto-mode assumption Claude Code doesn't
-document as reliable — `acceptEdits`/`bypassPermissions` are a separately
-verified exception, see below). It does **not**, however, close the actual
+the custom hook's specific defects (a hand-rolled host parser and a `python3`
+hard dependency). It does **not**, however, close the actual
 gap that makes a custom allowlist-file hook unsafe here: nothing in this
-repo gates edits to `settings.json` beyond `ask-review-permissions.sh`,
-which is `hook-class: informational` and returns only an `ask` decision — a
-soft gate a human can approve without scrutiny, unlike a hard `deny`. An
+repo gates edits to `settings.json` beyond `ask-review-permissions.sh`
+(`hook-class: informational`) and a `permissions.ask` rule on settings-file
+paths, both of which only `ask` — a soft gate a human can approve without
+scrutiny, unlike a hard `deny`. An
 agent can edit `permissions.allow` to add a `WebFetch(domain:...)` rule for
 a host of its own choosing exactly as readily as it could have appended a
 line to the custom hook's additions file — the self-widening path is
@@ -232,12 +231,32 @@ Code 2.1.223, via a throwaway hook gating an ordinary file (isolating the
 result from `.claude/settings.json`'s own native edit confirmation, which
 fires independently of hooks) plus a no-hook control confirming the prompt
 is attributable to the hook rather than baseline Edit-confirmation
-behavior. `auto` mode's classifier layer was not tested and its `ask`
-reliability remains open. The `bypassPermissions` result is notable on its
+behavior. That test did not cover `auto` mode, which was tested later
+(below). The `bypassPermissions` result is notable on its
 own: that mode is documented to skip permission checks more broadly than
 `acceptEdits`, yet a hook's `ask` still surfaced there. None of this closes
 the self-widening gap above — even a reliably-rendering `ask` is a soft
 gate, not a hard `deny`.
+
+Behavior of `ask` under `auto` mode, recorded from live sessions.
+
+Observed on 2026-09-24 and 2026-09-25, Claude Code 2.1.282, `auto` mode (status bar confirmed), interactive, one machine:
+
+- A throwaway hook returning `permissionDecision: "ask"` for one file prompted a human. That throwaway hook's reason text did not appear in the dialog. The shipped `ask-review-permissions.sh` was not tested for reason-text rendering, alone or together with the rule.
+- An ordinary file with no hook was edited silently after "Allowed by auto mode classifier".
+- A `permissions.ask` rule `Edit(//**/.claude/probe-settings*.json)` prompted on Edit in-project and on Write out-of-project, with the user's regular hooks and the throwaway hook also active. A rule written `Edit(/tmp/...)` in project settings did not match.
+- With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on Edit of an out-of-project `.claude/settings.json`, on Write creating an out-of-project `settings.local.json`, and on Write creating an in-project `settings.local.json`. An in-project Edit of a settings file with the shipped pattern alone was not run.
+- The Edit tool refused to write through a symbolic link and named the target path. In a stow layout the target sits under a `.claude/` segment and so plausibly matches the pattern (inference; Write through a symlink is untested).
+
+Documented in Anthropic's permissions and permission-modes pages (re-read 2026-09-25):
+
+- Explicit ask rules prompt in every mode that can prompt, including `bypassPermissions`; `dontAsk` denies anything that would prompt.
+- Auto mode still shows prompts forced by an ask rule or by a hook. The permission-modes page (code.claude.com/docs/en/permission-modes) says "because auto mode still shows you those prompts" and "Explicit ask rules still force a prompt".
+- `//path` is an absolute filesystem path.
+- `/path` anchors at the settings source, which is the project root in project settings and the user config directory in user settings.
+- `dontAsk` denies anything that would prompt.
+
+Untested: `bypassPermissions` for the rule, MultiEdit, case variants, Bash-mediated writes, Write through a symlink, headless `-p` runs, older Claude Code versions, and the shipped hook's reason text in any configuration.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
