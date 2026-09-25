@@ -22473,6 +22473,38 @@ class TestRearmBacktestReport:
         assert "sess-a" not in out
         assert "sess-b" not in out
 
+    def test_multi_root_session_pricing_aggregates_across_every_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """The Spacing table's Sessions in scope count and baseline $ total
+        are the report's primary output. A regression that narrowed
+        session aggregation back to one root -- the mirror-image of the
+        defect this diff's root-aware log join exists to fix -- would
+        silently understate both. Each root contributes one priced
+        session so a single-root regression halves the expected total,
+        not merely rounds it."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        single_session_dollars = _extract_grand_total(capsys.readouterr().out)
+
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-other-repo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        _mod._rearm_backtest_report(
+            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
+        )
+        out = capsys.readouterr().out
+        assert "Sessions in scope: 2" in out
+        cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
+        baseline_total = float(cols["$"].replace(",", ""))
+        assert baseline_total == pytest.approx(2 * single_session_dollars)
+
     def test_root_with_no_log_file_contributes_zero_entries_without_raising(
         self, fake_projects, fake_config_dir_factory, tmp_path, capsys
     ):
