@@ -20,11 +20,15 @@ round's own branch key (see docs/transcript-analysis-architecture.md).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import random
 import re
 import sys
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from transcript_analysis import corpus, pricing, redaction, render, scope
 
@@ -433,6 +437,356 @@ def compute_review_round_counts(
     return counts
 
 
+# --- --pooled: cross-account share block ------------------------------------
+#
+# Everything below prints percentages and 95% confidence intervals only --
+# no dollar amount, no raw count, no per-account/per-project/per-branch
+# split. See docs/private-project-redaction.md § "The owner can authorize
+# one figure, case by case". Promotion trigger: when a second subcommand
+# grows a pooled mode, move the doc pointer and approval pointer below to
+# scope.py, beside scope._DO_NOT_PUBLISH_BANNER.
+
+_POOLED_PUBLICATION_POINTER = (
+    "POOLED — publishable only under docs/private-project-redaction.md\n"
+    '§ "The owner can authorize one figure, case by case". Propose the figure, this exact\n'
+    "command, and the destination artifact to the owner, then cite the owner's\n"
+    "approval in that artifact. Nothing here checks that for you. Before citing\n"
+    "this alongside any rate or count already published elsewhere (e.g. a $/PR\n"
+    "rate or a branch count), name that composition in the proposal — these\n"
+    "shares were not designed to be composed with a figure outside this block."
+)
+
+_POOLED_CAPTION = (
+    "Pooled across every scan root in scope, machine-wide, whole period. Every\n"
+    "figure below is a share of list-price compute, never of billed spend. No\n"
+    "dollar amount, no raw count, and no per-account, per-project, or per-branch\n"
+    "split is emitted. Each interval is a 2,000-resample percentile bootstrap\n"
+    "resampled over branches, so it reflects branch-to-branch variation, treating\n"
+    "the branches in scope as a sample of ongoing work."
+)
+
+# Percentile bootstrap resampled over branches; 2,000 matches this repo's
+# own prior use of the same technique at docs/cost-levers-considered.md:205.
+_BOOTSTRAP_RESAMPLES = 2000
+# Fixed so a published figure is reproducible by whoever checks it -- the
+# value itself is arbitrary.
+_BOOTSTRAP_SEED = 0
+_CI_LEVEL = 0.95
+
+_POOLED_REFUSAL_DOC_POINTER = (
+    ' See docs/private-project-redaction.md § "The owner can authorize one figure, case by case".'
+)
+
+
+class _PooledBranchTotals(NamedTuple):
+    """One branch's totals, or (via _pooled_branch_aggregates) the
+    elementwise sum of several -- the true pool, or one bootstrap
+    resample's own draw.
+
+    A branch with priced spend but no in-scope round is excluded from the
+    pool entirely, matching the existing per-root footer's own
+    accumulation.
+
+    skill_round_counts/skill_round_dollars are keyed by every
+    REVIEW_SKILLS member, zeros included.
+    """
+    round_dollars: float
+    agent_dollars: float
+    branch_dollars: float
+    skill_round_counts: dict[str, int]
+    skill_round_dollars: dict[str, float]
+    rounds_with_dangling: int
+    rounds_with_unpriced: int
+    round_count: int
+
+
+# The pooled share block's own fixed key space -- _pooled_shares (below)
+# and the "too few branches" degenerate branch in _render_pooled_block
+# must both cover exactly this set.
+_POOLED_STAT_KEYS: tuple[str, ...] = (
+    "spend_inside", "spend_outside", "spend_reviewer_only",
+    *(f"skill_spend:{s}" for s in REVIEW_SKILLS),
+    *(f"skill_rounds:{s}" for s in REVIEW_SKILLS),
+    "gap_dangling", "gap_unpriced",
+)
+
+
+def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> str | None:
+    """The first applicable --pooled refusal message, or None once every
+    check passes -- evaluated in the table order documented in
+    docs/transcript-analysis.md's Pooled mode subsection.
+
+    roots=None skips the last, root-count clause: the pre-
+    resolve_scan_roots call site in cmd_review_round_cost (and any direct
+    caller of _render_pooled_block, this module's own tests included) may
+    not have roots in hand yet.
+
+    --this-repo is checked in the flag block, not folded into the
+    root-count clause below, so it always fires first on a single-root
+    machine.
+    """
+    if getattr(args, "branches", None):
+        return (
+            "review-round-cost --pooled refuses --branches: naming branches makes the"
+            " figure per-deliverable, not a pooled share." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if getattr(args, "projects", None) not in (None, "*"):
+        return (
+            "review-round-cost --pooled refuses a non-default --projects glob: a named"
+            " glob is a per-project dimension." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if getattr(args, "skill", None):
+        return (
+            "review-round-cost --pooled refuses --skill: it narrows the numerator against"
+            " an un-narrowed denominator and degenerates the per-skill lines." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if getattr(args, "since", None) or getattr(args, "until", None):
+        return (
+            "review-round-cost --pooled refuses --since/--until: whole period only, never"
+            " a time series." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if getattr(args, "config_dir", None):
+        return (
+            "review-round-cost --pooled refuses top-level --config-dir: it collapses the"
+            " pool to one named account." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if getattr(args, "this_repo", False):
+        return (
+            "review-round-cost --pooled refuses --this-repo: not implemented as a pooled"
+            " scope -- a product decision, not a policy bar." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if roots is not None and len(roots) == 1:
+        return (
+            "review-round-cost --pooled requires more than one resolved scan root: a"
+            " single-account figure is a per-account figure. Declare another account in"
+            f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    return None
+
+
+def _pooled_branch_aggregates(per_branch: Sequence[_PooledBranchTotals]) -> _PooledBranchTotals:
+    """Elementwise-sum a list of _PooledBranchTotals into one pooled total
+    -- reused identically for the true sample (point estimate) and for
+    every bootstrap resample's own draw, so every reported statistic is
+    computed the same way regardless of which list it was handed.
+    """
+    return _PooledBranchTotals(
+        round_dollars=sum(b.round_dollars for b in per_branch),
+        agent_dollars=sum(b.agent_dollars for b in per_branch),
+        branch_dollars=sum(b.branch_dollars for b in per_branch),
+        skill_round_counts={s: sum(b.skill_round_counts[s] for b in per_branch) for s in REVIEW_SKILLS},
+        skill_round_dollars={s: sum(b.skill_round_dollars[s] for b in per_branch) for s in REVIEW_SKILLS},
+        rounds_with_dangling=sum(b.rounds_with_dangling for b in per_branch),
+        rounds_with_unpriced=sum(b.rounds_with_unpriced for b in per_branch),
+        round_count=sum(b.round_count for b in per_branch),
+    )
+
+
+def _pooled_shares(agg: _PooledBranchTotals) -> dict[str, float | None]:
+    """Computes every pooled share (_POOLED_STAT_KEYS) from one already-
+    summed _PooledBranchTotals.
+
+    Returns None where that share's denominator is zero, rather than
+    render._pct_of's 0.0, since zero denominator here means undefined,
+    not zero.
+    """
+    shares: dict[str, float | None] = {
+        "spend_inside": render._pct_value(agg.round_dollars, agg.branch_dollars) if agg.branch_dollars else None,
+        "spend_outside": (
+            render._pct_value(agg.branch_dollars - agg.round_dollars, agg.branch_dollars)
+            if agg.branch_dollars else None
+        ),
+        "spend_reviewer_only": render._pct_value(agg.agent_dollars, agg.branch_dollars) if agg.branch_dollars else None,
+        "gap_dangling": render._pct_value(agg.rounds_with_dangling, agg.round_count) if agg.round_count else None,
+        "gap_unpriced": render._pct_value(agg.rounds_with_unpriced, agg.round_count) if agg.round_count else None,
+    }
+    for skill in REVIEW_SKILLS:
+        shares[f"skill_spend:{skill}"] = (
+            render._pct_value(agg.skill_round_dollars[skill], agg.round_dollars) if agg.round_dollars else None
+        )
+        shares[f"skill_rounds:{skill}"] = (
+            render._pct_value(agg.skill_round_counts[skill], agg.round_count) if agg.round_count else None
+        )
+    return shares
+
+
+def _resample_percentile(sorted_values: Sequence[float]) -> tuple[float, float]:
+    """2.5th/97.5th percentile bounds by index into an already-sorted
+    resample distribution: lo_idx = round(tail * (B - 1)), hi_idx =
+    round((1 - tail) * (B - 1)), tail = (1 - _CI_LEVEL) / 2 -- the
+    design's documented percentile-bootstrap index formula.
+    """
+    b = len(sorted_values)
+    tail = (1 - _CI_LEVEL) / 2
+    lo_idx = round(tail * (b - 1))
+    hi_idx = round((1 - tail) * (b - 1))
+    return sorted_values[lo_idx], sorted_values[hi_idx]
+
+
+def _bootstrap_share_intervals(
+    per_branch: Sequence[_PooledBranchTotals],
+) -> dict[str, tuple[float | None, float | None, float | None]]:
+    """Branch-cluster percentile bootstrap over every pooled share.
+
+    Resamples branches, not rounds, since every reported statistic is a
+    ratio of two branch-level sums and resampling rounds instead would
+    leave the denominator undefined. Each of _BOOTSTRAP_RESAMPLES draws
+    resamples len(per_branch) branches with replacement via a local
+    random.Random(_BOOTSTRAP_SEED) instance, never the module-global RNG.
+    Every stat's CI is drawn from the same resample set, so CIs stay
+    mutually consistent rather than each stat resampled independently.
+    """
+    point = _pooled_shares(_pooled_branch_aggregates(per_branch))
+    rand = random.Random(_BOOTSTRAP_SEED)
+    resample_values: dict[str, list[float]] = {key: [] for key in _POOLED_STAT_KEYS}
+    for _ in range(_BOOTSTRAP_RESAMPLES):
+        draw = rand.choices(per_branch, k=len(per_branch))
+        for key, value in _pooled_shares(_pooled_branch_aggregates(draw)).items():
+            if value is not None:
+                resample_values[key].append(value)
+
+    intervals: dict[str, tuple[float | None, float | None, float | None]] = {}
+    for key in _POOLED_STAT_KEYS:
+        point_value = point[key]
+        values = sorted(resample_values[key])
+        if point_value is None or not values:
+            # point=0.0 here is a filler value, never printed (see
+            # _fmt_share_with_ci); lo=None is what actually signals a
+            # zero-denominator branch. point=None is reserved for
+            # _render_pooled_block's separate "too few branches" case, so
+            # the two degenerate reasons stay distinguishable downstream.
+            intervals[key] = (0.0, None, None)
+        else:
+            lo, hi = _resample_percentile(values)
+            intervals[key] = (point_value, lo, hi)
+    return intervals
+
+
+def _fmt_share_with_ci(point: float | None, lo: float | None, hi: float | None) -> str:
+    """Render one pooled share line as `P.P% (95% CI L.L-H.H%)`. point is
+    None when the whole pool has too few branches to bootstrap at all; lo
+    is None, with point defined but unused, when this one share's own
+    denominator is zero. Neither degenerate wording contains a digit,
+    matching the enforcing grammar test.
+    """
+    if point is None:
+        return "(95% CI not computed — too few branches in scope)"
+    if lo is None:
+        return "(95% CI not computed — no priced branch spend)"
+    return f"{point:.1f}% (95% CI {lo:.1f}-{hi:.1f}%)"
+
+
+def _pooled_resolved_scope_header(scope_label: str) -> str:
+    """The --pooled header line, built locally instead of calling
+    scope.print_resolved_scope: that shared function's own root-count
+    clause is unconditional, even at one root, and would otherwise
+    disclose the number of resolved scan roots (a per-account dimension)
+    even under --pooled. scope_label is always the literal "*" here,
+    since --projects and --this-repo are both refused before this ever
+    prints; the fixed word "pooled" replaces the root-count clause
+    entirely, so this is a fixed string, not merely digit-free.
+    """
+    return f"REVIEW ROUND COST SOURCES ({scope_label}; pooled)"
+
+
+def _render_pooled_block(
+    args: argparse.Namespace,
+    roots: Sequence[Path],
+    scope_label: str,
+    rounds: list[dict],
+    branch_totals: dict[tuple[int | None, str], float],
+) -> None:
+    """--pooled's entire render path: shares and 95% confidence intervals
+    only, never a dollar amount, a raw count, or a per-account/per-project/
+    per-branch split. See docs/private-project-redaction.md § "Publishing
+    a pooled tooling measurement".
+
+    Re-derives cmd_review_round_cost's own refusal check as defense in
+    depth: every direct caller of this function, including this module's
+    own tests, bypasses that CLI-boundary check, so this call is the only
+    enforcement a direct caller ever sees.
+    """
+    refusal = _pooled_scope_refusal(args, roots=roots)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        sys.exit(2)
+
+    print(_pooled_resolved_scope_header(scope_label))
+    print()
+    print(_POOLED_PUBLICATION_POINTER)
+    print()
+    print(_POOLED_CAPTION)
+    print()
+
+    by_branch: dict[tuple[int | None, str], list[dict]] = defaultdict(list)
+    for entry in rounds:
+        by_branch[entry["branch_key"]].append(entry)
+
+    per_branch: list[_PooledBranchTotals] = []
+    for branch_key, branch_rounds in by_branch.items():
+        skill_round_counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
+        skill_round_dollars: dict[str, float] = dict.fromkeys(REVIEW_SKILLS, 0.0)
+        for e in branch_rounds:
+            skill_round_counts[e["skill"]] += 1
+            skill_round_dollars[e["skill"]] += e["main_dollars"] + e["agent_dollars"]
+        per_branch.append(_PooledBranchTotals(
+            round_dollars=sum(e["main_dollars"] + e["agent_dollars"] for e in branch_rounds),
+            agent_dollars=sum(e["agent_dollars"] for e in branch_rounds),
+            branch_dollars=branch_totals.get(branch_key, 0.0),
+            skill_round_counts=skill_round_counts,
+            skill_round_dollars=skill_round_dollars,
+            rounds_with_dangling=sum(1 for e in branch_rounds if e["dangling"] > 0),
+            rounds_with_unpriced=sum(1 for e in branch_rounds if e["unpriced_turns"] > 0),
+            round_count=len(branch_rounds),
+        ))
+
+    intervals = (
+        dict.fromkeys(_POOLED_STAT_KEYS, (None, None, None))
+        if len(per_branch) < 2
+        else _bootstrap_share_intervals(per_branch)
+    )
+
+    def fmt(key: str) -> str:
+        return _fmt_share_with_ci(*intervals[key])
+
+    print("  Share of branch spend")
+    print(f"    {'inside round windows':<30}{fmt('spend_inside')}")
+    print(f"    {'outside every round window':<30}{fmt('spend_outside')}")
+    print(f"    {'reviewer dispatches only':<30}{fmt('spend_reviewer_only')}")
+    print("  Round-window spend by skill")
+    for skill in REVIEW_SKILLS:
+        print(f"    {skill:<30}{fmt(f'skill_spend:{skill}')}")
+    print("  Rounds by skill")
+    for skill in REVIEW_SKILLS:
+        print(f"    {skill:<30}{fmt(f'skill_rounds:{skill}')}")
+    print("  Rounds affected by a data-quality gap")
+    print(f"    {'dangling dispatch':<30}{fmt('gap_dangling')}")
+    print(f"    {'unpriced turn':<30}{fmt('gap_unpriced')}")
+
+
+_SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
+
+
+def _pooled_compute_review_round_costs(*args, **kwargs) -> dict:
+    """compute_review_round_costs, with scope's own "scanning root N/M..."
+    diagnostic filtered out of stderr.
+
+    That diagnostic discloses the resolved root count. --pooled must never
+    print the resolved root count (see _pooled_resolved_scope_header).
+    Every other stderr line -- an OSError diagnostic, a warning -- passes
+    through unchanged.
+    """
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(captured):
+            data = compute_review_round_costs(*args, **kwargs)
+    finally:
+        for line in captured.getvalue().splitlines():
+            if not _SCANNING_ROOT_DIAGNOSTIC_RE.match(line.strip()):
+                print(line, file=sys.stderr)
+    return data
+
+
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
     """Per-branch review-round dollar cost.
 
@@ -465,7 +819,22 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     under a single root there is nothing to redact, so branch names print
     raw unconditionally. Unlike subagent-mix (which has no cross-branch
     footer), this command's own footer is partitioned per root the same way.
+
+    `--pooled` instead renders a fixed cross-account share block with
+    bootstrap CIs (_render_pooled_block), refusing every scope-narrowing
+    flag first and requiring more than one resolved scan root. Everything
+    above this line describes the non-pooled path only.
     """
+    pooled = bool(getattr(args, "pooled", False))
+    if pooled:
+        # Layer 1: before resolve_scan_roots, so a refused run never scans
+        # the corpus at all. roots=None skips the root-count clause,
+        # re-checked below once roots are known.
+        refusal = _pooled_scope_refusal(args)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            sys.exit(2)
+
     this_repo = bool(getattr(args, "this_repo", False))
     branches_arg: str | None = getattr(args, "branches", None) or None
     branch_filter = {b for b in branches_arg.split(",") if b} if branches_arg else None
@@ -475,15 +844,35 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     roots = scope.resolve_scan_roots(args)
     multi_root = len(roots) > 1
-    if multi_root:
+
+    if pooled:
+        # Layer 1's mirror, with roots now in hand: must return before any
+        # print side effect below, including the banner-suppression and
+        # header-suppression branches this same `pooled` flag now gates.
+        refusal = _pooled_scope_refusal(args, roots=roots)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            sys.exit(2)
+
+    if multi_root and not pooled:
         print(scope._DO_NOT_PUBLISH_BANNER)
         print(scope._DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
     session_iter, scope_label = scope._resolve_project_scope(args, "review-round-cost", roots=roots)
-    scope.print_resolved_scope("review-round-cost", scope_label, roots)
+    if not pooled:
+        # --pooled prints its own header (_pooled_resolved_scope_header)
+        # instead, which never discloses the resolved root count; this
+        # unconditional call is skipped so the root-count-bearing header
+        # does not print a second time ahead of it.
+        scope.print_resolved_scope("review-round-cost", scope_label, roots)
 
     resolved_roots = [root.resolve() for root in roots] if multi_root else None
-    data = compute_review_round_costs(
+    # --pooled routes through the diagnostic-filtering wrapper: scope's own
+    # "scanning root N/M..." print would otherwise disclose the resolved
+    # root count on stderr. Every other path calls compute_review_round_costs
+    # directly, with stderr unchanged.
+    compute = _pooled_compute_review_round_costs if pooled else compute_review_round_costs
+    data = compute(
         session_iter,
         skill_filter=skill_filter,
         branch_filter=branch_filter,
@@ -493,6 +882,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     )
     rounds = data["rounds"]
     branch_totals = data["branch_totals"]
+
+    if pooled:
+        _render_pooled_block(args, roots, scope_label, rounds, branch_totals)
+        return
 
     if not rounds:
         print("\nNo review rounds found in scope.")
