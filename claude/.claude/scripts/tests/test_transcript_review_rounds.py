@@ -1738,6 +1738,25 @@ class TestCmdReviewRoundCostPooled:
         assert exc.value.code == 2
         assert "--config-dir" in capsys.readouterr().err
 
+    def test_refuses_top_level_config_dir_through_the_real_parser(self, tmp_path, capsys):
+        """CLI-level counterpart to test_refuses_top_level_config_dir above:
+        that test builds a hand-rolled Namespace directly, bypassing
+        build_parser() entirely, so a regression in how --config-dir is
+        wired through argparse (its top-level placement, its dest name)
+        would go uncaught there. In-process via build_parser() + a direct
+        cmd_review_round_cost(args) call, matching test_transcript_cost.py's
+        own build_parser().parse_args(...) convention -- no subprocess
+        needed since this claim is about argparse wiring, not hash-seed
+        determinism."""
+        args = _mod.build_parser().parse_args(
+            ["--config-dir", str(tmp_path), "review-round-cost", "--pooled"]
+        )
+        assert args.func == _mod.cmd_review_round_cost
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(args)
+        assert exc.value.code == 2
+        assert "--config-dir" in capsys.readouterr().err
+
     def test_refuses_this_repo_on_single_root_fixture(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
             _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, this_repo=True))
@@ -1952,6 +1971,58 @@ class TestCmdReviewRoundCostPooled:
         expected_line = f"    {'inside round windows':<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
         assert expected_line in out
 
+    def test_multi_round_branch_accumulates_skill_totals_across_rounds(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """feat-a has two in-scope code-review rounds with distinct dollar
+        amounts; skill_round_counts/skill_round_dollars must sum both, not
+        retain only the last one -- no other pooled fixture gives any
+        branch more than one in-scope round, so an `=`-instead-of-`+=`
+        accumulation regression would otherwise go uncaught. Hand-built
+        rounds/branch_totals via a direct _render_pooled_block call, matching
+        test_bootstrap_ci_bounds_are_invariant_to_branch_insertion_order's own
+        convention -- the accumulation loop under test needs no corpus scan
+        or pricing table, so going through cmd_review_round_cost's full JSONL
+        pipeline would only add incidental coupling to those independently-
+        churning subsystems."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {(0, "feat-a"): 0.80, (1, "feat-b"): 0.20}
+        args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        out = capsys.readouterr().out
+
+        # Sums both of feat-a's code-review rounds ($0.20 + $0.60 = $0.80,
+        # count 2), not just the second one -- what an `=`-instead-of-`+=`
+        # regression would leave behind.
+        branch_a = review_rounds._PooledBranchTotals(
+            round_dollars=0.80, agent_dollars=0.0, branch_dollars=0.80,
+            skill_round_counts={"code-review": 2, "plan-review": 0, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 0.80, "plan-review": 0.0, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=2,
+        )
+        branch_b = review_rounds._PooledBranchTotals(
+            round_dollars=0.20, agent_dollars=0.0, branch_dollars=0.20,
+            skill_round_counts={"code-review": 0, "plan-review": 1, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 0.0, "plan-review": 0.20, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+        )
+        intervals = review_rounds._bootstrap_share_intervals([branch_a, branch_b])
+        for label, key in (
+            ("code-review", "skill_spend:code-review"), ("code-review", "skill_rounds:code-review"),
+        ):
+            point, lo, hi = intervals[key]
+            expected_line = f"    {label:<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
+            assert expected_line in out
+
     def test_degenerate_single_branch_prints_too_few_branches_wording_with_no_digit(
         self, tmp_path, monkeypatch, capsys,
     ):
@@ -2021,6 +2092,37 @@ class TestCmdReviewRoundCostPooled:
         # branch_totals alone), the pool would hold two branches instead of
         # one and "too few branches" would not fire.
         assert "(95% CI not computed — too few branches in scope)" in out
+
+    def test_pool_with_two_roots_but_one_contributing_account_stays_degenerate(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Two resolved roots and two branches satisfy both of
+        _render_pooled_block's own count floors, but both branches come
+        from the same root -- only one account actually contributed data.
+        The root-count floor alone would let this bootstrap into a real
+        percentage that is 100% one account's data; must degrade to the
+        same "too few branches" wording as a genuinely single-branch pool.
+        Hand-built rounds/branch_totals via a direct _render_pooled_block
+        call -- the contributing-roots floor under test needs no corpus
+        scan or pricing table, matching this file's established direct-call
+        convention for testing _render_pooled_block in isolation.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a1"), "skill": "code-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a2"), "skill": "plan-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        # roots[1] (acct-b) resolves but contributes no branch at all.
+        branch_totals = {(0, "feat-a1"): 0.20, (0, "feat-a2"): 0.20}
+        args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
 
     def test_no_print_before_refusal_on_single_root_case(self, fake_projects, capsys):
         """The single-root refusal fires last in _pooled_scope_refusal's

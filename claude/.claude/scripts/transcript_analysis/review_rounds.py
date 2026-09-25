@@ -655,6 +655,8 @@ def _bootstrap_share_intervals(
         draw = rand.choices(per_branch, k=len(per_branch))
         for key, value in _pooled_shares(_pooled_branch_aggregates(draw)).items():
             if value is not None:
+                # A key whose draws mostly hit a zero denominator still
+                # renders a full-confidence CI off whatever few survive.
                 resample_values[key].append(value)
 
     intervals: dict[str, tuple[float | None, float | None, float | None]] = {}
@@ -676,10 +678,11 @@ def _bootstrap_share_intervals(
 
 
 def _fmt_share_with_ci(point: float | None, lo: float | None, hi: float | None) -> str:
-    """Render one pooled share line as `P.P% (95% CI L.L-H.H%)`. point is
-    None when the whole pool has too few branches to bootstrap at all; lo
-    is None, with point defined but unused, when this one share's own
-    denominator is zero. Neither degenerate wording contains a digit,
+    """Render one pooled share line as `P.P% (95% CI L.L-H.H%)`.
+
+    `point` is None when the whole pool has too few branches to bootstrap.
+    `lo` is None (with `point` defined but unused) when this one share's
+    own denominator is zero. Neither degenerate wording contains a digit,
     matching the enforcing grammar test.
     """
     if point is None:
@@ -761,9 +764,12 @@ def _render_pooled_block(
             round_count=len(branch_rounds),
         ))
 
+    # A resolved-root count >= 2 only proves two accounts exist, not that
+    # more than one of them actually contributed a branch to this pool.
+    contributing_roots = {branch_key[0] for branch_key in by_branch}
     intervals = (
         dict.fromkeys(_POOLED_STAT_KEYS, (None, None, None))
-        if len(per_branch) < 2
+        if len(per_branch) < 2 or len(contributing_roots) < 2
         else _bootstrap_share_intervals(per_branch)
     )
 
@@ -879,11 +885,9 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     skill_filter = {skill_arg} if skill_arg else None
     since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
-    # --pooled routes resolve_scan_roots through the same diagnostic filter
-    # as compute_review_round_costs below. declared_transcript_roots()'s own
-    # "declared root N unreadable" warning is raised here, before either
-    # refusal call fires, and is root-count-revealing too. This applies on
-    # both the still-poolable and the single-root-refusal path.
+    # Also routed through the diagnostic filter on both the poolable and
+    # single-root-refusal paths: declared_transcript_roots()'s own "declared
+    # root N unreadable" warning is root-count-revealing too.
     roots = (
         _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
         if pooled
