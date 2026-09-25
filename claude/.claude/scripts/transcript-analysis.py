@@ -11952,25 +11952,13 @@ _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
 _HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
 
 
-def _handoff_signal_shlex_segments(command: str) -> list[list[str]]:
-    """Tokenize a Bash command and split it on shell operators, reusing
-    _split_command_tokens_on_shell_operators so a chained invocation (`cd x
-    && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`) is still
-    detected in its own segment."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    return _split_command_tokens_on_shell_operators(tokens)
-
-
 def _handoff_signal_bash_check_call(block: dict) -> bool:
     """True iff `block` is a Bash tool_use invoking
     nudge-handoff-near-context-cap.sh --check, in any &&/;/|-chained segment."""
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return False
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if segment and os.path.basename(segment[0]) == _HANDOFF_SIGNAL_HOOK_BASENAME and "--check" in segment[1:]:
             return True
     return False
@@ -11984,7 +11972,7 @@ def _handoff_signal_marker_transition(block: dict) -> str | None:
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return None
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if len(segment) < 3 or os.path.basename(segment[0]) != "marker.sh":
             continue
         if segment[1] in ("activate", "deactivate") and segment[2] == "ready-for-review":
