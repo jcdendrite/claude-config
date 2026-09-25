@@ -2598,11 +2598,13 @@ class TestDenyPrivateProjectRefs:
     #
     # These tests pin at the full-hook (`run_hook`) layer deliberately.
     # The hook scans the union of the raw scan target and a quote-stripped
-    # copy of it, and every case below turns on which character sits
-    # immediately before a `#`, `(`, or `]` -- quote stripping deletes
-    # characters and so changes that adjacency, which makes a unit-level
-    # assertion against `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw
-    # literal a different check than the one the hook performs.
+    # copy of it.
+    # Many cases below turn on which character sits immediately before a
+    # `#`, `(`, or `]`.
+    # Quote stripping deletes characters, so it changes that adjacency.
+    # For those cases, a unit-level assertion against
+    # `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw literal is a different
+    # check than the one the hook performs.
     # A unit pin would also miss a detector left out of
     # `STRUCTURAL_DETECTORS`, a scan-target regression, or a
     # fast-path/per-detector pattern drifting out of sync
@@ -2639,6 +2641,114 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Follow-up to #4210's",
+            "Follow-up to #4210's. Done",
+            "Follow-up to #4210's, then more",
+            "Follow-up (#4210's)",
+            "Follow-up to #4210's fix",
+        ],
+        ids=["end-of-message", "period", "comma", "close-paren", "space"],
+    )
+    def test_structural_slack_possessive_issue_reference_allowed(self, claude_config_repo, message):
+        """GH-826: a possessive issue reference is not a Slack channel.
+        Quote stripping deletes the apostrophe and joins the `s` onto the
+        digits, so the stripped copy of the possessive must still read as
+        an issue reference rather than a digit-led channel name."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f'git commit -m "{message}"'),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_typed_digits_plus_s_accepted_allowed(self, claude_config_repo):
+        """GH-826: a typed digits-plus-`s` token with no apostrophe is an
+        accepted gap. The quote-stripped copy cannot tell it from a
+        possessive, so the two share one verdict."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Follow-up to #4210s'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "channel",
+        [
+            "#_alerts",
+            "#-alerts",
+            "#42-alerts",
+            "#42_alerts",
+            "#2026-alerts",
+            "#7a",
+            "#42a",
+            "#42r",
+            "#42t",
+            "#42z",
+            "#42s0",
+            "#42s9",
+            "#42s_",
+            "#42s-",
+            "#42sa",
+            "#42sz",
+            "#42ss",
+        ],
+        ids=[
+            "underscore-led",
+            "hyphen-led",
+            "digits-hyphen",
+            "digits-underscore",
+            "four-digits-hyphen",
+            "single-digit-a",
+            "digits-a",
+            "digits-r",
+            "digits-t",
+            "digits-z",
+            "digits-s-zero",
+            "digits-s-nine",
+            "digits-s-underscore",
+            "digits-s-hyphen",
+            "digits-s-a",
+            "digits-s-z",
+            "digits-s-s",
+        ],
+    )
+    def test_structural_slack_channel_tail_alphabet_denied(self, claude_config_repo, channel):
+        """GH-826: each row pins one member of the tail class that must stay flagged:
+        - letter-led names
+        - digit-led names whose first non-digit is not `s`
+        - digit-led names whose first letter is `s` followed by another name character
+        """
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m 'Discussed in {channel} before filing'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_quote_split_digit_led_channel_denied(self, claude_config_repo):
+        """GH-826: an apostrophe splitting a digit-led channel name leaves
+        the raw copy allowed (`#42` then a quote). Only the quote-stripped
+        copy joins it into `#42s-alerts`, so this pins that the stripped
+        view still denies the `s` branch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m "Discussed in #42\'s-alerts before filing"'),
+                cwd=claude_config_repo,
+            )
+            == "deny"
         )
 
     def test_structural_slack_markdown_anchor_link_denied(self, claude_config_repo):
