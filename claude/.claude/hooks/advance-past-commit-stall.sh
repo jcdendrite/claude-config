@@ -106,9 +106,11 @@ LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 # This gate covers a fork only if the fork's Stop payload carries agent_type,
 # which is unverified.
 # AGENT_TYPE-unreadable and AGENT_TYPE-absent pass this gate as the main
-# session does; that's safe only because a jq/read failure also empties
-# SESSION_ID, which gate 5 below independently denies — load-bearing on that
-# ordering, not an explicit fail-closed check on this field itself.
+# session does.
+# That is safe only because a jq/read failure also empties SESSION_ID, which
+# gate 5 below independently denies.
+# The safety rests on that ordering, not on an explicit fail-closed check on
+# this field itself.
 [ -z "$AGENT_TYPE" ] || exit 0
 
 # 5. session_id required and must be a safe single path component; it feeds

@@ -97,7 +97,11 @@ Unverified: load behavior on out-of-project reads beyond one trial each, whether
 The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a)-(c), (e), (f), (g) and (h) are open. All share one ownership record:
 
 - Owner: the repo owner.
-- Tracker: GH-1094 for gaps (c), (g) and (h), which it fixes only if the hook survives its evaluation of a first-party `permissions.ask` rule, and for whether a hook `ask` reaches a human under auto mode. Gaps (a), (b), (e) and (f) and the fork and identity-gate residual have no tracker issue. GH-1093 separately tracks the Model & Effort Routing section's audiences.
+- Tracker:
+  - GH-1094 covers gaps (c), (g) and (h), which it fixes only if the hook survives its evaluation of a first-party `permissions.ask` rule.
+  - GH-1094 also covers whether a hook `ask` reaches a human under auto mode.
+  - No tracker issue exists for gaps (a), (b), (e) and (f) or for the fork and identity-gate residual.
+  - GH-1093 separately tracks the Model & Effort Routing section's audiences.
 - Re-review triggers, each with how it is observed:
   - A fork or subagent commits, pushes or opens a PR contrary to the shipping clause: observed by the post-merge fork spot-check and by transcript review.
   - A settings edit slips through gap (c), (d), (g) or (h): not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
@@ -111,7 +115,7 @@ The output-preferences read instruction moves verbatim into Main session. Making
 
 A user-scope scratch test, one run per arm, showed that a symlinked CLAUDE.md follows `@`-imports and resolves a relative import against the symlink target's directory. `@~/` resolution is untested. The consequence for the later extraction of core: a colocated relative import of core resolves inside the repo.
 
-## Moved lines
+## Moved and reworded lines
 
 The Stopping bullet is split across the group boundary. Its blocked-stop half sits in Agent Core: "Stop when the work is genuinely blocked", with the three example conditions and "Say what is blocked." Its "Do not ask permission to proceed with work that is already done." half ends Main session § Shipping's "Do not offer to show the diff first" sub-bullet, next to its autonomous-shipping antecedent. The group test pins both placements.
 
