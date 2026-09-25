@@ -152,3 +152,10 @@ claude/.claude/issue-triage/
 # read-check-write window (never the ledger file itself, since renaming it
 # would swap the locked inode out from under a racing recorder).
 docs/cost-ledger.md.lock
+
+# Local skill-deletion trash, no confirmed writer in this repo's own
+# scripts (same no-writer shape as claude/.claude/cache/ above). Left
+# untracked and unignored, it shows up in `git ls-files --others
+# --exclude-standard` and makes select-tests.py fall back to a full-suite
+# run on every unrelated change.
+claude-skills/skills/.trash/

@@ -84,18 +84,10 @@ SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 # table hasn't declared yet.
 SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
-# test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
-# by path, not by import.
-# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB.
-# Only lovable-cloud needs an explicit exception, because its DOMAIN_RULES
-# entry is the only one broad enough to otherwise claim this path ahead of
-# the unmatched-path fallback.
-LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.json"
-
 # check-handoff.py hardcodes this path.
 # test_check_handoff.py reads it directly by path, not by import.
-# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB and
-# LOVABLE_CLOUD_PLUGIN_MANIFEST. Stays outside SKILL_FILES_READ_BY_HOOK_TESTS
+# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB.
+# Stays outside SKILL_FILES_READ_BY_HOOK_TESTS
 # below because test_check_handoff.py lives in SCRIPTS_TESTS_DIR, not
 # HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
 # this file's second target.
@@ -315,6 +307,16 @@ def _is_plugin_agents_change(path: str) -> bool:
     return _is_plugin_subpath(path, "agents")
 
 
+# test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json by
+# path, not by import -- same undeclared-dependency shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB. Deliberately narrower than
+# _is_plugin_subpath: only the manifest file itself, not every file under
+# .claude-plugin/, matches what that glob reads.
+def _is_plugin_manifest_change(path: str) -> bool:
+    parts = Path(path).parts
+    return len(parts) == 4 and parts[0] == PLUGINS_DIR and parts[2] == ".claude-plugin" and parts[3] == "plugin.json"
+
+
 def _is_lovable_cloud_shell_script_change(path: str) -> bool:
     return _is_under(path, LOVABLE_CLOUD_SCRIPTS_DIR) or _is_under(path, LOVABLE_CLOUD_LIB_DIR)
 
@@ -405,8 +407,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # validator scripts and eval runner it exercises.
 # SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
 # module, and that import is invisible to path-constant scanning.
-# LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
-# globs every plugin's plugin.json by path.
+# _is_plugin_manifest_change: test_plugin_manifests.py (SKILLS_TESTS_DIR)
+# globs every plugin's plugin.json by path, not only lovable-cloud's --
+# see its own comment above for why it's narrower than _is_plugin_subpath.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
 # (HOOKS_TESTS_DIR) glob plugins/*/hooks/*.sh.
 # _is_plugin_skills_change: test_skills.py (SKILLS_TESTS_DIR) globs
@@ -445,8 +448,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
 # claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
-# _is_plugin_hooks_change, _is_plugin_skills_change, and
-# _is_plugin_agents_change match every plugin under plugins/, not only
+# _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
+# and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
@@ -478,7 +481,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
-    (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
+    (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
     (_is_plugin_agents_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),

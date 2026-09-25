@@ -557,9 +557,37 @@ class TestSelectPytestTargets:
         by path. Without this cross-domain exception, LOVABLE_CLOUD_DIR's
         broad domain rule claims the path first and the dependent test goes
         unrun."""
-        result = _mod.select_pytest_targets([_mod.LOVABLE_CLOUD_PLUGIN_MANIFEST])
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/.claude-plugin/plugin.json"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_other_plugin_manifest_change_also_selects_skills_tests(self):
+        """test_plugin_manifests.py globs every plugin's plugin.json, not
+        only lovable-cloud's -- a plugin with no directory-wide DOMAIN_RULES
+        entry of its own must still match _is_plugin_manifest_change rather
+        than falling through to unmatched-path."""
+        result = _mod.select_pytest_targets(["plugins/claude-hook-review/.claude-plugin/plugin.json"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_manifest_one_level_too_shallow_is_not_a_manifest_change(self):
+        """No .claude-plugin/ segment -- _is_plugin_manifest_change's len(parts)
+        == 4 check must reject this three-part shape, not just accept
+        len(parts) > 3 like the sibling plugin-generic predicates do."""
+        assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/plugin.json")
+
+    def test_manifest_one_level_too_deep_is_not_a_manifest_change(self):
+        """A file nested under .claude-plugin/ rather than directly in it --
+        the exact shape the predicate's own comment says stays narrower than
+        _is_plugin_subpath for."""
+        assert not _mod._is_plugin_manifest_change(
+            "plugins/claude-hook-review/.claude-plugin/sub/plugin.json"
+        )
+
+    def test_manifest_wrong_filename_is_not_a_manifest_change(self):
+        """Right directory, wrong file -- test_plugin_manifests.py globs
+        plugin.json specifically, not every file under .claude-plugin/."""
+        assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/.claude-plugin/other.json")
 
     def test_lovable_cloud_hooks_change_also_selects_hooks_tests(self):
         """test_hook_alignment.py and test_lib.py both glob
@@ -1474,7 +1502,6 @@ class TestPytestSubprocessEnv:
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.SKILL_AUXILIARY_FILES_MODULE,
-    _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST,
     _mod.README_MD,
     _mod.INSTALL_SH,
     _mod.CLAUDE_SETTINGS_JSON,
