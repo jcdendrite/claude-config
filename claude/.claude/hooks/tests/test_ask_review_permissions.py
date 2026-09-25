@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -22,14 +23,43 @@ from helpers import (
 
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
 
+# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
+# through to the manual ancestor-walk fallback) by shadowing `realpath` on
+# PATH -- same shim test_lib.py's TestLibRealpathM uses for the same
+# purpose. A non-`-m` invocation still execs the real binary, so the
+# fallback loop's own `realpath --` lookups keep working.
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+
+
+def _forced_fallback_path_env(tmp_path: Path) -> str:
+    """Build a PATH whose `realpath` is the forced-fallback shim above,
+    ahead of /usr/bin:/bin -- excludes any grealpath the host might also
+    have on a wider PATH, since `command -v grealpath` succeeding would
+    skip the fallback branch this exists to force."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "realpath"
+    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+    shim.chmod(0o755)
+    return f"{shim_dir}:/usr/bin:/bin"
+
 
 class TestAskReviewPermissions:
     @pytest.fixture(autouse=True)
     def _isolate_config_dir(self, tmp_path, monkeypatch):
-        """The hook also checks the resolved config-dir root (gap (c)), so every
-        test needs an ambient CLAUDE_CONFIG_DIR that can't coincide with a test
-        fixture path like /some/project/... A test that needs its own
-        CLAUDE_CONFIG_DIR passes extra_env, which overrides this default."""
+        """The hook also checks the resolved config-dir root (gap (c) — see
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Known gaps list), so every test needs an ambient CLAUDE_CONFIG_DIR
+        that can't coincide with a test fixture path like /some/project/...
+        A test that needs its own CLAUDE_CONFIG_DIR passes extra_env, which
+        overrides this default."""
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "unused-ambient-config-dir"))
 
     @pytest.mark.parametrize(
@@ -116,13 +146,29 @@ class TestAskReviewPermissions:
         ids=["double-slash", "dot-segment", "dotdot-segment", "case-variant"],
     )
     def test_aliased_or_case_varied_settings_path_asks(self, file_path):
-        """gap (h): the hook's regex used to run on the raw, case-sensitive
-        `file_path`. The alias decorations sit between `.claude` and
-        `settings` specifically, so the raw string doesn't already contain the
-        literal `.claude/settings` substring — a decoration elsewhere in the
-        path (e.g. before `.claude`) would pass even without normalization,
-        since the substring survives intact."""
+        """Pins that the hook's regex is case-insensitive and
+        alias-normalized (gap (h)): a doubled slash, `.`/`..` segment, or a
+        case variant still asks. The alias decorations sit between `.claude`
+        and `settings` specifically, so the raw string doesn't already
+        contain the literal `.claude/settings` substring — a decoration
+        elsewhere in the path (e.g. before `.claude`) would pass even
+        without normalization, since the substring survives intact."""
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
+
+    def test_aliased_nested_settings_path_stays_allowed(self):
+        """Allow-path pairing for the alias/case-normalization arm above: a
+        `.`-segment decoration still routes through `_lib_realpath_m`
+        normalization, but the nested `settings/x.json` shape it resolves to
+        is legitimately excluded by the `[^/]*` boundary.
+        test_non_settings_paths_allowed already excludes this shape on the
+        raw path; this exercises the same exclusion after normalization."""
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input("/some/project/.claude/./settings/x.json"),
+            )
+            == "allow"
+        )
 
     def test_settings_path_through_symlinked_claude_ancestor_asks(self, tmp_path):
         """Regression control: _lib_realpath_m follows symlinks even under
@@ -138,6 +184,26 @@ class TestAskReviewPermissions:
         (project_dir / ".claude").symlink_to(real_target, target_is_directory=True)
         file_path = project_dir / ".claude" / "settings.json"
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(str(file_path))) == "ask"
+
+    def test_settings_path_through_symlinked_claude_ancestor_allow_control(self, tmp_path):
+        """Allow-path pairing for the regression control above: the same
+        symlinked-`.claude`-ancestor construction, but a filename that still
+        reaches `_lib_realpath_m` and the anchored regex instead of exiting
+        at the cheap prefilter. `old-settings-archive.json` contains
+        "settings" and ends `.json`, so it passes the `*settings*.json`
+        prefilter. Its basename doesn't start with "settings", so the
+        anchored `settings[^/]*\\.json$` match fails both before and after
+        symlink resolution. A plain non-settings filename like CLAUDE.md
+        would instead exit at the prefilter without ever calling
+        `_lib_realpath_m`, so it wouldn't prove the symlink resolution isn't
+        over-firing."""
+        real_target = tmp_path / "dotfiles" / "claude"
+        real_target.mkdir(parents=True)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".claude").symlink_to(real_target, target_is_directory=True)
+        file_path = project_dir / ".claude" / "old-settings-archive.json"
+        assert run_hook(REVIEW_PERMS_HOOK, edit_input(str(file_path))) == "allow"
 
     def test_aliased_path_at_config_dir_root_asks(self, tmp_path):
         """Combines gap (h) and gap (c): an aliased path reaching a settings
@@ -201,6 +267,48 @@ class TestAskReviewPermissions:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "config_dir_name, near_miss_dir_name",
+        [
+            ("work+2024", "workk2024"),
+            ("work*2024", "wor2024"),
+            ("work?2024", "wor2024"),
+            ("work{1,2}2024", "workk2024"),
+            ("work|2024", "workx2024"),
+        ],
+        ids=["plus", "star", "question-mark", "brace-interval", "pipe"],
+    )
+    def test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators(
+        self, tmp_path, config_dir_name, near_miss_dir_name
+    ):
+        """Extends the dot-escaping test above to the escape class's other
+        members (`s/[.[\\*^$()+?{|]/\\&/g`): `+` (the hook's own comment's
+        motivating `work+2024` case), `*`, `?`, `{}` interval syntax, and `|`
+        alternation. Each near-miss directory name is the string an
+        unescaped interpretation of the metacharacter would incorrectly
+        match against the fixed config-dir pattern -- e.g. unescaped `+`
+        (one-or-more) would match `workk2024` against a `work+2024` pattern,
+        which the escaped literal `+` correctly rejects."""
+        config_dir = tmp_path / config_dir_name
+        exact_match_path = config_dir / "settings.json"
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(str(exact_match_path)),
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "ask"
+        )
+        near_miss_path = tmp_path / near_miss_dir_name / "settings.json"
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(str(near_miss_path)),
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
     def test_config_dir_resolution_failure_falls_through_to_allow(self, tmp_path):
         """Pins the hook's own `CONFIG_DIR=... || CONFIG_DIR=""` fallback when
         `_lib_config_dir` itself fails (CLAUDE_CONFIG_DIR empty and HOME
@@ -213,6 +321,51 @@ class TestAskReviewPermissions:
                 extra_env={"CLAUDE_CONFIG_DIR": "", "HOME": ""},
             )
             == "allow"
+        )
+
+    def test_partial_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks(self, tmp_path):
+        """ask-review-permissions.sh:61-72 documents that when only one of
+        the two `_lib_realpath_m` calls (FILE_PATH's or CONFIG_DIR's)
+        succeeds, the hook falls back to comparing the raw file path against
+        the raw config dir rather than mixing a normalized side with a raw
+        one. This forces exactly that partial failure: FILE_PATH's own call
+        fails on a dangling symlink, the same failure shape test_lib.py's
+        TestLibRealpathM pins for _lib_realpath_m's manual fallback loop.
+
+        CONFIG_DIR's own call succeeds, but from a raw string decorated with
+        a `/./` segment that `_lib_realpath_m` collapses away, so its
+        normalized form differs from its raw form as a string. That
+        difference is what makes the both-succeed guard load-bearing here: a
+        guard that used each side's own normalized-or-raw value
+        independently, instead of requiring both sides to succeed before
+        using either normalized form, would compare the raw file path
+        against CONFIG_DIR's *normalized* form and no longer match, since
+        the raw file path still carries the `/./` segment. Both calls are
+        routed through the manual fallback loop by a PATH-shimmed `realpath`
+        that disables the native `-m` fast path, the same technique
+        test_lib.py's forced-fallback shim uses.
+
+        The raw file path is built from the same decorated CONFIG_DIR string
+        plus `/settings.json`, so the raw-vs-raw comparison the guard's else
+        branch performs still asks."""
+        config_dir_real = tmp_path / "claude-accounts" / "work"
+        config_dir_real.mkdir(parents=True)
+        config_dir_raw = f"{config_dir_real.parent}/./work"
+        file_path_raw = f"{config_dir_raw}/settings.json"
+        # dangling: _lib_realpath_m fails on FILE_PATH only. Pathlib collapses the
+        # "/./" segment on construction, but the kernel resolves it identically, so
+        # this creates the symlink at the same real location config_dir_real names.
+        Path(file_path_raw).symlink_to(config_dir_real / "does-not-exist")
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(file_path_raw),
+                extra_env={
+                    "CLAUDE_CONFIG_DIR": config_dir_raw,
+                    "PATH": _forced_fallback_path_env(tmp_path),
+                },
+            )
+            == "ask"
         )
 
     def test_ask_reason_names_allow_deny_default_mode_and_review_skill(self):

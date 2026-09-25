@@ -2,6 +2,15 @@
 # hook-class: informational
 # Gate: ask before editing .claude/settings*.json.
 #
+# Matches three shapes:
+# - a literal `.claude/settings*.json` substring
+# - that same shape after case-folding and `_lib_realpath_m` alias
+#   normalization, closing gap (h) (see
+#   docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+#   Known gaps list)
+# - a settings file at the resolved config-dir root with no `.claude/`
+#   segment, closing gap (c) (same doc)
+#
 # Why: settings.json edits that touch permissions.allow are security-sensitive
 # and deserve a /review-permissions pass. A precise "does this edit touch
 # permissions.allow" heuristic is fuzzy — the hook only sees new content, not
@@ -16,7 +25,7 @@ if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-# Unlike require-worktree-for-file-writes.sh's parse-or-deny, an empty $TOOL here (e.g. a jq failure) falls through to allow, not deny.
+# Unlike require-worktree-for-file-writes.sh's _lib_parse_tool_input_or_deny, an empty $TOOL here (e.g. a jq failure) falls through to allow, not deny.
 TOOL=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/null)
 
 case "$TOOL" in
@@ -36,7 +45,7 @@ if printf '%s\n' "$FOLDED_RAW_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; 
 fi
 
 # Cheap prefilter before paying for realpath: neither remaining arm can ever match
-# unless the basename looks like a settings file, so every other edit exits here
+# unless the path looks like a settings file, so every other edit exits here
 # instead of spawning realpath subprocesses on every Edit/Write/MultiEdit in every session.
 if [ "$MATCHED" -eq 0 ]; then
   case "$FOLDED_RAW_PATH" in
@@ -73,6 +82,9 @@ if [ "$MATCHED" -eq 0 ]; then
           # Escaping every ERE metacharacter is required for correctness, not just
           # hardening: an unescaped legitimate config-dir segment like `work+2024` would
           # otherwise reach grep -E as a malformed pattern and silently fail to match.
+          # DEFER: `[ \ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
+          # are session-level trusted config rather than attacker-controlled input. Of these,
+          # `(`/`)` are the most practically plausible to hit in a real config-dir name (e.g. "Work (2024)").
           # shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
           FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[.[\*^$()+?{|]/\\&/g')
           if printf '%s\n' "$COMPARE_PATH" | grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$"; then
