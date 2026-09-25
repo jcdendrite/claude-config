@@ -174,6 +174,17 @@ _lib_realpath_m() {
   done
 }
 
+# Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
+# Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
+# The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
+# `local LC_ALL=C` is not used because its restore of the caller's locale was not verified on bash 4.x.
+_lib_passes_path_char_allowlist() (
+  LC_ALL=C
+  case "${1-}" in
+    '' | *[!A-Za-z0-9._/@+-]*) exit 1 ;;
+  esac
+)
+
 # _lib_advance_offset_past_complete_lines TRANSCRIPT OFFSET CURRENT_SIZE
 # Prints the resume-from byte offset, stopping before any trailing
 # partially-written line — shared mid-write-safety helper for hooks that scan
