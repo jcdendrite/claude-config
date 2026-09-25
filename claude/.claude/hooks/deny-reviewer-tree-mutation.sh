@@ -60,7 +60,8 @@
 #   - The Bash arm denies only the shapes this header names, so any other
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
 #     interpreter write such as `python3 -c`, a tool's own output flag) is
-#     not inspected, and GH-1103 tracks the structural fix.
+#     not inspected.
+#     GH-1103 tracks the structural fix for this closed enumeration.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
 #     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
 #     fragment's sole or first command; a target behind a bare `&`
@@ -166,7 +167,7 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to eval
 # review-only set pass through unconditionally regardless of tool or command.
 _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
-SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Do not retry a denied write through a script, another command form, or another tool. Use Read, Grep, or Glob for a read the hook misjudges. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
+SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
 # Local to this hook, not _lib.sh: this -i-prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.

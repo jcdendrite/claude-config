@@ -911,26 +911,29 @@ class TestCisoReviewerSecurityBulletsPin:
         )
 
 
-# Pinned verbatim in each persona's Scratch execution section and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
+# The next four sentences are pinned verbatim in each persona's Scratch execution section
+# and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
 SCRATCH_LINK_SENTENCE = (
     "A write through a symlink or hard link changes the linked file, "
     "wherever it lives, so a /tmp path can still change a file outside /tmp."
 )
 
-# Pinned verbatim in each persona's Scratch execution section and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
 SCRATCH_NEW_NAME_SENTENCE = (
     "Never overwrite or replace an existing path, even one you created; "
     "write a new file under a new name instead."
 )
 
+SCRATCH_NO_RETRY_SENTENCE = (
+    "Do not retry any other denied action through a script, another command "
+    "form, or another tool."
+)
+
+SCRATCH_READ_TOOL_SENTENCE = "Use Read, Grep, or Glob for a read the hook misjudges."
+
 # Each incident-critical rule of the Scratch execution section, pinned verbatim.
 # The byte-identical test only catches divergence between personas, so these
 # catch a rule deleted from every persona at once.
 _SCRATCH_RULE_SENTENCES = {
-    "no-retry": (
-        "Never retry the denied action through a script, another command form, "
-        "or another tool."
-    ),
     "variable-path-denial-is-not-a-retry": (
         "A denial for an unresolved variable in a /tmp path is fixed by "
         "spelling the path out literally, per the next rule, and is not a "
@@ -946,6 +949,14 @@ _SCRATCH_RULE_SENTENCES = {
     "never-create-a-link": "Never create a link.",
     "plain-cp-only": (
         "The only sanctioned copy is plain `cp <file> <new-name>` with no options."
+    ),
+    "non-file-effects-bound": (
+        "and they bind non-file effects too: network egress, credential or "
+        "environment reads, signals to other processes, and unbounded CPU or "
+        "memory use."
+    ),
+    "read-only-exemption-bare-command": (
+        "but only as the bare command with no redirect and no output flag"
     ),
     "home-directory-writes": (
         "Run no program that writes through your home directory or another "
@@ -966,9 +977,14 @@ _CISO_NO_LIVE_ATTACK_SENTENCE = (
 )
 
 _CISO_TRACING_RECONCILIATION_SENTENCES = (
-    "Feeding a crafted input to the code under review and reading its "
-    "verdict is tracing, and follows `## Scratch execution`. Probing a "
-    "scratch copy of a hook or gate is tracing, never the live one."
+    "Feeding a crafted input to code under review and reading its verdict "
+    "is tracing, and follows `## Scratch execution`, only when every effect "
+    "of that code is a returned verdict: no network, no process or "
+    "environment access, no unbounded resource use, and no write to real "
+    "state such as a path derived from the config directory. Probing a "
+    "scratch copy of a hook or gate is tracing on the same condition, never "
+    "the live one. Any other code under review is never executed; record "
+    "the intended check instead."
 )
 
 # Any reviewer holding Bash carries the Scratch execution section. Derived from
@@ -1022,6 +1038,21 @@ class TestScratchExecutionSection:
             "Bash; a persona that lost it belongs in DIFF_INPUT_NO_BASH_AGENTS."
         )
 
+    def test_every_bash_holding_review_only_agent_carries_the_section(self):
+        # Built-in agents such as Plan have no file and stay outside the section.
+        missing = [
+            name
+            for name in _review_only_agents()
+            if (AGENTS_DIR / f"{name}.md").exists()
+            and "Bash" in (parse_frontmatter(AGENTS_DIR / f"{name}.md").get("tools") or "")
+            and f"{name}.md" not in SCRATCH_SECTION_AGENTS
+        ]
+        assert not missing, (
+            f"Bash-holding members of _LIB_REVIEW_ONLY_AGENTS (_lib.sh) outside "
+            f"SCRATCH_SECTION_AGENTS: {missing}. Add the '## Scratch execution' "
+            "section to each and list it in CANARY_AGENTS."
+        )
+
     @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS[1:])
     def test_section_byte_identical_to_canonical(self, name):
         canonical_name = SCRATCH_SECTION_AGENTS[0]
@@ -1045,6 +1076,14 @@ class TestScratchExecutionSection:
             f"{name}: Scratch execution section is missing the new-name "
             f"sentence verbatim:\n{SCRATCH_NEW_NAME_SENTENCE!r}"
         )
+        assert SCRATCH_NO_RETRY_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the no-retry "
+            f"sentence verbatim:\n{SCRATCH_NO_RETRY_SENTENCE!r}"
+        )
+        assert SCRATCH_READ_TOOL_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the read-tool "
+            f"sentence verbatim:\n{SCRATCH_READ_TOOL_SENTENCE!r}"
+        )
 
     @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
     @pytest.mark.parametrize("rule", _SCRATCH_RULE_SENTENCES)
@@ -1057,7 +1096,10 @@ class TestScratchExecutionSection:
 
     @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
     def test_intro_carries_pointer(self, name):
-        assert _SCRATCH_EXECUTION_POINTER in (AGENTS_DIR / name).read_text(), (
+        # The intro is the body between the frontmatter and the first "## " heading.
+        body = (AGENTS_DIR / name).read_text().split("\n---\n", 1)[1]
+        intro = body.split("\n## ", 1)[0]
+        assert _SCRATCH_EXECUTION_POINTER in intro, (
             f"{name}: intro is missing the pointer to '## Scratch execution' "
             f"verbatim:\n{_SCRATCH_EXECUTION_POINTER!r}"
         )
@@ -1066,7 +1108,8 @@ class TestScratchExecutionSection:
     def test_no_copy_into_tmp_sanction_wording(self, name):
         path = AGENTS_DIR / name
         assert "copy the file into" not in path.read_text(), (
-            f"{name}: carries the superseded 'copy the file into' /tmp sanction."
+            f"{name}: carries a 'copy the file into' /tmp sanction; the only "
+            "sanctioned copy is plain `cp <file> <new-name>`."
         )
         section = self._extract_scratch_execution_section(path)
         match = _TMP_COPY_SANCTION_PATTERN.search(section)

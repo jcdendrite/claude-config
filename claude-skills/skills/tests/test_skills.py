@@ -4705,6 +4705,24 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     assert "page onward with `offset` until one doesn't" in reviewer_body
 
 
+def test_claude_hook_review_section10_handoff_rules_present() -> None:
+    """Section 10 hands the reviewers a hook path plus its diff, never a branch
+    or range name, and says so when the diff is unavailable."""
+    skill_md_path = _skill_file("claude-hook-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    section_start, section_end = _section_between(
+        lines, "## 10. Operational-footprint escalation", skill_md_path
+    )
+    section_text = "".join(lines[section_start:section_end])
+    for literal in (
+        "Never pass a branch or range name",
+        "tell the reviewer the diff is unavailable instead of passing the path alone",
+    ):
+        assert literal in section_text, (
+            f"{skill_md_path}: section 10 no longer carries the exact literal {literal!r}"
+        )
+
+
 def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> None:
     """The comment-discipline-reviewer diff-artifact-resolution procedure
     lives in its own subsection directly below the Change-type table, not

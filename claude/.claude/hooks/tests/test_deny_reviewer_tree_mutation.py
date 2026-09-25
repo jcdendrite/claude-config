@@ -23,14 +23,11 @@ from .test_agent_roster import (
     CANARY_AGENTS,
     SCRATCH_LINK_SENTENCE,
     SCRATCH_NEW_NAME_SENTENCE,
+    SCRATCH_NO_RETRY_SENTENCE,
+    SCRATCH_READ_TOOL_SENTENCE,
 )
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
-
-# Pinned verbatim in SANCTIONED_ALTERNATIVE. The persona-side counterpart is
-# _SCRATCH_RULE_SENTENCES["no-retry"] in test_agent_roster.py.
-_NO_RETRY_SENTENCE = "Do not retry a denied write through a script, another command form, or another tool."
-
 
 @pytest.fixture
 def repo_ignoring_agent_reviews(tmp_path):
@@ -128,7 +125,8 @@ class TestFileWriteTools:
         assert reason is not None
         assert SCRATCH_LINK_SENTENCE in reason, "denial reason lost the link-hazard sentence"
         assert SCRATCH_NEW_NAME_SENTENCE in reason, "denial reason lost the new-name sentence"
-        assert _NO_RETRY_SENTENCE in reason, "denial reason lost the no-retry sentence"
+        assert SCRATCH_NO_RETRY_SENTENCE in reason, "denial reason lost the no-retry sentence"
+        assert SCRATCH_READ_TOOL_SENTENCE in reason, "denial reason lost the read-tool sentence"
         assert "agent-reviews" in reason, "denial reason lost the findings-file path"
         assert "copy the file" not in reason, "denial reason sanctions a /tmp copy"
 
@@ -864,6 +862,43 @@ class TestKnownGapBypass:
     def test_reviewer_write_through_directory_symlink_allowed(self):
         assert run_hook(HOOK, bash_input("ln -s src /tmp/d", agent_type="ciso-reviewer")) == "allow"
         assert run_hook(HOOK, write_input("/tmp/d/file", agent_type="ciso-reviewer")) == "allow"
+        assert run_hook(HOOK, bash_input("cat > /tmp/d/file", agent_type="ciso-reviewer")) == "allow"
+
+
+class TestScratchDirectoryWorkflow:
+    """The persona scratch-execution workflow: a mktemp directory under /tmp,
+    then writes spelled out literally under it."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "mktemp -d /tmp/staff-sdet.XXXXXX",
+            "echo x > /tmp/staff-sdet.abc123/out.txt",
+            "cd /tmp/staff-sdet.abc123 && echo x > /tmp/staff-sdet.abc123/out.txt",
+            "git --no-optional-locks status",
+        ],
+        ids=[
+            "mktemp-directory",
+            "literal-tmp-write",
+            "literal-tmp-write-after-cd",
+            "git-no-optional-locks-status",
+        ],
+    )
+    def test_reviewer_scratch_workflow_command_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo x > $SCRATCH/out.txt",
+            "cd /tmp/staff-sdet.abc123 && echo x > out.txt",
+        ],
+        ids=["variable-target", "relative-target-after-cd"],
+    )
+    def test_reviewer_unliteral_write_target_denied_as_outside_tmp(self, command):
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "', which is outside /tmp." in reason
 
 
 class TestChainOperators:

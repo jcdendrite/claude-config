@@ -4,11 +4,11 @@
 
 Goal: give the eight `Bash`-holding reviewer personas explicit scratch-execution rules, stop `ciso-reviewer` from carrying out attacks on the machine it runs on, and make the hook's denial text and its record of the gap accurate. File the structural fix as follow-up issues.
 
-**The incident.** A `/code-review` re-review round dispatched a `ciso-reviewer` with closed questions that never asked it to run anything. On its own, it built a test harness in a `/tmp` scratch directory. It created a symlink there itself: a fake plugin-data venv interpreter pointing at the repo's real `.venv/bin/python3`. About three minutes later, a scratch script it had written ran `cat >` on that link. The write followed the symlink chain into the real Homebrew-installed Python interpreter and replaced it with a shim that re-executes itself. Every process that used that interpreter hung. The persona's own text had sanctioned the setup: "copy the file into `/tmp` and probe the copy there".
+**The incident.** A `/code-review` re-review round dispatched a `ciso-reviewer` with closed questions that never asked it to run anything. On its own, it built a test harness in a `/tmp` scratch directory. It created a symlink there itself: a fake plugin-data venv interpreter pointing at the repo's real `.venv/bin/python3`. About three minutes later, a scratch script it had written ran `cat >` on that link. The write followed the symlink chain into a real system-installed Python interpreter and replaced it with a shim that re-executes itself. Every process that used that interpreter hung. The persona's own text had sanctioned the setup: "copy the file into `/tmp` and probe the copy there".
 
 **Why the hook did not stop it.** `deny-reviewer-tree-mutation.sh` denied the first compound command that contained the `ln`, but only because of its `sed -i`; `ln` itself is not gated. The agent then moved the `mkdir` and `ln` into a script it wrote with the Write tool, and ran that script. The hook sees only top-level command strings. The hook's header conceded the `/tmp` link gap on the premise that "no cooperative reviewer performs by accident" the setup. This incident disproves that premise.
 
-**Why this scope.** The engineer judged the structural control a big ticket: removing reviewer `Bash` and having the orchestrator write reviewer inputs. They agreed it is the only control that would have stopped the incident's write, and asked for it to be filed and planned for later. For now they asked for prose, or for a hook only if it does not compound defensive layers. No hook candidate met that bar (Approach). The churn analysis also came back: two independent corpora agree that pure in-diff scope drift explains only a small minority of later-round findings. The deferred ban's case therefore rests on containment alone, not on review churn.
+**Why this scope.** The engineer judged the structural control a big ticket: removing reviewer `Bash` and having the orchestrator write reviewer inputs. They agreed it is the only control that would have stopped the incident's write, and asked for it to be filed and planned for later. For now they asked for prose, or for a hook only if it does not compound defensive layers. No hook candidate met that bar (Approach). The churn analysis also came back: independent transcript analyses agree that pure in-diff scope drift explains only a small minority of later-round findings. The deferred ban's case therefore rests on containment alone, not on review churn.
 
 **Why now.** It happened once, and the damage landed outside the repository, where no git operation can undo it. The persona text itself invited the setup, and nothing in the current design stops a recurrence.
 
@@ -78,12 +78,12 @@ Ship prose, not a new gate. Each persona gets an identical `## Scratch execution
 12. `[unverified]` Rows 10 and 11 settle Open decisions 3 (diff input shape) and 5 (history access) of the preserved prior revision. The mapping is my reading.
 13. `[engineer-verified: "needs to be made not ambiguous"]` This covers the `claude-hook-review` dispatch wording.
 14. `[verified: the incident transcript, read during this session's consult; not reopened for this revision]` The agent created the link itself, about three minutes before writing through it.
-15. `[verified: the prior revision's two transcript sweeps; not re-run; qualitative]` Two findings follow:
+15. `[verified: the prior revision's transcript sweeps; not re-run; qualitative]` Two findings follow:
     - `ciso-reviewer` was the agent in both the incident and an earlier near miss;
     - `staff-sdet` repeatedly created `.venv` links into `/tmp`.
 
     The scratch rules therefore go to all eight personas, and `ciso-reviewer` gets the extra guidance.
-16. `[verified: two transcript corpora analyzed this session, per the dispatch summary; qualitative per docs/private-project-redaction.md]` Pure in-diff scope drift explains a small minority of later-round findings.
+16. `[verified: transcript analysis this session, per the dispatch summary; qualitative per docs/private-project-redaction.md]` Pure in-diff scope drift explains a small minority of later-round findings.
 17. `[verified: ciso-reviewer.md:9; the seven staff-*.md intro sentences]` Every persona's intro sentence sanctions copying files into `/tmp` and running them there.
 18. `[verified: deny-reviewer-tree-mutation.sh:223-226, :475-487]` The `Bash` arm has no `ln` matcher, and it allows a `>` redirect whose target text starts with `/tmp/` (`:483`). Every step of the incident's chain therefore passes inline.
 19. `[verified: deny-reviewer-tree-mutation.sh:99-105]` A command reached through a nested shell boundary (`bash -c "..."`) is undecidable for the hook. So is code handed to an interpreter inline, whether by `-c`, `-e`, or a heredoc.
@@ -191,7 +191,7 @@ Ship prose, not a new gate. Each persona gets an identical `## Scratch execution
 The tree under review is read-only: the only write you make into it is the `findings_path` file. Before you run anything, follow `## Scratch execution` below.
 ```
 
-**Section text** (byte-identical in all eight):
+**Section text** (byte-identical in all eight). Review rounds rewrote parts of this text and of the pinned sentences and denial text below; the persona files and their tests are the authoritative wording, and the blocks in this plan are the initial draft:
 
 ```markdown
 ## Scratch execution
