@@ -131,6 +131,14 @@
 #   body-source paths after the unparseable token are never read.
 # - The gate's scope comes from the hook process's cwd, so a chained `cd`
 #   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
+# - The Slack-channel shape accepts digits, `s`, then end of line or any
+#   non-name character (`#<n>s`, `#<n>s.`), because the quote-stripped
+#   copy cannot tell it from a possessive issue reference.
+# - Under a non-C collation locale, a digit-led name whose first non-digit
+#   collates between `r` and `t` also passes the Slack-channel shape.
+# - A possessive issue reference still denies when the quote-strip joins a
+#   name character onto its `s`, such as an escape like `\n` or a hyphen
+#   or underscore continuation.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------

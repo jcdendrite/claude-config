@@ -159,7 +159,7 @@ Flag these on a hook PR:
 
 ## 10. Operational-footprint escalation
 
-After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pass the hook script or diff (not this review's output — each agent reads the source fresh) with these specific questions:
+After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pass two separate artifacts. The first is the hook script's path. The second, for a change to an existing hook, is its diff: the diff-file path you were handed, if any, otherwise the output of `git diff HEAD -- <hook path>` as literal text. If that command prints nothing (the change is already committed), tell the reviewer the diff is unavailable instead of passing the path alone. Never pass a branch or range name, and never this review's output — each agent reads the source fresh. Ask it these questions:
 
 - Does the per-fire latency hold across all system states (daemon present, absent, slow, unresponsive)?
 - Are external commands (`docker`, `systemctl`, `curl`, package managers, sockets) guarded by an explicit timeout?
@@ -168,4 +168,4 @@ After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pa
 
 Return ≤2K tokens of structured findings keyed to these questions; if over budget, prioritize by severity and note omissions. After the agent returns, fold its findings into the review output.
 
-Also spawn `ciso-reviewer` when the hook gates a security boundary — auth checks, secrets, env-var reads, private-data redaction, or credential handling. Pass the same source and ask: is the security boundary correctly enforced, and could sensitive data leak via the hook's stdout or failure path? Apply the same ≤2K-token constraint.
+Also spawn `ciso-reviewer` when the hook gates a security boundary — auth checks, secrets, env-var reads, private-data redaction, or credential handling. Pass the same path, and the same diff when you passed one, and ask: is the security boundary correctly enforced, and could sensitive data leak via the hook's stdout or failure path? Apply the same ≤2K-token constraint.
