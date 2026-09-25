@@ -522,10 +522,16 @@ def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None
     check passes -- evaluated in the table order documented in
     docs/transcript-analysis.md's Pooled mode subsection.
 
-    roots=None skips the last, root-count clause: the pre-
-    resolve_scan_roots call site in cmd_review_round_cost (and any direct
-    caller of _render_pooled_block, this module's own tests included) may
-    not have roots in hand yet.
+    roots=None, or omitting roots entirely, always skips the last,
+    root-count clause. This function itself never fails closed on a
+    missing roots argument. That sentinel is reserved for
+    cmd_review_round_cost's own layer-1 call, which runs before
+    resolve_scan_roots and so genuinely has no roots yet. Every other
+    caller is responsible for coercing its own roots to an already-resolved
+    list, even an empty one, before calling in. _render_pooled_block's own
+    defense-in-depth call does this (see that function's docstring): it
+    fails the floor instead of silently skipping it, but that fail-closed
+    behavior belongs to its wrapper, not to this function.
 
     --this-repo is checked in the flag block, not folded into the
     root-count clause below, so it always fires first on a single-root
@@ -561,7 +567,7 @@ def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None
             "review-round-cost --pooled refuses --this-repo: not implemented as a pooled"
             " scope -- a product decision, not a policy bar." + _POOLED_REFUSAL_DOC_POINTER
         )
-    if roots is not None and len(roots) == 1:
+    if roots is not None and len(roots) < 2:
         return (
             "review-round-cost --pooled requires more than one resolved scan root: a"
             " single-account figure is a per-account figure. Declare another account in"
@@ -711,9 +717,11 @@ def _render_pooled_block(
     Re-derives cmd_review_round_cost's own refusal check as defense in
     depth: every direct caller of this function, including this module's
     own tests, bypasses that CLI-boundary check, so this call is the only
-    enforcement a direct caller ever sees.
+    enforcement a direct caller ever sees. Passes `roots or []`, never
+    `roots` bare. This makes a caller that passes None or an empty
+    sequence fail the root-count floor instead of silently skipping it.
     """
-    refusal = _pooled_scope_refusal(args, roots=roots)
+    refusal = _pooled_scope_refusal(args, roots=roots or [])
     if refusal is not None:
         print(refusal, file=sys.stderr)
         sys.exit(2)
@@ -730,7 +738,13 @@ def _render_pooled_block(
         by_branch[entry["branch_key"]].append(entry)
 
     per_branch: list[_PooledBranchTotals] = []
-    for branch_key, branch_rounds in by_branch.items():
+    # Sorted so bootstrap resampling draws from a content-derived order,
+    # never raw rounds-list (file-scan) order. Mirrors the non-pooled
+    # renderer's own sorted(by_branch, key=_branch_label) a few hundred
+    # lines above. See _bootstrap_share_intervals's own reproducibility
+    # comment for why positional draw order matters here.
+    for branch_key in sorted(by_branch, key=lambda k: (str(k[0]), k[1])):
+        branch_rounds = by_branch[branch_key]
         skill_round_counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
         skill_round_dollars: dict[str, float] = dict.fromkeys(REVIEW_SKILLS, 0.0)
         for e in branch_rounds:
@@ -772,9 +786,9 @@ def _render_pooled_block(
 
 
 _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
-# declared_transcript_roots()'s own per-line warning (_config_dir.py's
-# declared_roots_matching, warn_prefix="declared_transcript_roots"), raised
-# by scope.resolve_scan_roots() before either refusal call in
+# declared_transcript_roots()'s own per-line warning
+# (_config_dir.py's declared_roots_matching, warn_prefix="declared_transcript_roots").
+# It is raised by scope.resolve_scan_roots() before either refusal call in
 # cmd_review_round_cost runs. The line-index it names is still a lower bound
 # on the declared-roots file's size, so it is root-count-revealing too.
 _DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared root \d+ unreadable$")
@@ -866,11 +880,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
     # --pooled routes resolve_scan_roots through the same diagnostic filter
-    # as compute_review_round_costs below: declared_transcript_roots()'s own
-    # "declared root N unreadable" warning (raised here, before either
-    # refusal call has a roots-dependent chance to fire) is root-count-
-    # revealing too, on both the still-poolable and the single-root-refusal
-    # path.
+    # as compute_review_round_costs below. declared_transcript_roots()'s own
+    # "declared root N unreadable" warning is raised here, before either
+    # refusal call fires, and is root-count-revealing too. This applies on
+    # both the still-poolable and the single-root-refusal path.
     roots = (
         _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
         if pooled
@@ -894,9 +907,9 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     session_iter, scope_label = scope._resolve_project_scope(args, "review-round-cost", roots=roots)
     if not pooled:
         # --pooled prints its own header (_pooled_resolved_scope_header)
-        # instead, which never discloses the resolved root count; this
+        # instead, which never discloses the resolved root count. This
         # unconditional call is skipped so the root-count-bearing header
-        # does not print a second time ahead of it.
+        # does not also print, a second time, ahead of it.
         scope.print_resolved_scope("review-round-cost", scope_label, roots)
 
     resolved_roots = [root.resolve() for root in roots] if multi_root else None

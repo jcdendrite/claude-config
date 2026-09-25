@@ -1673,8 +1673,34 @@ class TestCmdReviewRoundCostPooled:
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "account-" not in out
-        assert re.search(r"code-review\s+50\.0% \(95% CI", out)
-        assert re.search(r"plan-review\s+50\.0% \(95% CI", out)
+
+        # One code-review round, one plan-review round, each its branch's
+        # only round. skill_rounds:* depends only on round_count and
+        # skill_round_counts, not on dollar amounts, so this pair is
+        # numerically equivalent to the fixture's real per-branch totals
+        # for the two keys checked below. Dollar fields are deliberately
+        # asymmetric (3.0/7.0) so a skill_spend:* line can never coincide
+        # with the skill_rounds:* line this test means to match.
+        branch_a = review_rounds._PooledBranchTotals(
+            round_dollars=3.0, agent_dollars=0.0, branch_dollars=3.0,
+            skill_round_counts={"code-review": 1, "plan-review": 0, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 3.0, "plan-review": 0.0, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+        )
+        branch_b = review_rounds._PooledBranchTotals(
+            round_dollars=7.0, agent_dollars=0.0, branch_dollars=7.0,
+            skill_round_counts={"code-review": 0, "plan-review": 1, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 0.0, "plan-review": 7.0, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+        )
+        intervals = review_rounds._bootstrap_share_intervals([branch_a, branch_b])
+        for skill, key in (
+            ("code-review", "skill_rounds:code-review"), ("plan-review", "skill_rounds:plan-review"),
+        ):
+            point, lo, hi = intervals[key]
+            assert point == 50.0
+            expected_line = f"    {skill:<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
+            assert expected_line in out
 
     def test_refuses_branches_flag(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -1752,6 +1778,37 @@ class TestCmdReviewRoundCostPooled:
             review_rounds._render_pooled_block(args, roots, "*", [], {})
         assert exc.value.code == 2
 
+    def test_render_pooled_block_called_directly_with_none_roots_still_refuses(self):
+        """The roots=None sentinel means "defer" only at
+        cmd_review_round_cost's own layer-1, pre-resolution call. A direct
+        caller reaching _render_pooled_block's own layer-2 defense-in-depth
+        call with roots=None must still fail the root-count floor, not
+        silently skip it the way the layer-1 sentinel does."""
+        args = _review_round_cost_args(pooled=True)
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(args, None, "*", [], {})
+        assert exc.value.code == 2
+
+    def test_render_pooled_block_called_directly_with_empty_roots_still_refuses(self):
+        """Same floor as the None case above, reached instead with an
+        empty (not None) roots list -- the other bypass shape closed
+        alongside it."""
+        args = _review_round_cost_args(pooled=True)
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(args, [], "*", [], {})
+        assert exc.value.code == 2
+
+    def test_render_pooled_block_called_directly_with_single_root_still_refuses(self):
+        """Same floor with a genuinely single-element roots list -- the
+        realistic shape the root-count clause was always meant to catch,
+        pinned here at the direct-call layer specifically. The clause only
+        inspects len(roots) and returns before any filesystem access, so a
+        fabricated path stands in for a real declared root."""
+        args = _review_round_cost_args(pooled=True)
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(args, [Path("/fake/root")], "*", [], {})
+        assert exc.value.code == 2
+
     def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
         """Two real `python3` subprocesses, not two in-process calls, since
         PYTHONHASHSEED is fixed per process; four branches (not two) to
@@ -1812,6 +1869,42 @@ class TestCmdReviewRoundCostPooled:
         assert second.returncode == 0, second.stderr
         assert first.stdout == second.stdout
 
+    def test_bootstrap_ci_bounds_are_invariant_to_branch_insertion_order(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """_bootstrap_share_intervals resamples per_branch positionally, so
+        an unsorted by_branch construction would let two runs over the
+        same branch content in different insertion orders print different
+        CI bounds. _render_pooled_block sorts by_branch into per_branch
+        before bootstrapping specifically to rule that out. Four branches
+        (not two) widen the resample-index space enough that a coincidental
+        pass can't mask a reordering regression here, the way the
+        cross-process subprocess test above does for hash-seed variance.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-c"), "skill": "ready-for-review",
+             "main_dollars": 0.35, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-d"), "skill": "code-review",
+             "main_dollars": 0.15, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 0.40, (1, "feat-b"): 1.00, (0, "feat-c"): 0.55, (1, "feat-d"): 0.30,
+        }
+        args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        forward_out = capsys.readouterr().out
+
+        review_rounds._render_pooled_block(args, roots, "*", list(reversed(rounds)), branch_totals)
+        reversed_out = capsys.readouterr().out
+
+        assert forward_out == reversed_out
+
     def test_point_estimate_is_share_of_sums_not_mean_of_per_branch_shares(
         self, tmp_path, monkeypatch, capsys,
     ):
@@ -1847,12 +1940,17 @@ class TestCmdReviewRoundCostPooled:
         share_of_sums = round(100 * (0.20 + 0.60) / (0.40 + 1.00), 1)  # 57.1 -- correct
         mean_of_shares = round((50.0 + 60.0) / 2, 1)  # 55.0 -- the regression this fixture rules out
         assert share_of_sums != mean_of_shares
-        match = re.search(r"inside round windows\s+(\d+\.\d)% \(95% CI (\d+\.\d)-(\d+\.\d)%\)", out)
-        assert match is not None
-        point = float(match.group(1))
-        assert point == share_of_sums
-        lo, hi = float(match.group(2)), float(match.group(3))
-        assert lo <= point <= hi
+
+        # This JSONL fixture's dollar amounts are numerically identical to
+        # _asymmetric_two_branch_pooled_totals's, in the same branch order.
+        # The real production bootstrap over that equivalent fixture
+        # therefore reproduces exactly what the CLI run above computed.
+        point, lo, hi = review_rounds._bootstrap_share_intervals(
+            _asymmetric_two_branch_pooled_totals()
+        )["spend_inside"]
+        assert round(point, 1) == share_of_sums
+        expected_line = f"    {'inside round windows':<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
+        assert expected_line in out
 
     def test_degenerate_single_branch_prints_too_few_branches_wording_with_no_digit(
         self, tmp_path, monkeypatch, capsys,
@@ -1943,7 +2041,7 @@ class TestCmdReviewRoundCostPooled:
     ):
         """Same ordering invariant as the test above, reached instead by
         declared_transcript_roots() dropping the sole declared entry as
-        invalid: its own "declared root N unreadable" diagnostic must not
+        invalid. Its own "declared root N unreadable" diagnostic must not
         leak the dropped entry's index on stderr either, on this same
         refuse-and-print-nothing path.
         """
