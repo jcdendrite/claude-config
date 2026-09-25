@@ -42,16 +42,18 @@
 #   conflicted SKILL.md leaves the index equal to HEAD, so a HEAD-relative
 #   prefilter would disarm on exactly the commit that discards upstream's
 #   reviewed content.
-# - Known gap: a conflict-free merge/cherry-pick/revert still reaches a
-#   commit with no gate firing at all.
+# - Known gap: a conflict-free merge/cherry-pick/revert still reaches a commit
+#   with no gate firing; see "Known gap: the ungated clean merge" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - The structural validator's path list excludes deletions by the diff's own status
 #   (`--diff-filter=d`), and a staged deletion reaches the marker check, which covers
 #   it through the base-relative hash.
 # - With a non-empty base, a HEAD-relative scan of the gated pathspecs
 #   (`git diff -G`, then `git grep` on the staged blobs) hard-denies a staged
 #   file that carries column-0 conflict-marker lines and whose staged change
-#   touches such a line: mid-merge the base tree holds conflict-marker blobs,
-#   so an unresolved file can read as already reviewed. See "Conflict-marker hard deny" in
+#   touches such a line.
+#   Mid-merge the base tree holds conflict-marker blobs, so an unresolved file
+#   can read as already reviewed; see "Conflict-marker hard deny" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Fail-closed denies, each rather than disarming or skipping the structural
 #   validator:
@@ -61,24 +63,18 @@
 #     index is corrupt, git still lists its name C-quoted, or its name does
 #     not survive argv normalization.
 # - Known gap: with neither timeout nor gtimeout on PATH, every _lib_capped
-#   site runs uncapped, and a stalled git then exits only via the harness's own
-#   hook timeout, which releases the commit (fail-open) rather than blocking it.
-#   The uncapped sites are:
-#   - the conflict-marker scan's two git calls.
-#   - the three staged-path listings.
-#   - the per-path `git show`.
-#   - the marker hash.
-#   - the validator.
-#   - the advisory corpus scan (_lib_capped_for 10).
-#   - the base resolution.
-# - Known gap: the validator reads each listed path's blob by re-resolving its name,
-#   so a hand-built index with aliased entry names leaves an invalid entry
+#   site runs uncapped and a stalled git releases the commit at the harness
+#   timeout; see "Latency" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+# - Known gap: the validator reads each listed path's blob by re-resolving its
+#   name, so a hand-built index with aliased entry names leaves an invalid entry
 #   unvalidated; see "Known residual: aliased index entries" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Known gap: an auto-merge that combines two valid gated files into one
-#   invalid tree is not caught here, since the structural validator only
-#   sees the base-relative path set -- CI catches this in claude-config
-#   itself, but plugin consumers get no compensating check.
+#   invalid tree escapes the structural validator, which sees only the
+#   base-relative path set; see "Known residual: the structural validator's
+#   auto-merge give-up" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 set -uo pipefail
 
 emit_deny() {

@@ -32,13 +32,27 @@ Mid-revert the exclusion buys the GH-1076 fix nothing anyway: a revert introduce
 
 ## The bracket: sampling the exclusion on both sides of the base computation
 
-The wrapper's exclusion decision and `_lib_gate_diff_base`'s own formula selection read the same mutable gitdir at different points in time, separated by real time and several `git` spawns. An exclusion sampled only *after* the base computation is a TOCTOU: a revert that starts before the wrapper's own check and ends (its `REVERT_HEAD` removed) before that trailing probe would have its subtraction tree printed as though it were an ordinary union base. `_lib_skill_review_diff_base` therefore brackets the `_lib_gate_diff_base` call: it samples `_lib_git_inprogress_state` once before the call and once after, excluding on either sample reading `revert`. A pre-sample reading no in-progress state returns 1 directly, without ever calling `_lib_gate_diff_base` or spawning `merge-tree --write-tree` — the same answer `_lib_gate_diff_base` itself would give on the identical resolved gitdir, just without paying for the six-git-process closure to reach it. A single state change across the call (e.g., a revert concluding in a second terminal mid-call) yields the conservative HEAD-relative answer — the safe direction, and the same answer the gate gives outside any in-progress state.
+The wrapper's exclusion decision and `_lib_gate_diff_base`'s own formula selection read the same mutable gitdir at different points in time. Real time and several `git` spawns separate the two reads.
+
+An exclusion sampled only *after* the base computation is a TOCTOU. A revert that starts before the wrapper's own check and ends (its `REVERT_HEAD` removed) before that trailing probe would have its subtraction tree printed as though it were an ordinary union base.
+
+`_lib_skill_review_diff_base` therefore brackets the `_lib_gate_diff_base` call. It samples `_lib_git_inprogress_state` once before the call and once after, and excludes on either sample reading `revert`.
+
+- A pre-sample reading no in-progress state returns 1 directly, without calling `_lib_gate_diff_base` or spawning `merge-tree --write-tree`.
+- That is the same answer `_lib_gate_diff_base` itself gives on the identical resolved gitdir, without the six-git-process closure to reach it.
+- A single state change across the call (a revert concluding in a second terminal mid-call) yields the conservative HEAD-relative answer.
+- That answer is the safe direction, and the same one the gate gives outside any in-progress state.
 
 The bracket is not a closed guarantee. `_lib_git_inprogress_state` is itself a short sequence of up to five file stats, not one atomic read. The pre-sample, `_lib_gate_diff_base`'s own internal probe, and the post-sample are each a sequence in time rather than an instant snapshot.
 
 The one residual shape that still yields a subtraction tree is a revert that both starts and ends *inside* the bracket's own window, while some other trusted state (merge, cherry-pick, or rebase) was already in progress at the pre-sample. That state's own marker must disappear and `REVERT_HEAD` appear before the internal probe, which then selects the subtraction formula against a genuine OID. `REVERT_HEAD` must then disappear again before the post-sample.
 
-The residual is dominated without needing any timing at all by the ungated clean merge (a conflict-free `git revert` reaches a commit with no gate firing, requiring no timing whatsoever; see "Known gap: the ungated clean merge" below) and by the forgeable anchors (a committer who can write into the gitdir, or who runs `git fetch . +<ref>:refs/remotes/origin/<default>` with porcelain alone, can plant an anchored `MERGE_HEAD` or forge the remote-tracking anchor outright, no race needed; see `merge-tree-base-recipe-for-gate-diff-base.md`). Its realistic reachability is honest concurrency in the same worktree — a `git revert --abort`/`--continue` in a second terminal, or an editor's git integration, firing inside the hook's own execution window — not an attacker racing the gate.
+Two other bypasses dominate the residual without needing any timing.
+
+- The ungated clean merge: a conflict-free `git revert` reaches a commit with no gate firing (see "Known gap: the ungated clean merge" below).
+- The forgeable anchors: a committer who can write into the gitdir can plant an anchored `MERGE_HEAD`, and one who runs `git fetch . +<ref>:refs/remotes/origin/<default>` with porcelain alone can forge the remote-tracking anchor. Neither needs a race (see `merge-tree-base-recipe-for-gate-diff-base.md`).
+
+The residual's realistic reachability is honest concurrency in the same worktree, not an attacker racing the gate. Examples are a `git revert --abort`/`--continue` in a second terminal, or an editor's git integration, firing inside the hook's own execution window.
 
 ## Rebase is inert in the ordinary case
 
@@ -94,6 +108,7 @@ Accepted residuals:
 - A merge in which upstream itself indents the marker lines is released, because the staged blob no longer carries a column-0 marker line.
 - A bare marker line ending in a carriage return (`<<<<<<<` then CR) does not match the scan. Git's own conflict output does not emit that shape.
 - A `conflict-marker-size` attribute on the path changes the marker width git writes, and the scan does not match that width.
+- The code-review gate consumes the same `_lib_gate_diff_base` tree through `_lib_code_review_marker_value` and carries the same hidden-conflict shape, but has no conflict-marker scan. That gate does not verify that conflicts are resolved, whether the merge is named by ref or by full OID. An unresolved conflict staged with `git add -A` after a merge named by full OID can therefore release that gate, and the marker's hash preimage is then the empty-base sentinel. `require-plan-review.sh` also consumes `_lib_gate_diff_base` and disarms on an empty base-relative active plan set, and its exposure has not been probed. This pre-dates this change and is not a regression. It is accepted here and not yet tracked; a follow-up issue is to be filed. See `merge-tree-base-recipe-for-gate-diff-base.md`.
 
 ## Latency
 
@@ -108,7 +123,11 @@ Base resolution makes up to 12 sequential capped calls. A cap hit at six of them
 
 The whole-hook worst case sums each capped site: ~70s base resolution, 2 x 7s conflict-marker scan calls, 3 x 7s listings, 12s structural validator (10s cap plus grace), 12s corpus-budget scan, 7s marker-hash diff, and 2 x 5s `_lib_jq` (input parse and deny encoding). That is ~146s, plus 7s per staged `SKILL.md` for its `git show`. It is an approximate upper bound that no run reaches, because a cap hit at a listing, `git show`, or validator site denies and exits early. It excludes the uncapped calls: the repo-root and hook-own-directory resolutions, the corpus `git ls-files`, and the `cwd` extraction.
 
+Without `timeout` or `gtimeout` on PATH, every `_lib_capped` site runs uncapped. A stalled git then holds the hook until the harness timeout below, which releases the commit rather than blocking it. The uncapped sites are the conflict-marker scan's two calls, the three staged-path listings, the per-path `git show`, the marker hash, the validator, the corpus-budget scan, and the base resolution.
+
 `plugins/skill-management/hooks/hooks.json` sets no `timeout`, so Claude Code's default of 600 seconds for command hooks applies, and a `PreToolUse` command hook that times out does not block the call ([hooks reference](https://code.claude.com/docs/en/hooks.md), Timeouts section). The sizing must therefore keep the worst case under 600s: ~146s + 7s x N stays below it for up to 64 staged `SKILL.md` files.
+
+The 64-file bound is conservative. A cap hit at a `git show` denies and exits, so a run that reaches the later sites completes every `git show` without a hit, at up to 5s each. That gives ~146s + 5s x N, which stays below 600s up to N = 90 (596s) and reaches 601s at N = 91.
 
 `scripts/marker.sh`'s `status` arm resolves the skill-review base separately from the shared `GATE_DIFF_BASE`, so mid-merge, cherry-pick, or rebase it repeats the 7-process resolution and its `merge-tree --write-tree` object write on every call. That cost is bounded by the same caps and is accepted.
 
@@ -118,13 +137,22 @@ The whole-hook worst case sums each capped site: ~70s base resolution, 2 x 7s co
 
 ## Known gap: the ungated clean merge
 
-A conflict-free `git merge`, `cherry-pick`, or `revert` still reaches a commit with no gate firing at all — `git merge`/`cherry-pick`/`revert` create the commit inside the initiating command itself, with no separate `git commit` tool call for any `PreToolUse` gate to see. This is load-bearing: it is the dominating bypass that makes this gate's disarm, and `_lib_gate_diff_base`'s forgeable anchors, admissible in the first place. A Bash-capable actor who wanted past `/skill-review` entirely never needed a forged base or a timing race — a clean merge already gets there with zero gates and no marker left behind. `git merge --continue`, `cherry-pick --continue`, `revert --continue`, and `rebase --continue` complete a resolved conflicted state the same way and also skip the gate, since the hook's regex matches only `git commit`.
+A conflict-free `git merge`, `cherry-pick`, or `revert` still reaches a commit with no gate firing at all. Each creates the commit inside the initiating command itself, with no separate `git commit` tool call for any `PreToolUse` gate to see.
+
+This gap is load-bearing: it is the dominating bypass that makes this gate's disarm, and `_lib_gate_diff_base`'s forgeable anchors, admissible in the first place. A Bash-capable actor who wanted past `/skill-review` entirely never needed a forged base or a timing race, because a clean merge already gets there with zero gates and no marker left behind.
+
+`git merge --continue`, `cherry-pick --continue`, `revert --continue`, and `rebase --continue` complete a resolved conflicted state the same way. They also skip the gate, since the hook's regex matches only `git commit`.
 
 ## The anchor is the fully-qualified remote-tracking ref
 
-`_lib_gate_diff_base` checks ancestry against `refs/remotes/origin/<default>`, not the short name `origin/<default>`, because git resolves a local branch or tag named `origin/<default>` ahead of the remote-tracking ref, so a local ref cannot supply the anchor; a direct write to `refs/remotes/origin/<default>` itself remains the accepted forged-anchor residual. That write needs no gitdir access: `git fetch . +<ref>:refs/remotes/origin/<default>` performs it with porcelain alone.
+`_lib_gate_diff_base` checks ancestry against `refs/remotes/origin/<default>`, not the short name `origin/<default>`. Git resolves a local branch or tag named `origin/<default>` ahead of the remote-tracking ref, so a local ref cannot supply the anchor.
 
-`_lib_default_branch_or_guess` still probes the short name `origin/<candidate>` when `origin/HEAD` is unset. That is intentional and a known gap for a follow-up: it returns only a branch name, and the gate's fully-qualified ancestry check then rejects a name whose remote-tracking ref does not exist, falling back to the `HEAD` anchor.
+A direct write to `refs/remotes/origin/<default>` itself remains the accepted forged-anchor residual. That write needs no gitdir access: `git fetch . +<ref>:refs/remotes/origin/<default>` performs it with porcelain alone.
+
+`_lib_default_branch_or_guess` still probes the short name `origin/<candidate>` when `origin/HEAD` is unset. That is intentional and a known gap for a follow-up.
+
+- It returns only a branch name.
+- The gate's fully-qualified ancestry check then rejects a name whose remote-tracking ref does not exist, and falls back to the `HEAD` anchor.
 
 ## Reopening criterion
 
