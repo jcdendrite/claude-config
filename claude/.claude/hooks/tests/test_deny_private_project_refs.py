@@ -2598,11 +2598,13 @@ class TestDenyPrivateProjectRefs:
     #
     # These tests pin at the full-hook (`run_hook`) layer deliberately.
     # The hook scans the union of the raw scan target and a quote-stripped
-    # copy of it, and every case below turns on which character sits
-    # immediately before a `#`, `(`, or `]` -- quote stripping deletes
-    # characters and so changes that adjacency, which makes a unit-level
-    # assertion against `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw
-    # literal a different check than the one the hook performs.
+    # copy of it.
+    # Many cases below turn on which character sits immediately before a
+    # `#`, `(`, or `]`.
+    # Quote stripping deletes characters, so it changes that adjacency.
+    # For those cases, a unit-level assertion against
+    # `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw literal is a different
+    # check than the one the hook performs.
     # A unit pin would also miss a detector left out of
     # `STRUCTURAL_DETECTORS`, a scan-target regression, or a
     # fast-path/per-detector pattern drifting out of sync
