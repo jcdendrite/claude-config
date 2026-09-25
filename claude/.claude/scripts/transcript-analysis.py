@@ -11588,15 +11588,16 @@ def _rearm_backtest_log_size_lines(
     """
     if multi_root:
         total_bytes = sum(size for _root, size in per_root_sizes if size is not None)
-        truncated_count = sum(
-            1 for _root, size in per_root_sizes if size is not None and size > _NUDGE_LOG_MAX_READ
+        # Boolean-only, never a count: same cardinality-leak concern as above.
+        any_truncated = any(
+            size is not None and size > _NUDGE_LOG_MAX_READ for _root, size in per_root_sizes
         )
-        unreadable_count = sum(1 for _root, size in per_root_sizes if size is None)
+        any_unreadable = any(size is None for _root, size in per_root_sizes)
         note = ""
-        if truncated_count:
-            note += f" ({truncated_count} truncated -- oldest lines dropped)"
-        if unreadable_count:
-            note += f" ({unreadable_count} unreadable)"
+        if any_truncated:
+            note += " (some roots truncated -- oldest lines dropped)"
+        if any_unreadable:
+            note += " (some roots unreadable)"
         return [f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}"]
 
     # multi_root=False implies exactly one entry: the sole caller derives
@@ -13650,9 +13651,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-redact", action="store_true",
         help=(
             "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
+            " --no-redact has no effect on most of its content, but at single-root scope it"
+            " prints the literal .handoff-nudge.log path (instead of an account-N label) in the"
+            " per-root log-size line. It still prints the DO NOT PUBLISH banner and enforces the"
+            " same multi-root refusal as cost, for CLI parity. Refused when --config-dir puts"
+            " more than one root in scope."
         ),
     )
     p_rearm_backtest.add_argument(

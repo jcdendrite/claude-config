@@ -194,10 +194,10 @@ no-compliance-observed         26    10.6%
 
 Conversion rate (voluntary + forced / fired): 89.4% (219/245)
 Block-reach rate (forced + blocked-no-handoff / fired): 6.9% (17/245)
-Join validity (handoff lines matching an in-scope fired session): 219
+Join validity (fired sessions with a matching handoff line): 219
 Re-arms tolerated at voluntary compliance: median ignored=1 across 198 voluntary session(s) (4 voluntary session(s) missing ignored=)
 ```
-The root count in the header above is redacted (shown as `N`) per `docs/private-project-redaction.md`'s account-cardinality bar. The per-account nudge-log byte sizes the raw command output also printed are omitted for the same reason — they would disclose the same account count by enumeration. Every other figure in this block is pooled with no per-account breakdown and is pasted verbatim: the owner reviewed and approved publishing this run's pooled figures at this granularity in session on 2026-09-14, per `docs/private-project-redaction.md`'s "The owner can authorize one figure, case by case" section.
+The root count in the header above is redacted (shown as `N`) per `docs/private-project-redaction.md`'s account-cardinality bar. The per-account nudge-log byte sizes the raw command output also printed are omitted for the same reason — they would disclose the same account count by enumeration. Every other figure in this block is pooled with no per-account breakdown and is pasted verbatim: the owner reviewed and approved publishing this run's pooled figures at this granularity in session on 2026-09-14, per `docs/private-project-redaction.md`'s "The owner can authorize one figure, case by case" section. The "Join validity" line's wording was re-synced post-paste to match a later wording-only change to the same print statement. The value (219) is the original run's own output, unchanged.
 `[verified: rearm-backtest --this-repo --since 14d --spacings 40000,80000,120000,160000, Linux machine, run 2026-09-14]`
 
 **Gate evaluation:**

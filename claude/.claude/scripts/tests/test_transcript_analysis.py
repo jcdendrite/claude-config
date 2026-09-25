@@ -22033,6 +22033,38 @@ class TestNudgeConversionFromLog:
         assert conversion == 6
         assert block_reach == 4
 
+    def test_session_id_repeated_across_two_roots_lands_in_root_scan_order(self):
+        """Pins the function's own documented limitation (the comment above
+        its per_session grouping loop): a session id colliding across two
+        roots (stale symlink, merged log, PID reuse) is not detected.
+        Entries from both roots merge in root-scan order -- the dict
+        iteration order of log_entries_by_root -- rather than true
+        chronological order, since neither line type carries a timestamp.
+        Swapping which root is scanned first changes whether the block line
+        lands before or after the handoff line, flipping the bucket, turning
+        the comment's claim into a regression-guarded fact."""
+        session_traces = {"s": [100]}
+        entries_root_a = [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "s"},
+        ]
+        entries_root_b = [
+            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+        ]
+
+        handoff_scanned_first = _mod._nudge_conversion_from_log(
+            session_traces, {"root-a": entries_root_a, "root-b": entries_root_b}
+        )
+        assert handoff_scanned_first["voluntary"] == 1
+        assert handoff_scanned_first["forced"] == 0
+
+        block_scanned_first = _mod._nudge_conversion_from_log(
+            session_traces, {"root-b": entries_root_b, "root-a": entries_root_a}
+        )
+        assert block_scanned_first["forced"] == 1
+        assert block_scanned_first["voluntary"] == 0
+
 
 class TestParseRearmSpacingsArg:
     def test_default_value_when_spacings_is_unset(self):
@@ -22155,7 +22187,7 @@ class TestRearmBacktestLogSizeLines:
         assert lines == ["  nudge logs across every resolved root: 300 bytes"]
         assert "account-" not in lines[0]
 
-    def test_multi_root_flags_truncated_count_without_naming_the_root(self):
+    def test_multi_root_flags_truncated_without_a_count_or_naming_the_root(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
         oversized = _mod._NUDGE_LOG_MAX_READ + 1
         lines = _mod._rearm_backtest_log_size_lines(
@@ -22164,16 +22196,16 @@ class TestRearmBacktestLogSizeLines:
         )
         assert lines == [
             f"  nudge logs across every resolved root: {oversized + 10:,} bytes"
-            " (1 truncated -- oldest lines dropped)"
+            " (some roots truncated -- oldest lines dropped)"
         ]
 
-    def test_multi_root_flags_unreadable_count_and_excludes_it_from_the_total(self):
+    def test_multi_root_flags_unreadable_without_a_count_and_excludes_it_from_the_total(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
         lines = _mod._rearm_backtest_log_size_lines(
             [(root_a, None), (root_b, 500)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
-        assert lines == ["  nudge logs across every resolved root: 500 bytes (1 unreadable)"]
+        assert lines == ["  nudge logs across every resolved root: 500 bytes (some roots unreadable)"]
 
     def test_multi_root_combines_truncated_and_unreadable_in_expected_order(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
@@ -22184,8 +22216,34 @@ class TestRearmBacktestLogSizeLines:
         )
         assert lines == [
             f"  nudge logs across every resolved root: {oversized:,} bytes"
-            " (1 truncated -- oldest lines dropped) (1 unreadable)"
+            " (some roots truncated -- oldest lines dropped) (some roots unreadable)"
         ]
+
+    def test_multi_root_disclosure_line_never_contains_a_digit_that_varies_with_root_count(self):
+        """Redaction regression guard: a per-condition digit (a count of
+        truncated or unreadable roots) discloses a root/account-cardinality
+        lower bound, which docs/private-project-redaction.md's
+        Account-cardinality bar prohibits at any pooling breadth. Sweeps
+        the healthy-root count (0 extra vs. 3 extra, alongside one fixed
+        truncated root and one fixed unreadable root) and asserts the note
+        text itself (after the pooled byte total, which does legitimately
+        vary) contains no digit and is identical across both sweep sizes."""
+        oversized = _mod._NUDGE_LOG_MAX_READ + 1
+
+        def note_for(root_count: int) -> str:
+            roots = [Path(f"/fake/{n}/projects") for n in range(root_count)]
+            per_root_sizes = [(roots[0], oversized), (roots[1], None)] + [
+                (r, 10) for r in roots[2:]
+            ]
+            lines = _mod._rearm_backtest_log_size_lines(
+                per_root_sizes, multi_root=True, redact=True,
+                redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
+            )
+            assert len(lines) == 1
+            return lines[0].split("bytes", 1)[1]
+
+        assert not any(char.isdigit() for char in note_for(2))
+        assert note_for(2) == note_for(5)
 
     def test_multi_root_at_three_roots_still_prints_exactly_one_line(self):
         roots = [Path(f"/fake/{n}/projects") for n in "abc"]
@@ -22468,7 +22526,8 @@ class TestRearmBacktestReport:
         assert str(acct_b) not in out
         assert "account-" not in out  # no per-account byte-size breakdown under multi-root scope
         assert (
-            f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes (1 unreadable)" in out
+            f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes"
+            " (some roots unreadable)" in out
         )
 
     def test_truncation_can_drop_an_early_block_line_causing_real_misclassification(
@@ -22644,6 +22703,31 @@ class TestRearmBacktestReport:
         out = capsys.readouterr().out
         assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
         assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "1"
+
+    def test_malformed_empty_session_value_is_silently_dropped_through_the_real_parser(
+        self, tmp_path
+    ):
+        """Routes a real .handoff-nudge.log line with an empty session=
+        value (a hook payload bug shape) through the real text-log parser,
+        then straight into _nudge_conversion_from_log with a hand-built
+        session_traces dict -- exercising the same parsing regression
+        surface as the full-stack pattern, without the report/table-text
+        layer above it. _parse_nudge_log_entries checks key presence, not
+        truthiness, so this line survives parsing with session=="". It
+        then fails the `if session:` guard downstream, landing in no
+        bucket -- not even dropped. The classification must not crash or
+        inflate any count as a result."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session= est=100 model=claude-sonnet-5 window=1000000 event=Stop\n"
+            "nudged session=voluntary-tele est=100 model=claude-sonnet-5 window=1000000 event=Stop\n"
+            "handoff session=voluntary-tele\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        session_traces = {"voluntary-tele": [100]}
+        result = _mod._nudge_conversion_from_log(session_traces, {log_path.parent: entries})
+        assert result["voluntary"] == 1
+        assert result["dropped"] == 0
 
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         """--no-redact is refused when --config-dir puts more than one root
