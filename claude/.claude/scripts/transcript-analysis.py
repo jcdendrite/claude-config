@@ -11716,6 +11716,10 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     for root in scan_roots:
         log_path = root.parent / ".handoff-nudge.log"
         log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
+        # This guard duplicates _read_bounded_log_lines' own exists/stat/read
+        # guard rather than reusing it; the two stay in sync only because
+        # both currently catch plain OSError. Re-check both sites together
+        # if either one's caught exception type narrows.
         try:
             log_size = log_path.stat().st_size if log_path.exists() else 0
         except OSError:

@@ -22187,6 +22187,14 @@ class TestRearmBacktestLogSizeLines:
         assert lines == ["  nudge logs across every resolved root: 300 bytes"]
         assert "account-" not in lines[0]
 
+    def test_multi_root_at_exactly_the_cap_is_not_flagged_truncated(self):
+        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
+        lines = _mod._rearm_backtest_log_size_lines(
+            [(root_a, _mod._NUDGE_LOG_MAX_READ), (root_b, 10)], multi_root=True, redact=True,
+            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
+        )
+        assert lines == [f"  nudge logs across every resolved root: {_mod._NUDGE_LOG_MAX_READ + 10:,} bytes"]
+
     def test_multi_root_flags_truncated_without_a_count_or_naming_the_root(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
         oversized = _mod._NUDGE_LOG_MAX_READ + 1
