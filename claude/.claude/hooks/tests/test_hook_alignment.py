@@ -222,7 +222,7 @@ _ATTRIBUTION_SETTINGS_PATHS = (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH)
 def _tree_settings_paths() -> list[Path]:
     """Return the `settings*.json` files directly under `claude/.claude/` and `.claude/`.
 
-    Reads the working tree, and excludes `*.local.json`.
+    Reads the working tree. Excludes `*.local.json`.
     A settings file in a subdirectory or under another name is not found.
     """
     candidates = [
@@ -672,10 +672,12 @@ def test_permissions_allow_stays_wildcard_free_in_tree_settings(path: Path) -> N
     """Pins the no-wildcards rule in `permissions.allow`.
 
     A wildcard widens an allow rule so that it accepts injected flags,
-    chained commands and shell expansion. Only `permissions.allow` is
-    checked: `permissions.deny` legitimately carries wildcards such as
-    `Bash(sudo *)`, and `permissions.ask` rules carry globs too, as the
-    shipped settings-file `permissions.ask` entry does.
+    chained commands and shell expansion.
+
+    Only `permissions.allow` is checked:
+    - `permissions.deny` legitimately carries wildcards, e.g. `Bash(sudo *)`.
+    - `permissions.ask` rules carry globs too, as the shipped settings-file
+      entry does.
     """
     allow = json.loads(path.read_text()).get("permissions", {}).get("allow", [])
     non_string_entries = [entry for entry in allow if not isinstance(entry, str)]

@@ -259,7 +259,8 @@ Documented in Anthropic's permissions and permission-modes pages (re-read 2026-0
 Untested:
 
 - `bypassPermissions` for the rule.
-- The rule after the session-wide approval to edit Claude's own settings.
+- The rule after selecting "Yes, and allow Claude to edit its own settings for this session" on a `.claude/` write prompt.
+- In-project Edit of the shipped pattern alone, hooks enabled or disabled.
 - MultiEdit.
 - Case variants.
 - Bash-mediated writes.

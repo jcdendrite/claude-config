@@ -74,11 +74,11 @@ The "Don't add globs" bullet lives in `claude/.claude/rules/settings-json-conven
 - Decision: both the `permissions.ask` entry and `ask-review-permissions.sh` are kept.
   - The `permissions.ask` entry adds a harness-level prompt that is independent of `_lib.sh` and `jq`, so the no-ask outcome of gaps (e) and (g) is mitigated for Edit and Write in auto mode; MultiEdit and other modes remain residual.
   - The hook keeps its tested regex and its MultiEdit arm.
-  - A throwaway hook's reason text was not observed to render; the shipped hook's reason text was not tested, alone or with the rule.
+  - A throwaway hook's reason text was not observed to render. The shipped hook's reason text was not tested, alone or with the rule.
 - Test coverage for the two layers:
   - `test_ask_review_permissions.py` covers the Edit, Write and MultiEdit arms, ask and allow paths.
   - `test_hook_alignment.py` pins that `settings.json` wires the hook on a matcher spanning all three tools.
-  - `test_hook_alignment.py` pins that the `permissions.ask` entry is declared in the stow-source `settings.json`, declared only; whether the harness matches it is recorded in `docs/security-hardening.md`.
+  - `test_hook_alignment.py` pins only that the `permissions.ask` entry is declared in the stow-source `settings.json`. Whether the harness matches it is recorded in `docs/security-hardening.md`.
   - The group test pins that the rule file keeps the guidance and both settings filenames in its `paths:`.
   - None of these tests cover when the rule loads.
 - A permission deny rule for Bash reads of settings files was considered and advised against by `plan-architect`. A narrow pattern misses `settings.local.json`, `sed`, `jq`, `head` and `grep`. A broad one also blocks `git diff` on settings paths and any `git commit -m` that names the file. It teaches the agent nothing, and it does not reach an out-of-project `~/.claude/settings.json`.
@@ -103,7 +103,7 @@ The fork and identity-gate residual under Forks is an accepted risk that relies 
 
 - Owner: the repo owner.
 - Tracker:
-  - GH-1094 covers gaps (c), (g) and (h). Its decision keeps both the `permissions.ask` entry and the hook. Gap (g) is mitigated for Edit and Write in auto mode, with MultiEdit and other modes residual, and gaps (c) and (h) remain open.
+  - GH-1094 covers gaps (c), (g) and (h). Its decision keeps both the `permissions.ask` entry and the hook. Gap (g) is mitigated for Edit and Write in auto mode, with MultiEdit and other modes residual. Gaps (c) and (h) remain open.
   - GH-1094 also covers whether a hook `ask` reaches a human under auto mode.
   - No tracker issue exists for gaps (a), (b), (e) and (f) or for the fork and identity-gate residual.
   - GH-1093 separately tracks the Model & Effort Routing section's audiences.
