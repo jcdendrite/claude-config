@@ -176,7 +176,7 @@ _lib_realpath_m() {
 
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
-# The body is a subshell that sets LC_ALL=C, since bracket ranges are byte ranges only in the C locale.
+# The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
 # `local LC_ALL=C` is not used because its restore of the caller's locale was not verified on bash 4.x.
 _lib_passes_path_char_allowlist() (
   LC_ALL=C
