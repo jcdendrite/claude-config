@@ -70,7 +70,7 @@ The "Don't add globs" bullet lives in `claude/.claude/rules/settings-json-conven
 - The stub keeps the prohibition always loaded, which meets the relocation bar at `docs/cost-levers-considered.md` for the prohibition. The rationale and the exact-match alternative live in the rule file to pay for the opening line's bytes. The stub is a fragment on purpose.
 - The backstop is `ask-review-permissions.sh`, which asks on Edit, Write and MultiEdit of a path ending in `.claude/settings*.json`.
 - The hook fails open when `_lib.sh` cannot be sourced.
-- Whether a hook `ask` reaches a human under auto mode is unverified. `docs/auto-mode.md` says auto mode replaces per-action permission prompts with a background classifier. Nothing in this repo states how a hook `ask` resolves there.
+- Whether a hook `ask` reaches a human under auto mode is unverified. `docs/auto-mode.md` says auto mode replaces per-action permission prompts with a background classifier. `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the modes where a hook `ask` was verified to render, leaves auto mode untested, and calls `ask-review-permissions.sh`'s `ask` a soft gate.
 - Tests covering the backstop:
   - `test_ask_review_permissions.py` covers the Edit, Write and MultiEdit arms, ask and allow paths.
   - `test_hook_alignment.py` pins that `settings.json` wires the hook on a matcher spanning all three tools.
@@ -97,7 +97,7 @@ Unverified: load behavior on out-of-project reads beyond one trial each, whether
 The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a)-(c), (e), (f), (g) and (h) are open. All share one ownership record:
 
 - Owner: the repo owner.
-- Tracker: not yet filed.
+- Tracker: GH-1094 for gaps (c), (g) and (h), which it fixes only if the hook survives its evaluation of a first-party `permissions.ask` rule, and for whether a hook `ask` reaches a human under auto mode. Gaps (a), (b), (e) and (f) and the fork and identity-gate residual have no tracker issue. GH-1093 separately tracks the Model & Effort Routing section's audiences.
 - Re-review triggers, each with how it is observed:
   - A fork or subagent commits, pushes or opens a PR contrary to the shipping clause: observed by the post-merge fork spot-check and by transcript review.
   - A settings edit slips through gap (c), (d), (g) or (h): not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
@@ -111,6 +111,8 @@ The output-preferences read instruction moves verbatim into Main session. Making
 
 A user-scope scratch test, one run per arm, showed that a symlinked CLAUDE.md follows `@`-imports and resolves a relative import against the symlink target's directory. `@~/` resolution is untested. The consequence for the later extraction of core: a colocated relative import of core resolves inside the repo.
 
+## Moved lines
+
 The Stopping bullet is split across the group boundary. Its blocked-stop half sits in Agent Core: "Stop when the work is genuinely blocked", with the three example conditions and "Say what is blocked." Its "Do not ask permission to proceed with work that is already done." half ends Main session § Shipping's "Do not offer to show the diff first" sub-bullet, next to its autonomous-shipping antecedent. The group test pins both placements.
 
 Four lines are reworded rather than moved verbatim: the shipping clause, the Stopping bullet's opening, the permissions stub, and the relocated proceed clause.
@@ -118,13 +120,9 @@ Four lines are reworded rather than moved verbatim: the shipping clause, the Sto
 Follow-ups for dangling phrases left by verbatim moves:
 
 - The shipping clause's "Merge stays human-only", whose autonomous-shipping antecedent stays in Main session.
-- The output-preferences bullet's "the rules above", which now sits under Working Style.
+- The output-preferences bullet's "the rules above", which now sits under Working Style. Tracked in GH-1091.
 - The Prose section scope line's "the section below", which now points at a subsection.
 - The Durable text scope line "This section governs comments and durable docs only", which is ambiguous inside Prose.
-
-## Forward pointer
-
-`advance-past-commit-stall.sh` cites the shipping-clause as "CLAUDE.md's Shipping section". That clause now sits in Working Style, so the citation needs a follow-up.
 
 ## Byte margin
 
@@ -149,6 +147,7 @@ Trigger, either of:
 
 Procedure:
 
+- Confer with the repo owner before choosing the approach.
 - Revert the whole squash commit, never individual paths, so this record and the "Partially superseded" line do not describe a contract that no longer exists.
 - A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it.
 - Plain `git revert <sha>` is not intercepted by the length gate or the code-review gate, both of which match only the `commit` subcommand.

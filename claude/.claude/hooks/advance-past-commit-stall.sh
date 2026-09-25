@@ -100,12 +100,15 @@ LAST_ASSISTANT_MESSAGE=""
 
 LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 
-# 4. Subagents are never force-continued — only the session the engineer is
-# talking to (CLAUDE.md's Shipping section states this explicitly).
-# AGENT_TYPE-unreadable and AGENT_TYPE-absent take this same branch; that's
-# safe only because a jq/read failure also empties SESSION_ID, which gate 4
-# below independently denies — load-bearing on that ordering, not an
-# explicit fail-closed check on this field itself.
+# 4. A Stop payload with agent_type set is never force-continued, because
+# CLAUDE.md's Agent Core tells any fork or subagent to return its work to its
+# dispatcher rather than ship.
+# This gate covers a fork only if the fork's Stop payload carries agent_type,
+# which is unverified.
+# AGENT_TYPE-unreadable and AGENT_TYPE-absent pass this gate as the main
+# session does; that's safe only because a jq/read failure also empties
+# SESSION_ID, which gate 5 below independently denies — load-bearing on that
+# ordering, not an explicit fail-closed check on this field itself.
 [ -z "$AGENT_TYPE" ] || exit 0
 
 # 5. session_id required and must be a safe single path component; it feeds

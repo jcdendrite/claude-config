@@ -669,8 +669,9 @@ def test_kill_switch_disables(armed_home, dirty_repo):
 
 
 def test_agent_type_present_silent(armed_home, dirty_repo):
-    """Subagents are never force-continued — CLAUDE.md's Shipping section
-    scopes this authorization to the session the engineer is talking to."""
+    """A Stop payload with agent_type set is never force-continued: CLAUDE.md's
+    Agent Core tells a subagent to return its work to its dispatcher rather
+    than ship."""
     result = _fire(
         stop_input(
             ISSUE_QUOTE_QUESTION,
