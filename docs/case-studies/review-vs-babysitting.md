@@ -28,7 +28,7 @@ Of 785 sessions, 332 contain at least one review event. Within them:
 - **142 specialist-reviewer spawns** (`staff-*`, `ciso-reviewer`) across 62 sessions.
 - **946 hook denials** across 317 sessions — 40% of all sessions hit a gate at least once. By gate, attributed best-effort from each denial's message text: worktree-enforcement 387, marker-shape 213, ready-for-review 88, plan-review 69, code-review 62, redaction 39, respond-pr 35, memory-write 30, skill-review 14 — these nine sum to 937; the remaining 9 are denials whose message did not map cleanly to a single gate.
 
-The denial total is the headline: 946 times, an agent attempted something a gate blocked. That is the load-bearing measurement — the gates are not decorative, they are interposed on real attempts. A second repository's private transcript corpus — 590 sessions over a comparable window — shows the same shape in aggregate (989 denials across 244 sessions, 712 review-skill invocations, 330 specialist spawns); it is not quoted here, only noted as corroboration at similar scale.
+The denial total is the headline: 946 times, an agent attempted something a gate blocked. That is the load-bearing measurement — the gates are not decorative, they are interposed on real attempts.
 
 What the numbers cannot show is whether any given review *caught something material*. That is a question only a transcript read answers, and the three sections below work through it from primary sources.
 

@@ -23,7 +23,9 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
-      "Bash(cleanup-idle-open-pr-worktrees --dry-run)"
+      "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
+      "Bash(~/.claude/scripts/worktree-removal-status.sh)",
+      "Bash(worktree-removal-status)"
     ],
     "ask": [
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
@@ -76,6 +78,7 @@
   "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
+  "syncClaudeAiSkills": false,
   "attribution": {
     "sessionUrl": false
   },
@@ -90,10 +93,12 @@
     "error-handling": "name-only",
     "test-conventions": "name-only",
     "sql-query-conventions": "name-only",
+    "feature-flags": "name-only",
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
     "measure-check-output": "name-only",
+    "review-loop-cost-audit": "name-only",
     "loop": "name-only",
     "simplify": "name-only",
     "claude-api": "off",
@@ -169,7 +174,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/record-session-end.sh"
+            "command": "~/.claude/hooks/record-session-end.sh",
+            "timeout": 10
           }
         ]
       }
@@ -401,6 +407,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-architect-consult.sh",
             "statusMessage": "Checking architect-consult gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-no-op-dispatch.sh",
+            "statusMessage": "Checking no-op-dispatch gate..."
           }
         ]
       },
@@ -463,6 +474,19 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-resume-command.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-answer-provenance.sh"
           }
         ]
       },
@@ -509,17 +533,5 @@
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
-  },
-  "enabledPlugins": {
-    "claude-md-management@claude-plugins-official": false,
-    "claude-code-setup@claude-plugins-official": false
-  },
-  "extraKnownMarketplaces": {
-    "claude-plugins-official": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
-      }
-    }
   }
 }

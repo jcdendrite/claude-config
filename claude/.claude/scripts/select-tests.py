@@ -6,11 +6,18 @@ primary-source citations.
 
 Usage: select-tests.py [pytest args...]
 """
+import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
+
+from _config import ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError, config_enabled
+from _config_dir import config_dir
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
 # Hang-detection backstop, not a measured worst case.
 # Sized between post-crash-sessions.py's 5.0s and 25.0s timeouts.
@@ -39,6 +46,9 @@ LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
+# Doubles as its own domain: unlike the source-tree/test-dir pairs above, any
+# path under it maps to itself rather than to a separate test directory.
+CLAUDE_TESTS_DIR = "claude/.claude/tests"
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
@@ -47,6 +57,10 @@ CLAUDE_TOP_LEVEL_DIR = "claude"
 # role in the repo-wide-scan predicate below (see root CLAUDE.md's repo-layout
 # bullet for why it's a separate package).
 CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
+# Directory name .gitignore excludes at both worktree roots. pyproject.toml's
+# norecursedirs prunes it from collection, so no test under one is ever
+# collected.
+WORKTREES_DIR_NAME = "worktrees"
 
 # test_transcript_analysis.py and its two siblings shell into specific hook
 # scripts and read specific SKILL.md files by path, not by import.
@@ -64,9 +78,10 @@ TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
 # test_select_tests.py's own TestCrossDomainReadCompleteness parses every
-# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR, and
-# plugins/*/tests/ for module-level repo-path constants, so a change to any
-# of those files can introduce a read this table hasn't declared yet.
+# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR,
+# CLAUDE_TESTS_DIR, and plugins/*/tests/ for module-level repo-path
+# constants, so a change to any of those files can introduce a read this
+# table hasn't declared yet.
 SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
@@ -85,6 +100,9 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
 # this file's second target.
 HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
+
+# Import dependency of test_skills.py; see _skill_auxiliary_files.py's docstring.
+SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
 PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
@@ -115,6 +133,15 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
 
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
+
+# test_config_py.py and test_config_parser_parity.py (SCRIPTS_TESTS_DIR) read
+# this exact file by path to drive _config.py against it; test_config_lib.py
+# (HOOKS_TESTS_DIR) reads it via _config.sh's own schema reader. Already
+# covered for HOOKS_TESTS_DIR by the blanket HOOKS_DIR domain rule -- this
+# row exists so a change here (e.g. a resolution-mode or legacy-polarity
+# column edit) also selects SCRIPTS_TESTS_DIR and SKILLS_TESTS_DIR, which
+# otherwise have no path to it.
+CONFIG_KEYS_PSV = "claude/.claude/hooks/config-keys.psv"
 
 # test_hook_alignment.py (HOOKS_TESTS_DIR) reads this file's permissions.allow
 # entries by path. test_doc_counts.py (HOOKS_TESTS_DIR) reads its
@@ -166,8 +193,9 @@ GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 
 # test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
 # builds its corpus via REPO_ROOT.rglob("*.md") reading file content, the
-# same dependency GLOBAL_CLAUDE_MD cites above. Unlike that file, no test
-# reads this one by path, so only HOOKS_TESTS_DIR is implicated.
+# same dependency GLOBAL_CLAUDE_MD cites above. test_hook_alignment.py
+# (HOOKS_TESTS_DIR) and SKILLS_TESTS_DIR's test_skills.py also read this one
+# by path, but only HOOKS_TESTS_DIR is selected.
 ROOT_CLAUDE_MD = "CLAUDE.md"
 
 # test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this directory
@@ -187,33 +215,32 @@ ROOT_SKILLS_DIR = ".claude/skills"
 # claudeMdExcludes entry by path.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
+# test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
+# test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
+# tracked-shell-script sweep. test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR) pick
+# it up via their own recursive *.sh globs.
+STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
-# directory absent from both this set and DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
-# means some test's cross-domain file-path or subprocess read into it was
-# never audited into this table. SKILLS_DIR has no member here: it points
-# at claude-skills/skills, outside claude/.claude/.
+# directory absent from this set means some test's cross-domain file-path or
+# subprocess read into it was never audited into this table. SKILLS_DIR has
+# no member here: it points at claude-skills/skills, outside
+# claude/.claude/.
 MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
     Path(HOOKS_DIR).name,
     Path(SCRIPTS_DIR).name,
     Path(AGENTS_DIR).name,
     Path(RULES_DIR).name,
+    Path(CLAUDE_TESTS_DIR).name,
 })
-
-# claude/.claude/tests/test_statusline_command.py reads
-# claude/.claude/statusline-command.sh by path, and its sibling helpers.py
-# reads .github/workflows/tests.yml by path. Both paths deliberately fall
-# open to the full suite instead of getting a CROSS_DOMAIN_EXCEPTIONS entry,
-# because claude/.claude/tests/ itself has no selectable pytest target.
-DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
 
 # Directory names directly under root .claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference by path (PLANS_DIR,
 # ROOT_RULES_DIR, ROOT_SKILLS_DIR). Mirrors MAPPED_TOP_LEVEL_DIRS's role for
-# claude/.claude/, but for the separate root .claude/ tree. Unlike that
-# sibling, root .claude/ has no directory-with-no-selectable-pytest-target
-# case, so it needs no DELIBERATELY_UNMAPPED counterpart.
+# claude/.claude/, but for the separate root .claude/ tree.
 MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
     Path(PLANS_DIR).name,
     Path(ROOT_RULES_DIR).name,
@@ -227,7 +254,9 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
 FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
-# - claude/.claude/tests/helpers.py is imported by every domain's own test dir
+# - claude/.claude/tests/helpers.py's own DOMAIN_RULES match alone would
+#   under-select it to claude/.claude/tests plus TICKET_REFERENCE_DISCIPLINE_TEST_PATH.
+#   This entry is what forces every importing domain's tests to run instead.
 # - pyproject.toml governs collection for all of them
 # - this script's own table can't be trusted to correctly select tests for
 #   itself once changed
@@ -247,12 +276,10 @@ def _is_skill_md_change(path: str) -> bool:
 
 
 # test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR) scans every
-# REFERENCES.md and ROUTING.md sibling of a SKILL.md, not just SKILL.md itself.
-# This set must stay in sync with _citation_sources_for_skill_md's sibling
-# names in test_skills.py — a shared constant would be warranted if a third
-# auxiliary filename type is ever added.
+# auxiliary sibling of a SKILL.md, not just SKILL.md itself. The filenames
+# live in _skill_auxiliary_files.py, shared with that test.
 def _is_skill_auxiliary_md_change(path: str) -> bool:
-    return _is_under(path, SKILLS_DIR) and Path(path).name in {"REFERENCES.md", "ROUTING.md"}
+    return _is_under(path, SKILLS_DIR) and Path(path).name in SKILL_AUXILIARY_MD_NAMES
 
 
 def _is_hooks_or_skills_change(path: str) -> bool:
@@ -305,23 +332,17 @@ def _is_hooks_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, HOOKS_DIR) and path.endswith(".sh")
 
 
-def _is_under_deliberately_unmapped_claude_dir(path: str) -> bool:
-    return any(
-        _is_under(path, f"{CLAUDE_TOP_LEVEL_DIR}/.claude/{name}")
-        for name in DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
-    )
-
-
 # See TICKET_REFERENCE_DISCIPLINE_TEST_PATH's own comment above for what
 # that test scans. This predicate is deliberately .py-only. That test's .sh
 # coverage is achieved today only incidentally, through the existing
 # hooks/scripts shell-script domain rules.
 # Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
-# HOOKS_TESTS_DIR domain it lives in. Excludes
-# DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS (claude/.claude/tests/):
-# - test_statusline_command.py and test_pytest_collection_config.py live there
-# - excluding them keeps those two files falling open to the full suite via
-#   unmatched-path, instead of narrowing to a domain that doesn't contain them
+# HOOKS_TESTS_DIR domain it lives in.
+# Also selects CLAUDE_TESTS_DIR: TestConftestModuleNamesAreUnique in
+# test_pytest_collection_config.py resolves every tracked conftest.py
+# repo-wide via git ls-files, with no root scoping, so a .py file anywhere
+# under this predicate's three roots can be a new conftest.py that needs
+# that pairwise-uniqueness check to actually run.
 def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     return (
         path.endswith(".py")
@@ -330,7 +351,6 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
             or _is_under(path, CLAUDE_SKILLS_TOP_LEVEL_DIR)
             or _is_under(path, PLUGINS_DIR)
         )
-        and not _is_under_deliberately_unmapped_claude_dir(path)
     )
 
 
@@ -338,10 +358,12 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
 # a test_*.py file directly inside a tests/ directory under claude/ or
 # plugins/. A stricter subset of _is_py_source_under_claude_or_plugins,
 # since only a test file can introduce a new module-level repo-path
-# constant for that scanner to miss.
+# constant for that scanner to miss. Excludes any path under a worktrees/
+# directory, since no test corpus root ever resolves into one.
 def _is_test_source_change(path: str) -> bool:
     return (
         _is_py_source_under_claude_or_plugins(path)
+        and WORKTREES_DIR_NAME not in Path(path).parts
         and Path(path).parent.name == "tests"
         and Path(path).name.startswith("test_")
     )
@@ -357,6 +379,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
+    (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -380,6 +403,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # scripts and reads SKILL.md files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
+# SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
+# module, and that import is invisible to path-constant scanning.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
@@ -439,17 +464,20 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
+# STATUSLINE_COMMAND_SH: see its own comment above for citation.
+# CONFIG_KEYS_PSV: see its own comment above for citation.
 # _is_py_source_under_claude_or_plugins: see its own comment above for
-# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly, not a
-# domain directory.
+# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
+# CLAUDE_TESTS_DIR directly.
 # _is_test_source_change: see SELECT_TESTS_TEST_PATH's own comment above for
 # citation. A strict subset of _is_py_source_under_claude_or_plugins, since
-# only a test file under one of the four selectable test directories can
+# only a test file under one of the five selectable test directories can
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
+    (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
@@ -474,7 +502,9 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
-    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
+    (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
+    (lambda p: p == CONFIG_KEYS_PSV, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH, CLAUDE_TESTS_DIR)),
     (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )
 
@@ -590,6 +620,19 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
 
 # --- pytest invocation ----------------------------------------------------
 
+XDIST_WORKER_ENV_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+# Below two workers, xdist's own per-worker spawn/IPC overhead outweighs
+# any parallelism gained.
+# A one-line change here if field data contradicts it.
+_MIN_LOAD_AWARE_WORKERS = 2
+
+# Discriminates pytest_subprocess_env's three outcomes, so callers don't have
+# to infer which one occurred by re-inspecting the returned env dict.
+WORKER_SIZING_ALREADY_SET = "already-set"
+WORKER_SIZING_COMPUTED = "computed"
+WORKER_SIZING_UNAVAILABLE = "unavailable"
+
 
 def _expand_target(target: str, *, repo_root: Path) -> list[str]:
     """A plain directory/file target passes through unchanged.
@@ -675,10 +718,112 @@ def _resolve_pytest_executable() -> str:
     return str(sibling) if sibling.exists() else "pytest"
 
 
-def run_pytest(pytest_argv: list[str], *, cwd: Path, run=subprocess.run) -> int:
+def _cpu_budget() -> int:
+    # Mirrors pytest-xdist's own `-n auto` count on the non-psutil path, so
+    # an idle machine still gets exactly `-n auto`'s own worker count.
+    try:
+        from os import sched_getaffinity
+    except ImportError:
+        n = os.cpu_count()
+    else:
+        n = len(sched_getaffinity(0))
+    return n if n else 1
+
+
+def compute_worker_count(*, cpu_budget: int, load_one_minute: float) -> int:
+    return max(
+        min(_MIN_LOAD_AWARE_WORKERS, cpu_budget),
+        min(cpu_budget, round(cpu_budget - load_one_minute)),
+    )
+
+
+class WorkerSizingResult(NamedTuple):
+    env: dict[str, str]
+    outcome: str
+    worker_count: int | None = None
+    load_average: float | None = None
+
+
+def pytest_subprocess_env(base_env: dict[str, str], *, getloadavg) -> WorkerSizingResult:
+    """Injects XDIST_WORKER_ENV_VAR into base_env, sized from the current
+    1-minute load average, and reports which outcome occurred.
+
+    Leaves base_env's XDIST_WORKER_ENV_VAR untouched, reporting the
+    matching outcome, when:
+    - the caller already set it to a non-empty value (WORKER_SIZING_ALREADY_SET)
+    - the load average can't be read (WORKER_SIZING_UNAVAILABLE)
+
+    getloadavg has no default, since Python binds a default once at
+    def-time -- a default of os.getloadavg would capture the pre-monkeypatch
+    function and defeat tests that patch os.getloadavg after import.
+    """
+    if base_env.get(XDIST_WORKER_ENV_VAR):
+        return WorkerSizingResult(dict(base_env), WORKER_SIZING_ALREADY_SET)
+    try:
+        load_one_minute = getloadavg()[0]
+    except OSError:
+        return WorkerSizingResult(dict(base_env), WORKER_SIZING_UNAVAILABLE)
+    workers = compute_worker_count(cpu_budget=_cpu_budget(), load_one_minute=load_one_minute)
+    env = {**base_env, XDIST_WORKER_ENV_VAR: str(workers)}
+    return WorkerSizingResult(env, WORKER_SIZING_COMPUTED, worker_count=workers, load_average=load_one_minute)
+
+
+def run_pytest(
+    pytest_argv: list[str], *, cwd: Path, run=subprocess.run, env: dict[str, str] | None = None,
+) -> int:
     executable = _resolve_pytest_executable()
-    result = run([executable, *pytest_argv], cwd=cwd, check=False)
+    result = run([executable, *pytest_argv], cwd=cwd, check=False, env=env)
     return result.returncode
+
+
+# --- Fallback-reason instrumentation -------------------------------------
+
+SELECTION_LOG_FILENAME = ".test-selection-log.jsonl"
+
+# Bounds one JSON line to well under one write() syscall's atomic-write size
+# limit. An unbounded triggering_paths list could otherwise make two
+# concurrent appends interleave instead of landing as separate atomic writes.
+_TRIGGERING_PATHS_LOG_CAP = 20
+
+
+def record_selection(
+    selection: SelectionResult,
+    resolved_targets: list[str],
+    size_result: WorkerSizingResult | None = None,
+) -> None:
+    """Appends one JSON line describing this invocation's selection outcome
+    to <config-dir>/.test-selection-log.jsonl, gated by the off-by-default
+    test_selection_tracking config key.
+
+    worker_count and load_average are added to the record only when
+    size_result's outcome is WORKER_SIZING_COMPUTED.
+
+    Best-effort: swallows a log-append OSError, a config_dir() resolution
+    ValueError, or a config-keys.psv truncation error from config_enabled()
+    with one stderr warning, since a full disk, an unresolvable config dir,
+    or a torn schema row must not turn into a failed test run.
+    """
+    try:
+        if not config_enabled("test_selection_tracking"):
+            return
+        triggering_paths = list(selection.triggering_paths)
+        record = {
+            "logged_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason": selection.reason,
+            "is_full_suite": selection.is_full_suite,
+            "triggering_paths": triggering_paths[:_TRIGGERING_PATHS_LOG_CAP],
+            "target_count": len(resolved_targets),
+        }
+        if len(triggering_paths) > _TRIGGERING_PATHS_LOG_CAP:
+            record["triggering_paths_truncated"] = True
+        if size_result is not None and size_result.outcome == WORKER_SIZING_COMPUTED:
+            record["worker_count"] = size_result.worker_count
+            record["load_average"] = size_result.load_average
+        log_path = config_dir() / SELECTION_LOG_FILENAME
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except (OSError, ValueError, ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError) as exc:
+        print(f"select-tests: could not record test selection to the log ({exc})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -695,6 +840,14 @@ def main(argv: list[str] | None = None) -> int:
 
     resolved_targets = resolve_target_paths(selection.target_paths, repo_root=repo_root)
 
+    # No sizing decision is made for the nothing-to-run early return below:
+    # pytest never runs, so a getloadavg() syscall would be wasted.
+    will_run_pytest = selection.is_full_suite or bool(selection.target_paths)
+    size_result = (
+        pytest_subprocess_env(dict(os.environ), getloadavg=os.getloadavg) if will_run_pytest else None
+    )
+    record_selection(selection, resolved_targets, size_result)
+
     if selection.is_full_suite:
         if selection.triggering_paths:
             paths = ", ".join(selection.triggering_paths)
@@ -707,11 +860,32 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
 
+    # size_result is never None past this point: either branch above that
+    # returns early corresponds exactly to will_run_pytest being False.
+    if size_result.outcome == WORKER_SIZING_ALREADY_SET:
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR} already set to "
+            f"{size_result.env[XDIST_WORKER_ENV_VAR]}; leaving it alone",
+            file=sys.stderr,
+        )
+    elif size_result.outcome == WORKER_SIZING_COMPUTED:
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR}={size_result.worker_count} "
+            f"(1-minute load average {size_result.load_average})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"select-tests: could not read the 1-minute load average; "
+            f"leaving {XDIST_WORKER_ENV_VAR} unset",
+            file=sys.stderr,
+        )
+
     # build_pytest_argv resolves resolved_targets again internally; safe
     # because resolve_target_paths is idempotent on its own output, pinned
     # by test_idempotent_on_its_own_output.
     pytest_argv = build_pytest_argv(resolved_targets, passthrough_args, repo_root=repo_root)
-    return run_pytest(pytest_argv, cwd=repo_root)
+    return run_pytest(pytest_argv, cwd=repo_root, env=size_result.env)
 
 
 if __name__ == "__main__":

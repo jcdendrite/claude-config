@@ -869,7 +869,8 @@ class TestGuardSettingsSessionKeys:
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
-        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
+        superset entry this hook's own bootstrap does not call,
         `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
         (GH-783), `grep` for the staged-file match, `git` for the
         _lib_capped-wrapped diff/show calls), omitting both timeout(1) and

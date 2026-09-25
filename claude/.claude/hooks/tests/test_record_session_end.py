@@ -12,8 +12,11 @@ from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
+    assert_cap_engaged,
     plant_traversal_canary,
     run_hook_advisory,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
 )
 
 RECORD_SESSION_END_HOOK = HOOKS_DIR / "record-session-end.sh"
@@ -287,8 +290,9 @@ class TestRecordSessionEnd:
 
         stub_dir = tmp_path / "hung-jq-stub"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         fake_jq = stub_dir / "jq"
-        fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+        fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
         fake_jq.chmod(0o755)
 
         env = {
@@ -296,21 +300,17 @@ class TestRecordSessionEnd:
             "HOME": str(isolated_home),
             "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
         }
-        start = time.monotonic()
-        result = subprocess.run(
-            ["bash", str(RECORD_SESSION_END_HOOK)],
-            input=json.dumps({"session_id": "hung-jq-session"}),
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
-        )
-        elapsed = time.monotonic() - start
+        # The hook makes two sequential _lib_jq calls (session_id, reason)
+        # before it can act on either, so both are killed by the cap.
+        with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=2):
+            result = subprocess.run(
+                ["bash", str(RECORD_SESSION_END_HOOK)],
+                input=json.dumps({"session_id": "hung-jq-session"}),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
 
         assert result.returncode == 0
         assert self._records_files(isolated_home) == []
-        # The hook makes two sequential _lib_jq calls (session_id, reason)
-        # before it can act on either, so a working 5s cap bounds this at
-        # ~10s; 20s leaves headroom for scheduling jitter without masking an
-        # actually-uncapped bare-jq regression (2 x 10s sleep = 20s+).
-        assert elapsed < 20, f"hung-jq test took {elapsed:.1f}s — _lib_jq's cap did not engage"

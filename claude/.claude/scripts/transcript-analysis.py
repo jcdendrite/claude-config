@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
+import _config
 from _config_dir import config_dir
 
 # corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
@@ -99,6 +100,7 @@ from transcript_analysis.redaction import (
     _build_redact_map,
     _corpus_fingerprint,
     _derive_proj_label,
+    _project_family,
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
@@ -125,6 +127,7 @@ from transcript_analysis.review_rounds import (
     # exception documented in docs/transcript-analysis-architecture.md.
     REVIEW_SKILLS,
     cmd_review_round_cost,
+    compute_review_round_counts,
 )
 from transcript_analysis.reviewer_yield import (
     # The six names below are read only via _mod.<name> from test files (unit-testing a
@@ -152,7 +155,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.reviewer_yield import compute_reviewer_yield_data as _compute_reviewer_yield_data
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR,
+    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
@@ -287,7 +290,7 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         for branch, fb in file_branches.items():
             d = branch_data[branch]
             d["sessions"] += 1
-            d["projects"].add(jsonl.parent.name)
+            d["projects"].add(_project_family(jsonl.parent.name))
             for fam in ("opus", "sonnet", "haiku", "other"):
                 d[fam] += fb[fam]
             if fb["ts_min"] < float("inf"):
@@ -568,7 +571,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 
     for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
         proj_label = _derive_proj_label(jsonl)
-        total_projects_seen.add(proj_label)
+        total_projects_seen.add(_project_family(jsonl.parent.name))
 
         # Count unrecognized shapes regardless of other filters.
         for rec in records:
@@ -1168,6 +1171,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
     "architect-consult",  # require-architect-consult.sh
     "invisible-commit-content",  # deny-invisible-commit-content.sh
+    "no-op-dispatch",  # deny-no-op-dispatch.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
@@ -2648,7 +2652,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 name = block.get("name")
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
-                    stype = inp.get("subagent_type") or "unknown"
+                    stype = inp.get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
                     session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
@@ -2783,6 +2787,41 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
+def _spawn_counts_by_agent_type(
+    session_iter, branch_filter: set[str] | None,
+) -> dict[str, int]:
+    """Raw (undisclosed) subagent_type spawn counts across session_iter,
+    for cost-counts.
+
+    Main-thread dispatches only: excludes isSidechain records before ever
+    reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
+    subagent's own gitBranch never reaches this count. branch_filter matches
+    a record's own literal gitBranch, not review_rounds' carry-forward
+    attribution. For a main-thread record the two agree in every case that
+    matters here, since cost._attributed_branch's own carry-forward logic
+    exists only to resolve a worktree-agent-* sidechain record.
+
+    No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
+    for the allowlist partition this raw count feeds.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for _jsonl, records in session_iter:
+        for rec in records:
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            branch = rec.get("gitBranch") or ""
+            if branch_filter is not None and branch not in branch_filter:
+                continue
+            for block in (rec.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") not in _SPAWN_TOOL_NAMES:
+                    continue
+                stype = (block.get("input") or {}).get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
+                counts[stype] += 1
+    return dict(counts)
+
+
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 
@@ -2810,6 +2849,12 @@ _DECLARED_PIN_BUILT_IN = "built-in"
 # subagent_type disclosure, regardless of whether this repo's own agents/
 # tree tracks a same-named file.
 _BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
+# Fallback subagent_type for a spawn tool_use whose input carries no
+# subagent_type field -- shared between cmd_subagent_mix and
+# _spawn_counts_by_agent_type so the two never disagree on which raw string
+# means "input missing this field."
+_UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
 # "general-purpose") -- never containing "/" or "..". _declared_pin enforces
@@ -2901,6 +2946,131 @@ def _repo_tracked_agent_type_names() -> frozenset[str]:
         if entry and "/" not in entry and entry.endswith(".md")
     }
     return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
+
+
+# The one folded row a subagent_type this repo's own agents/ tree does not
+# track (and is not a Claude Code built-in) collapses into -- an em dash,
+# not a hyphen, and parenthesized so it reads unambiguously as a caption,
+# never as an agent name.
+_WITHHELD_AGENT_TYPE_LABEL = "(withheld — untracked agent type)"
+
+
+def _partition_spawn_counts_by_disclosure(raw_counts: dict[str, int]) -> list[tuple[str, int]]:
+    """Partition raw subagent_type spawn counts into disclosed rows plus one
+    folded withheld row, for cost-counts.
+
+    The _repo_tracked_agent_type_names() allowlist gate is applied here
+    unconditionally, unlike _stype_label's `disclose=this_repo and stype in
+    _repo_tracked_agent_type_names()` (reached only under multi-root):
+    _repo_tracked_agent_type_names() resolves its allowlist from
+    _REPO_AGENT_DEFINITIONS_DIR, this installed toolkit's own agents/ tree --
+    never a consumer repo's own tracked agents/ directory (see that
+    function's own docstring). So a stow consumer's own real,
+    project-tracked agent types are exactly as unresolvable here as a
+    genuinely ad hoc dispatch. Both fold into the same withheld row
+    regardless of whose branch cost-counts is scoring.
+
+    Disclosed rows sort by (-count, name), matching cmd_subagent_mix's own
+    `top` ordering. The withheld row -- when its folded total is nonzero --
+    is always appended last, never merged into that sort, so its count can
+    never place it ahead of a named row and be mistaken for one.
+    """
+    tracked = _repo_tracked_agent_type_names()
+    disclosed = sorted(
+        ((stype, count) for stype, count in raw_counts.items() if stype in tracked),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    withheld_total = sum(count for stype, count in raw_counts.items() if stype not in tracked)
+    rows = list(disclosed)
+    if withheld_total:
+        rows.append((_WITHHELD_AGENT_TYPE_LABEL, withheld_total))
+    return rows
+
+
+_COST_COUNTS_ROUNDS_CAPTION = (
+    "Each invocation of a review skill is one round, whether or not it produced findings."
+    " Counts reflect this section's last render; a review round that ran afterward may not"
+    " be included yet."
+)
+
+_COST_COUNTS_SPAWNS_CAPTION = (
+    "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
+    " counted."
+)
+
+
+def cmd_cost_counts(args: argparse.Namespace) -> None:
+    """Per-branch review-round and subagent-spawn counts, for embedding in a
+    public PR body -- counts only, no dollar attribution anywhere.
+
+    Requires --this-repo and --branches; always resolves to a single root,
+    `[config_dir() / "projects"]`, the active account alone. Prints exactly
+    two GFM subsections, `### Review rounds` and `### Subagent spawns`, and
+    nothing else. See docs/transcript-analysis.md's `cost-counts` section
+    for the branch-attribution-model distinction, the rounds/spawns
+    zero-count rendering asymmetry, and the disclosure-allowlist assertion
+    backstop.
+    """
+    this_repo = bool(getattr(args, "this_repo", False))
+    projects_arg = getattr(args, "projects", None)
+    if not this_repo or projects_arg not in (None, "*"):
+        print(
+            "cost-counts: requires --this-repo and refuses any --projects scope"
+            " (including the default glob) — see docs/transcript-analysis.md",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    branches_arg: str | None = getattr(args, "branches", None) or None
+    if not branches_arg:
+        print(
+            "cost-counts: --branches is required — a corpus-wide count is never a"
+            " legitimate PR-body figure",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    branch_filter = _branch_filter(args)
+
+    roots = [config_dir() / "projects"]
+
+    session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    sessions = list(session_iter)
+
+    round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
+    spawn_rows = _partition_spawn_counts_by_disclosure(
+        _spawn_counts_by_agent_type(sessions, branch_filter)
+    )
+
+    print("### Review rounds\n")
+    print(f"{_COST_COUNTS_ROUNDS_CAPTION}\n")
+    print("| Skill | Rounds |")
+    print("|---|---|")
+    total_rounds = 0
+    for skill in REVIEW_SKILLS:
+        n = round_counts[skill]
+        total_rounds += n
+        print(f"| {_sanitize_table_cell(skill)} | {n} |")
+    print(f"| **total** | **{total_rounds}** |")
+
+    print("\n### Subagent spawns\n")
+    print(f"{_COST_COUNTS_SPAWNS_CAPTION}\n")
+    if not spawn_rows:
+        print("No subagent spawns found in scope.")
+    else:
+        tracked = _repo_tracked_agent_type_names()
+        print("| Agent type | Spawns |")
+        print("|---|---|")
+        total_spawns = 0
+        for row_index, (label, count) in enumerate(spawn_rows):
+            if not (label == _WITHHELD_AGENT_TYPE_LABEL or label in tracked):
+                raise AssertionError(
+                    f"cost-counts: spawn row {row_index} is neither the withheld label nor a"
+                    " repo-tracked agent type. Refusing to print the value; it is withheld"
+                    " from this message by design."
+                )
+            total_spawns += count
+            print(f"| {_sanitize_table_cell(label)} | {count} |")
+        print(f"| **total** | **{total_spawns}** |")
 
 
 def _dispatch_usage_summary(
@@ -3106,16 +3276,45 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         print(f"{bin_str:<10} {lead:>5} {main:>5} {side:>5} {pair_pct:>6.1f}%")
 
 
+def _pr_link_gh_failure_kind(exc: Exception) -> str:
+    """This module's own label for why a pr-link gh call failed -- never gh's
+    raw stderr, which can echo the queried repo verbatim."""
+    if isinstance(exc, FileNotFoundError):
+        return "gh not found"
+    if isinstance(exc, json.JSONDecodeError):
+        return "unparseable gh output"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    kind = _classify_gh_error(getattr(exc, "stderr", None) or "")
+    # _classify_gh_error falls through to "network" for any stderr it does
+    # not recognize, a wrong repo slug included.
+    return "network or unrecognized" if kind == _GH_ERROR_KIND_NETWORK else kind
+
+
+def _pr_link_report_gh_failure(branch: str, step: str, exc: Exception) -> None:
+    print(f"pr-link: {step} failed for branch {branch} ({_pr_link_gh_failure_kind(exc)})", file=sys.stderr)
+
+
 def cmd_pr_link(args: argparse.Namespace) -> None:
-    if not getattr(args, "repo", None):
-        print("--repo is required for pr-link", file=sys.stderr)
-        sys.exit(1)
     if not getattr(args, "branches", None):
         print("--branches is required for pr-link", file=sys.stderr)
         sys.exit(1)
 
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
-    repo: str = args.repo
+    supplied_repo: str | None = getattr(args, "repo", None)
+    if supplied_repo:
+        repo = pr_list_repo = supplied_repo
+        api_host_args: list[str] = []
+    else:
+        # `gh pr list --repo` takes the host-qualified slug directly; `gh api`
+        # takes `--hostname` instead, since its path carries no host.
+        # Either way, a GHE origin reaches the right host regardless of the
+        # ambient GH_HOST.
+        origin_host, repo = _git_remote_origin_host_and_owner_repo(
+            subcommand="pr-link", failure_hint="pass --repo OWNER/REPO",
+        )
+        pr_list_repo = _gh_host_qualified_repo(origin_host, repo)
+        api_host_args = ["--hostname", origin_host]
     author: str = getattr(args, "author", None) or ""
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "pr-link", roots=roots)
@@ -3140,11 +3339,17 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             pr_result = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--repo", repo, "--state", "all", "--json", "number", "--limit", "1"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "pr", "list", "--head", branch, "--repo", pr_list_repo,
+                    "--state", "all", "--json", "number", "--limit", "1",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             prs = json.loads(pr_result.stdout or "[]")
-        except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        except (
+            subprocess.CalledProcessError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired,
+        ) as exc:
+            _pr_link_report_gh_failure(branch, "gh pr list", exc)
             print(f"{branch:<35} {'?':>5} {opus_n:>6} {sonnet_n:>7} {'gh-err':>9} {'':>10}")
             continue
 
@@ -3157,19 +3362,26 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             ic = subprocess.run(
-                ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/issues/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             issue_logins = [ln.strip() for ln in ic.stdout.splitlines() if ln.strip()]
             issue_comments = sum(1 for ln in issue_logins if not author or ln == author)
 
             rc = subprocess.run(
-                ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/pulls/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             review_logins = [ln.strip() for ln in rc.stdout.splitlines() if ln.strip()]
             review_comments = sum(1 for ln in review_logins if not author or ln == author)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            _pr_link_report_gh_failure(branch, "gh api comments", exc)
             issue_comments = review_comments = -1
 
         print(f"{branch:<35} {pr_number:>5} {opus_n:>6} {sonnet_n:>7} {issue_comments:>9} {review_comments:>10}")
@@ -5845,12 +6057,63 @@ _CACHE_REBUILD_DEFAULT_SINCE = "30d"
 _CACHE_REBUILD_IDLE_5M_SECONDS = 300
 _CACHE_REBUILD_IDLE_1H_SECONDS = 3600
 
+# --ttl-verdict's second boundary point for its two-point sensitivity check
+# (.claude/plans/cache-ttl-tuning-analysis.md's Approach section): the
+# vendor's own illustrative "about 1 minute" margin a 4-minute-streaming
+# response leaves inside a 5-minute TTL, used here as an alternate idle-band
+# lower bound. A direction adopts only when its margin clears at both this
+# boundary and _CACHE_REBUILD_IDLE_5M_SECONDS.
+_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS = 60
+
+# --ttl-verdict's own per-root margin requirement: a direction's net savings
+# must clear at least this fraction of that root's own dollar-equivalent
+# volume to adopt -- a pre-registered decision threshold from the plan's
+# Approach section, not a vendor-sourced rate.
+_CACHE_REBUILD_TTL_MARGIN_FRACTION = 0.10
+
+# --ttl-verdict's own per-root eligibility test: the dominant tier's share
+# of that root's W5m + W1h must clear this fraction to count toward the
+# bucket's verdict, else the root is excluded as a near-tie.
+# Engineer-set (.claude/plans/cache-ttl-verdict-gate-fix.md's Approach
+# section, no vendor grounding): set below observed incidental-fallback
+# shares and above genuinely-mixed shares.
+_CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN = 0.90
+
+_TTL_VERDICT_ADOPT = "adopt"
+_TTL_VERDICT_DECLINE = "decline"
+_TTL_VERDICT_ROOTS_DISAGREE = "roots disagree"
+_TTL_VERDICT_NO_VERDICT = "no verdict"
+
+# --ttl-verdict's tier-direction discriminator, shared by root["favors"],
+# _cache_rebuild_root_verdict_input's positive_favors/negative_favors, and
+# the printed Tier/Favors table columns.
+_CACHE_REBUILD_TIER_5M = "5m"
+_CACHE_REBUILD_TIER_1H = "1h"
+
+# --ttl-verdict's own per-root row labels: a root excluded from a bucket's
+# verdict names why in the Clears column, instead of only being absorbed
+# into that bucket's lumped exclusion count. Each token stays whitespace-
+# free -- _extract_ttl_verdict_root_row maps columns by splitting the row
+# on whitespace, so a space in any label would shift every column after it.
+_TTL_EXCLUDE_NEAR_TIE = "excluded(near-tie)"
+_TTL_EXCLUDE_NO_DATA = "excluded(no-data)"
+_TTL_ROW_NOT_APPLICABLE = "--"
+_TTL_TIER_NONE = "none"
+_TTL_ROW_NA = "n/a"
+
 _CAUSE_SESSION_START = "session start"
 _CAUSE_IDLE_5M_1H = "idle 5m-1h"
 _CAUSE_IDLE_OVER_1H = "idle >1h"
 _CAUSE_MODEL_SWITCH = "model switch"
 _CAUSE_UNEXPLAINED = "unexplained"
 _CAUSE_TS_ANOMALY = "excluded (timestamp anomaly)"
+
+# _cache_miss_reason's own vendor-emitted type value for a real model
+# switch. Compared against the gap-derived idle-5m-1h cause as a
+# cross-check, never fed back into any accumulator.
+# Named as a constant, not a bare string, so it stays byte-identical to
+# _classify_cache_rebuild_cause's own _CAUSE_MODEL_SWITCH trigger.
+_CACHE_MISS_REASON_MODEL_CHANGED = "model_changed"
 
 # Print order for the cause-breakdown table: the two TTL-explained idle
 # buckets first, then the non-idle tail, then the excluded diagnostic bucket
@@ -5915,8 +6178,26 @@ def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> f
     return gap if gap >= 0 else None
 
 
+def _cache_rebuild_in_idle_5m_1h_band(
+    is_first_call: bool, gap_seconds: float | None,
+    *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
+) -> bool:
+    """Whether one call's own prior-call gap lands in
+    [idle_5m_boundary_seconds, _CACHE_REBUILD_IDLE_1H_SECONDS) -- the gap
+    test alone, with no cache-write-tier qualifier.
+
+    Deliberately tier-blind: _classify_cache_rebuild_cause's write-tier
+    qualifier answers a different question than --ttl-verdict's 1h-to-5m
+    direction, which only needs the gap.
+    """
+    if is_first_call or gap_seconds is None:
+        return False
+    return idle_5m_boundary_seconds <= gap_seconds < _CACHE_REBUILD_IDLE_1H_SECONDS
+
+
 def _classify_cache_rebuild_cause(
-    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool
+    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool,
+    *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
 ) -> str:
     """Classify one threshold-crossing cache-write call's cause.
 
@@ -5925,7 +6206,9 @@ def _classify_cache_rebuild_cause(
     the call's cache-write tokens are entirely ephemeral_1h-tier (no
     ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
     the 1h-TTL cache would still be warm, so it falls to "unexplained"
-    instead of "idle 5m-1h".
+    instead of "idle 5m-1h". idle_5m_boundary_seconds overrides the idle
+    band's lower bound and is forwarded to _cache_rebuild_in_idle_5m_1h_band.
+    Production callers use the default, vendor-grounded boundary.
     """
     if is_first_call:
         return _CAUSE_SESSION_START
@@ -5933,7 +6216,9 @@ def _classify_cache_rebuild_cause(
         return _CAUSE_TS_ANOMALY
     if gap_seconds >= _CACHE_REBUILD_IDLE_1H_SECONDS:
         return _CAUSE_IDLE_OVER_1H
-    if gap_seconds >= _CACHE_REBUILD_IDLE_5M_SECONDS:
+    if _cache_rebuild_in_idle_5m_1h_band(
+        is_first_call, gap_seconds, idle_5m_boundary_seconds=idle_5m_boundary_seconds
+    ):
         return _CAUSE_UNEXPLAINED if pure_1h_tier_write else _CAUSE_IDLE_5M_1H
     if model_changed:
         return _CAUSE_MODEL_SWITCH
@@ -6088,6 +6373,158 @@ def _cache_rebuild_switch_delta_dollars(
     return delta_dollars, 0
 
 
+def _cache_rebuild_1h_to_5m_delta_dollars(
+    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
+) -> tuple[float | None, int]:
+    """One call's signed contribution to a per-root 1h-to-5m cacheTtl switch
+    delta -- the algebraic mirror of _cache_rebuild_switch_delta_dollars for
+    the opposite direction (see .claude/plans/cache-ttl-tuning-analysis.md's
+    Approach section for the derivation). The 5m/1h-write rate difference
+    must be resolved per call via _model_rates, never hardcoded, for the
+    same mixed-rate-corpus reason as the sibling. Positive is
+    switch-cost-positive, matching the sibling's own convention: the report
+    negates the accumulated sum before printing it as a savings-positive
+    net. is_idle_5m_1h_cause marks a call whose prior-call gap fell in
+    [idle_5m_boundary, 3600) -- under a live 1h tier this call was served as
+    a warm read, so its own cache_read_input_tokens are the plan's Z
+    contribution, not eph_5m (near-zero by construction on the population
+    this function is called for). Returns (None, unpriced_tokens) for a
+    model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's own
+    contract.
+    """
+    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
+    if dollars_by_class is None:
+        return None, unpriced_tokens
+    rates = _model_rates(model)
+    eph_1h, _eph_5m = _cache_write_split(usage)
+    tier_savings_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
+    delta_dollars = -(eph_1h / 1_000_000 * tier_savings_per_token)
+    if is_idle_5m_1h_cause:
+        read_tokens = int(usage.get("cache_read_input_tokens", 0))
+        expiry_cost_per_token = rates["cache_write_5m"] - rates["cache_read"]
+        delta_dollars += read_tokens / 1_000_000 * expiry_cost_per_token
+    # Mirrors _price_turn's own fast/geo multiplier application -- neither
+    # leg above goes through _price_turn's own dollars_by_class, so both
+    # need the same multiplier applied here instead.
+    if usage.get("speed") == "fast":
+        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
+    if usage.get("inference_geo") == "us":
+        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
+    return delta_dollars, 0
+
+
+def _cache_rebuild_margin_clears(net_dollars: float, dollar_volume: float) -> bool:
+    """Whether a direction's net savings clears --ttl-verdict's own
+    _CACHE_REBUILD_TTL_MARGIN_FRACTION of that root's own dollar-equivalent
+    volume -- shared by both the 5m-to-1h and 1h-to-5m per-root checks
+    (Approach section), since the fraction and comparison are identical;
+    only the two inputs' own derivation differs per direction. A
+    non-positive volume never clears, rather than dividing by zero or by a
+    negative number.
+    """
+    if dollar_volume <= 0:
+        return False
+    return net_dollars / dollar_volume >= _CACHE_REBUILD_TTL_MARGIN_FRACTION
+
+
+def _cache_rebuild_token_tiebreaker_favors_5m(z: int, w1h: int) -> bool | None:
+    """Raw-token, zero-price tiebreaker for a 1h-tier root (the vendor
+    publishes nothing on how cache writes weigh against subscription rate
+    limits, which matters only for a root currently paying the 1h tier):
+    True favors dropping to 5m (Z < W1h), False disfavors it (Z > W1h),
+    None when Z == W1h -- a wash counts as a disagreement, never a
+    favorable tie, so a root whose dollar accounting disagrees with this
+    sign, or whose Z and W1h are exactly equal, declines regardless of
+    its own dollar margin.
+    """
+    if z == w1h:
+        return None
+    return z < w1h
+
+
+def _cache_rebuild_dominant_tier_share(w5m: float, w1h: float) -> float:
+    """Share of a root's own W5m + W1h volume held by its dominant tier --
+    the value --ttl-verdict's per-root eligibility test
+    (_CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN) compares against. Callers
+    must exclude the w5m == w1h == 0 (no-data) case before calling this,
+    since that ratio is undefined.
+    """
+    return max(w5m, w1h) / (w5m + w1h)
+
+
+def _cache_rebuild_root_is_dominant(share: float) -> bool:
+    """Whether a root's dominant-tier share clears
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN -- the boolean the print
+    loop's own eligibility branch decides on."""
+    return share >= _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN
+
+
+def _cache_rebuild_root_verdict_input(
+    *, net_primary: float, net_sensitivity: float, volume: float,
+    positive_favors: str, negative_favors: str,
+    apply_tiebreaker: bool, tiebreaker_favors_5m: bool | None = None,
+) -> dict[str, object]:
+    """Reduce one consistent root's own net-dollar figures (at both
+    sensitivity boundaries) and dollar-equivalent volume into the
+    {"favors", "clears"} shape _cache_rebuild_ttl_verdict consumes.
+    positive_favors/negative_favors name the direction net_primary's own
+    sign resolves to -- "1h"/"5m" for a 5m-tier root, "5m"/"1h" for a
+    1h-tier root, since the two directions' savings-positive sign points
+    opposite ways. apply_tiebreaker is False for a 5m-tier root, so clears
+    is the dollar margin alone. W1h is always 0 for a 5m-tier root by
+    construction -- that's what "consistent 5m" means. A raw-token
+    comparison against it would therefore be degenerate rather than a
+    real tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
+    tiebreaker_favors_5m must agree with the dollar accounting's own sign
+    -- a None (Z == W1h wash) result never agrees, so clears is forced
+    False regardless of margin.
+    """
+    favors = positive_favors if net_primary > 0 else negative_favors
+    margin_ok = (
+        _cache_rebuild_margin_clears(net_primary, volume)
+        and _cache_rebuild_margin_clears(net_sensitivity, volume)
+    )
+    if not apply_tiebreaker:
+        return {"favors": favors, "clears": margin_ok}
+    tiebreaker_agrees = (
+        tiebreaker_favors_5m is not None and tiebreaker_favors_5m == (favors == _CACHE_REBUILD_TIER_5M)
+    )
+    clears = margin_ok and tiebreaker_agrees
+    return {"favors": favors, "clears": clears}
+
+
+def _cache_rebuild_tier_split_agreement(
+    net_5m_slice: float, net_1h_slice: float
+) -> tuple[str, str, str]:
+    """Resolve a mixed root's two slices to their own favored tier, via the
+    same savings-positive sign rule _cache_rebuild_root_verdict_input
+    applies, then compare the two labels for agreement. Returns
+    (favors_5m_slice, favors_1h_slice, agreement) for the two-slice
+    cross-check's tier-split print line. Informative only: the result never
+    feeds root_inputs, the verdict, or any count.
+    """
+    favors_5m_slice = _CACHE_REBUILD_TIER_1H if net_5m_slice > 0 else _CACHE_REBUILD_TIER_5M
+    favors_1h_slice = _CACHE_REBUILD_TIER_5M if net_1h_slice > 0 else _CACHE_REBUILD_TIER_1H
+    agreement = "agree" if favors_5m_slice == favors_1h_slice else "disagree"
+    return favors_5m_slice, favors_1h_slice, agreement
+
+
+def _cache_rebuild_ttl_verdict(root_inputs: Sequence[dict[str, object]]) -> str:
+    """Reduce one bucket's own consistent-root inputs to the plan's four-way
+    verdict (Approach section's "ship rule"). Roots-disagree is checked
+    before clears, so a direction conflict wins even when every root's own
+    margin happens to clear.
+    """
+    if not root_inputs:
+        return _TTL_VERDICT_NO_VERDICT
+    favored_directions = {root["favors"] for root in root_inputs}
+    if len(favored_directions) > 1:
+        return _TTL_VERDICT_ROOTS_DISAGREE
+    if all(root["clears"] for root in root_inputs):
+        return _TTL_VERDICT_ADOPT
+    return _TTL_VERDICT_DECLINE
+
+
 def _negate_switch_delta_for_display(accumulated_delta: float) -> float:
     """Savings-positive negation of an accumulated switch-delta sum, cents-
     rounded. Two per-call contributions that cancel exactly at the rational
@@ -6134,16 +6571,20 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
 
     Also splits idle-gap rebuilds and the 5m-tier cache-write-token volume
     by origin (main vs. subagent), and prices the dollar delta a 5m-to-1h
-    cacheTtl switch would make to subagent traffic -- see
+    cacheTtl switch would make to subagent traffic. That delta is not
+    simply the subagent share of the priced excess above, because the
+    switch raises the write rate from 1.25x to 2x on every 5m-tier write
+    the origin makes, not only the idle-gap-rebuilt tokens the excess
+    figure already prices -- see
     .claude/plans/subagent-idle-gap-cache-rebuild-split.md's Approach
-    section for why that delta is not simply the subagent share of the
-    priced excess above.
+    section for the full derivation.
 
     roots is None only for this module's own tests exercising the report
     body directly; --this-repo/--config-dir CLI validation happens once in
     cmd_cache_rebuild.
     """
     redact: bool = not bool(getattr(args, "no_redact", False))
+    ttl_verdict: bool = bool(getattr(args, "ttl_verdict", False))
     scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
@@ -6233,6 +6674,36 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
     unpriced_switch_delta_turns = 0
     unpriced_switch_delta_tokens = 0
+    # This family is never read on the default path: w5m_by_origin/x_by_origin/
+    # switch_delta_by_origin above remain the sole source for every
+    # default-path figure.
+    w5m_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    w5m_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    x_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    switch_delta_5m_to_1h_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
+    switch_delta_5m_to_1h_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    w1h_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    w1h_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    z_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
+    switch_delta_1h_to_5m_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
+    switch_delta_1h_to_5m_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Calls this family skips for lacking a price-table entry, pooled across
+    # both directions and every root -- disclosed in the --ttl-verdict
+    # section rather than split per root, since a call is unpriced by model,
+    # not by which root or direction it landed in.
+    unpriced_ttl_verdict_turns = 0
+    unpriced_ttl_verdict_tokens = 0
+    # Cross-tab of the gap-derived idle-5m-1h cause against
+    # pricing._cache_miss_reason's own "model_changed" signal -- never feeds
+    # back into any accumulator above.
+    cache_miss_reason_agree = 0
+    cache_miss_reason_discrepancy = 0
     # One entry per subagent-file group (one dispatch's own conversation),
     # for the ex-post per-dispatch dispersion figures -- kept separate from
     # w5m_by_origin/x_by_origin above, which pool every subagent-origin
@@ -6353,6 +6824,96 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                             group_delta_dollars += delta_dollars
                             if origin == "subagent":
                                 subagent_origin_w5m_in_groups += eph_5m
+
+                # --ttl-verdict's own second, parallel accumulation: keyed
+                # on (origin, root_ordinal), never read on the default
+                # path above. root_key's own ordinal is always an int here
+                # (redact_ordinals seeds single_root_ordinal too), but the
+                # None guard mirrors the per_account_* sites' own defensive
+                # style.
+                if ttl_verdict and in_scope and account_ordinal is not None:
+                    root_key = (origin, account_ordinal)
+                    read_tokens = int(usage.get("cache_read_input_tokens", 0))
+                    # The idle flags here are the gap test alone.
+                    # A call's own cache-write tier gates whether a 5-minute expiry
+                    # forced its write, not whether a live 1-hour tier served its read.
+                    is_idle_primary = _cache_rebuild_in_idle_5m_1h_band(is_first_call, gap_seconds)
+                    is_idle_sensitivity = _cache_rebuild_in_idle_5m_1h_band(
+                        is_first_call, gap_seconds,
+                        idle_5m_boundary_seconds=_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS,
+                    )
+
+                    in_w5m_branch = eph_5m > 0
+                    # A call in the sensitivity idle band (the wider of the
+                    # two boundaries) may carry read tokens the mirror
+                    # direction needs even when it wrote no 1h-tier tokens
+                    # at all -- the common case for a live-1h-tier root's
+                    # warm read.
+                    in_w1h_branch = eph_1h > 0 or (read_tokens > 0 and is_idle_sensitivity)
+
+                    # Unpriced-ness depends only on model/usage, the same
+                    # regardless of which branch(es) below this record
+                    # enters, so it's resolved once here rather than once
+                    # per branch -- a record eligible for both branches (a
+                    # mixed-tier write, or a sensitivity-band warm read
+                    # alongside a 5m-tier write) is counted at most once.
+                    dollars_by_class: dict[str, float] | None = None
+                    if in_w5m_branch or in_w1h_branch:
+                        dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
+                        if dollars_by_class is None:
+                            unpriced_ttl_verdict_turns += 1
+                            unpriced_ttl_verdict_tokens += turn_unpriced_tokens
+
+                    if in_w5m_branch:
+                        w5m_by_origin_root[root_key] += eph_5m
+                        # Reuses _price_turn's own priced classes so the margin denominator
+                        # carries the same fast-mode/US-geo multipliers the net's own
+                        # per-call delta already applies.
+                        if dollars_by_class is not None:
+                            w5m_dollars_by_origin_root[root_key] += dollars_by_class["cache_write_5m"]
+                        # X is a primary-boundary-only quantity (the report's
+                        # own display column) -- only switch_delta_5m_to_1h_*
+                        # needs the sensitivity boundary too, for the
+                        # two-point margin check.
+                        if is_idle_primary:
+                            x_by_origin_root[root_key] += eph_5m
+                        for is_idle_at_boundary, delta_dict in (
+                            (is_idle_primary, switch_delta_5m_to_1h_by_origin_root),
+                            (is_idle_sensitivity, switch_delta_5m_to_1h_at_60_by_origin_root),
+                        ):
+                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
+                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
+                            )
+                            if boundary_delta is not None:
+                                delta_dict[root_key] += boundary_delta
+
+                    if in_w1h_branch:
+                        w1h_by_origin_root[root_key] += eph_1h
+                        if dollars_by_class is not None:
+                            w1h_dollars_by_origin_root[root_key] += dollars_by_class["cache_write_1h"]
+                        # Z is a primary-boundary-only quantity, the same
+                        # reason as X above.
+                        if is_idle_primary:
+                            z_by_origin_root[root_key] += read_tokens
+                        for is_idle_at_boundary, delta_dict in (
+                            (is_idle_primary, switch_delta_1h_to_5m_by_origin_root),
+                            (is_idle_sensitivity, switch_delta_1h_to_5m_at_60_by_origin_root),
+                        ):
+                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_1h_to_5m_delta_dollars(
+                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
+                            )
+                            if boundary_delta is not None:
+                                delta_dict[root_key] += boundary_delta
+
+                    # Disclosed only, never fed back into any accumulator
+                    # above -- see _CAUSE_IDLE_5M_1H's own docstring caveat
+                    # that a model/effort switch outside the classified
+                    # window can masquerade as idle-gap expiry.
+                    if cause == _CAUSE_IDLE_5M_1H:
+                        if _cache_miss_reason(msg) == _CACHE_MISS_REASON_MODEL_CHANGED:
+                            cache_miss_reason_discrepancy += 1
+                        else:
+                            cache_miss_reason_agree += 1
 
                 write_tokens = eph_1h + eph_5m
                 in_tail = write_tokens >= threshold
@@ -6529,8 +7090,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "means the marker landed early and most of the gap is still unexplained.\n"
         "It renders n/a whenever the winning marker's own timestamp is missing\n"
         "or unparseable, which never changes the cause itself. Main origin is\n"
-        "excluded: experimental.cacheTtl cannot reach main-conversation traffic,\n"
-        "so a main-origin split would have no lever to point at. A large\n"
+        "excluded from this sub-table because experimental.cacheTtl is a\n"
+        "subagent-frontmatter lever and cannot reach main-conversation\n"
+        "traffic. The main bucket's own lever is promptCacheTtl. A large\n"
         "'unattributed' share means the marker taxonomy is incomplete, not that\n"
         "the gaps are causeless -- a transcript records the marker the harness\n"
         "delivered, never a statement of why the subagent was idle. [unverified]\n"
@@ -6581,10 +7143,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold\n"
         "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
-        "if negative) against this origin's own traffic. The main row's Net$ has\n"
-        "no corresponding lever in this plan's scope -- experimental.cacheTtl is\n"
-        "set in subagent frontmatter and cannot reach main-conversation traffic;\n"
-        "read it as reconciliation context only.\n"
+        "if negative) against this origin's own traffic. The main row reads\n"
+        "zero because this corpus was captured while main traffic was on the\n"
+        "1h tier -- promptCacheTtl is unset for main (see\n"
+        "docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
+        "corpus captured today still shows the 1h tier here. The per-root\n"
+        "--ttl-verdict gate below, not this pooled, threshold-independent\n"
+        "row, is what actually decides a tier change.\n"
     )
     print(f"{'Origin':<10} {'W5m':>14} {'X':>14} {'Ratio':>8} {'Net$':>10}")
     for origin in _CACHE_REBUILD_ORIGINS:
@@ -6641,6 +7206,149 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         " transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound"
         " above has exact W5m coverage, not merely assumed)"
     )
+
+    if ttl_verdict:
+        print(
+            "\n## TTL-verdict per-root analysis (--ttl-verdict) [unverified]\n\n"
+            "Per-root break-even verdict for each bucket's own live TTL tier -- see"
+            " .claude/plans/cache-ttl-tuning-analysis.md's Approach section for the derivation, the ship rule,"
+            " and every caveat this print omits, and .claude/plans/cache-ttl-verdict-gate-fix.md's Approach"
+            " section for the dominant-tier-share eligibility test below. A root is consistent by whichever"
+            " tier holds at least a"
+            f" {_CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN:.0%} share of its own W5m + W1h; a root below that"
+            " share (near-tie) or with neither tier nonzero (no data) is excluded from this bucket's verdict"
+            " entirely, never counted toward either direction. Clears"
+            " requires the margin to hold at both the"
+            f" {_CACHE_REBUILD_IDLE_5M_SECONDS}s and {_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS}s boundary,"
+            " and, for every 1h-tier root, the raw-token tiebreaker to agree with the dollar accounting's own"
+            " sign. [unverified]\n"
+        )
+        all_root_ordinals: tuple[int, ...] = tuple(sorted(set(redact_ordinals.values())))
+        for ttl_origin in _CACHE_REBUILD_ORIGINS:
+            consistent_5m_roots = 0
+            consistent_1h_roots = 0
+            excluded_roots = 0
+            root_inputs: list[dict[str, object]] = []
+            print(f"\n### {ttl_origin}\n")
+            print(
+                f"{'Root':<12} {'Tier':>6} {'W5m/W1h':>14} {'X/Z':>14} {'Net$':>10}"
+                f" {'Favors':>8} {'Clears':>8} {'Share':>8}"
+            )
+            for root_ordinal in all_root_ordinals:
+                root_key = (ttl_origin, root_ordinal)
+                # --no-redact is refused once more than one root is in
+                # scope, so scan_roots[0] is the only root this branch can
+                # reach when not redact.
+                root_label = f"account-{root_ordinal}" if redact else str(scan_roots[0].parent)
+                root_w5m = w5m_by_origin_root.get(root_key, 0)
+                root_w1h = w1h_by_origin_root.get(root_key, 0)
+                if root_w5m == 0 and root_w1h == 0:
+                    # No data in either tier excludes this root from the
+                    # bucket's verdict. The row still prints so the reason
+                    # is visible rather than only folded into the lumped
+                    # count.
+                    excluded_roots += 1
+                    print(
+                        f"{root_label:<12} {_TTL_TIER_NONE:>6} {0:>14,} {0:>14,} {_TTL_ROW_NA:>10}"
+                        f" {_TTL_ROW_NOT_APPLICABLE:>8} {_TTL_EXCLUDE_NO_DATA:>8} {_TTL_ROW_NA:>8}"
+                    )
+                    continue
+                # A mixed root still gets its own row, naming the dominant
+                # tier's own accumulators (eligibility rule: see
+                # _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN above).
+                is_mixed = root_w5m > 0 and root_w1h > 0
+                share = _cache_rebuild_dominant_tier_share(root_w5m, root_w1h)
+                if root_w5m >= root_w1h:
+                    tier = _CACHE_REBUILD_TIER_5M
+                    net_primary = _negate_switch_delta_for_display(
+                        switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
+                    )
+                    net_sensitivity = _negate_switch_delta_for_display(
+                        switch_delta_5m_to_1h_at_60_by_origin_root.get(root_key, 0.0)
+                    )
+                    volume = w5m_dollars_by_origin_root.get(root_key, 0.0)
+                    root_input = _cache_rebuild_root_verdict_input(
+                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
+                        positive_favors=_CACHE_REBUILD_TIER_1H, negative_favors=_CACHE_REBUILD_TIER_5M,
+                        apply_tiebreaker=False,
+                    )
+                    row_prefix = (
+                        f"{root_label:<12} {_CACHE_REBUILD_TIER_5M:>6} {root_w5m:>14,}"
+                        f" {x_by_origin_root.get(root_key, 0):>14,} {_fmt_usd(net_primary):>10}"
+                        f" {root_input['favors']:>8}"
+                    )
+                else:
+                    tier = _CACHE_REBUILD_TIER_1H
+                    net_primary = _negate_switch_delta_for_display(
+                        switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
+                    )
+                    net_sensitivity = _negate_switch_delta_for_display(
+                        switch_delta_1h_to_5m_at_60_by_origin_root.get(root_key, 0.0)
+                    )
+                    volume = w1h_dollars_by_origin_root.get(root_key, 0.0)
+                    root_z = z_by_origin_root.get(root_key, 0)
+                    root_input = _cache_rebuild_root_verdict_input(
+                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
+                        positive_favors=_CACHE_REBUILD_TIER_5M, negative_favors=_CACHE_REBUILD_TIER_1H,
+                        apply_tiebreaker=True,
+                        tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
+                    )
+                    row_prefix = (
+                        f"{root_label:<12} {_CACHE_REBUILD_TIER_1H:>6} {root_w1h:>14,} {root_z:>14,}"
+                        f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8}"
+                    )
+                if not _cache_rebuild_root_is_dominant(share):
+                    excluded_roots += 1
+                    print(f"{row_prefix} {_TTL_EXCLUDE_NEAR_TIE:>8} {share:>8.3f}")
+                else:
+                    if tier == _CACHE_REBUILD_TIER_5M:
+                        consistent_5m_roots += 1
+                    else:
+                        consistent_1h_roots += 1
+                    root_inputs.append(root_input)
+                    print(f"{row_prefix} {str(root_input['clears']):>8} {share:>8.3f}")
+                if is_mixed:
+                    # Two-slice cross-check, informative only. The unanimity
+                    # unit is the root, not a root-slice.
+                    # net_5m_slice/net_1h_slice recompute the same
+                    # switch_delta lookup-and-negate expression as the
+                    # tier branches above. Keep both call sites in sync
+                    # if that expression changes.
+                    net_5m_slice = _negate_switch_delta_for_display(
+                        switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
+                    )
+                    net_1h_slice = _negate_switch_delta_for_display(
+                        switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
+                    )
+                    favors_5m_slice, favors_1h_slice, agreement = _cache_rebuild_tier_split_agreement(
+                        net_5m_slice, net_1h_slice
+                    )
+                    print(
+                        f"tier-split {root_label}: 5m-slice favors {favors_5m_slice}, "
+                        f"1h-slice favors {favors_1h_slice} ({agreement})"
+                    )
+            verdict = _cache_rebuild_ttl_verdict(root_inputs)
+            print(
+                f"\n{ttl_origin}: consistent 5m roots={consistent_5m_roots}"
+                f"  consistent 1h roots={consistent_1h_roots}"
+                f"  excluded (near-tie or no data) roots={excluded_roots}  verdict={verdict}"
+            )
+
+        if unpriced_ttl_verdict_turns:
+            print(
+                f"\n  ({unpriced_ttl_verdict_turns:,} calls / {unpriced_ttl_verdict_tokens:,} tokens excluded from"
+                " every Net$ figure and its own margin volume above -- model has no price-table entry)"
+            )
+
+        cache_miss_reason_total = cache_miss_reason_agree + cache_miss_reason_discrepancy
+        if cache_miss_reason_discrepancy:
+            print(
+                f"\n  (cache-miss-reason cross-tab: {cache_miss_reason_discrepancy:,} of"
+                f" {cache_miss_reason_total:,} idle-5m-1h-classified calls carry a vendor cache_miss_reason of"
+                f" {_CACHE_MISS_REASON_MODEL_CHANGED!r} -- a discrepancy between the gap-derived cause and Claude"
+                " Code's own miss signal. Every W5m/X/W1h/Z figure above still reflects the gap-derived"
+                " classification, never this signal.)"
+            )
 
 
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
@@ -7193,13 +7901,66 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         _print_cost_ledger_read(existing_rows, args, roots)
         return
 
-    sentinel_path = config_dir() / ".cost-ledger-enabled"
-    if not sentinel_path.exists():
-        # Hardcodes the conventional ~/.claude path rather than sentinel_path
-        # itself -- same don't-print-a-resolved-home-rooted-path discipline
-        # as the ledger-file-missing message above, applied to a fixed
-        # docstring instead of an f-string since CLAUDE_CONFIG_DIR overrides
-        # are rare enough that the canonical hint reads clearer.
+    # No config_dir_override -- this is the single-account path, not the
+    # --all-accounts loop below, which passes its own account_config_dir.
+    try:
+        cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    except _config.ConfigSchemaEmptyError:
+        # config-keys.psv was read successfully but produced zero schema
+        # rows (see that class's own docstring) -- distinct from the
+        # unreadable-file case below, which this file was not.
+        print(
+            "cost-ledger: --record found config-keys.psv empty or malformed"
+            " (no parseable schema rows) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except _config.ConfigSchemaRowTruncatedError:
+        # cost_ledger_recording's own row is present but truncated after an
+        # earlier column (see that class's own docstring) -- a torn schema
+        # row, not a renamed or typo'd key literal at this call site.
+        print(
+            "cost-ledger: --record found cost_ledger_recording's config-keys.psv"
+            " row truncated (partial stow-relink or interrupted git pull)"
+            " -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except KeyError as exc:
+        if _config.schema():
+            # config-keys.psv parsed fine (schema() returned rows), so this
+            # KeyError is a real unknown-key bug -- a renamed or typo'd
+            # literal at this call site -- not the infrastructure cause the
+            # message below assumes.
+            print(f"cost-ledger: --record: unknown config key {exc}", file=sys.stderr)
+            sys.exit(1)
+        # config-keys.psv itself was unreadable at the moment of this call
+        # (see _config.py's module docstring) -- a partial stow-relink or
+        # interrupted `git pull`, not a caller-side key-name typo.
+        print(
+            "cost-ledger: --record could not read config-keys.psv (partial stow-relink"
+            " or interrupted git pull) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if cost_ledger_recording_enabled is None:
+        # Distinguishes "config dir unresolvable" from "disabled" -- the
+        # single message below would otherwise misdiagnose an unresolvable
+        # CLAUDE_CONFIG_DIR as a missing opt-in, the same three-way branch
+        # _cost_ledger_path() above already makes for its own ValueError.
+        print(
+            "cost-ledger: --record could not resolve the Claude Code config"
+            " directory (CLAUDE_CONFIG_DIR is set to a relative path, or"
+            " $HOME is unset/empty) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not cost_ledger_recording_enabled:
+        # Hardcodes the conventional ~/.claude path rather than the resolved
+        # config dir -- same don't-print-a-resolved-home-rooted-path
+        # discipline as the ledger-file-missing message above, applied to a
+        # fixed docstring instead of an f-string since CLAUDE_CONFIG_DIR
+        # overrides are rare enough that the canonical hint reads clearer.
         print(
             "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
             " -- see docs/cost-ledger.md",
@@ -7464,7 +8225,7 @@ _PR_COST_TEST_FILE_RE = re.compile(
     r"(^|/)tests?/|(^|/)test_[^/]+\.py$|_test\.py$|\.test\.[jt]sx?$|\.spec\.[jt]sx?$"
 )
 
-_PR_COST_GH_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
+_GH_CALL_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
 # per-call timeout recommendation, so this is a considered guess generous
 # enough for one REST round trip, not a network SLA citation.
 _PR_COST_RATE_LIMIT_MIN_BACKOFF_S = 60.0  # GitHub REST API docs, "Rate
@@ -7771,7 +8532,7 @@ def _acquire_pr_cost_ledger_lock(lock_f) -> None:
             time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
 
 
-def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
+def _git_remote_origin_host_and_owner_repo(subcommand: str = "pr-cost", failure_hint: str = "") -> tuple[str, str]:
     """Case-folded (host, owner/name) parsed from this invocation's own
     `git remote get-url origin` -- the corpus-root side of _resolve_pinned_gh_repo's
     identity comparison, run from cwd (this subcommand's own worktree) rather
@@ -7779,7 +8540,10 @@ def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
     a git repository itself. Accepts any host (github.com, a GitHub
     Enterprise host, ...); whether gh actually holds credentials for that
     host is left to the caller and to gh itself, not decided by this parse.
+    `subcommand` prefixes the failure messages. A non-empty `failure_hint`
+    is appended to them as the caller's escape hatch.
     """
+    hint_suffix = f" -- {failure_hint}" if failure_hint else ""
     try:
         proc = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -7787,11 +8551,17 @@ def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
             encoding="utf-8", errors="replace",
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        print("pr-cost: could not resolve this repo's own remote (git remote get-url origin failed)", file=sys.stderr)
+        print(
+            f"{subcommand}: could not resolve this repo's own remote (git remote get-url origin failed){hint_suffix}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     m = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(proc.stdout.strip())
     if not m:
-        print("pr-cost: this repo's origin remote is not a recognizable host/owner/repo URL", file=sys.stderr)
+        print(
+            f"{subcommand}: this repo's origin remote is not a recognizable host/owner/repo URL{hint_suffix}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return m.group("host").lower(), f"{m.group('owner')}/{m.group('repo')}".lower()
 
@@ -7856,7 +8626,7 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
         stderr = ""
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
+                argv, capture_output=True, text=True, timeout=_GH_CALL_TIMEOUT_S,
                 encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -7923,7 +8693,7 @@ def _gh_auth_preflight_ok(hostname: str) -> bool:
     try:
         proc = subprocess.run(
             ["gh", "auth", "status", "--hostname", hostname], capture_output=True, text=True,
-            timeout=_PR_COST_GH_TIMEOUT_S, encoding="utf-8", errors="replace",
+            timeout=_GH_CALL_TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -8446,12 +9216,76 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             )
             continue
 
-        sentinel_path = account_config_dir / ".pr-cost-enabled"
-        if not sentinel_path.exists():
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except _config.ConfigSchemaEmptyError:
+            # config-keys.psv was read successfully but produced zero
+            # schema rows (see that class's own docstring) -- distinct
+            # from the unreadable-file case below, which this file was
+            # not.
+            print(
+                "pr-cost: --record found config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            # pr_cost_recording's own row is present but truncated after an
+            # earlier column (see that class's own docstring) -- a torn
+            # schema row, not a renamed or typo'd key literal at this call
+            # site.
+            print(
+                "pr-cost: --record found pr_cost_recording's config-keys.psv"
+                " row truncated (partial stow-relink or interrupted git pull)"
+                " -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except KeyError as exc:
+            if _config.schema():
+                # config-keys.psv parsed fine (schema() returned rows), so
+                # this KeyError is a real unknown-key bug -- a renamed or
+                # typo'd literal at this call site -- not the infrastructure
+                # cause the message below assumes.
+                print(f"pr-cost: --record: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            # config-keys.psv itself was unreadable at the moment of this
+            # call (see _config.py's module docstring) -- a partial
+            # stow-relink or interrupted `git pull`, not a caller-side
+            # key-name typo.
+            print(
+                "pr-cost: --record could not read config-keys.psv (partial stow-relink"
+                " or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always a concrete, already-resolved
+            # directory here (root.parent) -- not expected to be reachable
+            # in practice -- handled explicitly anyway so a future
+            # account_config_dir computation change fails loud rather than
+            # silently misreporting "not opted in".
             if all_accounts:
-                # account-N, not sentinel_path, to avoid a resolved
-                # home-rooted path in output -- same discipline as the
-                # single-account refusal message below.
+                print(
+                    f"pr-cost: account-{ordinal}'s config directory could not be resolved --"
+                    " skipped, see docs/pr-cost.md",
+                    file=sys.stderr,
+                )
+                skipped_other += 1
+                continue
+            print(
+                "pr-cost: --record could not resolve the Claude Code config directory --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            if all_accounts:
+                # account-N, not the resolved config dir, to avoid a
+                # resolved home-rooted path in output -- same discipline as
+                # the single-account refusal message below.
                 print(
                     f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
                     " skipped, see docs/pr-cost.md",
@@ -8459,9 +9293,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not sentinel_path, to avoid a
-            # resolved home-rooted path in output -- same discipline as
-            # cost-ledger's equivalent message above.
+            # Prints the conventional path, not the resolved config dir, to
+            # avoid a resolved home-rooted path in output -- same discipline
+            # as cost-ledger's equivalent message above.
             print(
                 "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
                 " see docs/pr-cost.md",
@@ -8832,8 +9666,16 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
 
 
 def _print_nudge_log_diagnostic() -> None:
-    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
-    log_path = config_dir() / ".handoff-nudge.log"
+    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if
+    present. Silently skips the diagnostic (never raises) when config_dir()
+    can't resolve, since the primary report this footer follows has already
+    printed and succeeded. Matches _read_bounded_log_lines' own
+    absent/unreadable-file degrade above."""
+    try:
+        config_directory = config_dir()
+    except ValueError:
+        return
+    log_path = config_directory / ".handoff-nudge.log"
     lines = _read_bounded_log_lines(log_path)
     drift_count = sum(1 for ln in lines if ln.startswith("schema-drift"))
     if drift_count:
@@ -10707,7 +11549,15 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    try:
+        config_directory = config_dir()
+    except ValueError as exc:
+        # Mirrors _cost_ledger_path's callers' own stderr+exit convention.
+        # The rest of this report can't locate the recorded corpus it
+        # backtests against without a resolved config dir.
+        print(f"rearm-backtest: {exc}", file=sys.stderr)
+        sys.exit(1)
+    log_entries = _parse_nudge_log_entries(config_directory / ".handoff-nudge.log")
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)
@@ -11094,6 +11944,643 @@ def _plan_boundary_report(args: argparse.Namespace, today: date, roots: Sequence
             print(f"  {reason}: {cache_miss_reason_counts[reason]:,}")
 
 
+# --- handoff-signal-response: mechanical audit of the handoff-nudge rationalization gap ---
+# .claude/plans/handoff-nudge-rationalization-gap.md owns the full design.
+
+# Named constants, not inline strings, so a signal's kind is never a
+# copy-pasted literal. Read at three call sites: the OR-condition detector,
+# the aggregate table, and the curation-card formatter.
+_HANDOFF_SIGNAL_CHECK = "check"
+_HANDOFF_SIGNAL_ADVISORY = "advisory"
+_HANDOFF_SIGNAL_HARD_BLOCK = "hard-block"
+
+# nudge-handoff-near-context-cap.sh's own script basename, matched
+# post-basename since the real invocation is always a tilde or absolute path
+# -- mirrors _DENIAL_COMMAND_MULTIPLEXERS' own convention for marker.sh.
+_HANDOFF_SIGNAL_HOOK_BASENAME = "nudge-handoff-near-context-cap.sh"
+
+# The hard-block stderr message's own stable substring
+# (nudge-handoff-near-context-cap.sh's printf, around line 647), distinct
+# from the advisory clause's own text so it can't cross-match.
+_HANDOFF_SIGNAL_HARD_BLOCK_TEXT = "handoff-nudge hard-block point"
+
+# A /handoff write's own file-path shape: handoff/SKILL.md writes
+# "<config-dir>/handoffs/<slug>-handoff.md".
+_HANDOFF_SIGNAL_WRITE_PATH_RE = re.compile(r"/handoffs/[^/]+-handoff\.md$")
+
+# Long enough to carry a full rationalization sentence on a curation card,
+# short enough to keep the card scannable -- a display truncation, not a
+# protocol-grounded value.
+_HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
+
+# Long enough to carry a full reasoning paragraph in a --context-turns
+# entry, short enough to keep --sample output bounded -- a display
+# truncation, not a protocol-grounded value.
+_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
+
+
+def _handoff_signal_shlex_segments(command: str) -> list[list[str]]:
+    """Tokenize a Bash command and split it on shell operators, reusing
+    _split_command_tokens_on_shell_operators so a chained invocation (`cd x
+    && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`) is still
+    detected in its own segment."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    return _split_command_tokens_on_shell_operators(tokens)
+
+
+def _handoff_signal_bash_check_call(block: dict) -> bool:
+    """True iff `block` is a Bash tool_use invoking
+    nudge-handoff-near-context-cap.sh --check, in any &&/;/|-chained segment."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+        return False
+    command = (block.get("input") or {}).get("command", "") or ""
+    for segment in _handoff_signal_shlex_segments(command):
+        if segment and os.path.basename(segment[0]) == _HANDOFF_SIGNAL_HOOK_BASENAME and "--check" in segment[1:]:
+            return True
+    return False
+
+
+def _handoff_signal_marker_transition(block: dict) -> str | None:
+    """Return "activate"/"deactivate" iff `block` is a Bash tool_use invoking
+    `marker.sh (activate|deactivate) ready-for-review`, else None. Best-effort,
+    like every other command-shape classifier in this file: an unrecognized
+    wrapping (an alias, a function) is silently missed."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+        return None
+    command = (block.get("input") or {}).get("command", "") or ""
+    for segment in _handoff_signal_shlex_segments(command):
+        if len(segment) < 3 or os.path.basename(segment[0]) != "marker.sh":
+            continue
+        if segment[1] in ("activate", "deactivate") and segment[2] == "ready-for-review":
+            return segment[1]
+    return None
+
+
+def _handoff_signal_is_handoff_event(block: dict) -> bool:
+    """True iff `block` is a same-session handoff event: a `/handoff` Skill
+    invocation, or a Write/Edit whose file_path is a
+    `<config-dir>/handoffs/<slug>-handoff.md` write."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+        return False
+    name = block.get("name")
+    inp = block.get("input") or {}
+    if name == "Skill" and inp.get("skill") == "handoff":
+        return True
+    if name in ("Write", "Edit"):
+        return bool(_HANDOFF_SIGNAL_WRITE_PATH_RE.search(inp.get("file_path", "") or ""))
+    return False
+
+
+def _handoff_signal_is_eligible_main_thread_turn(rec: dict) -> bool:
+    """True iff `rec` is a main-thread assistant turn: type=="assistant",
+    not isSidechain. Shared by _handoff_signal_excerpt_eligible_text and
+    _handoff_signal_forward_context, whose turn-walking loops both need
+    the same main-thread-turn definition."""
+    return rec.get("type") == "assistant" and not bool(rec.get("isSidechain"))
+
+
+def _handoff_signal_excerpt_eligible_text(rec: dict) -> str:
+    """Excerpt-eligible: main-thread assistant `text` blocks only, never
+    tool_use/tool_result/user records or sidechain turns."""
+    if not _handoff_signal_is_eligible_main_thread_turn(rec):
+        return ""
+    content = (rec.get("message") or {}).get("content") or []
+    if not isinstance(content, list):
+        return ""
+    texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+    return " ".join(texts)
+
+
+def _handoff_signal_excerpt(deduped: Sequence[dict], after_record_index: int) -> str:
+    """First excerpt-eligible text strictly after `after_record_index` in
+    `deduped` (see _handoff_signal_excerpt_eligible_text), truncated to
+    _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS; "" when no eligible record follows."""
+    for rec in deduped[after_record_index + 1:]:
+        text = _handoff_signal_excerpt_eligible_text(rec)
+        if text:
+            return text[:_HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
+    return ""
+
+
+def _handoff_signal_forward_context(deduped: Sequence[dict], after_record_index: int, n_turns: int) -> list[dict]:
+    """Forward-context window for a --context-turns caller:
+    - up to `n_turns` main-thread turns strictly after `after_record_index` in `deduped`
+    - same main-thread-turn definition as _handoff_signal_response_session_rows' own
+      main_thread_turns: type=="assistant", not isSidechain
+    - each entry carries both text AND thinking content -- unlike
+      _handoff_signal_excerpt_eligible_text (text blocks only), reading both
+      content-block kinds lets a caller see reasoning an agent confined to an
+      extended-thinking block, invisible to the base excerpt
+    - one entry per turn visited, even when both fields are empty, keeping
+      turn_offset (1-based) stable
+    - stops early once `n_turns` turns have been visited or the transcript
+      runs out, whichever comes first
+    - never includes session_id/jsonl_path or any other identifying field
+    """
+    if n_turns <= 0:
+        return []
+    contexts: list[dict] = []
+    for rec in deduped[after_record_index + 1:]:
+        if not _handoff_signal_is_eligible_main_thread_turn(rec):
+            continue
+        content = (rec.get("message") or {}).get("content") or []
+        if not isinstance(content, list):
+            content = []
+        texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+        thinkings = [
+            b.get("thinking", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "thinking" and b.get("thinking")
+        ]
+        contexts.append({
+            "turn_offset": len(contexts) + 1,
+            "text": " ".join(texts)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+            "thinking": " ".join(thinkings)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+        })
+        if len(contexts) >= n_turns:
+            break
+    return contexts
+
+
+def _handoff_signal_response_session_rows(records: Sequence[dict]) -> tuple[list[dict], list[dict], list[int]]:
+    """Detect every observed context-budget signal in one session's own
+    transcript. Returns (rows, deduped, trace):
+    - rows: one dict per signal (kind, record_index, position, context_at_turn,
+      threshold, marker_active, handoff_followed, turns_after_signal,
+      dollars_after_signal, session_total_dollars, pct_spend_after_signal)
+      -- session_id is not included; the caller attaches it (this function
+      has no I/O, so it never resolves jsonl.stem).
+      -- exceeds_startup_burn_benchmark is not included either: it depends on
+      a corpus-wide benchmark the caller alone can compute
+      (_startup_burn_benchmark), not on anything local to one session.
+    - deduped: this session's own _dedup_turns_by_request_id output, returned
+      so a caller building curation-card excerpts can search forward from a
+      row's own record_index without re-deduping the session a second time.
+    - trace: one abs-token estimate (context_at_turn + output_tokens, the
+      hook's own ESTIMATE unit) per main-thread turn, in
+      _rearm_backtest_report's own session_traces shape -- lets a caller feed
+      _operator_response_lag_from_log without a second dedup+price pass.
+
+    A single ordered pass over `records` (post-dedup) tracks, in parallel:
+    - running main-thread turn context/output/dollars (`_price_turn`, the
+      same primitive every sibling subcommand in this file uses for this)
+    - the `ready-for-review` active-marker state (marker.sh
+      activate/deactivate Bash calls)
+    - pending `--check` tool_use ids awaiting their tool_result
+    - every same-session handoff event
+
+    Each signal row captures the running marker-active state AS OF that
+    point in the pass, not the state by the end of the session.
+    """
+    deduped = _dedup_turns_by_request_id(records)
+
+    main_thread_turns: list[tuple[int, int, float]] = []  # (context_at_turn, output_tokens, dollars)
+    main_thread_models: list[str] = []
+    marker_active = False
+    pending_check_calls: dict[str, int] = {}  # tool_use_id -> turn_index at call time
+    handoff_record_indices: list[int] = []
+    signals: list[dict] = []
+
+    for record_index, rec in enumerate(deduped):
+        rec_type = rec.get("type")
+
+        if rec_type == "attachment":
+            att = rec.get("attachment") or {}
+            att_type = att.get("type")
+            if att_type == "hook_success" and os.path.basename(att.get("command") or "") == _HANDOFF_SIGNAL_HOOK_BASENAME:
+                try:
+                    payload = json.loads(att.get("stdout") or "")
+                except (json.JSONDecodeError, ValueError):
+                    payload = {}
+                additional_context = (payload.get("hookSpecificOutput") or {}).get("additionalContext")
+                if additional_context:
+                    signals.append({
+                        "kind": _HANDOFF_SIGNAL_ADVISORY,
+                        "record_index": record_index,
+                        "turn_index": len(main_thread_turns),
+                        "marker_active": marker_active,
+                    })
+            elif att_type == "hook_stopped_continuation" and _HANDOFF_SIGNAL_HARD_BLOCK_TEXT in (att.get("message") or ""):
+                signals.append({
+                    "kind": _HANDOFF_SIGNAL_HARD_BLOCK,
+                    "record_index": record_index,
+                    "turn_index": len(main_thread_turns),
+                    "marker_active": marker_active,
+                })
+            continue
+
+        if rec_type == "user":
+            content = (rec.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                        continue
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id is None or tool_use_id not in pending_check_calls:
+                        continue
+                    turn_index = pending_check_calls.pop(tool_use_id)
+                    try:
+                        payload = json.loads(_content_text(block.get("content")))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if payload.get("status") != "ok":
+                        continue
+                    if payload.get("over_threshold") or payload.get("already_fired"):
+                        signals.append({
+                            "kind": _HANDOFF_SIGNAL_CHECK,
+                            "record_index": record_index,
+                            "turn_index": turn_index,
+                            "marker_active": marker_active,
+                        })
+            continue
+
+        if rec_type != "assistant" or bool(rec.get("isSidechain")):
+            continue
+
+        msg = rec.get("message") or {}
+        usage = msg.get("usage")
+        if usage:
+            model = msg.get("model", "")
+            dollars_by_class, context_at_turn, _unpriced_tokens = _price_turn(model, usage)
+            dollars = sum(dollars_by_class.values()) if dollars_by_class is not None else 0.0
+            main_thread_turns.append((context_at_turn, int(usage.get("output_tokens", 0)), dollars))
+            main_thread_models.append(model)
+
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            transition = _handoff_signal_marker_transition(block)
+            if transition == "activate":
+                marker_active = True
+            elif transition == "deactivate":
+                marker_active = False
+            if _handoff_signal_bash_check_call(block):
+                tool_use_id = block.get("id")
+                if tool_use_id:
+                    pending_check_calls[tool_use_id] = len(main_thread_turns)
+            if _handoff_signal_is_handoff_event(block):
+                handoff_record_indices.append(record_index)
+
+    total_turns = len(main_thread_turns)
+    # Suffix sums: O(total_turns) once, vs. O(signals × turns) if re-summed per signal.
+    suffix_dollars = [0.0] * (total_turns + 1)
+    for i in range(total_turns - 1, -1, -1):
+        suffix_dollars[i] = suffix_dollars[i + 1] + main_thread_turns[i][2]
+
+    rows: list[dict] = []
+    for sig in signals:
+        turn_index = sig["turn_index"]
+        if turn_index > 0:
+            context_at_turn = main_thread_turns[turn_index - 1][0]
+            threshold = _hook_effective_fire_threshold(main_thread_models[turn_index - 1])
+        else:
+            # Defensive edge case, not expected in practice: every real fire
+            # already read a usage block before firing, so turn_index is 0
+            # only for a malformed/synthetic fixture with no prior usage.
+            context_at_turn, threshold = 0, None
+        rows.append({
+            "kind": sig["kind"],
+            "record_index": sig["record_index"],
+            "position": turn_index,
+            "context_at_turn": context_at_turn,
+            "threshold": threshold,
+            "marker_active": sig["marker_active"],
+            "handoff_followed": any(idx > sig["record_index"] for idx in handoff_record_indices),
+            "turns_after_signal": total_turns - turn_index,
+            "dollars_after_signal": suffix_dollars[turn_index],
+            "session_total_dollars": suffix_dollars[0],
+            "pct_spend_after_signal": (
+                suffix_dollars[turn_index] / suffix_dollars[0] if suffix_dollars[0] > 0 else None
+            ),
+        })
+
+    trace = [c + o for c, o, _d in main_thread_turns]
+    return rows, deduped, trace
+
+
+def _rank_signal_rows_by_spend(rows: list[dict], sample_n: int, seed: int | None) -> list[dict]:
+    """Return the top `sample_n` rows descending by `dollars_after_signal`,
+    with a seeded pre-shuffle tie-break; with no seed, ties keep input order."""
+    if seed is not None:
+        rng = random.Random(seed)
+        rows = list(rows)
+        rng.shuffle(rows)
+    return sorted(rows, key=lambda row: row["dollars_after_signal"], reverse=True)[:sample_n]
+
+
+def _handoff_signal_response_cards(sampled: list[dict], redact: bool, context_turns: int = 0) -> list[dict]:
+    """Attach a curation-card excerpt to each sampled row, re-reading only
+    the sampled rows' own sessions (not the whole scanned corpus) -- see
+    _handoff_signal_excerpt's own eligibility rule. `redact` controls
+    whether each card's session id is replaced by a run-scoped opaque
+    label (_assign_session_redact_label/_redact_session_id, the same
+    mechanism cost's own per-row redaction uses). `context_turns` > 0 adds
+    a "forward_context" key (_handoff_signal_forward_context) to each card;
+    0 (the default) omits the key entirely, so every existing call site's
+    card shape is unchanged."""
+    session_redact_map: dict[str, str] = {}
+    deduped_cache: dict[Path, list[dict]] = {}
+    cards: list[dict] = []
+    for row in sampled:
+        jsonl_path: Path = row["jsonl_path"]
+        deduped = deduped_cache.get(jsonl_path)
+        if deduped is None:
+            deduped = _dedup_turns_by_request_id(corpus.read_session_file(jsonl_path, include_subagents=False))
+            deduped_cache[jsonl_path] = deduped
+        excerpt = _handoff_signal_excerpt(deduped, row["record_index"])
+        session_id = row["session_id"]
+        if redact:
+            _assign_session_redact_label(session_id, session_redact_map)
+            session_id = _redact_session_id(session_id, session_redact_map)
+        card = {
+            "session_id": session_id,
+            "kind": row["kind"],
+            "position": row["position"],
+            "context_at_turn": row["context_at_turn"],
+            "threshold": row["threshold"],
+            "marker_active": row["marker_active"],
+            "handoff_followed": row["handoff_followed"],
+            "turns_after_signal": row["turns_after_signal"],
+            "dollars_after_signal": round(row["dollars_after_signal"], 2),
+            "session_total_dollars": round(row["session_total_dollars"], 2),
+            "pct_spend_after_signal": (
+                round(row["pct_spend_after_signal"], 4) if row["pct_spend_after_signal"] is not None else None
+            ),
+            "exceeds_startup_burn_benchmark": row["exceeds_startup_burn_benchmark"],
+            "excerpt": excerpt,
+        }
+        if context_turns:
+            card["forward_context"] = _handoff_signal_forward_context(deduped, row["record_index"], context_turns)
+        cards.append(card)
+    return cards
+
+
+def _startup_burn_benchmark(workstream: dict[str, dict]) -> tuple[float | None, int, int]:
+    """Session-count-weighted average of startup-burn dollars
+    (_compute_workstream_dollars' own startup_burn_dollars) across every
+    branch in scope -- not an unweighted per-branch average, which would let
+    a low-continuation branch skew the result.
+
+    Returns (benchmark_dollars, total_continuations, branch_count), where
+    branch_count is every branch with corpus activity in scope (len(workstream),
+    _compute_workstream_dollars' own population), not only branches with a
+    continuation session. Returns None for benchmark_dollars when no branch
+    has a non-first session to sum, to avoid a ZeroDivisionError.
+    """
+    total_burn = sum(agg["startup_burn_dollars"] for agg in workstream.values())
+    total_continuations = sum(max(agg["session_count"] - 1, 0) for agg in workstream.values())
+    benchmark = total_burn / total_continuations if total_continuations > 0 else None
+    return benchmark, total_continuations, len(workstream)
+
+
+def _format_startup_burn_benchmark(benchmark_dollars: float | None) -> str:
+    """Shared "$X.XX per continuation session" / unavailable phrasing for
+    the startup-burn benchmark -- used by both the aggregate report and the
+    curation-card markdown header, so the two surfaces never drift apart."""
+    if benchmark_dollars is None:
+        return "unavailable (no continuation sessions found in scope)"
+    return f"{_fmt_usd(benchmark_dollars)} per continuation session"
+
+
+def _format_forward_context_turns_markdown(forward_context: list[dict]) -> str:
+    """Render a card's own "forward_context" list (--context-turns only) as
+    a markdown subsection; a turn whose text and thinking are both empty is
+    skipped entirely to keep the card scannable. Caller only invokes this
+    when the key is present on the card -- an empty (but present) list
+    still renders a header, distinct from the key being absent."""
+    if not forward_context:
+        return "**Forward context:** (no eligible turns followed the signal)\n\n"
+    lines = [f"**Forward context (next {len(forward_context)} turn(s)):**\n"]
+    for turn in forward_context:
+        text = turn.get("text") or ""
+        thinking = turn.get("thinking") or ""
+        if not text and not thinking:
+            continue
+        pieces = []
+        if thinking:
+            pieces.append(f"thinking: {thinking}")
+        if text:
+            pieces.append(f"text: {text}")
+        lines.append(f"- turn +{turn['turn_offset']}: {' / '.join(pieces)}\n")
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _format_handoff_signal_cards_as_markdown(
+    cards: list[dict], *, sample_n: int, seed: int | None, benchmark_dollars: float | None,
+) -> str:
+    """Return a full markdown document for human curation of
+    handoff-signal-response --sample output, mirroring
+    _format_samples_as_markdown's own curation-card shape."""
+    today = date.today().isoformat()
+    seed_display = str(seed) if seed is not None else "(none)"
+    header = (
+        f"# handoff-signal-response curation — {len(cards)} signal(s)\n"
+        f"\n"
+        f"Generated: {today}  ·  Filter: `--sample {sample_n}  --seed {seed_display}`\n"
+        f"\n"
+        f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.\n"
+        f"\n"
+        f"For each signal: read the excerpt (the agent's own next eligible text turn after the"
+        f" signal, if any), then check ONE verdict box.\n"
+    )
+    sections: list[str] = []
+    total = len(cards)
+    for i, card in enumerate(cards):
+        excerpt = card["excerpt"] or "(no eligible assistant text turn followed the signal)"
+        threshold_display = f"{card['threshold']:,}" if card["threshold"] is not None else "n/a"
+        pct_display = (
+            f"{card['pct_spend_after_signal'] * 100:.1f}%" if card["pct_spend_after_signal"] is not None else "n/a"
+        )
+        exceeds_display = (
+            "n/a" if card["exceeds_startup_burn_benchmark"] is None
+            else ("yes" if card["exceeds_startup_burn_benchmark"] else "no")
+        )
+        forward_context_block = (
+            _format_forward_context_turns_markdown(card["forward_context"]) if "forward_context" in card else ""
+        )
+        section = (
+            f"## {i + 1}/{total} — session `{card['session_id']}` — {card['kind']} signal at turn {card['position']}\n"
+            f"\n"
+            f"- context_at_turn: {card['context_at_turn']:,}  ·  threshold: {threshold_display}\n"
+            f"- ready-for-review marker active: {card['marker_active']}\n"
+            f"- handoff followed (same session): {card['handoff_followed']}\n"
+            f"- turns after signal: {card['turns_after_signal']:,}  ·  $ after signal: {card['dollars_after_signal']:,.2f}\n"
+            f"- % of session spend after signal: {pct_display}  ·  exceeds startup-burn benchmark: {exceeds_display}\n"
+            f"\n"
+            f"**Excerpt:**\n"
+            f"> {excerpt}\n"
+            f"\n"
+            f"{forward_context_block}"
+            f"Verdict: [ ] cost-grounded  [ ] step-count/\"nearly-done\" (no cost reasoning)  "
+            f"[ ] handed off  [ ] unclassifiable\n"
+        )
+        sections.append(section)
+    return header + "\n" + "\n".join(sections)
+
+
+def _handoff_signal_response_aggregate_report(
+    rows: Sequence[dict], log_diagnostic: str | None,
+    benchmark_dollars: float | None,
+) -> None:
+    """Print the census-mode aggregate report: signal counts, conversion
+    rate, and post-signal spend distribution split by signal kind and by
+    marker-active context.
+
+    benchmark_dollars is the corpus-wide startup-burn benchmark
+    (_startup_burn_benchmark), pre-computed by the caller from a second,
+    independent scope pass -- this function never recomputes it from rows."""
+    total = len(rows)
+    print(f"\n## Handoff signal response ({total:,} signal(s) in scope)\n")
+    print(f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.")
+    if not total:
+        print("No signals found in scope.")
+        return
+
+    sessions_with_signal = len({r["session_id"] for r in rows})
+    followed = sum(1 for r in rows if r["handoff_followed"])
+    print(f"Sessions with at least one signal: {sessions_with_signal:,}")
+    print(
+        "Conversion rate (a same-session /handoff followed the signal):"
+        f" {_pct_of(followed, total)} ({followed:,}/{total:,})"
+    )
+    if benchmark_dollars is not None:
+        exceeding = sum(1 for r in rows if r["exceeds_startup_burn_benchmark"])
+        print(
+            "Signals whose post-signal spend exceeded the benchmark:"
+            f" {exceeding:,} ({_pct_of(exceeding, total)})"
+        )
+    if log_diagnostic:
+        print(f"\n{log_diagnostic}")
+
+    def _print_breakdown(title: str, key) -> None:
+        print(f"\n### {title}\n")
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            groups[key(r)].append(r)
+        header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
+        print(header)
+        print("-" * len(header))
+        for label in sorted(groups):
+            group_rows = groups[label]
+            n = len(group_rows)
+            hf = sum(1 for r in group_rows if r["handoff_followed"])
+            dollars = [r["dollars_after_signal"] for r in group_rows]
+            median = statistics.median(dollars) if dollars else 0.0
+            print(f"{label:<14} {n:>8,} {_pct_of(hf, n):>9} {median:>15,.2f}")
+
+    _print_breakdown("By signal kind", lambda r: r["kind"])
+    _print_breakdown(
+        "By ready-for-review active-marker context",
+        lambda r: "active" if r["marker_active"] else "inactive",
+    )
+
+
+def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
+    """CLI entry point for the handoff-signal-response subcommand.
+
+    Uses the shared `_resolve_scan_roots` scope machinery, not the
+    cost-family per-subcommand `--config-dir` extras.
+
+    Resolves scope a second time to feed `_compute_workstream_dollars`,
+    since `session_iter` above is a single-pass generator already consumed
+    by the main loop. Every other two-pass subcommand in this file (e.g.
+    cost-ledger) accepts the same tradeoff.
+    """
+    redact: bool = not bool(getattr(args, "no_redact", False))
+    roots = _resolve_scan_roots(args)
+    multi_root = len(roots) > 1
+    sample_n: int = getattr(args, "sample", 0) or 0
+    context_turns: int = getattr(args, "context_turns", 0) or 0
+
+    if not redact and multi_root:
+        print(
+            "handoff-signal-response: --no-redact is refused when more than one root is in scope;"
+            " drop --no-redact or scope to a single root (e.g. --this-repo with no additional"
+            " declared roots)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if context_turns and not sample_n:
+        print("handoff-signal-response: --context-turns requires --sample", file=sys.stderr)
+        sys.exit(2)
+    if context_turns < 0:
+        print("handoff-signal-response: --context-turns must not be negative", file=sys.stderr)
+        sys.exit(2)
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    session_iter, scope_label = _resolve_project_scope(args, "handoff-signal-response", roots=roots)
+    _print_resolved_scope("handoff-signal-response", scope_label, roots)
+
+    seed: int | None = getattr(args, "seed", None)
+
+    all_rows: list[dict] = []
+    session_traces: dict[str, list[int]] = {}
+    for jsonl, records in session_iter:
+        session_id = jsonl.stem
+        rows, _deduped, trace = _handoff_signal_response_session_rows(records)
+        for row in rows:
+            row["session_id"] = session_id
+            row["jsonl_path"] = jsonl
+        all_rows.extend(rows)
+        if trace:
+            session_traces[session_id] = trace
+
+    benchmark_session_iter, _benchmark_scope_label = _resolve_project_scope(
+        args, "handoff-signal-response", roots=roots
+    )
+    workstream = _compute_workstream_dollars(benchmark_session_iter)
+    benchmark_dollars, _, _ = _startup_burn_benchmark(workstream)
+    for row in all_rows:
+        row["exceeds_startup_burn_benchmark"] = (
+            row["dollars_after_signal"] > benchmark_dollars if benchmark_dollars is not None else None
+        )
+
+    # Corroborating diagnostic only -- every row above already comes from
+    # this session's own transcript, never from this log. Mirrors
+    # _rearm_backtest_report's own "Operator-response-lag sample" line.
+    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    lags, excluded = _operator_response_lag_from_log(session_traces, log_entries)
+    log_diagnostic: str | None = None
+    if lags:
+        median_lag = statistics.median(lags)
+        log_diagnostic = (
+            f"Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): {len(lags):,}"
+            f" joined ({excluded:,} excluded -- no matching session in scope), median lag"
+            f" {median_lag:,.0f} tokens past the fire point"
+        )
+
+    if sample_n:
+        # Rank by post-signal spend, since that is where a wrong
+        # continue-decision actually cost something -- not the whole
+        # population. See _rank_signal_rows_by_spend's own docstring for the
+        # tie-break contract.
+        sampled = _rank_signal_rows_by_spend(all_rows, sample_n, seed)
+        cards = _handoff_signal_response_cards(sampled, redact, context_turns=context_turns)
+        output_format: str = getattr(args, "output_format", "json") or "json"
+        if output_format == "md":
+            print(_format_handoff_signal_cards_as_markdown(
+                cards, sample_n=sample_n, seed=seed, benchmark_dollars=benchmark_dollars,
+            ))
+        else:
+            print(json.dumps(cards, indent=2))
+        return
+
+    for row in all_rows:
+        row.pop("jsonl_path", None)
+        row.pop("record_index", None)
+    _handoff_signal_response_aggregate_report(
+        all_rows, log_diagnostic, benchmark_dollars=benchmark_dollars,
+    )
+
+
 def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared --projects/--this-repo scope flags to a subparser.
 
@@ -11278,7 +12765,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)
 
     p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
-    p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")
+    p_pr.add_argument(
+        "--repo", metavar="OWNER/REPO",
+        help="GitHub repo to query (default: parsed from this checkout's origin remote, host-qualified)",
+    )
     p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
     p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
     _add_project_scope_args(p_pr)
@@ -11484,6 +12974,14 @@ def build_parser() -> argparse.ArgumentParser:
             " model ID, and thread, plus session and priced-turn counts — no per-session or"
             " per-project row. Requires --this-repo; refuses --projects, --by-project,"
             " --no-redact, and --config-dir."
+        ),
+    )
+    p_cost.add_argument(
+        "--share-only", action="store_true",
+        help=(
+            "Four dimensionless percentage-share tables (class, model, thread, context bucket) —"
+            " never a dollar figure, a token count, or a grand total. Refuses --by-project,"
+            " --no-redact, --summary, and --top. See docs/transcript-analysis.md."
         ),
     )
     p_cost.set_defaults(func=cmd_cost)
@@ -11731,6 +13229,16 @@ def build_parser() -> argparse.ArgumentParser:
             " Refused when --config-dir puts more than one root in scope."
         ),
     )
+    p_cache_rebuild.add_argument(
+        "--ttl-verdict", action="store_true",
+        help=(
+            "Also report a per-root, per-bucket (main / everything-else) adopt/decline verdict on"
+            " each bucket's live prompt-cache TTL, covering both the 5m-to-1h and the mirrored,"
+            " inferred 1h-to-5m direction. Ships a shared default only when every consistent root"
+            " agrees -- see .claude/plans/cache-ttl-tuning-analysis.md's Approach section. Adds"
+            " no new output when omitted; every figure without this flag is unchanged."
+        ),
+    )
     p_cache_rebuild.set_defaults(func=cmd_cache_rebuild)
 
     p_cost_ledger = sub.add_parser(
@@ -11877,6 +13385,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    p_cost_counts = sub.add_parser(
+        "cost-counts",
+        help=(
+            "Per-branch review-round and subagent-spawn counts, as two GFM subsections for a"
+            " public PR body -- counts only, no dollar attribution. Requires --this-repo and"
+            " --branches; always scoped to the active account alone."
+        ),
+    )
+    _add_project_scope_args(p_cost_counts)
+    p_cost_counts.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Branch name filter. Required at runtime (see cmd_cost_counts's own docstring).",
+    )
+    p_cost_counts.set_defaults(func=cmd_cost_counts)
+
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
         help=(
@@ -11919,6 +13442,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
     )
     p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)
+
+    p_handoff_signal_response = sub.add_parser(
+        "handoff-signal-response",
+        help=(
+            "Per-session observed context-budget signals (--check over_threshold/already_fired,"
+            " the advisory nudge injection, the hard-block stderr) and whether a same-session"
+            " /handoff followed each one, split by marker context. Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_handoff_signal_response)
+    p_handoff_signal_response.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "Emit raw session IDs in --sample curation cards instead of a run-scoped opaque"
+            " label, and print the DO NOT PUBLISH banner. Refused when scope resolves to more"
+            " than one root -- narrow to a single root first, e.g. with --this-repo."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--sample", type=int, default=0, metavar="N",
+        help=(
+            "Emit the top N signal rows by post-signal spend as curation cards instead of the"
+            " aggregate report."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--seed", type=int, default=None, metavar="N",
+        help=(
+            "Seed for reproducible tie-breaking among equal-spend rows in --sample (default:"
+            " unseeded -- ties keep scan order)."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--format", dest="output_format", choices=("json", "md"), default="json",
+        help="--sample output format: json (default) or md (a human curation document).",
+    )
+    p_handoff_signal_response.add_argument(
+        "--context-turns", type=int, default=0, metavar="N",
+        help=(
+            "With --sample, also attach the next N main-thread turns of text AND thinking-block"
+            " content after each signal (forward_context) -- unlike the single-turn excerpt"
+            " (text blocks only), this surfaces reasoning an agent confined to an"
+            " extended-thinking block. Requires --sample."
+        ),
+    )
+    p_handoff_signal_response.set_defaults(func=cmd_handoff_signal_response)
 
     p_plan_boundary = sub.add_parser(
         "plan-boundary",
@@ -12111,17 +13680,31 @@ def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
     if parsed.config_dir:
-        # These subcommands resolve their own scan roots via their own
-        # --config-dir (_resolve_cost_roots), never reading the reassignment
-        # below -- refuse outright rather than let the two same-named flags
-        # silently diverge (this top-level one would validate one account
-        # while the subcommand scans another).
-        if parsed.subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR:
+        # These subcommands each refuse the top-level --config-dir outright
+        # rather than let it silently diverge from whatever scan roots the
+        # subcommand actually resolves (this top-level one would validate
+        # one account while the subcommand scans another). Most resolve
+        # their own scan roots via their own --config-dir (_resolve_cost_roots);
+        # cost-counts is the one exception, registering no --config-dir flag
+        # of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
+            # hasattr, not a hardcoded subcommand list: True only when the
+            # invoked subparser itself registered --config-dir (dest
+            # extra_config_dirs), so the hint never recommends a flag that
+            # doesn't exist on cost-counts's own parser.
+            if hasattr(parsed, "extra_config_dirs"):
+                own_scope_clause = (
+                    "this subcommand resolves its own scan roots via its own --config-dir "
+                    "(repeatable, additive) -- use that instead: "
+                    f"transcript-analysis.py {parsed.subcommand} --config-dir PATH"
+                )
+            else:
+                own_scope_clause = (
+                    "this subcommand is scoped to the active account's config dir with no override"
+                )
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "
-                f"this subcommand resolves its own scan roots via its own --config-dir "
-                f"(repeatable, additive) -- use that instead: "
-                f"transcript-analysis.py {parsed.subcommand} --config-dir PATH",
+                f"{own_scope_clause}",
                 file=sys.stderr,
             )
             sys.exit(2)

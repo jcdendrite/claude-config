@@ -44,7 +44,7 @@
 INPUT=$(cat 2>/dev/null)
 [ -z "$INPUT" ] && exit 0
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
@@ -52,8 +52,18 @@ fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -d "$CONFIG_DIR" ] || exit 0
 
-# 2. Always-effective kill switch, independent of sentinel state.
-[ -f "$CONFIG_DIR/.commit-stall-block-disabled" ] && exit 0
+# 2. Always-effective kill switch, independent of sentinel state. Delegates
+# to _config_enabled's commit_stall_block schema row (presence-disables).
+# Only exit code 1 (explicitly disabled) turns this hook off -- every other
+# outcome, including config-keys.psv being transiently unreadable (exit 3)
+# or readable but missing commit_stall_block's own row (exit 4), leaves it
+# armed. See config-schema-audit.md's commit_stall_block section for the
+# full fail-direction rationale.
+_config_enabled commit_stall_block
+case "$?" in
+  1) exit 0 ;;
+  *) ;;
+esac
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9
@@ -64,7 +74,7 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # common case. The full check (this file plus the per-repo optout) still
 # runs at step 9, once REPO_ROOT is known. This is a redundant, cheaper
 # pre-filter, not a replacement for it.
-_lib_autonomous_shipping_sentinel_present "$CONFIG_DIR" || exit 0
+_lib_autonomous_shipping_sentinel_present || exit 0
 
 # Six fields in a single jq pass (nudge-handoff-near-context-cap.sh:29-49
 # pattern). Pre-initialized so a failed read leaves empty strings, not
@@ -90,12 +100,17 @@ LAST_ASSISTANT_MESSAGE=""
 
 LOG_FILE="$CONFIG_DIR/.commit-stall-block.log"
 
-# 4. Subagents are never force-continued — only the session the engineer is
-# talking to (CLAUDE.md's Shipping section states this explicitly).
-# AGENT_TYPE-unreadable and AGENT_TYPE-absent take this same branch; that's
-# safe only because a jq/read failure also empties SESSION_ID, which gate 4
-# below independently denies — load-bearing on that ordering, not an
-# explicit fail-closed check on this field itself.
+# 4. A Stop payload with agent_type set is never force-continued, because
+# CLAUDE.md's Agent Core tells any fork or subagent to return its work to its
+# dispatcher rather than ship.
+# This gate covers a fork only if the fork's Stop payload carries agent_type,
+# which is unverified.
+# AGENT_TYPE-unreadable and AGENT_TYPE-absent pass this gate as the main
+# session does.
+# That is safe only because a jq/read failure also empties SESSION_ID, which
+# gate 5 below independently denies.
+# The safety rests on that ordering, not on an explicit fail-closed check on
+# this field itself.
 [ -z "$AGENT_TYPE" ] || exit 0
 
 # 5. session_id required and must be a safe single path component; it feeds

@@ -22,7 +22,9 @@ one file per decision.
   migration that reassigns a legacy §N to a different decision (resolving a
   duplicate-numbering collision) must add the reassigned number to
   `_REASSIGNED_LEGACY_NUMBERS` in
-  `claude/.claude/hooks/tests/test_design_decision_files.py`.
+  `claude/.claude/hooks/tests/test_design_decision_files.py`. The legacy
+  `§N` set is closed at `§63` — the retired monolith cannot grow, so no
+  file will ever carry a `Formerly §N` clause above that number.
 - **Supersession.** A decision that a later one overturns is edited in
   place to say so, immediately under its own provenance line — e.g.
   `**Superseded by [§49](schedulewakeup-denied-by-bare-tool-name.md)
@@ -31,3 +33,7 @@ one file per decision.
 - **No index.** Find a decision by its slug or by `git grep` across the
   directory. A hand-maintained index is another shared append surface that
   goes stale, as `docs/case-studies.md`'s index already has.
+- **Cite, don't restate.** When a decision's rationale rests on a rule
+  stated canonically in another instruction file, cite the
+  file and heading that state the rule, per `.claude/rules/citation-grammar.md`,
+  and record only why the rule exists here — never restate the rule itself.

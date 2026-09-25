@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /skill-review before git commit when SKILL.md files are staged,
 # verified via marker file.
 #
@@ -11,8 +12,8 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
-#   'claude-skills/skills/plan-review/ROUTING.md'` when the review is clean. The
+#   of the staged diff scoped to the same pathspec set this hook defines below
+#   (MARKER_PATHSPECS) when the review is clean. The
 #   marker lives under $HOME (not inside the repo) so it never pollutes
 #   `git status` or risks being accidentally committed.
 # - This hook recomputes the same path-scoped diff hash at commit time and
@@ -60,7 +61,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by skill-review gate: could not source _lib.sh."
   exit 0
 fi
@@ -99,14 +100,21 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
+# Scoped pathspec sets, shared by every site below that enumerates SKILL.md
+# layouts. No bare `*SKILL.md` glob, which would sweep in vendored or fixture
+# files.
+SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md')
+ROUTING_PATHSPEC='claude-skills/skills/plan-review/ROUTING.md'
+MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
+
 # Early exit: if no SKILL.md files and no plan-review/ROUTING.md are staged,
 # this hook is a no-op. Commits that don't touch any gated skill file are not
 # gated by skill-review. ROUTING_DIFF is checked separately from SKILL_DIFF
 # because SKILL_DIFF also feeds STAGED_SKILL_PATHS below, which the
 # frontmatter/YAML structural validator consumes — ROUTING.md has no
 # frontmatter and must not reach that validator.
-SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
-ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/plan-review/ROUTING.md')
+SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- "${SKILL_CONTENT_PATHSPECS[@]}")
+ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- "$ROUTING_PATHSPEC")
 if [ -z "$SKILL_DIFF" ] && [ -z "$ROUTING_DIFF" ]; then
   exit 0
 fi
@@ -163,13 +171,34 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    VALIDATOR_STDERR=$("$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
+    # 10s caps validator latency (12s including the -k grace); this call and
+    # the corpus scan below both run per commit, so worst-case combined
+    # latency is ~24s — weigh future bound changes against that total.
+    VALIDATOR_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
       # Strip the tmp-dir prefix so the user sees the original repo-relative
       # SKILL.md path in the deny reason rather than /tmp/tmp.XXXX/...
       VALIDATOR_STDERR=${VALIDATOR_STDERR//"$STAGED_BLOB_DIR/"/}
-      emit_deny "Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
+      # 124 (GNU SIGTERM), 143 (BusyBox SIGTERM), 137 (the -k grace escalated
+      # to SIGKILL), and 127 get their own messages since VALIDATOR_STDERR is
+      # unreliable for all of them, rather than the generic wrapped-stderr
+      # deny used for real structural violations. 137 and 143 are also a
+      # validator's own signal-death statuses, so that arm's text names both
+      # causes. _lib_capped_for's fallback removes the missing-timeout cause of
+      # 127. A validator interpreter (python3) missing from PATH still yields
+      # 127, so that branch stays reachable.
+      case "$VALIDATOR_EXIT" in
+        124|137|143)
+          emit_deny "Commit blocked by skill-management structural validator: validator killed (exit ${VALIDATOR_EXIT}) by the 10s cap or a signal."
+          ;;
+        127)
+          emit_deny "Commit blocked by skill-management structural validator: validator command not found."
+          ;;
+        *)
+          emit_deny "Commit blocked by skill-management structural validator: ${VALIDATOR_STDERR}"
+          ;;
+      esac
       exit 0
     fi
   fi
@@ -178,12 +207,11 @@ fi
 # Corpus budget warning: check aggregate description+when_to_use chars across
 # all model-invokable skills in this repo against the Claude Code listing budget.
 # Non-blocking — exits 0 regardless; hard enforcement is in pytest/CI.
-# Uses the same scoped pathspecs as SKILL_DIFF above (no bare *SKILL.md glob,
-# which would sweep in vendored or fixture files).
+# Uses the same scoped pathspecs as SKILL_DIFF above (SKILL_CONTENT_PATHSPECS).
 CORPUS_PATHS=()
 while IFS= read -r CORPUS_PATH; do
   [ -n "$CORPUS_PATH" ] && CORPUS_PATHS+=("$CORPUS_PATH")
-done < <(git -C "$REPO_ROOT" ls-files 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
+done < <(git -C "$REPO_ROOT" ls-files -- "${SKILL_CONTENT_PATHSPECS[@]}" 2>/dev/null)
 
 # Overlay staged blobs: replace corpus path with staged blob path for any
 # staged SKILL.md (so the warning reflects the post-commit state of staged files).
@@ -199,7 +227,10 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
     fi
   done
 
-  CORPUS_STDERR=$(timeout 10s "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
+  # No exit-status branch here (contrast the structural validator call
+  # above): this scan is advisory only, so a swallowed timeout or missing
+  # binary is a missed warning, not a missed gate.
+  CORPUS_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
   if [ -n "$CORPUS_STDERR" ]; then
     printf 'skill-management: corpus budget warning: %s\n' "$CORPUS_STDERR" >&2
   fi
@@ -218,7 +249,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- "${MARKER_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
 
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the commit through.

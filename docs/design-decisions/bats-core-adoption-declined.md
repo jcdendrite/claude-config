@@ -1,0 +1,81 @@
+# bats-core adoption declined
+
+*2026-09-19.*
+
+Counts as of 2026-09-19: the shell surface is 110 tracked files, listed by `scripts/list-shell-files.sh`. It includes two shared libraries, `claude/.claude/hooks/_lib.sh` and `claude/.claude/hooks/_config.sh`. Every test of it runs through pytest. The question is whether bats-core should sit alongside that suite, on the hypothesis that it would give better coverage, better performance, or both. It should not. Each motivation fails against primary sources and this repo's own tree.
+
+## White-box access already exists
+
+The capability bats is proposed to add is sourcing a library and calling one function in isolation. The suite already works this way.
+
+- The shape is `subprocess.run(["bash", "-c", f". {lib}; {call}"])`.
+- 151 lines across 19 `*.py` files under `claude/.claude/hooks/tests/` contain `"bash", "-c"`.
+- `claude/.claude/hooks/tests/test_lib.py` wraps the shape as `_run_lib_call`.
+- `test_lib.py` also wraps the variant that predefines `emit_deny` before sourcing as `_run_harness`.
+
+## Every shared-library function has a reference
+
+- Each of the 103 functions in `_lib.sh` and `_config.sh` has a reference within the liveness guard's scan scope: tracked shell and `.py` files, outside whole-line comments and `plugins/`.
+- Some are referenced only from test files, including three test seams: `_lib_review_only_agents`, `_lib_no_gate_release_agents`, and `_lib_reviewer_persona_agents`.
+
+## The performance hypothesis points the wrong way
+
+- A local, unreproduced observation found that a large share of CPU time is `sys` time. It points to a suite bound by fork and exec.
+- Two causes contribute, and neither is reachable from a test framework.
+- Contract-boundary tests exec a real process because the contract under test is the process boundary Claude Code invokes (stdin JSON, stdout JSON, exit code). That costs the same in any language.
+- Function-level tests exec `bash -c` because the functions are written in Bash.
+- Rewriting 49 hooks in Python is disproportionate to a test-framework question.
+- bats execs the same Bash artifacts and adds a subshell per `run`, so it removes no forks.
+- The suite already runs `-n auto`, with a CI `timing` / `-n0` serial split.
+- Absolute wall-clock time is not cited, because it varies with machine load and CPU count.
+
+## The dependency bar is repo precedent, not a rule
+
+Nothing in `CLAUDE.md` forbids a mandatory non-pip system package. The precedent is what makes bats-core a new kind of dependency.
+
+- bats-core ships no PyPI wheel.
+- Its installation reference lists a distro package, Homebrew, npm, a source clone, or Docker.
+- Its tutorial presents a git submodule as the quick installation, and an action named `bats-core/bats-action` exists in the bats-core organization.
+- The decision does not rest on the dependency ground. The white-box, coverage, and performance arguments carry it.
+- Its parallelism additionally needs GNU parallel or a compatible replacement, and it does not guarantee test ordering.
+- `requirements-dev.txt` holds five wheels, and ShellCheck arrives as the `shellcheck-py` wheel.
+- The only non-pip CI install is `apt-get install -y stow direnv`.
+- `.github/workflows/tests.yml` installs `stow` and `direnv` because tests exercise the real binaries rather than a stub. bats would be the first system package that is a test vehicle rather than a subject under test.
+
+Sources, as observed on 2026-09-19. The record links each source instead of quoting it, so re-read the page to check what a claim is scoped to. The three bats-core documentation links are pinned to commit `fbb2d33f256d` so the cited line range stays valid. Every other item is an unpinned observation that can change.
+- Installation routes: https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/installation.rst
+- Submodule quick installation: https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/tutorial.rst (lines 16-38)
+- Parallel execution and ordering: the "Parallel Execution" section of https://github.com/bats-core/bats-core/blob/fbb2d33f256d/docs/source/usage.md
+- The action's repository, unpinned: https://github.com/bats-core/bats-action
+- `https://pypi.org/pypi/bats-core/json` returned 404, unpinned.
+- `shellcheck --help` (0.11.0) lists `sh, bash, dash, ksh, busybox` for `--shell` and no bats dialect.
+- The open ShellCheck `.bats` issues, unpinned, include https://github.com/koalaman/shellcheck/issues/2041, https://github.com/koalaman/shellcheck/issues/3222, https://github.com/koalaman/shellcheck/issues/2873, https://github.com/koalaman/shellcheck/issues/3263, https://github.com/koalaman/shellcheck/issues/3229, https://github.com/koalaman/shellcheck/issues/3247, and https://github.com/koalaman/shellcheck/issues/3509.
+
+ShellCheck's `.bats` support is undocumented in `--shell`'s help output and carries several open false-positive issues. Adoption would mean unlinted test files or a growing per-file suppression list.
+
+## Optional, degrades-gracefully adoption is declined too
+
+The strongest shape installs bats unconditionally in CI through the existing apt step. The merge-gating signal stays uniform and only local runs vary, the same asymmetry the repo accepts for `stow` and `direnv`. It still buys nothing, since the white-box capability exists, every library function has a reference, and the performance case is negative. Optionality removes an objection to adoption. It does not supply a reason for it.
+
+## Reconsideration trigger
+
+Two independent axes. The capability axis needs all three conditions:
+
+1. A specific named function in `_lib.sh` or `_config.sh` cannot be exercised from Python via `bash -c '. lib; fn'`, with the reason stated concretely. Today the count is zero.
+2. bats-core becomes installable from `requirements-dev.txt` alone (a maintained PyPI wheel, on the `shellcheck-py` precedent, published by the upstream org or a named, vetted repackager; a name match is not evidence), or a maintainer opens a new design-decision file proposing to widen the apt-get precedent to a test vehicle, and that file is reviewed and merged.
+3. ShellCheck documents `.bats` in `--shell`'s help output and the open `.bats` false-positive issues close.
+
+The performance axis has one condition: a profile of the CI `-m "not timing"` pass attributes the majority of its time to pytest's own per-test overhead rather than to subprocess fork and exec. A wall-clock threshold is deliberately not the trigger, because absolute time grows with test count and would fire for a cause bats cannot address.
+
+If adoption is ever pursued, `claude/.claude/scripts/select-tests.py` needs to learn a second runner first. `select_pytest_targets` and `build_pytest_argv` only construct pytest argv, and an unmatched `.bats` path falls open to the full pytest suite without ever executing it. Issue #1043 tracks that work, gated on this trigger, and it closes unread if the trigger never fires.
+
+## Related findings and guards
+
+Two findings are orthogonal to the framework choice and have their own issues.
+
+- #1042 evaluates decomposing `install.sh` behind a sourcing guard. Its 18 fixture-marker pairs exist because its top level mutates `$HOME`, which bats' `load` could not source safely either.
+- #1041 tracks a shared white-box helper for the four distinct sourced-lib invocation shapes. It is one unit of work with migrating the call sites.
+
+`test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins` in `test_lib.py` guards the roster seam around `_lib_reviewer_persona_agents`. `test_shell_lib_function_liveness.py` is a zero-reference tripwire over the two shared libraries. Each docstring carries its mechanics and scope.
+
+Issue #1045 tracks a test-selection gap for the liveness guard.

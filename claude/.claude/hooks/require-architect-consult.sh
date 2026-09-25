@@ -1,11 +1,16 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse: deny a reviewer-persona Agent/Task spawn when this branch is
-# entering its third distinct reviewed state without a recent
-# `plan-architect MODE=consult`. "Entry to round 3" is the measured,
-# discontinuous jump in the case study this gate exists to interrupt
+# entering a new reviewed state beyond the round-state cap without a
+# recent `plan-architect MODE=consult`. The cap is resolved by _lib.sh's
+# _lib_reviewer_round_state_cap (2 by default, 1 when the
+# round_consult_round2_pilot config key is enabled). "Entry to round 3" --
+# the default cap's trigger point -- is the measured, discontinuous jump in
+# the case study this gate exists to interrupt
 # (docs/case-studies/opus-frontload-review-rounds.md lines 158-269). See
-# docs/design-decisions.md §41 for the full design rationale.
+# docs/design-decisions/round3-plan-architect-consult-gate.md for the full
+# design rationale.
 #
 # Failure direction:
 #   - Deny on payload failure (malformed JSON, empty stdin, non-object
@@ -39,12 +44,12 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment).
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -91,10 +96,12 @@ STATE_KEY=$(_lib_reviewer_round_state_key "$REPO_ROOT") || exit 0
 
 STATE_FILE="$CONFIG_DIR/.reviewer-round-state.d/$STATE_KEY"
 
-# Below the cap (fewer than _LIB_REVIEWER_ROUND_STATE_CAP distinct reviewed
-# states recorded so far): allow without paying for the current state's own
-# hash. See _lib.sh's _LIB_REVIEWER_ROUND_STATE_CAP for the cap's citation.
-if [ ! -f "$STATE_FILE" ] || [ "$(wc -l < "$STATE_FILE" | tr -d ' ')" -lt "$_LIB_REVIEWER_ROUND_STATE_CAP" ]; then
+CAP=$(_lib_reviewer_round_state_cap)
+
+# Below the cap (fewer than CAP distinct reviewed states recorded so far):
+# allow without paying for the current state's own hash. See _lib.sh's
+# _lib_reviewer_round_state_cap for the cap's resolution and citation.
+if [ ! -f "$STATE_FILE" ] || [ "$(wc -l < "$STATE_FILE" | tr -d ' ')" -lt "$CAP" ]; then
   exit 0
 fi
 
@@ -107,9 +114,11 @@ CURRENT_STATE=$(_lib_reviewer_round_state_value "$REPO_ROOT") || exit 0
 # -- allow.
 grep -qFx -e "$CURRENT_STATE" -- "$STATE_FILE" 2>/dev/null && exit 0
 
-# A genuinely new, third distinct state. Allow if the latch already shows a
+# A genuinely new state beyond the cap. Allow if the latch already shows a
 # consult ran recently on this branch -- otherwise deny.
 LATCH_FILE="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
 [ -f "$LATCH_FILE" ] && exit 0
 
-emit_deny "this branch is entering its third distinct reviewed state without a recent architect consult. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then retry this reviewer spawn once it returns. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
+STATE_NOUN="states"
+[ "$CAP" -eq 1 ] && STATE_NOUN="state"
+emit_deny "this branch has already recorded $CAP distinct reviewed $STATE_NOUN without a recent architect consult, and the current one is new. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then route its return by the three verdicts in code-review/SKILL.md's 'Round-cap architect consult' section before retrying this reviewer spawn. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."

@@ -88,6 +88,243 @@ regardless of what occupies the pattern position. See
 `_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
 exemption's matching mechanics.
 
+## Publishing a tooling measurement
+
+This is the tier-3 companion to the two mechanical tiers above. It is
+reviewer discipline, not a hook. A measurement's safety depends on
+which corpus produced it, not what string it contains, and a hook
+can't see that. The repo-root
+[`CLAUDE.md`](../CLAUDE.md) "Also redact structural fingerprints and
+provenance" rule states the bar this section gates.
+
+### This repository, one account
+
+A measurement of this repo's own tooling in use is publishable when it
+is computed over this repository's own corpus on a single
+`CLAUDE_CONFIG_DIR` account. That corpus holds no private-engagement
+record, so a figure drawn from it carries no engagement's fingerprint
+to redact.
+
+Scope it with a command that *refuses* a wider corpus, and cite that
+command beside the figure. Avoiding a wider corpus by choosing flags
+carefully is not the same thing: the refusal is what a reader can
+re-run and check.
+
+- `transcript-analysis.py cost --this-repo --summary` is the worked
+  case. `--summary` requires `--this-repo`, refuses every other scope
+  flag, resolves to the active config dir alone, and exits 2 if more
+  than one root is ever in scope.
+- `pr-cost --record` refuses differently, to the same effect. It
+  unions every declared root, then exits 2 rather than write or report
+  a blended total when more than one resolves. `--all-accounts` opts
+  into a per-account loop, whose output publishes nothing — see the
+  next section.
+- A subcommand with no scope refusal of its own is not a publication
+  instrument. Route it through the next section instead.
+
+`pr-cost-section.sh` is a standing pre-cleared instance of this bar,
+not a per-publication judgment call. Gated by the opt-in
+`<config-dir>/pr-cost-disclosure` sentinel, off by default so a fork
+contributor publishes nothing until they enable it. It embeds two
+scope-fixed-by-construction blocks in every merged PR's body: a dollar
+total from `cost --this-repo --branches <branch> --summary`. The other
+is a review-round/subagent-spawn count from `cost-counts --this-repo
+--branches <branch>`, which always resolves to a single hardcoded root
+regardless of any flag. Neither call can be pointed at a wider corpus,
+so there is nothing for a reviewer to approve per PR — the review
+question is answered once, here, rather than re-litigated on every
+merge. The dollar block's `Scope:` caption echoes the branch name the
+wrapper passes; the `--branches` echo note in `docs/transcript-analysis.md`
+lists what that echo can carry. The pre-clearance
+covers the wrapper path only, and a change to what the block prints
+reopens this bar. A diff that widens either call's scope, or weakens a
+refusal a publication instrument depends on, is a P1 finding.
+
+Within that scope nothing further is withheld. A total, a rate, a
+median, a share, a pool size, a per-day series, a before/after split
+at any pivot — all publishable. This repository's own commit and PR
+history is already public, so neither a calendar axis nor a volume
+count over it discloses anything the repository does not already
+disclose, and the dollars are the owner's own spend on public work.
+
+Doubt about whether a given repository or account genuinely carries no
+private-engagement record goes to the owner. Doubt is never a reason
+to publish anyway.
+
+### A wider corpus goes to the owner, never into a public artifact
+
+Machine-wide, multi-account, and cross-machine questions are worth
+asking. They are not worth publishing. Measure them with the same
+tools at their wider scope — `cost` without `--summary` (add
+`--share-only` to keep raw absolutes out of the agent's context),
+`pr-cost --all-accounts`, or any subcommand at its default machine-wide
+scope. Report the figures to the owner in session or through another
+non-public channel.
+
+Publish nothing computed from such a read: no total, no rate, no
+share, no count, no bounded range, in any artifact — commit message,
+PR body, issue, decision record, case study, or illustrative example.
+A public artifact may record that the read happened and what it
+decided: which lever was adopted or declined, and which way the
+reading pointed. It names no figure from it. The withholding sites in
+`docs/cost-levers-considered.md` and `docs/design-decisions/` are the
+worked shape.
+
+### The owner can authorize one figure, case by case
+
+The bar above holds by default: a wider read stays with the owner
+and publishes nothing. The owner can release it for one specific
+figure. Propose the figure, the exact command that produced it, and
+the artifact it would appear in. Publish only after an explicit,
+in-session yes. Cite that authorization beside the figure, naming
+what was proposed and the timestamp of the yes. A bare claim that
+approval occurred, with nothing to check it against, is not a
+citation. A recalled yes from another transcript or artifact does
+not count; only a live answer in the current session does. This
+matches the standard set by "New figures against the grandfathered
+set" below. The command is cited so a reader can re-run the
+measurement. Unlike the single-account case above, authorization
+guarantees nothing about scope by itself; it is the whole control.
+That is why it is granted per figure and left as a citable trace.
+The mechanical backstop is this repository's own human-only merge
+gate: the owner reviews every PR before it merges and can catch a
+citation for a yes that was never given.
+
+An authorization covers the figure, the command, and the artifact it
+named. The following each count as a fresh ask:
+
+- a second figure
+- the same figure published a second time in a different artifact
+- a re-run of the same figure over a grown corpus
+
+Cite each authorized figure on its own — one citation spanning
+several figures does not establish that each was individually
+proposed and approved. Before citing an authorized figure, check
+whether it composes with an already-published rate or count to
+reconstruct a calendar-time series or narrow a boundary. That
+comparison source can be the grandfathered set below or an earlier
+authorization under this section. If it composes, name that
+composition in the proposal. "New figures against the grandfathered
+set" below is the mechanical half of that check. It does not, on its
+own, cover composition against a prior authorization.
+
+An authorization releases the corpus-scope bar and nothing else. Four
+things stay barred alongside it:
+
+- A figure carrying a per-project, per-account, or per-engagement
+  dimension — barred absolutely by the repo-root `CLAUDE.md`, since
+  this section only relaxes scope, not dimension.
+- A count of accounts or declared config-dir roots — see "Account
+  cardinality" below.
+- `--share-only` output — it keeps a wider read's absolutes out of
+  the agent's context, not a publication instrument.
+- A figure with its own calendar-time axis (per-week, per-month, or a
+  two-point before/after split) drawn from a wider corpus — barred
+  even as a single authorized figure, since no split mechanism
+  exists here to sanction one.
+
+### Own-history counts were never inside this class
+
+The test is the scope's content, not the account or machine count, and
+not the quantity's type. Two classes fall outside the wider-corpus bar
+rather than being exceptions to it:
+
+- A count whose scope holds no private-engagement record anywhere —
+  this repo's own history, or the owner's other personal, non-client
+  repositories. Examples: branch, PR, review-finding, hook-denial, and
+  log-line counts. This holds however many accounts or machines the
+  scope unions, for a count with no per-account or per-machine
+  decomposition: unioning more roots discloses more of the same thing,
+  not a new one.
+- It does not extend to a `transcript-analysis.py` Cost, Duration, or
+  activity measurement — tool calls, sessions, dispatches, dollars, or
+  wall-clock — at a scope wider than the bar above. Those read
+  whatever private work the roots in scope contain, which is what the
+  bar keeps out of a published figure.
+
+This exemption covers what a figure is, not what it combines with —
+see "New figures against the grandfathered set" below for the
+composition check every new figure clears, own-history or not.
+
+### Account cardinality
+
+How many accounts or declared config-dir roots exist is never
+published as a digit or a bounded range, at any pooling breadth. An
+account can correspond to a single private engagement, so its
+cardinality is the per-account dimension the repo-root `CLAUDE.md`
+bars absolutely. `docs/transcript-analysis.md`'s sample outputs elide
+the root count for this reason.
+
+How many machines exist may be stated as a digit. A machine is the
+operator's own hardware and partitions no engagement. This repository
+states its own machine count in ordinary prose. Doubt about whether an
+operator's own machine boundary correlates with an engagement boundary
+— as it could for a fork contributor running client-dedicated hardware
+— goes to that operator, the same as every other content-purity
+judgment call in this section.
+
+### New figures against the grandfathered set
+
+Figures published before this bar stay published (see "Remediation"
+below). A new figure — own-history, drawn from this repository on one
+account, or an owner-authorized wider-corpus figure — can still newly
+disclose something private if it lets a reader subtract it from one of
+those down to its non-this-repo remainder. Before publishing, check
+the new figure against Remediation's named list. If it could narrow
+one of those figures' residual, tell the owner what the combination
+would newly disclose and ask in session; an uncited in-session answer
+settles it.
+
+This check runs once per new figure, forward from here. It does not
+require re-auditing the grandfathered set against this repository's
+own accumulating totals — the owner has weighed that once (see
+"Remediation") and it is not re-litigated per publication.
+
+### Remediation
+
+Content published before this bar took effect stays as published. The
+grandfathered set, computed over a machine-wide, multi-account corpus,
+predates this section's current single-account bar:
+
+- `docs/case-studies/handoff-threshold-impact.md`, entirely
+- `docs/case-studies/handoff-hard-block-position.md`, entirely
+- `docs/case-studies/cold-cache-attribution.md`, entirely
+- `docs/case-studies/check-runner.md`'s Retirement section, entirely —
+  its 649-session corpus window, byte-size distribution, dispatch
+  count, and percentage breakdown all derive from the same pooled
+  measurement
+- `docs/case-studies/check-runner.md`'s "Re-grounding: verdict quality,
+  not context cost" section, for its "median of roughly 100 tokens"
+  inline-test-run figure, drawn from an unscoped local-transcript-corpus
+  measurement
+- `docs/case-studies/worktree-enforcement.md`'s "The general
+  philosophy" section, for its 785-session/387-denial/243-session
+  `review-trace` corpus measurement
+- `docs/cost-levers-considered.md`'s machine-wide pooled review-round
+  share and machine-wide rows
+- `docs/case-studies.md`'s index blurbs
+- `docs/case-studies/effort-estimation-review-surface.md`,
+  `hashline-edit-format.md`, `targeted-read-discipline.md`,
+  `delegate-instrument-authoring.md`, `plan-mode-model-resolution.md`,
+  `opus-frontload-review-rounds.md`, `markdown-context-ingestion.md`,
+  and `review-vs-babysitting.md`
+
+The bar above governs what ships next, not what already shipped:
+rewriting a published figure is not a retraction once a public repo's
+history can be cloned, forked, or cached — it only adds a second
+version.
+
+Whether this repository's own now-accumulating single-account totals
+(`pr-cost-section.sh`'s per-PR figures) already compose against this
+grandfathered set closely enough to matter is the owner's call, made
+once here: no further action. The grandfathered figures predate this
+bar and their relevance decays as the corpus ages; this is not
+re-audited per PR.
+
+A wrongly-scoped figure discovered already published is the owner's
+call, not the agent's. Stop and report what was published and where —
+do not rewrite history yourself, even if told to.
+
 ## Why the blocklist can't be armed by default
 
 The blocklist *mechanism* is complete and correct; what's missing by default

@@ -26,6 +26,14 @@ is done when you have reviewed your own diff and fixed what that review found.
   state-mutating commands (database reset, migration apply, container
   start/stop, seed scripts, package installs); those are directory-sensitive,
   mutate shared state, and belong to the parent.
+- When a check you ran comes back red, fix the code, not the test — unless the
+  dispatch prompt states the expected behavior itself changed. Turning a check
+  green this way is test-to-fit, not a fix:
+  - Loosening an assertion.
+  - Marking a case skipped or expected-to-fail.
+  - Narrowing what a test covers.
+  A red check you can attribute to neither your own diff nor the dispatch's
+  stated task belongs in **Still uncertain** — report it, do not resolve it.
 - Fix what your self-review finds, inline, before returning — but only defects
   in your own diff, not pre-existing issues elsewhere in the files you touched.
 
@@ -53,9 +61,15 @@ language and stack:
   runner config, sibling test files following a pattern). When no such
   convention exists, flag the coverage gap in **Still uncertain** rather than
   introduce test scaffolding the project does not have.
-- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and §Code
-  Comments, Documentation, and Prose actively steer choices — surface each at
-  its own decision point, not only at self-review:
+- Never move text a skill or agent body loads at runtime into an edit-time-only
+  file such as `REFERENCES.md`.
+- If a change would push a file past the file's stated line cap, or alter a
+  clause a test pins verbatim, and the dispatch prompt does not direct it, stop
+  and report it under **Still uncertain** — do not trim elsewhere to make room,
+  and do not edit the pin.
+- As you write, let CLAUDE.md §Engineering Judgment, §Working Style, and
+  §Durable text actively steer choices — surface each at its own decision
+  point, not only at self-review:
   - Understand the intent of existing code before changing it.
   - Ground every choice: timeouts, suppressions, discriminator literals, new
     dependencies.
@@ -95,10 +109,12 @@ more focused task than writing it — use that asymmetry deliberately.
    govern a reviewer's job, not yours; applying them here is a mistake.
 5. Scale the pass to the change. A one-line edit or a single config tweak needs
    the baseline only. A change that adds or alters logic in a domain gets that
-   domain's reviewer read. When in doubt, read.
+   domain's reviewer read. When in doubt, read. Added or rewritten prose
+   beyond a whitespace or typo fix always gets the read for the prose row in
+   the table below, even on one line: in a one-paragraph-per-line file, one
+   line is a whole paragraph.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
-   Style, and §Code Comments, Documentation, and Prose before handoff. Flag
-   each of these separately:
+   Style, and §Durable text before handoff. Flag each of these separately:
    - An unverified external-state claim.
    - An out-of-scope file edit.
    - An ungrounded timeout or literal.
@@ -119,6 +135,7 @@ more focused task than writing it — use that asymmetry deliberately.
 | User-visible behavior, copy, flows | `staff-product-engineer` |
 | Auth, authorization, secrets, trust boundaries | `ciso-reviewer` |
 | Test code | `staff-sdet` |
+| Comments, docstrings, durable-doc prose (docs, READMEs, skill/agent bodies) | `comment-discipline-reviewer` |
 
 ## Return format
 

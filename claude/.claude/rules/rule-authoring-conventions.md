@@ -5,10 +5,9 @@ paths:
 
 ## `paths:` glob-dialect conventions
 
-Sources verified against `code.claude.com/docs/en/memory` §"Path-specific
-rules", fetched 2026-09-03; re-verify by 2026-12-03. Full citations and
-verbatim quotes live in `docs/rules-references.md` in the claude-config
-repo.
+Sources verified against `code.claude.com/docs/en/memory` § "Path-specific rules",
+fetched 2026-09-03; re-verify by 2026-12-03. Full citations and verbatim
+quotes live in `docs/rules-references.md` in the claude-config repo.
 
 - **Brace expansion is supported.** `src/*.{ts,tsx}` expands to two
   patterns (full citation and verbatim quote: `docs/rules-references.md`).

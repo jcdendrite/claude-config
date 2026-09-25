@@ -1,4 +1,5 @@
 """Tests for transcript_analysis/cost.py (cmd_cost, cmd_cost_trend)."""
+import argparse
 import importlib.util
 import os
 import re
@@ -454,7 +455,8 @@ class TestCost:
         # not $6.00 for pricing the group's usage three times over.
         assert _extract_md_grand_total(out) == pytest.approx(2.00)
         # Three content-block records collapse into one priced turn, not three.
-        assert "1 priced turns" in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_sidechain_multi_record_request_id_group_composes_with_sidechain_dedup(
         self, fake_projects, capsys
@@ -817,12 +819,32 @@ class TestCostResolveRoots:
         roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects"]
 
+    def test_share_only_returns_full_multi_root_union_not_narrowed(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
+    ):
+        """Unlike --summary above, --share-only exists to serve a pooled/
+        multi-root corpus, so this narrowing check must stay gated on
+        args.summary alone -- pins that _resolve_cost_roots called with
+        share_only=True still returns the full declared/--config-dir union,
+        not a single root. Guards against a future `or args.share_only`
+        added to the summary-only narrowing check above."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        declared = tmp_path / "declared-account"
+        (declared / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [declared])
+        acct_b = fake_config_dir_factory("acct-b")
+        roots = _mod._resolve_cost_roots(_cost_args(share_only=True, extra_config_dirs=[str(acct_b)]))
+        assert roots == [default_dir / "projects", declared / "projects", acct_b / "projects"]
+
     def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
         """Mechanism 1 narrows _resolve_cost_roots only for subcommand ==
         "cost" -- a populated declared-roots file still unions for every
-        other _SUBCOMMANDS_WITH_OWN_CONFIG_DIR caller, since only cost's
-        argparser defines --summary today and the gate is on `subcommand`,
-        not on a bare summary_mode check."""
+        other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR caller that goes
+        through this function, since only cost's argparser defines --summary
+        today and the gate is on `subcommand`, not on a bare summary_mode
+        check."""
         active = tmp_path / "acct-a"
         (active / "projects").mkdir(parents=True)
         other = tmp_path / "acct-b"
@@ -1538,6 +1560,30 @@ class TestCostByAccount:
         with pytest.raises(AssertionError, match="per-account"):
             _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
 
+    def test_per_account_missing_turn_assertion_omits_raw_dollars_under_share_only(self, tmp_path, monkeypatch):
+        """Same fault injection as the test above, under --share-only: the
+        raised message must state the mismatch without the raw dollar totals
+        --share-only's whole design keeps out of stderr."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+
+        original = _mod._accumulate_per_account_turn
+        calls = {"n": 0}
+
+        def flaky_accumulate(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return  # drop the first turn's per-account contribution
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(_mod.cost, "_accumulate_per_account_turn", flaky_accumulate)
+
+        with pytest.raises(AssertionError, match="per-account") as exc:
+            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        assert not re.search(r"\d", str(exc.value))
+
     def test_cost_by_account_section_absent_at_single_root(self, fake_projects, capsys):
         """No --config-dir (single root): the '## Cost by account' section
         must not appear at all -- promoted from the plan's manual
@@ -1703,13 +1749,85 @@ class TestCostThreadSplit:
             "| subagent | 1.00 | 25.0% |\n"
         )
 
+    def test_main_subagent_missing_turn_assertion_omits_raw_dollars_under_share_only(
+        self, fake_projects, monkeypatch
+    ):
+        """Fault injection for the main+subagent cross-check's share_only branch,
+        mirroring TestCostByAccount's per-account version. The main/subagent split
+        has no separately-extracted accumulator to monkeypatch -- it's derived
+        inline from each turn's isSidechain flag inside the per-class token loop,
+        which reads dollars_by_class[cls] twice (once into class_totals, once into
+        turn_total). Wrapping _price_turn's return value in a dict that answers a
+        class's first read truthfully and every later read with 0.0 sends
+        turn_total to 0 while class_totals (and so grand_total) keeps the real
+        dollars, desyncing main+subagent from the grand total."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        class _OnceThenZero(dict):
+            def __init__(self, data):
+                super().__init__(data)
+                self._read: set = set()
+
+            def __getitem__(self, key):
+                if key in self._read:
+                    return 0.0
+                self._read.add(key)
+                return super().__getitem__(key)
+
+        original_price_turn = _mod.pricing._price_turn
+
+        def faulty_price_turn(model, usage):
+            dollars_by_class, context_at_turn, unpriced = original_price_turn(model, usage)
+            if dollars_by_class is None:
+                return dollars_by_class, context_at_turn, unpriced
+            return _OnceThenZero(dollars_by_class), context_at_turn, unpriced
+
+        monkeypatch.setattr(_mod.pricing, "_price_turn", faulty_price_turn)
+
+        with pytest.raises(AssertionError) as exc:
+            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        assert "main+subagent" in str(exc.value)
+        assert not re.search(r"\d", str(exc.value))
+
 
 class TestCostMarkdownTablePrinters:
-    """Direct unit coverage of _print_token_class_table's and
-    _print_model_id_table's markdown branches, mirroring
-    TestCostThreadSplit's _print_thread_table unit test -- pins each
-    function's own formatting invariants without paying --summary's full
-    _cost_report fixture cost."""
+    """Direct unit coverage of _print_scan_coverage_table,
+    _print_token_class_table's, and _print_model_id_table's markdown
+    branches, mirroring TestCostThreadSplit's _print_thread_table unit
+    test -- pins each function's own formatting invariants without paying
+    --summary's full _cost_report fixture cost."""
+
+    def test_print_scan_coverage_table_omits_unreadable_column_when_zero(self, capsys):
+        _mod.cost._print_scan_coverage_table(3, 0, 2, 5)
+        out = capsys.readouterr().out
+        assert "Of those, unreadable" not in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
+        assert coverage_cols["Sessions with priced turns"] == "2"
+        assert coverage_cols["Priced turns"] == "5"
+
+    def test_print_scan_coverage_table_includes_unreadable_column_when_nonzero(self, capsys):
+        _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
+        assert coverage_cols["Of those, unreadable"] == "1"
+        assert coverage_cols["Sessions with priced turns"] == "2"
+        assert coverage_cols["Priced turns"] == "5"
+
+    def test_print_scan_coverage_table_formats_large_counts_with_commas(self, capsys):
+        _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "1,500,000"
+
+    def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
+        _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "0"
+        assert coverage_cols["Sessions with priced turns"] == "0"
+        assert coverage_cols["Priced turns"] == "0"
 
     def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
         class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
@@ -1740,6 +1858,45 @@ class TestCostMarkdownTablePrinters:
             "| claude-sonnet-5 | 3.00 | 75.0% |\n"
             "| claude-opus-5 | 1.00 | 25.0% |\n"
         )
+
+
+class TestSummaryScopeBranchClause:
+    """Direct unit coverage of _summary_scope_branch_clause, mirroring
+    TestCostMarkdownTablePrinters's precedent -- pins the singular/plural/
+    absent-filter/empty-filter wording without paying a full _cost_report
+    fixture per case. TestCostSummary below exercises the absent-filter,
+    single-branch, and multiple-branches cases end-to-end through
+    _cost_report's Scope: caption."""
+
+    def test_no_branch_filter_renders_all_branches(self):
+        assert _mod.cost._summary_scope_branch_clause(None) == "all branches"
+
+    def test_empty_branch_filter_renders_no_branches(self):
+        """--branches "," reaches this state (parsed to an empty set)."""
+        assert _mod.cost._summary_scope_branch_clause(set()) == "no branches"
+
+    def test_single_branch_renders_singular_clause(self):
+        assert _mod.cost._summary_scope_branch_clause({"GH-1088/pr-cost-scope-header"}) == \
+            "branch GH-1088/pr-cost-scope-header"
+
+    def test_multiple_branches_render_plural_sorted_clause(self):
+        branches = {"feature-d", "feature-a", "feature-c", "feature-b"}
+        assert _mod.cost._summary_scope_branch_clause(branches) == \
+            "branches feature-a, feature-b, feature-c, feature-d"
+
+
+class TestBranchFilterParsing:
+    """Pins the --branches string -> filter-set mapping docs/transcript-analysis.md documents."""
+
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("", None),
+        (",", set()),
+        ("a,,b", {"a", "b"}),
+        ("main", {"main"}),
+        (None, None),
+    ])
+    def test_branches_value_maps_to_filter_set(self, raw, expected):
+        assert _mod.scope._branch_filter(argparse.Namespace(branches=raw)) == expected
 
 
 class TestPrintBranchExclusionDiagnostic:
@@ -1910,7 +2067,6 @@ class TestCostBranchFilter:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
         _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
         _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
@@ -1924,13 +2080,101 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2))
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
         out = capsys.readouterr().out
         assert "Branch-filter exclusions" not in out
         assert "feature-a" not in out
         assert "feature-b" not in out
         assert "branch-1" not in out
         assert "branch-2" not in out
+
+    def test_summary_branches_filter_leaves_scanned_files_column_unfiltered(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches narrows the priced sessions and turns columns but leaves the scanned-files column at the full file count."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
+        _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
+
+    def test_summary_since_window_excluding_every_record_keeps_full_scanned_file_count(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--since excluding every record keeps the scanned-files count full while priced sessions and turns read 0."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # --since counts back from wall-clock now (scope._parse_since_nd_arg), not the injected `today`.
+        # _priced's fixed default timestamp (2026-05-19) predates any 5-day window ending at wall-clock now.
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(
+            out, header_contains="Transcript files scanned", row_contains="0",
+        )
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "2"
+        assert coverage_cols["Sessions with priced turns"] == "0"
+        assert coverage_cols["Priced turns"] == "0"
+
+    def test_summary_since_window_appears_in_scope_caption(self, tmp_path, monkeypatch, capsys):
+        """--since Nd names the window in the Scope caption as 'last Nd'; without it the caption reads 'all time'."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
+        )
+        since_out = capsys.readouterr().out
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        unbounded_out = capsys.readouterr().out
+        assert "This account only, last 5d." in since_out
+        assert "This account only, all time." in unbounded_out
 
     def test_non_summary_redact_default_shows_sequential_branch_labels(self, fake_projects, capsys):
         """Non-summary, redact=True (the default, no --no-redact): excluded
@@ -2049,6 +2293,51 @@ class TestFablePricing:
         assert input_cols["$"] == "1.00"
         cache_read_cols = _table_cols(out, header_contains="Class", row_contains="cache_read", row_startswith=True)
         assert cache_read_cols["$"] == "0.05"
+
+
+class TestOpus55Pricing:
+    """Opus 5 / 5.5 rate arithmetic against the vendor-published figures
+    (platform.claude.com/docs/en/about-claude/pricing). These validate rate
+    arithmetic only, never the model-ID string -- an exact-match dict test
+    supplies the same key it looks up, so no test shape here can catch a
+    wrong guess at what Claude Code actually writes to message.model."""
+
+    def test_opus_5_5_rates_use_its_own_reduced_cache_read_multiplier(self):
+        """Opus 5.5: base $4, output 5x=$20, cache_write_5m 1.25x=$5,
+        cache_write_1h 2x=$8, cache_read 0.05x (its own reduced multiplier,
+        distinct from Fable 5.1's 0.025x)=$0.20."""
+        rates = _mod._model_rates("claude-opus-5-5")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(4.00)
+        assert rates["output"] == pytest.approx(20.00)
+        assert rates["cache_write_5m"] == pytest.approx(5.00)
+        assert rates["cache_write_1h"] == pytest.approx(8.00)
+        assert rates["cache_read"] == pytest.approx(0.20)
+
+    def test_opus_5_5_priced_turn_hand_computed_dollar_total(self, fake_projects, capsys):
+        """End-to-end through _cost_report: an Opus 5.5 turn's cache_read
+        dollars reflect the 0.05x path, not the 0.1x every non-overridden
+        model uses."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-5-5", input=100_000, cache_read=200_000, output=5_000),
+        ])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        # $4/MTok input on 100,000 = $0.40; $20/MTok output on 5,000 = $0.10;
+        # $0.20/MTok cache_read (0.05x reduced multiplier) on 200,000 = $0.04.
+        input_cols = _table_cols(out, header_contains="Class", row_contains="input", row_startswith=True)
+        assert input_cols["$"] == "0.40"
+        cache_read_cols = _table_cols(out, header_contains="Class", row_contains="cache_read", row_startswith=True)
+        assert cache_read_cols["$"] == "0.04"
+
+    def test_opus_5_rates_match_vendor_table_with_standard_cache_read(self):
+        """Opus 5 (base $5, not in _CACHE_READ_MULTIPLIER_OVERRIDES) still
+        resolves cache_read at the base 0.1x multiplier ($0.50) -- proves the
+        new claude-opus-5-5 override entry is scoped to its exact key and
+        doesn't leak onto the un-suffixed sibling."""
+        rates = _mod._model_rates("claude-opus-5")
+        assert rates is not None
+        assert rates["cache_read"] == pytest.approx(0.50)
 
 
 class TestCostSummary:
@@ -2193,8 +2482,9 @@ class TestCostSummary:
         assert "## Cost by project" not in out
         assert "## Cost by context-at-turn bucket" not in out
         assert "## Cost by account" not in out
-        assert "1 priced sessions" in out
-        assert "1 priced turns" in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_summary_excluded_spend_banner_counts_and_tokens_column_exclusion(self, tmp_path, monkeypatch, capsys):
         """A nonzero-token <synthetic> turn fires the EXCLUDED SPEND banner
@@ -2295,12 +2585,16 @@ class TestCostSummary:
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(12.00)
 
-    def test_summary_scope_line_states_single_account_and_that_dropping_flag_widens_it(
+    def test_summary_scope_caption_discloses_single_account_scope(
         self, tmp_path, monkeypatch, capsys
     ):
-        """1c: the Scope: line must make it legible to a reader that dropping
-        --summary from the printed command returns a different, larger
-        total, not just state a transcript count."""
+        """The Scope: caption alone must make single-repository,
+        single-account scope legible to a reader unfamiliar with this
+        toolkit -- this fixture omits --branches, so the caption must also
+        read "all branches" rather than silently dropping the clause. No
+        separate disclosure sentence follows the scan-coverage table. See
+        docs/transcript-analysis.md's --summary flag entry for the full
+        narrowing contract."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2317,10 +2611,173 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
+        assert "\nScope: this repository only, all branches. This account only, all time.\n" in out
+        assert "different Claude account" not in out
+        # Structural guard: catches any prose reintroduced between the table and the
+        # next heading, regardless of its wording -- not just the phrase above.
+        before_heading = out[: out.index("### Cost by token class")]
+        assert before_heading.endswith("|\n\n")
+
+    def test_summary_scope_caption_names_single_branch_filter(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches main must reach the Scope: caption end to end, not just via _summary_scope_branch_clause's unit test."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        assert "\nScope: this repository only, branch main. This account only, all time.\n" in out
+
+    def test_summary_scope_caption_names_multiple_branch_filters(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Plural counterpart: two --branches values reach the caption, not
+        just via _summary_scope_branch_clause's own hand-built set."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="feature-b,feature-a"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
         assert (
-            "Scope: this account only, all time (1 transcripts scanned, 1 priced sessions, 1 priced turns)"
-            " — dropping --summary reports every declared account too"
-        ) in out
+            "\nScope: this repository only, branches feature-a, feature-b. "
+            "This account only, all time.\n" in out
+        )
+
+    def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """This fixture's one session contributes two priced turns, so
+        Sessions with priced turns must read 1 and Priced turns must read
+        2. Every other --summary fixture has exactly one of each, so a
+        positional-argument swap at _print_scan_coverage_table's call site
+        would otherwise pass every existing test undetected."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),
+            _priced("claude-sonnet-5", input=1_000_000),
+        ])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "2"
+
+    def test_summary_scan_coverage_table_includes_unreadable_column_when_nonzero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Present arm: a nonzero skipped-file count from the scan-root
+        helper reaches the table's Of those, unreadable cell. Monkeypatches
+        scope._scan_root_transcripts directly rather than chmod'ing a real
+        file -- that helper's own permission-probe behavior is already
+        unit-tested (test_transcript_analysis.py's
+        test_skipped_counts_unreadable_file_separately_from_scanned), so
+        this test only needs to prove cost.py's accumulator threads the
+        scanned/skipped counts through to the table."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.scope, "_scan_root_transcripts", lambda *a, **k: (2, 1))
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "2"
+        assert coverage_cols["Of those, unreadable"] == "1"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
+
+    def test_summary_scope_block_is_identical_regardless_of_declared_root_count(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The Scope: caption and scan-coverage table's wording do not vary
+        with declared-root count: pins that with a byte-identical comparison
+        of the caption-through-table span between a single-root and a
+        two-root fixture, rather than leaving it unverified."""
+        default_dir = tmp_path / "single"
+        (default_dir / "projects" / "-repo-main").mkdir(parents=True)
+        _write_jsonl(
+            default_dir / "projects" / "-repo-main" / "sess.jsonl",
+            [_priced("claude-sonnet-5", input=1_000_000)],
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/main\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        single_root_out = capsys.readouterr().out
+
+        _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
+        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        two_roots_out = capsys.readouterr().out
+
+        def _scope_span(out: str) -> str:
+            start = out.index("\nScope: this repository only,")
+            # Bounded by the next heading rather than the note's own wording.
+            # A wording-anchored bound would miss a regression that appends
+            # content between the note and that heading.
+            end = out.index("\n#", start)
+            return out[start:end]
+
+        assert _scope_span(single_root_out) == _scope_span(two_roots_out)
 
     def test_direct_cost_report_call_refuses_more_than_one_root_under_summary(
         self, tmp_path, capsys
@@ -2455,6 +2912,249 @@ class TestCostSummary:
         # $2.00 -- claude-sonnet-5's $2/MTok input rate on 1M input tokens, hand-computed.
         assert "| **total** | **2.00** | | |" in out
         assert _extract_md_grand_total(out) == pytest.approx(2.00)
+
+
+class TestCostShareOnly:
+    """--share-only: four dimensionless percentage-share tables (class,
+    model, thread, context bucket) and nothing else -- never a dollar
+    figure, a token count, or a grand total.
+
+    The structural assertions below check exact two-column header sets, and
+    that every non-label cell matches a percentage shape (`\\d+\\.\\d%`),
+    never a raw-float shape. This is the real leak check, not a `$`/`Tokens`
+    substring check, because this codebase's renderers never attach `$` or
+    `Tokens` to a data cell -- only to a header. Extend these structural
+    assertions if a fifth share-only table or a differently-labeled column
+    is ever added.
+    """
+
+    @staticmethod
+    def _share_table_rows(out: str, section: str) -> list[str]:
+        """Slice one share-only table's own header-and-data-row lines
+        (`[header, *data_rows]`), from its `## Cost by {section} (share
+        only)` heading through the next blank line."""
+        lines = out.splitlines()
+        heading_idx = next(i for i, ln in enumerate(lines) if ln == f"## Cost by {section} (share only)")
+        header_idx = heading_idx + 2  # heading, then the blank line the print's own \n\n opens
+        end = header_idx + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        return lines[header_idx:end]
+
+    def _assert_share_table_structure(self, out: str, section: str, label: str) -> None:
+        header, *data_rows = self._share_table_rows(out, section)
+        assert header.split() == [label, "Share"]
+        assert data_rows, f"no data rows found for the {section!r} share table"
+        for row in data_rows:
+            cells = row.split()
+            assert len(cells) == 2, f"expected a 2-cell row, got {row!r}"
+            assert re.fullmatch(r"\d+\.\d%", cells[1]), f"non-percentage share cell: {cells[1]!r}"
+
+    @staticmethod
+    def _excluded_spend_line(out: str) -> str:
+        for line in out.splitlines():
+            if line.startswith("EXCLUDED SPEND"):
+                return line
+        raise AssertionError("EXCLUDED SPEND banner not found in output")
+
+    # -- Refusals --------------------------------------------------------
+
+    def test_refuses_non_default_projects_glob(self, fake_projects, capsys):
+        """A percentage-share profile computed over one project (a non-default
+        --projects glob) is a per-project figure by construction -- barred
+        regardless of dollar/token content, since --share-only's whole safety
+        argument depends on always rendering over a pooled/mixed corpus."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, projects="-home-user-repo-a*"), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses a non-default --projects glob" in capsys.readouterr().err
+
+    def test_refuses_by_project(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, by_project=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --by-project" in capsys.readouterr().err
+
+    def test_refuses_no_redact(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, no_redact=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --no-redact" in capsys.readouterr().err
+
+    def test_refuses_summary(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, summary=True, this_repo=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --summary" in capsys.readouterr().err
+
+    def test_refuses_non_default_top(self, fake_projects, capsys):
+        """A dead combination, not a silent accept -- --top selects rows for
+        a table that sits entirely after the early return and is never
+        rendered under --share-only."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, top=5), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --top" in capsys.readouterr().err
+
+    def test_refuses_top_zero(self, fake_projects, capsys):
+        """--top 0 is falsy. Reading it via the `or 20`-collapsed top_n
+        instead of the raw parsed value would silently fold it back to the
+        default and let it slip past this refusal."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, top=0), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --top" in capsys.readouterr().err
+
+    def test_share_only_flag_registered_at_argparse_level(self):
+        args = _mod.build_parser().parse_args(["cost", "--share-only"])
+        assert args.share_only is True
+
+    # -- The four tables ---------------------------------------------------
+
+    def test_four_tables_render_percentage_shaped_cells_only(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, cache_read=500_000, output=200_000),
+            _priced("claude-opus-5", input=250_000, ephemeral_1h=100_000),
+        ])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        self._assert_share_table_structure(out, "token class", "Class")
+        self._assert_share_table_structure(out, "model ID", "Model")
+        self._assert_share_table_structure(out, "thread", "Thread")
+        self._assert_share_table_structure(out, "context-at-turn bucket", "Bucket")
+
+    def test_print_share_only_tables_computes_exact_percentages_from_known_totals(self, capsys):
+        """Direct unit call on _print_share_only_tables, mirroring
+        TestCostMarkdownTablePrinters's pattern of hand-picked totals and an
+        exact expected percentage, rather than only the shape the structural
+        test above checks. A denominator/argument-order regression (e.g. a
+        swapped grand_total) would still produce a percentage-shaped string
+        and pass every structural assertion above, so this pins one row per
+        table against an independently hand-computed percentage."""
+        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
+        class_totals["input"] = 3.0
+        class_totals["output"] = 1.0
+        model_totals = {"claude-sonnet-5": 3.0, "claude-opus-5": 1.0}
+        bucket_totals = {_mod.pricing._CONTEXT_BUCKET_UNDER: 3.0, _mod.pricing._CONTEXT_BUCKET_OVER: 1.0}
+        _mod.cost._print_share_only_tables(class_totals, model_totals, 3.0, 1.0, bucket_totals, 4.0)
+        out = capsys.readouterr().out
+
+        def _cell(section: str, label: str) -> str:
+            for row in self._share_table_rows(out, section)[1:]:
+                cells = row.split()
+                if cells[0] == label:
+                    return cells[1]
+            raise AssertionError(f"no {label!r} row in the {section!r} share table")
+
+        assert _cell("token class", "input") == "75.0%"
+        assert _cell("token class", "output") == "25.0%"
+        assert _cell("model ID", "claude-sonnet-5") == "75.0%"
+        assert _cell("model ID", "claude-opus-5") == "25.0%"
+        assert _cell("thread", "main") == "75.0%"
+        assert _cell("thread", "subagent") == "25.0%"
+        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_UNDER) == "75.0%"
+        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_OVER) == "25.0%"
+
+    # -- Suppression, not refusal, under multi-root -------------------------
+
+    def test_multi_root_composes_and_suppresses_per_account_and_top_n_sections(self, tmp_path, capsys):
+        """Multi-root scope is exactly the mixed corpus --share-only exists
+        to serve -- it is not refused, unlike --by-project/--no-redact/
+        --summary/--top above -- but the identity-bearing per-account and
+        top-N-by-dollars sections still don't render."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-opus-5", input=500_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "## Cost by account" not in out
+        assert "## Top" not in out
+        self._assert_share_table_structure(out, "token class", "Class")
+
+    def test_multi_root_per_root_scan_summary_line_still_prints(self, tmp_path, capsys):
+        """The per-root `cost: {root}: scanned N transcripts, M skipped
+        (unreadable)` diagnostic is gated only on `not summary_mode`
+        (mirrors TestCostResolveRoots's test_scan_summary_line_printed_per_root
+        under the plain report) -- --share-only never touches summary_mode,
+        so this line renders unchanged under --share-only too."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
+
+    def test_branch_exclusion_diagnostic_suppressed(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main"),
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x"),
+        ])
+        _mod._cost_report(_cost_args(share_only=True, branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "## Branch-filter exclusions" not in out
+
+    # -- Excluded-spend banner: count-free in both directions ----------------
+
+    def test_excluded_spend_banner_share_only_variant_has_no_count_priced_and_unpriced_mix(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
+            _priced("claude-sonnet-5", input=100_000),                 # priced
+        ])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        line = self._excluded_spend_line(out)
+        assert line == (
+            "EXCLUDED SPEND — some turns used unpriced or unrecognized model IDs and are"
+            " excluded from the shares below."
+        )
+        assert not re.search(r"\d", line)
+        assert "Unpriced tokens (unknown model IDs):" not in out
+        assert not re.search(r"unpriced\s+[\d,]+\s+tokens", out)
+
+    def test_excluded_spend_banner_share_only_variant_has_no_count_all_unpriced_corpus(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-example-9", input=1_000_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        line = self._excluded_spend_line(out)
+        assert not re.search(r"\d", line)
+        self._assert_share_table_structure(out, "token class", "Class")
+
+    # -- Zero-session multi-root scope ---------------------------------------
+
+    def test_zero_session_multi_root_scope_renders_clean_caption_and_warnings(self, tmp_path, capsys):
+        """render._pct_of is zero-safe: a zero-session scope still renders
+        the four share tables (every cell 0.0%), plus the caption and one
+        WARNING per empty root -- no crash, and no stale-total artifact
+        left over from a prior computation."""
+        empty_root_a = tmp_path / "acct-empty-a"
+        empty_root_a.mkdir(parents=True)
+        empty_root_b = tmp_path / "acct-empty-b"
+        empty_root_b.mkdir(parents=True)
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[empty_root_a, empty_root_b])
+        out = capsys.readouterr().out
+        assert "Scope: pooled corpus, all time." in out
+        assert out.count("WARNING: cost:") == 2
+        header, *data_rows = self._share_table_rows(out, "token class")
+        assert header.split() == ["Class", "Share"]
+        for row in data_rows:
+            assert row.split()[1] == "0.0%"
+        # Unlike the fixed-row token-class/thread/bucket tables, the model-ID
+        # table's row count tracks model_totals, which is empty when no
+        # session in scope used any model. A header with zero data rows is
+        # the deliberate output for that case, not a bug -- asserted here
+        # rather than via _assert_share_table_structure, whose `assert
+        # data_rows` is correct for every other share-only call site but
+        # doesn't hold for this one.
+        model_header, *model_rows = self._share_table_rows(out, "model ID")
+        assert model_header.split() == ["Model", "Share"]
+        assert model_rows == []
 
 
 class TestListPriceCaveat:

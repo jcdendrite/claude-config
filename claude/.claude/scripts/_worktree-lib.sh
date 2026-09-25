@@ -1,18 +1,27 @@
 #!/bin/bash
 # _worktree-lib.sh — shared helpers for worktree-cleanup scripts.
 #
-# Sourced by cleanup-merged-branches.sh and cleanup-idle-open-pr-worktrees.sh.
+# Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh, and
+# worktree-removal-status.sh.
 # Not executable on its own; source it, do not invoke it directly.
 #
 # Provides:
 #   progress / clear_progress            — stderr-only progress line helpers
 #   collect_process_cwds / worktree_in_use — live-process detection
 #   resolve_worktree_for_branch          — branch -> worktree path/lock lookup
+#   collect_all_worktrees                — full `worktree list --porcelain` scan
+#   worktree_canon_path                  — symlink-resolved path, raw on failure
+#   worktree_matches_filter              — branch/path match against FILTER_ARGS
 #
-# Every function here is pure / side-effect-free with respect to the caller's
-# script state (aside from the documented globals each one populates), so a
-# behavior regression traced back to this file can be fixed by editing this
-# file alone — neither consumer script needs a parallel change.
+# FILTER_ARGS is a caller-assigned array (may be empty) that worktree_matches_filter reads.
+# Assign it before calling -- an unassigned array aborts under `set -u`.
+#
+# Every function here is side-effect-free with respect to the caller's script
+# state, aside from the documented globals each one reads or populates.
+# collect_process_cwds is the one exception: its lsof branch installs an EXIT trap.
+# That trap replaces any EXIT trap the caller already set, and the reset does not restore it.
+# A behavior regression traced back to this file can therefore be fixed by
+# editing this file alone — neither consumer script needs a parallel change.
 
 # ---------------------------------------------------------------------------
 # Progress helpers (stderr-only, no-op when stderr is not a TTY)
@@ -27,6 +36,44 @@ progress() {
 clear_progress() {
   [ -t 2 ] || return 0
   printf '\r%-80s\r' '' >&2
+}
+
+# ---------------------------------------------------------------------------
+# Path canonicalization and filter matching
+# ---------------------------------------------------------------------------
+
+# worktree_canon_path <path> — prints <path> with symlinks resolved.
+# Falls back to the raw input when <path> can't be cd'd into (e.g. a prunable
+# worktree whose directory is gone, or a branch name).
+# A comparison against a raw fallback therefore never matches rather than erroring.
+# An inherited CDPATH is cleared so it cannot resolve a relative name (and
+# print the hit) against an unrelated directory.
+# An empty input or a lone `-` (cd's OLDPWD shorthand) falls back to raw.
+# `--` stops an input like `-P` from being read as a cd option instead of a path.
+worktree_canon_path() {
+  local p="$1"
+  case "$p" in
+    '' | -) printf '%s' "$p"; return 0 ;;
+  esac
+  (CDPATH='' cd -- "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+}
+
+# worktree_matches_filter <branch> <canonical-path> — does the worktree with
+# this branch and canonical path survive the FILTER_ARGS filter?
+#   0 = matches (always, when FILTER_ARGS is empty)   1 = no match
+# Each filter argument matches by exact branch name or by canonicalized path,
+# so a relative path or a symlinked component still matches the canonical
+# form git reports. A branch-name argument is compared raw, since
+# worktree_canon_path only ever resolves an actual path.
+worktree_matches_filter() {
+  local branch="$1" canon_path="$2" _f
+  [ "${#FILTER_ARGS[@]}" -eq 0 ] && return 0
+  for _f in "${FILTER_ARGS[@]}"; do
+    if [ "$_f" = "$branch" ] || [ "$(worktree_canon_path "$_f")" = "$canon_path" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -102,7 +149,7 @@ worktree_in_use() {
   local target="$1" resolved cwd
   # Canonicalize so symlinked path components match the kernel-canonical
   # cwd strings reported by /proc and lsof.
-  resolved=$(cd "$target" 2>/dev/null && pwd -P) || resolved="$target"
+  resolved=$(worktree_canon_path "$target")
   for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
     if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
       return 0
@@ -173,4 +220,86 @@ resolve_worktree_for_branch() {
     fi
   done < <(git worktree list --porcelain)
   _commit_worktree_candidate
+}
+
+# ---------------------------------------------------------------------------
+# Full worktree-list scan (every record, main worktree included)
+# ---------------------------------------------------------------------------
+
+# _commit_all_worktree_record — internal to collect_all_worktrees. Finalizes
+# the just-scanned porcelain record into the ALL_WT_* arrays.
+_commit_all_worktree_record() {
+  if [ "$_AWT_HAVE_RECORD" -eq 1 ]; then
+    ALL_WT_PATHS+=("$_AWT_PATH")
+    ALL_WT_BRANCHES+=("$_AWT_BRANCH")
+    ALL_WT_LOCKED+=("$_AWT_LOCKED")
+    ALL_WT_LOCK_PIDS+=("$_AWT_LOCK_PID")
+    ALL_WT_LOCK_REASONS+=("$_AWT_LOCK_REASON")
+    ALL_WT_PRUNABLE_REASONS+=("$_AWT_PRUNABLE_REASON")
+  fi
+}
+
+# collect_all_worktrees
+#
+# One forward scan of `git worktree list --porcelain`, populating six
+# parallel arrays — ALL_WT_PATHS, ALL_WT_BRANCHES, ALL_WT_LOCKED,
+# ALL_WT_LOCK_PIDS, ALL_WT_LOCK_REASONS, ALL_WT_PRUNABLE_REASONS — one entry
+# per worktree record, main worktree included. Unlike
+# resolve_worktree_for_branch, this does not key off one target branch, so
+# every record is committed rather than only a matching one. ALL_WT_LOCK_REASONS
+# holds the porcelain `locked <reason>` text verbatim, empty when the record
+# is `locked` with no reason. Git may quote it per `core.quotePath`; this
+# does not attempt to unescape it. ALL_WT_PRUNABLE_REASONS holds the
+# porcelain `prunable <reason>` text, empty when the record carries no
+# `prunable` line, for a worktree whose directory is gone. ALL_WT_LOCK_PIDS
+# mirrors resolve_worktree_for_branch's WORKTREE_LOCK_PID field for a
+# forward-looking consumer that needs process-liveness checks on a lock
+# holder, even though worktree-removal-status.sh itself doesn't currently
+# read it, only surfacing the full lock-reason text.
+#
+# resolve_worktree_for_branch and collect_all_worktrees are two independent
+# parsers of the same porcelain grammar, an accepted duplication rather than
+# an oversight — consider unifying them if a third consumer needs this
+# grammar, rather than adding a third copy.
+collect_all_worktrees() {
+  # shellcheck disable=SC2034
+  ALL_WT_PATHS=()
+  # shellcheck disable=SC2034
+  ALL_WT_BRANCHES=()
+  # shellcheck disable=SC2034
+  ALL_WT_LOCKED=()
+  # shellcheck disable=SC2034
+  ALL_WT_LOCK_PIDS=()
+  # shellcheck disable=SC2034
+  ALL_WT_LOCK_REASONS=()
+  # shellcheck disable=SC2034
+  ALL_WT_PRUNABLE_REASONS=()
+  _AWT_PATH="" _AWT_BRANCH="" _AWT_LOCKED=0 _AWT_LOCK_PID="" _AWT_LOCK_REASON="" _AWT_PRUNABLE_REASON=""
+  _AWT_HAVE_RECORD=0
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree "* ]]; then
+      _commit_all_worktree_record
+      _AWT_PATH="${line#worktree }"
+      _AWT_BRANCH=""
+      _AWT_LOCKED=0
+      _AWT_LOCK_PID=""
+      _AWT_LOCK_REASON=""
+      _AWT_PRUNABLE_REASON=""
+      _AWT_HAVE_RECORD=1
+    elif [[ "$line" == "branch refs/heads/"* ]]; then
+      _AWT_BRANCH="${line#branch refs/heads/}"
+    elif [[ "$line" == "locked"* ]]; then
+      _AWT_LOCKED=1
+      _AWT_LOCK_REASON="${line#locked}"
+      _AWT_LOCK_REASON="${_AWT_LOCK_REASON# }"
+      if [[ "$line" =~ pid[[:space:]]+([0-9]+) ]]; then
+        _AWT_LOCK_PID="${BASH_REMATCH[1]}"
+      fi
+    elif [[ "$line" == "prunable"* ]]; then
+      _AWT_PRUNABLE_REASON="${line#prunable}"
+      _AWT_PRUNABLE_REASON="${_AWT_PRUNABLE_REASON# }"
+    fi
+  done < <(git worktree list --porcelain)
+  _commit_all_worktree_record
 }

@@ -100,6 +100,10 @@ See README.md's Workflow section for the hook-enforced `plan-it` →
 details (loaded automatically for SKILL.md, agent, and
 plugin-directory files).
 
+## Hook threat model
+
+This repo's hooks default to guarding a **cooperative** agent that makes honest mistakes, not one attacking the gate. A review finding that needs a command or staged-content shape a cooperative agent would never emit is not a defect in a gate whose `# tier-threat-model:` line is present but omits `untrusted-input`. A gate with no tier line at all is not yet classified and gets no waiver. Non-gate hooks and shared library code get no waiver from this framework. A gate that lists `untrusted-input` gets no such waiver, because content read from outside the session can steer a cooperative agent into any shape. A gate is at least as strict as any gate whose header names it as that gate's backstop against evasion. A shared helper function is never relaxed just because one of its many callers denies less. A gate that lists `irreversible` is never relaxed on false-positive cost alone. A tier scopes what a reviewer treats as a defect in *this* gate; it never licenses the agent this repo guards to use a shape the gate happens to miss. See `docs/hooks.md` § "Threat-model tiers" for the tier definitions and each gate's classification.
+
 ## AI agents: don't merge your own PRs
 
 `block-gh-pr-merge.sh` blocks `gh pr merge` at the tool-call boundary
@@ -153,8 +157,22 @@ Provenance leaks the same way. If the only reason you know a fact is
 exposure to private engagement material, publishing it carries that
 engagement's fingerprint — whatever the datatype, and whether you
 quoted it, computed it, or recalled it. The test is where the
-knowledge came from, not what shape it takes; a figure drawn from a
-corpus mixing private and public sources inherits the private half.
+knowledge came from, not what shape it takes.
+
+Never publish a figure carrying a per-project, per-account, or
+per-engagement dimension — this is absolute, not a factor to weigh, no
+borderline case. It binds every artifact: a commit message, PR body,
+decision entry, or illustrative example included. A measurement of
+this repo's own tooling in use is publishable only
+when it is computed over this repository's own corpus on a single
+account — `docs/private-project-redaction.md` § "Publishing a tooling measurement" states the scope bar, the commands that enforce it, the
+two exemptions, and the limits on the owner's case-by-case
+authorization for a wider figure. Anything wider goes to the owner
+privately and publishes only under that cited authorization
+exception. Scope is not dimension — the single-account scope
+permitted here is not the per-account dimension barred above. If in
+doubt, don't.
+
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
 
@@ -162,8 +180,12 @@ sources, or from synthetic fixtures is not in this class.
 
 Not a redaction concern — a do-not-commit-ever concern. API keys,
 OAuth tokens, service-role keys, `.env` contents, database URLs with
-credentials, private-key material. If one ever lands, ask the owner to
-rotate it *then* rewrite history.
+credentials, private-key material. If one ever lands, stop and tell the
+owner directly in the current session — never through a GitHub issue, PR
+comment, commit message, or any other artifact that ships to the public
+repo. Do not rotate credentials or rewrite history yourself, even if told
+to. Both stay the owner's to run: a rewrite is not a retraction once this
+repo's history can be cloned, forked, or cached.
 
 ### Enforcement
 

@@ -50,7 +50,7 @@ The two behaviors are deliberately not unified into one dispatch shape.
 
 ## Debug-investigation probe: read-only probe vs. write-capable agent
 
-`docs/design-decisions.md §18` — the authoritative rationale for why the probe
+Under `docs/design-decisions/debug-investigation-read-only-probe.md` § "Debug-investigation delegation: read-only probe over debug-and-fix agent" — the authoritative rationale for why the probe
 stays read-only: the parent retains the edit and the judgment; a write-capable
 agent re-introduces the model-agency failure class documented in the check-runner
 retirement (see below).

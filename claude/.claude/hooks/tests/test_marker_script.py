@@ -16,21 +16,28 @@ from helpers import (
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
     agent_input,
+    assert_cap_engaged,
+    bare_remote_with_default_branch,
     bash_input,
+    edit_input,
     git_toplevel,
     head_sha,
     plan_review_marker_path,
     plant_traversal_canary,
+    push_conflicting_edit_to_origin,
     read_input,
     run_hook,
+    scaled_shim_sleep,
     skill_review_marker_path,
     staged_diff_hash,
+    staged_diff_hash_at_base,
     write_marker,
     write_plan_review_marker,
+    write_scaled_timeout_shim,
     write_skill_review_marker,
 )
 
-from .conftest import _seed_session, assert_cap_engaged
+from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 PR_DIFF_SCRIPT = SCRIPTS_DIR / "pr-diff-against-base.sh"
@@ -664,11 +671,15 @@ class TestMarkerScriptEmptyStagedGuard:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"guard should not write a marker: {stray}"
 
-    def test_code_review_empty_staged_no_unstaged_writes_marker(
+    def test_code_review_empty_staged_no_unstaged_exits_0_without_marker(
         self, isolated_home, git_repo
     ):
         """Guard must NOT fire when staged is empty AND there are no unstaged
-        changes — the review-of-nothing escape hatch must stay open."""
+        changes — the review-of-nothing escape hatch must stay open. A
+        genuinely clean tree makes `git diff --cached` produce zero bytes.
+        The write arm must still exit 0 without writing a marker. It must
+        not record sha256("")'s fixed-width digest as though it hashed real
+        content."""
         _seed_session(isolated_home, self.SID)
         # Unstage then discard the fixture's change so both index and working
         # tree are clean. Order matters: reset the index first (HEAD → index),
@@ -677,8 +688,10 @@ class TestMarkerScriptEmptyStagedGuard:
         subprocess.run(["git", "checkout", "--", "file.txt"], cwd=git_repo, check=True)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
+        assert "staged diff is empty" in result.stderr
         marker_dir = isolated_home / ".claude" / "code-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty staged diff must not write a marker: {stray}"
 
     # ── skill-review (path-scoped to SKILL.md) ────────────────────────────
 
@@ -700,7 +713,10 @@ class TestMarkerScriptEmptyStagedGuard:
         self, isolated_home, git_repo
     ):
         """Unstaged change outside the SKILL.md pathspec with nothing staged
-        must NOT trigger the guard — the guard is pathspec-scoped."""
+        must NOT trigger the guard — the guard is pathspec-scoped. But the
+        SKILL.md-scoped diff is genuinely empty here (no SKILL.md exists at
+        all), so the write arm exits 0 without writing a marker, not the
+        guard firing."""
         _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree. The unstaged file.txt change is outside the SKILL.md
@@ -709,7 +725,8 @@ class TestMarkerScriptEmptyStagedGuard:
         result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty SKILL.md-scoped diff must not write a marker: {stray}"
 
     def test_skill_review_unstaged_skill_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when staged SKILL.md diff is empty but an unstaged
@@ -774,7 +791,9 @@ class TestMarkerScriptEmptyStagedGuard:
         plan-review is out of scope for the hardcoded
         `claude-skills/skills/plan-review/ROUTING.md` pathspec — the guard
         must not fire, proving the pathspec is the exact path, not a
-        generic `**/ROUTING.md` glob."""
+        generic `**/ROUTING.md` glob. But the pathspec-scoped diff is
+        genuinely empty here, so the write arm exits 0 without writing a
+        marker, not the guard firing."""
         _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree, matching the sibling out-of-scope test's setup.
@@ -785,7 +804,8 @@ class TestMarkerScriptEmptyStagedGuard:
         result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty pathspec-scoped diff must not write a marker: {stray}"
 
     def test_skill_review_unstaged_routing_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when the staged plan-review/ROUTING.md diff is empty
@@ -801,6 +821,346 @@ class TestMarkerScriptEmptyStagedGuard:
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"guard should not write a marker: {stray}"
+
+
+_HASH_STAGED_DIFF_FIXTURE_START = "# MARKER_TEST_FIXTURE: hash-staged-diff — start\n"
+_HASH_STAGED_DIFF_FIXTURE_END = "# MARKER_TEST_FIXTURE: hash-staged-diff — end"
+
+
+def _extract_hash_staged_diff_block() -> str:
+    """Return _hash_staged_diff's two readonly constants plus its own body
+    from marker.sh, delimited by explicit marker comments rather than
+    located by matching shell syntax -- same rationale as
+    test_install_sh_transcript_config_dirs.py's _extract_block: marker.sh's
+    own CLI dispatch runs unconditionally when sourced (no BASH_SOURCE
+    guard), so sourcing the whole file would hit its subcommand `case` and
+    exit before a test ever got to call the function directly."""
+    marker_text = MARKER_SCRIPT.read_text()
+    start = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_START)
+    assert start != -1, f"{_HASH_STAGED_DIFF_FIXTURE_START!r} not found in {MARKER_SCRIPT}"
+    end = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_END, start)
+    assert end != -1, f"{_HASH_STAGED_DIFF_FIXTURE_END!r} not found after start marker in {MARKER_SCRIPT}"
+    block = marker_text[start + len(_HASH_STAGED_DIFF_FIXTURE_START) : end]
+    assert "_hash_staged_diff()" in block, (
+        f"extracted block is missing the function definition; markers in "
+        f"{MARKER_SCRIPT} are probably misplaced. Got: {block!r}"
+    )
+    return block
+
+
+def _run_hash_staged_diff(
+    repo_root: str, cap_mode: str = "uncapped", *pathspecs: str, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Runs _hash_staged_diff directly, uncapped by default so no `_lib.sh`
+    source (for `_lib_capped`) is needed -- cap-mode behavior itself is
+    already covered by test_code_review_value_computation_times_out_gracefully."""
+    env = {**os.environ, **extra_env} if extra_env else dict(os.environ)
+    script = _extract_hash_staged_diff_block() + '\n_hash_staged_diff "$@"\n'
+    return subprocess.run(
+        ["bash", "-c", script, "bash", cap_mode, repo_root, *pathspecs],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestHashStagedDiff:
+    """_hash_staged_diff's three return states -- 0 (content, hash on
+    stdout), $_HASH_STAGED_DIFF_RC_EMPTY (empty diff, nothing on stdout),
+    and the bare 1 (git itself could not be trusted, nothing on stdout) --
+    classified from the hashed digest itself rather than a separate probe.
+    The row-9 regression coverage: the four non-empty-diff categories
+    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF) must
+    still classify as content, not empty."""
+
+    _RC_EMPTY = 3
+
+    def _init_repo(self, repo) -> None:
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "f.txt").write_text("first\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+    def test_content_when_something_is_staged(self, tmp_path) -> None:
+        repo = tmp_path / "content-repo"
+        self._init_repo(repo)
+        (repo / "f.txt").write_text("first\nsecond\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        result = _run_hash_staged_diff(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == hashlib.sha256(
+            subprocess.run(
+                ["git", "-C", str(repo), "diff", "--cached"], capture_output=True, check=True
+            ).stdout
+        ).hexdigest()
+
+    def test_empty_return_code_when_nothing_is_staged(self, tmp_path) -> None:
+        repo = tmp_path / "empty-repo"
+        self._init_repo(repo)
+        result = _run_hash_staged_diff(str(repo))
+        assert result.returncode == self._RC_EMPTY, result.stderr
+        assert result.stdout == ""
+
+    def test_bare_failure_return_code_for_a_non_repo_root(self, tmp_path) -> None:
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        result = _run_hash_staged_diff(str(not_a_repo))
+        assert result.returncode == 1, result.stderr
+        assert result.stdout == ""
+
+    def test_mode_only_staged_change_classifies_as_content(self, tmp_path) -> None:
+        """A mode-only staged change (chmod +x, no content change) still
+        hashes non-empty `git diff --cached` output, so this must return 0,
+        not the empty rc."""
+        repo = tmp_path / "mode-only-repo"
+        self._init_repo(repo)
+        os.chmod(repo / "f.txt", 0o755)
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        result = _run_hash_staged_diff(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout != ""
+
+    def test_staged_rename_classifies_as_content(self, tmp_path) -> None:
+        repo = tmp_path / "rename-repo"
+        self._init_repo(repo)
+        subprocess.run(["git", "mv", "f.txt", "renamed.txt"], cwd=repo, check=True)
+        result = _run_hash_staged_diff(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout != ""
+
+    def test_staged_binary_file_classifies_as_content(self, tmp_path) -> None:
+        repo = tmp_path / "binary-repo"
+        self._init_repo(repo)
+        (repo / "binary.dat").write_bytes(bytes(range(256)))
+        subprocess.run(["git", "add", "binary.dat"], cwd=repo, check=True)
+        result = _run_hash_staged_diff(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout != ""
+
+    def test_git_external_diff_noop_misclassifies_staged_content_as_empty_rc(self, tmp_path) -> None:
+        """A GIT_EXTERNAL_DIFF tool that exits 0 without writing to stdout
+        makes `git diff --cached` (no `--quiet`) itself hash empty bytes for
+        a genuinely staged change. `git diff --cached --quiet` never invokes
+        an external-diff driver at all, so `_hash_staged_diff`'s own hashed
+        call is exactly the one that GIT_EXTERNAL_DIFF can affect. A real
+        external-diff helper always writes its own diff text to stdout,
+        precisely so tools that hash or display it see real content. This
+        test asserts against a deliberately broken no-op helper, not a
+        realistic one."""
+        repo = tmp_path / "external-diff-repo"
+        self._init_repo(repo)
+        (repo / "f.txt").write_text("first\nsecond\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        noop_script = tmp_path / "noop-external-diff.sh"
+        noop_script.write_text("#!/bin/bash\nexit 0\n")
+        noop_script.chmod(0o755)
+        result = _run_hash_staged_diff(
+            str(repo), "uncapped", extra_env={"GIT_EXTERNAL_DIFF": str(noop_script)}
+        )
+        assert result.returncode == self._RC_EMPTY, (
+            "a no-op GIT_EXTERNAL_DIFF helper makes git diff --cached itself "
+            "produce zero bytes for genuinely staged content -- this IS a "
+            "known, accepted residual (see the plan's row-9 discussion), not "
+            "a bug this test is pinning as correct; if this assertion ever "
+            "flips to 0, the accepted-residual writeup needs revisiting, not "
+            "just this test"
+        )
+
+
+class TestMarkerScriptStagedDiffStateClassification:
+    """_hash_staged_diff's failure outcome (bare rc 1, "git itself could
+    not be trusted") and the status arm's degradation to absent/historical
+    on that outcome are exercised here through marker.sh's write and
+    status arms. _hash_staged_diff's own three-way return contract
+    (content/empty/failure), including the four non-empty-diff categories
+    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF), is
+    covered directly against its own return value by this file's
+    TestHashStagedDiff. test_write_code_review_creates_marker in
+    TestMarkerScriptHappyPath already confirms the write arm wires a
+    "content" classification through to a written marker. No separate
+    wiring check for the other content-yielding shapes is kept here."""
+
+    SID = "test-session-diff-state"
+
+    # ── the probe's own cap, exercised on the write arm ─────────────────
+
+    def test_write_code_review_aborts_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The write arm now calls _hash_staged_diff uncapped directly, with
+        no separate probe call ahead of it -- a sleeping stub would hang the
+        write arm forever instead of exercising the failure path, so a
+        nonzero exit is required here, not a timeout. _guard_staged_vs_unstaged
+        runs its own `--quiet`-shaped diff calls first, at a different
+        argument count, so the stub only intercepts the load-bearing 4-arg
+        (`-C <repo> diff --cached`, no pathspec) hash call the write arm
+        actually makes."""
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        result = _run(
+            ["write", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 2, result.stderr
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an unanswerable diff state must not write a marker: {stray}"
+
+    def test_write_skill_review_aborts_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Same as the code-review case above, retargeted at the
+        skill-review arm's pathspec-scoped (10-arg, 5 pathspecs) hash call."""
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 10 ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        result = _run(
+            ["write", "skill-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 2, result.stderr
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an unanswerable diff state must not write a marker: {stray}"
+
+    # ── status degrades to absent/historical, not a crash ───────────────
+
+    def test_status_code_review_falls_through_to_absent_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """status calls _hash_staged_diff capped directly -- no separate
+        probe call remains to intercept. Uses the same nonzero-exit stub
+        shape as the write-arm tests above, for consistency between the
+        two arms' tests, even though this capped call could also tolerate
+        a sleep+cap stub; cap-engagement itself is already covered
+        generically by test_code_review_value_computation_times_out_gracefully.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        )
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        result = _run(
+            ["status"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "code-review: absent" in result.stdout
+
+    def test_status_skill_review_falls_through_to_absent_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """Same as the code-review case above, but matches the
+        skill-review line's 5-pathspec (10-arg) hash call shape
+        specifically, so it doesn't also fail the code-review line's own
+        hash call.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 10 ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        )
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        result = _run(
+            ["status"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: absent" in result.stdout
+
+    # ── a stray empty-digest marker must not read live ──────────────────
+
+    def test_status_empty_digest_marker_is_not_live_on_clean_tree(
+        self, isolated_home, git_repo
+    ):
+        """A completion marker seeded with sha256("")'s digest must not read
+        `live` once the tree is actually clean -- `status` computes no hash
+        at all for the "empty" state, so it can never match this value."""
+        _seed_session(isolated_home, self.SID)
+        subprocess.run(["git", "reset", "HEAD", "--", "file.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "checkout", "--", "file.txt"], cwd=git_repo, check=True)
+        empty_digest = hashlib.sha256(b"").hexdigest()
+        write_marker(isolated_home, git_repo, empty_digest, session_id=self.SID)
+        skill_marker = skill_review_marker_path(isolated_home, git_repo, session_id=self.SID)
+        skill_marker.parent.mkdir(parents=True, exist_ok=True)
+        skill_marker.write_text(empty_digest + "\n")
+
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" not in result.stdout
+        assert "skill-review: live" not in result.stdout
 
 
 class TestMarkerScriptStalePidLookup:
@@ -881,6 +1241,15 @@ class TestMarkerDirectoryNamingConvention:
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         (plans_dir / "p.md").write_text("# plan\n")
+        if skill == "skill-review":
+            # A staged SKILL.md-matching path: otherwise the pathspec-scoped
+            # diff is empty and the write arm exits 0 without writing a
+            # marker, which this test isn't exercising.
+            skill_dir = git_repo / "claude-skills" / "skills" / "naming-convention-test-skill"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text("# test skill\n")
+            subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
         extra_env = None
         if skill == "cumulative-review":
             # cumulative-review's own diff recipe needs a resolvable default
@@ -998,6 +1367,299 @@ class TestMarkerWriteSatisfiesTheGate:
             )
             == "allow"
         )
+
+
+def _build_conflicted_merge_via_origin(tmp_path):
+    """Local copy of test_require_code_review.py's fixture of the same name
+    (DAMP test code): a conflicted merge whose MERGE_HEAD is trusted via the
+    origin/<default> anchor, resolved and staged."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    return clone
+
+
+def _merge_tree_base(repo):
+    """Local copy of test_require_code_review.py's helper of the same name:
+    independently computes the reference tree _lib_gate_diff_base's merge
+    row computes. The literal MERGE_HEAD OID (not the ref name) is passed --
+    git embeds a merge-tree argument's own textual form into the conflict
+    marker label, so the ref name would compute a byte-different tree than
+    production's `merge-tree --write-tree HEAD "$state_oid"`."""
+    merge_head_oid = (repo / ".git" / "MERGE_HEAD").read_text().strip()
+    out = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "HEAD", merge_head_oid],
+        cwd=repo, capture_output=True, text=True, check=False,
+    ).stdout
+    return out.strip().splitlines()[0]
+
+
+class TestMarkerScriptMergeAwareBase:
+    """marker.sh's `write code-review` and `status` arms thread
+    _lib_gate_diff_base's resolved base through _lib_staged_diff_hash, the
+    same base require-code-review.sh's read side resolves -- write and read
+    must agree byte-for-byte or a marker written mid-merge can never match."""
+
+    def test_write_code_review_marker_value_matches_independent_oracle(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        sid = "test-session-merge-write"
+        _seed_session(isolated_home, sid)
+        result = _run(["write", "code-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        base = _merge_tree_base(repo)
+        expected = staged_diff_hash_at_base(repo, base)
+        assert files[0].read_text().strip() == expected
+
+    def test_write_code_review_marker_opens_the_commit_gate_mid_merge(
+        self, isolated_home, tmp_path
+    ):
+        """Same round-trip proof as TestMarkerWriteSatisfiesTheGate above,
+        against a mid-merge repo rather than a plain one -- write and read
+        must agree on the base-relative recipe, not just the HEAD-relative
+        one."""
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        sid = "test-session-merge-roundtrip"
+        _seed_session(isolated_home, sid)
+
+        result = _run(["write", "code-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        assert (
+            run_hook(
+                HOOKS_DIR / "require-code-review.sh",
+                bash_input("git commit -m roundtrip", session_id=sid),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_status_reports_live_mid_merge_for_base_relative_marker(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        sid = "test-session-merge-status"
+        _seed_session(isolated_home, sid)
+        base = _merge_tree_base(repo)
+        write_marker(
+            isolated_home, repo, staged_diff_hash_at_base(repo, base), session_id=sid
+        )
+        result = _run(["status"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" in result.stdout
+
+    def test_status_reports_historical_mid_merge_for_old_head_relative_marker(
+        self, isolated_home, tmp_path
+    ):
+        """A marker holding the plain HEAD-relative preimage must not read
+        as live mid-merge -- it covers upstream's whole contribution, not
+        just the resolution."""
+        repo = _build_conflicted_merge_via_origin(tmp_path)
+        sid = "test-session-merge-status-stale"
+        _seed_session(isolated_home, sid)
+        write_marker(isolated_home, repo, staged_diff_hash(repo), session_id=sid)
+        result = _run(["status"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: historical" in result.stdout
+
+
+def _build_conflicted_merge_via_origin_with_local_plan_edit(tmp_path):
+    """Merge fixture with a plan file edited only locally, post-merge and
+    unstaged -- upstream never touches it, so its merge-tree base content
+    equals HEAD's, and diffing the local edit against either base exercises
+    _lib_active_plan_hash's ordinary (non-empty active set) branch."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    plans_dir = clone / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "p.md").write_text("base plan\n")
+    subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed plan"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    (plans_dir / "p.md").write_text("locally edited plan\n")
+    return clone
+
+
+def _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path):
+    """Merge fixture with a plan file edited only upstream, before the
+    merge -- it auto-merges into the local worktree unchanged, so it reads
+    as active relative to plain HEAD (upstream's whole contribution) but not
+    relative to the trusted merge-tree base (already-reviewed content
+    excluded). Used to prove a HEAD-relative marker goes stale mid-merge."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    plans_dir = clone / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "p.md").write_text("base plan\n")
+    subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed plan"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "_push_upstream_plan_edit"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / "f").write_text("origin-edit\n")
+    (push_clone / ".claude" / "plans" / "p.md").write_text("upstream edited plan\n")
+    subprocess.run(["git", "add", "f", ".claude/plans/p.md"], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin edits f and p.md"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    return clone
+
+
+def _active_plan_hash_oracle(repo, active_files):
+    """Independent, non-shell reimplementation of _lib_active_plan_hash's
+    digest recipe (path, newline, per-file sha256, newline, concatenated
+    across active files and re-hashed) for a caller-supplied active file
+    list -- not derived by calling the function under test."""
+    combined = ""
+    for f in active_files:
+        file_hash = hashlib.sha256((repo / f).read_bytes()).hexdigest()
+        combined += f + "\n" + file_hash + "\n"
+    return hashlib.sha256(combined.encode()).hexdigest()
+
+
+class TestMarkerScriptMergeAwarePlanReviewBase:
+    """marker.sh's `write plan-review` and `status` arms thread
+    _lib_gate_diff_base's resolved base into _lib_active_plan_hash, the same
+    base require-plan-review.sh's read side resolves -- write and read must
+    agree byte-for-byte, or a plan-review marker written mid-merge can never
+    match. Mirrors TestMarkerScriptMergeAwareBase above for the plan-review
+    marker kind."""
+
+    def test_write_plan_review_marker_value_matches_independent_oracle(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_conflicted_merge_via_origin_with_local_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-write"
+        _seed_session(isolated_home, sid)
+        result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        expected = _active_plan_hash_oracle(repo, [".claude/plans/p.md"])
+        assert files[0].read_text().strip() == expected
+
+    def test_write_plan_review_marker_opens_the_write_gate_mid_merge(
+        self, isolated_home, tmp_path
+    ):
+        """Same round-trip proof as TestMarkerScriptMergeAwareBase above,
+        against the plan-review marker kind: write and read must agree on
+        the base-relative recipe, not just the HEAD-relative one."""
+        repo = _build_conflicted_merge_via_origin_with_local_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-roundtrip"
+        _seed_session(isolated_home, sid)
+
+        result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        assert (
+            run_hook(
+                HOOKS_DIR / "require-plan-review.sh",
+                {**edit_input(str(repo / "other.txt")), "session_id": sid},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_write_plan_review_marker_round_trips_mid_merge_with_upstream_only_plan(
+        self, isolated_home, tmp_path
+    ):
+        """The plan file differs from HEAD only by upstream's edit, so it is
+        excluded relative to the merge-tree base and no plan is active.
+        marker.sh resolves that base in its own process, separate from the
+        hook's read-time call; both must land on the empty-active-set result
+        rather than bind a value to the base's identity."""
+        repo = _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-upstream-only-roundtrip"
+        _seed_session(isolated_home, sid)
+
+        result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        marker = plan_review_marker_path(isolated_home, repo, sid)
+        held_value = marker.read_text().strip() if marker.exists() else ""
+        assert held_value == "", (
+            "an empty active set must leave no non-empty or base-bound marker "
+            f"value for this session/repo, got {held_value!r}"
+        )
+        # No run_hook allow-check here: with an empty active set the hook
+        # exits before reading any marker (require-plan-review.sh ~:241), so
+        # such a check observes nothing about this test's write side and is
+        # redundant with test_merge_of_upstream_plan_allows_unrelated_write
+        # in test_require_plan_review.py.
+
+    def test_status_reports_live_mid_merge_for_base_relative_plan_marker(
+        self, isolated_home, tmp_path
+    ):
+        repo = _build_conflicted_merge_via_origin_with_local_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-status"
+        _seed_session(isolated_home, sid)
+        base = _merge_tree_base(repo)
+        write_plan_review_marker(isolated_home, repo, sid, base=base)
+        result = _run(["status"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: live" in result.stdout
+
+    def test_status_reports_historical_mid_merge_for_old_head_relative_plan_marker(
+        self, isolated_home, tmp_path
+    ):
+        """A marker holding the plain HEAD-relative preimage must not read
+        as live mid-merge -- it covers upstream's whole contribution to the
+        plan file, not just the local resolution. The current value is empty
+        here (upstream's plan edit is excluded relative to the base), and
+        status reports any existing marker as historical when the current
+        value is empty."""
+        repo = _build_conflicted_merge_via_origin_with_upstream_plan_edit(tmp_path)
+        sid = "test-session-merge-plan-status-stale"
+        _seed_session(isolated_home, sid)
+        write_plan_review_marker(isolated_home, repo, sid)
+        result = _run(["status"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: historical" in result.stdout
 
 
 class TestMarkerScriptHonorsConfigDir:
@@ -1563,13 +2225,16 @@ class TestMarkerScriptPlanModeSibling:
         path string, not file/network I/O, so it carries no real timeout risk)
         and inflate this test's budget by that call's full sleep on top of the
         one actually under test."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep 10; fi\nexec {real_sha256sum} "$@"\n')
+        stub.write_text(
+            f'#!/bin/bash\nif [ "$#" -gt 0 ]; then sleep {scaled_shim_sleep(10)}; fi\nexec {real_sha256sum} "$@"\n'
+        )
         stub.chmod(0o755)
 
         sid = self.SID
@@ -1578,20 +2243,15 @@ class TestMarkerScriptPlanModeSibling:
         plan_mode_file.write_text("# plan\n")
         self._declare_sibling(isolated_home, plan_mode_file, sid)
 
-        start = time.monotonic()
-        result = _run(
-            ["write", "plan-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["write", "plan-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode != 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
         marker_dir = isolated_home / ".claude" / "plan-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a timed-out write must not write a marker: {stray}"
@@ -1668,6 +2328,13 @@ class TestWalkSessionDelegatesToLib:
             "}\n"
         )
         (hooks_dir / "_lib.sh").write_text(instrumented_lib)
+        # _lib.sh sources _config.sh from its own directory (BASH_SOURCE-relative,
+        # not $0) -- this synthetic hooks_dir needs a real copy alongside the
+        # instrumented _lib.sh above, or that source fails outright.
+        shutil.copy(HOOKS_DIR / "_config.sh", hooks_dir / "_config.sh")
+        # config-keys.psv is a required sibling of _config.sh for the same
+        # BASH_SOURCE-relative reason.
+        shutil.copy(HOOKS_DIR / "config-keys.psv", hooks_dir / "config-keys.psv")
 
         result = subprocess.run(
             ["bash", str(scripts_dir / "marker.sh"), "resolve-session-id"],
@@ -1692,6 +2359,16 @@ class TestMarkerScriptStatusCompletionMarkers:
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("# test skill\n")
+        subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
+        return skill_md
+
+    def _make_repo_root_skill_md(self, repo):
+        """Repo-root plugin layout (skills/<name>/SKILL.md), used when a
+        marketplace declares "source": "./"."""
+        skill_dir = repo / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# test repo-root skill\n")
         subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
         return skill_md
 
@@ -1728,36 +2405,32 @@ class TestMarkerScriptStatusCompletionMarkers:
         only sleeps for the exact bare `-C <repo> diff --cached` invocation
         (no pathspec) so the skill-review, plan-review, and ready-for-review
         git calls later in the same run are unaffected."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        start = time.monotonic()
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
         assert "code-review: absent" in result.stdout
 
     # ── skill-review ───────────────────────────────────────────────────
@@ -1765,6 +2438,19 @@ class TestMarkerScriptStatusCompletionMarkers:
     def test_skill_review_live_when_hash_matches_staged_skill_md_diff(self, isolated_home, git_repo):
         _seed_session(isolated_home, self.SID)
         self._make_skill_md(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: live" in result.stdout
+
+    def test_skill_review_live_when_hash_matches_staged_repo_root_skill_md_diff(
+        self, isolated_home, git_repo
+    ):
+        """Repo-root-layout SKILL.md diffs (skills/<name>/SKILL.md) report the same
+        live state as the stowed layout — the status arm's pathspec array must cover
+        both."""
+        _seed_session(isolated_home, self.SID)
+        self._make_repo_root_skill_md(git_repo)
         write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -1966,11 +2652,6 @@ class TestMarkerScriptCumulativeReview:
     write-side tests above."""
 
     SID = "test-session-cumulative-review"
-    # Lower bound for proving _lib_cumulative_diff_hash's 15s cap fired,
-    # not just any cap. Above the shared 5s _lib_capped default (so a
-    # silent regression back to that cap still fails this assertion) and
-    # safely under 15s (so cap-plus-overhead reliably clears it).
-    CUMULATIVE_DIFF_CAP_FLOOR_SECONDS = 12
 
     def test_write_creates_marker_with_diff_hash(
         self, isolated_home, cumulative_diff_repo, tmp_path
@@ -2296,7 +2977,7 @@ class TestMarkerScriptCumulativeReview:
 
     @pytest.mark.timing
     def test_status_degrades_to_absent_on_timeout_rather_than_erroring(
-        self, isolated_home, cumulative_diff_repo, gh_timeout_shim
+        self, isolated_home, cumulative_diff_repo, gh_timeout_shim, tmp_path
     ):
         """status is a report, not a write -- a hung `gh pr view` must
         degrade the cumulative-review line to absent rather than crashing
@@ -2306,7 +2987,7 @@ class TestMarkerScriptCumulativeReview:
         _lib_capped cap elsewhere."""
         _seed_session(isolated_home, self.SID)
         env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+        with assert_cap_engaged(tmp_path, production_cap=15):
             result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
         assert result.returncode == 0, result.stderr
         assert "cumulative-review: absent" in result.stdout
@@ -2337,7 +3018,7 @@ class TestMarkerScriptCumulativeReview:
         assert write_result.returncode == 0, write_result.stderr
 
         timeout_env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+        with assert_cap_engaged(tmp_path, production_cap=15):
             result = _run(
                 ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=timeout_env
             )
@@ -2345,7 +3026,8 @@ class TestMarkerScriptCumulativeReview:
         assert "cumulative-review:" in result.stdout
         assert (
             "cumulative-review: could not verify (pr-diff-against-base.sh failed, "
-            "produced no output, or timed out -- the state above reflects marker "
+            "the diff is empty -- often because this branch already has a merged "
+            "PR -- or resolution timed out -- the state above reflects marker "
             "presence only, not a confirmed hash comparison)"
         ) in result.stderr
 
@@ -2656,6 +3338,54 @@ class TestMarkerScriptCumulativeReview:
         result = _run(["clear-stale"], cwd=cumulative_diff_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert subject_path.exists()
+
+
+class TestMarkerScriptStatusDiffBaseInvocationCount:
+    """`marker.sh status` resolves GATE_DIFF_BASE once and threads it into
+    both the code-review and plan-review values below it -- a resolution per
+    value would multiply the merge-tree cost for the same result (see the
+    `status)` case's own comment above GATE_DIFF_BASE's assignment)."""
+
+    SID = "test-session-status-diff-base-count"
+
+    def test_gate_diff_base_resolved_once_across_code_review_and_plan_review(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """_lib_gate_diff_base's own first git call --
+        `rev-parse --absolute-git-dir` -- is the proxy counted here: it runs
+        unconditionally on every _lib_gate_diff_base invocation, before any
+        state-dependent branching, so counting it counts calls to the
+        function itself."""
+        _seed_session(isolated_home, self.SID)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-absolute-git-dir-invocations"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "--absolute-git-dir" ]; then\n'
+            f'    echo "$@" >> "{invocation_log}"\n'
+            '  fi\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _run(
+            ["status"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 0, result.stderr
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert len(invocations) == 1, (
+            f"expected exactly one `--absolute-git-dir`-shaped git invocation "
+            f"(_lib_gate_diff_base resolved once, not once per value that "
+            f"consumes it), got: {invocations}"
+        )
 
 
 class TestMarkerScriptStatusActiveBypass:
@@ -3056,36 +3786,32 @@ class TestMarkerScriptCheck:
         never a false match. Mirrors `status`'s own
         test_code_review_value_computation_times_out_gracefully for the
         same underlying call."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_stat_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
@@ -3093,33 +3819,29 @@ class TestMarkerScriptCheck:
         individually capped via `_lib_capped_for(5)` -- a stalled `stat` must
         not hang `check` indefinitely, and a killed call must fall through to
         no-match, never a false match on an unresolvable mtime."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_stat = shutil.which("stat")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "stat"
-        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_stat} "$@"\n')
+        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_stat} "$@"\n')
         stub.chmod(0o755)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        # Both the GNU and BSD stat forms are individually capped at 5s and
+        # tried in sequence, so both invocations are killed.
+        with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=2):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        # Both the GNU and BSD stat forms are individually capped at 5s and
-        # tried in sequence, so the bounded worst case is ~10s, not a hang.
-        assert elapsed < 14.5, (
-            f"expected both 5s _lib_capped_for stat timeouts to fire (stub "
-            f"sleeps 10s per call if they do not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_grep_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
@@ -3131,11 +3853,12 @@ class TestMarkerScriptCheck:
         marker file (the cheap common-case hash check `check` runs first), so
         the stub only stalls from the second `-qFx` invocation onward --
         isolating `_code_review_marker_fresh_age`'s own call."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_grep = shutil.which("grep")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "grep"
         invocation_counter = tmp_path / "grep-qFx-invocation-count"
         stub.write_text(
@@ -3144,7 +3867,7 @@ class TestMarkerScriptCheck:
             f'  count=$(( $(cat {invocation_counter} 2>/dev/null || echo 0) + 1 ))\n'
             f'  printf "%s" "$count" > {invocation_counter}\n'
             '  if [ "$count" -ge 2 ]; then\n'
-            '    sleep 10\n'
+            f'    sleep {scaled_shim_sleep(10)}\n'
             '  fi\n'
             'fi\n'
             f'exec {real_grep} "$@"\n'
@@ -3152,21 +3875,16 @@ class TestMarkerScriptCheck:
         stub.chmod(0o755)
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "code-review"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "code-review"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped_for grep timeout to fire (stub "
-            f"sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
     def test_only_one_git_diff_invocation_on_the_check_path(
         self, isolated_home, git_repo, tmp_path
@@ -3182,19 +3900,20 @@ class TestMarkerScriptCheck:
         staged diff is written first so the run also exercises the match
         branch through this single-call path, rather than passing vacuously
         the way an unconditional no-match would."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         invocation_log = tmp_path / "git-invocation-args"
         stub.write_text(
             '#!/bin/bash\n'
             f'echo "$@" >> {invocation_log}\n'
             'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )

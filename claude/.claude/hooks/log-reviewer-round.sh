@@ -11,10 +11,12 @@
 # Two independent write paths, both keyed on the gate's own
 # "<repo-hash>.<branch-hash>" state key (_lib_reviewer_round_state_key):
 #   - A reviewer-persona dispatch appends "<head-sha> <staged-diff-sha256>"
-#     to <config-dir>/.reviewer-round-state.d/<key>, capped at
-#     _LIB_REVIEWER_ROUND_STATE_CAP distinct lines, and skipped once a latch
-#     already exists for this branch -- further tracking has zero marginal
-#     value once the gate has gone permanently silent.
+#     to <config-dir>/.reviewer-round-state.d/<key>, capped at the resolved
+#     round-state cap (_lib.sh's _lib_reviewer_round_state_cap), and
+#     skipped once a latch already exists for this branch -- further
+#     tracking has zero marginal value once the gate has gone permanently
+#     silent. The cap is 2 by default, 1 when the round_consult_round2_pilot
+#     config key is enabled.
 #   - A `plan-architect` dispatch whose prompt's first line is not
 #     `MODE=plan-sections` writes a content-free, presence-only latch to
 #     <config-dir>/.architect-consult-latch.d/<key>: the fail-safe direction
@@ -43,7 +45,7 @@ _ROUND_STATE_LOCK_RETRIES=5
 INPUT=$(cat 2>/dev/null)
 [ -n "$INPUT" ] || exit 0
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
@@ -97,6 +99,9 @@ _record_reviewer_round() {
   local state_file="$state_dir/$STATE_KEY"
   mkdir -p "$state_dir" 2>/dev/null || return 0
 
+  local cap
+  cap=$(_lib_reviewer_round_state_cap)
+
   # Never grows past the cap. This pre-check runs outside the lock
   # _lib_append_line_locked holds below. Two concurrent dispatches racing
   # at two different new states could each read "under cap" and both
@@ -106,7 +111,7 @@ _record_reviewer_round() {
   if [ -f "$state_file" ] && ! grep -qFx -e "$state_value" -- "$state_file" 2>/dev/null; then
     local existing_count
     existing_count=$(wc -l < "$state_file" | tr -d ' ')
-    [ "$existing_count" -ge "$_LIB_REVIEWER_ROUND_STATE_CAP" ] && return 0
+    [ "$existing_count" -ge "$cap" ] && return 0
   fi
 
   _lib_append_line_locked "$state_file" "$state_file.lock" "$state_value" "$_ROUND_STATE_LOCK_RETRIES"

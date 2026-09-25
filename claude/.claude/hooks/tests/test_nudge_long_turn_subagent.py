@@ -20,8 +20,12 @@ from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
+    assert_cap_engaged,
     build_path_without,
+    caps_that_fired,
     plant_traversal_canary,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
 )
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-long-turn-subagent.sh"
@@ -489,19 +493,20 @@ class TestNudgeLongTurnSubagent:
         bounded window rather than trying once, so subprocess-spawn
         latency under machine load only changes how long this test takes
         to pass, not whether it does."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 5)])
 
         real_jq = shutil.which("jq")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-n" ]; then\n'
-            '  sleep 5\n'
+            f'  sleep {scaled_shim_sleep(5)}\n'
             'fi\n'
             f'exec {real_jq} "$@"\n'
         )
@@ -519,8 +524,11 @@ class TestNudgeLongTurnSubagent:
 
         # The scan (and its lock release) completes before jq -n is ever
         # invoked, so scan_state appearing proves the stall has begun --
-        # the `sleep 5` stub itself gets capped to ~2s by the hook's own
-        # _lib_capped_for wrapper around this jq -n call.
+        # the stub itself gets capped by the hook's own _lib_capped_for
+        # wrapper around this jq -n call.
+        # Stays at production scale (not divided by TIMEOUT_SCALE_DIVISOR):
+        # scaling would leave the 2.0s lock-release probe racy against the
+        # stall it's observing.
         deadline = time.monotonic() + 20.0
         while not scan_state.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -539,6 +547,10 @@ class TestNudgeLongTurnSubagent:
 
         stalled_thread.join()
         assert result_holder["r"].returncode == 0
+        fired = caps_that_fired(stub_dir)
+        assert fired[f"{SCAN_CALL_TIMEOUT_CAP_SECONDS} jq"] == 1, (
+            f"expected the {SCAN_CALL_TIMEOUT_CAP_SECONDS}s _lib_capped_for cap to fire once for jq, got {dict(fired)}"
+        )
 
         assert probe_succeeded, (
             "the scan lock must already be released while the stalled fire is still building its nudge JSON, "
@@ -710,8 +722,8 @@ class TestNudgeLongTurnSubagent:
         test_jq_count_stage_timeout_leaves_no_output_and_offset_unchanged
         below and test_diff_quiet_probe_times_out_to_no_match in
         test_marker_script.py."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(10)])
 
@@ -725,12 +737,13 @@ class TestNudgeLongTurnSubagent:
         real_find = shutil.which("find")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "find"
         stub.write_text(
             '#!/bin/bash\n'
             'for arg in "$@"; do\n'
             '  if [ "$arg" = "-mtime" ]; then\n'
-            '    sleep 10\n'
+            f'    sleep {scaled_shim_sleep(10)}\n'
             '    break\n'
             '  fi\n'
             'done\n'
@@ -741,18 +754,10 @@ class TestNudgeLongTurnSubagent:
 
         _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE - 1, extra_env=extra_env)
 
-        start = time.monotonic()
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=SCAN_CALL_TIMEOUT_CAP_SECONDS):
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
 
         assert result.returncode == 0
-        # No upper bound: an empirically observed baseline, not a guessed
-        # margin -- the invariant that matters is not hanging for the ~10s
-        # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= SCAN_CALL_TIMEOUT_CAP_SECONDS - 0.5, (
-            f"expected the {SCAN_CALL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s for the single sampled fire"
-        )
         assert stale_file.exists(), (
             "a timed-out sweep must not have silently run to completion and reclaimed the stale entry"
         )
@@ -846,8 +851,8 @@ class TestNudgeLongTurnSubagent:
         fires (the count stage is never invoked before the sampled fire, so
         these are unaffected by the stub) and times only the single sampled
         fire that actually reaches `jq -s`."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(50)])
         _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE)
@@ -858,11 +863,12 @@ class TestNudgeLongTurnSubagent:
         real_jq = shutil.which("jq")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-s" ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_jq} "$@"\n'
         )
@@ -872,19 +878,11 @@ class TestNudgeLongTurnSubagent:
         pre_fires = _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE - 1, extra_env=extra_env)
         assert all(r.stdout.strip() == "" for r in pre_fires), "unsampled fires must stay silent regardless of the jq stub"
 
-        start = time.monotonic()
-        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=SCAN_CALL_TIMEOUT_CAP_SECONDS):
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
 
         assert result.returncode == 0
         assert result.stdout.strip() == "", "a timed-out scan must not fire a nudge"
-        # No upper bound: an empirically observed baseline, not a guessed
-        # margin -- the invariant that matters is not hanging for the ~10s
-        # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= SCAN_CALL_TIMEOUT_CAP_SECONDS - 0.5, (
-            f"expected the {SCAN_CALL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s for the single sampled fire"
-        )
         offset_after, total_after, _ = _scan_state_path(tmp_path).read_text().splitlines()
         assert offset_after == offset_before, "a timed-out scan must not advance the offset"
         assert total_after == total_before, "a timed-out scan must not add to the running total"
@@ -951,8 +949,8 @@ class TestNudgeLongTurnSubagent:
         that succeeds regardless of size. The flat repeated-character
         fixture pins the byte-bound mechanism only, not the per-byte parse
         cost of real, structurally complex transcript content."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         oversized_record = {
             "type": "assistant",
@@ -963,6 +961,7 @@ class TestNudgeLongTurnSubagent:
         real_jq = shutil.which("jq")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             '#!/bin/bash\n'
@@ -974,7 +973,7 @@ class TestNudgeLongTurnSubagent:
             # set below (SMALL_SCAN_WINDOW_BYTES) + 1.
             f'  if [ "$size" -gt {SMALL_SCAN_WINDOW_BYTES + 1} ]; then\n'
             '    rm -f "$tmp"\n'
-            '    sleep 10\n'
+            f'    sleep {scaled_shim_sleep(10)}\n'
             '    exit 1\n'
             '  fi\n'
             f'  {real_jq} -s \'[.[] | select(.message? and .message.usage)] | length\' < "$tmp"\n'

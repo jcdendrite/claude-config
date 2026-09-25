@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse gate: block Write calls to supabase/migrations/<14digits>_*.sql
 # unless a one-shot token was written by the new-migration generator.
 # Fails closed on malformed input.

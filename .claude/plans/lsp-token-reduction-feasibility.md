@@ -196,7 +196,7 @@ navigation can convert a meaningful share of that into savings.
 | 7 | The realism discount — what fraction of whole-file code reads were comprehension reads LSP cannot replace — is unquantified | `[unverified]` — transcripts carry no intent signal; 3.8% is an upper bound only |
 | 8 | No independently reproduced benchmark of LSP-vs-grep token savings exists | `[verified: search returned only vendor self-published or self-acknowledged-broken benchmarks]` |
 | 9 | Tokens on the API-key-billed account are direct dollars, making it the priority lens | `[engineer-verified]` — stated this session |
-| 10 | Subagent sidechains already absorb ~70% of tool-result volume (69.6% / 70.5% on the two accounts measured) | `[verified: transcript-analysis subagents, this session]` — distinct from the register's 71.2% delegation figure, which measures a different window |
+| 10 | Subagent sidechains already absorb ~70% of tool-result volume (consistent across the accounts measured) | `[verified: transcript-analysis subagents, this session]` — distinct from the register's 71.2% delegation figure, which measures a different window |
 | 11 | Plugin install offers user / project / local scope; only **project** scope writes to `.claude/settings.json` | `[verified: code.claude.com/docs/en/discover-plugins — "Project scope: install for all collaborators on this repository, which adds the plugin to .claude/settings.json"]` |
 | 12 | Enabling code intelligence yields post-edit diagnostics that catch type errors without a compiler run | `[unverified]` — vendor-documented claim, not measured here; adopted on that basis, and no verification step in this plan tests it |
 

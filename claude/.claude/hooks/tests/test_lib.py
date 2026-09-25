@@ -11,12 +11,15 @@ OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -26,20 +29,63 @@ from helpers import (
     DEFAULT_TEST_SESSION_ID,
     FORCED_FALLBACK_REALPATH_SHIM,
     HOOKS_DIR,
+    _run_git,
+    assert_cap_engaged,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_cherry_pick,
+    build_conflicted_merge,
+    build_conflicted_rebase,
+    build_conflicted_revert,
+    build_octopus_merge_conflict,
     build_path_without,
+    build_rebase_merges_replay_conflict,
+    push_conflicting_edit_to_origin,
+    resolve_conflicted_rebase,
+    reviewer_round_state_key,
     run_hook,
+    scaled_shim_sleep,
+    staged_diff_hash,
+    staged_diff_hash_at_base,
+    write_scaled_timeout_shim,
 )
 
-from .conftest import _dead_pid, _worktree_lock_reason, assert_cap_engaged
+from .conftest import _dead_pid, _worktree_lock_reason
+from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
+# The skill-management plugin ships its own copy of _lib_capped_for, since plugin hooks cannot source the stowed _lib.sh.
+_SKILL_MANAGEMENT_PLUGIN_LIB = HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "_lib.sh"
 
 # require-code-review.sh is an unmodified production caller of
 # _lib_parse_tool_input_or_deny, used by the delimiter-shift regression test
 # below to prove the fixed parser, not just the unit harness, denies.
 _REQUIRE_CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
+
+
+def _lib_sh_with_unreadable_schema(tmp_path: Path) -> Path:
+    """Symlink _lib.sh and the _config.sh it sources into an isolated
+    directory with no config-keys.psv sibling, simulating an unreadable
+    schema file the way test_config_lib.py's _run_with_schema does for
+    _config.sh alone -- _lib.sh's own BASH_SOURCE-relative source of
+    _config.sh resolves against the symlink's own directory, so the
+    isolated dir's absent config-keys.psv is what _config_schema_field sees."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+    (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+    return isolated_hooks_dir / "_lib.sh"
+
+
+def _lib_sh_with_missing_config_sh(tmp_path: Path) -> Path:
+    """Symlink only _lib.sh into an isolated directory with no _config.sh
+    sibling at all, simulating a partial stow-relink or interrupted git pull
+    that drops _config.sh out from under an already-present _lib.sh."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks-no-config"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+    return isolated_hooks_dir / "_lib.sh"
 
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
 # call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
@@ -505,9 +551,9 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """
     import shutil
 
-    timeout_path = shutil.which("timeout")
+    timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
     if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
     bash_path = shutil.which("bash")
     if not bash_path:
@@ -515,28 +561,37 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
 
     # Create a fake jq that sleeps 10 seconds, plus stubs for required tools.
     fake_jq = tmp_path / "jq"
-    fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
     fake_jq.chmod(0o755)
 
     # Symlink real timeout and bash so the harness can find them.
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
-    # Also symlink standard commands needed by the harness.
-    for cmd in ["head", "tail", "cat", "cut", "printf"]:
+    # Also symlink standard commands needed by the harness. dirname is
+    # required too: _lib.sh's own sourcing of _config.sh resolves its path
+    # via `$(dirname "${BASH_SOURCE[0]}")`, and a failed source aborts
+    # _lib.sh's own sourcing entirely (see _lib.sh's header comment on that
+    # source line). sleep must be symlinked too: the fake jq's body shells
+    # out to it, and a missing sleep would return instantly instead of
+    # stalling.
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname", "sleep"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
 
+    # write_scaled_timeout_shim replaces the timeout symlink above, since
+    # Path.write_text follows a symlink rather than replacing it.
+    write_scaled_timeout_shim(tmp_path)
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
-    elapsed = time.monotonic() - start
+    with assert_cap_engaged(tmp_path, production_cap=5):
+        result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
 
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
-    assert elapsed < 6, f"hung-jq test took {elapsed:.1f}s — timeout did not fire within 6s"
 
 
+# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary
+# condition this test is named for, and the OK assertion below would still pass.
 def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> None:
     """Without timeout(1), valid payload still returns OK via bare jq."""
     import shutil
@@ -553,7 +608,11 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     # Symlink jq and bash into tmp_path but intentionally omit timeout.
     (tmp_path / "jq").symlink_to(jq_path)
     (tmp_path / "bash").symlink_to(bash_path)
-    for cmd in ["head", "tail", "cat", "cut", "printf"]:
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
@@ -564,6 +623,8 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
+# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps
+# end-to-end evidence that the binary itself enforces a cap.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
     """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
@@ -578,10 +639,18 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -592,6 +661,8 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
 
 
+# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test
+# would never execute and the exit-124 assertion would still pass.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
     """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
@@ -606,12 +677,20 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     # Alias the real timeout binary under the gtimeout name and omit timeout
     # from PATH entirely, simulating a Homebrew-coreutils-only machine.
     (tmp_path / "gtimeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -622,6 +701,7 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
 
 
+# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.
 def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     tmp_path: Path,
 ) -> None:
@@ -634,9 +714,17 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -649,6 +737,8 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
+# the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
     """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
 
@@ -667,10 +757,18 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
     printf_path = shutil.which("printf")
     if not printf_path:
         pytest.skip("printf not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "printf").symlink_to(printf_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     fake_gtimeout = tmp_path / "gtimeout"
     fake_gtimeout.write_text("#!/bin/bash\nprintf 'GTIMEOUT_WAS_USED'\nexit 99\n")
@@ -681,6 +779,93 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
 
     assert result.returncode == 0, repr(result)
     assert result.stdout == "real-timeout-path", repr(result.stdout)
+
+
+@pytest.mark.parametrize("lib_path", [_LIB_SH, _SKILL_MANAGEMENT_PLUGIN_LIB], ids=["stowed", "plugin"])
+@pytest.mark.parametrize("binary_name", ["timeout", "gtimeout"])
+def test_lib_capped_for_passes_kill_after_flag_before_the_duration(
+    tmp_path: Path, lib_path: Path, binary_name: str
+) -> None:
+    """`-k` and `2` arrive as two separate argv entries, in that order, both
+    ahead of SECONDS: timeout(1) requires OPTION before DURATION, and
+    BusyBox's timeout rejects the long `--kill-after=2` spelling. Pinned
+    against both binary names (the gtimeout case leaves `timeout` absent from
+    PATH) and both copies of the wrapper, so a later "tidy-up" to
+    `--kill-after=2` fails this test instead of shipping."""
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    argv_log = tmp_path / "argv.log"
+    fake_timeout = tmp_path / binary_name
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_log))}\n"
+        "exit 0\n"
+    )
+    fake_timeout.chmod(0o755)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_path))}; _lib_capped_for 5 echo hi"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    argv = argv_log.read_text().splitlines()
+    assert argv[:4] == ["-k", "2", "5", "echo"], (
+        f"expected -k and 2 as separate argv entries ahead of the duration, got {argv!r}"
+    )
+
+
+# A plain, untrapped `sleep N` (this block's sibling cases above) dies to a bare SIGTERM either way, so it
+# cannot show whether `-k` is present. The SIGTERM-immune child is described in
+# conftest's `_write_conditional_sleep_shim`; only `-k`'s grace-expiry SIGKILL can end it.
+@pytest.mark.timing
+def test_lib_capped_for_kills_a_sigterm_immune_child_via_the_grace(tmp_path: Path) -> None:
+    """A child that ignores SIGTERM outright must still return within
+    cap+grace, not hang to the fixture's own much longer sleep. The grace's
+    SIGKILL reports 137, not timeout(1)'s ordinary 124, so the wall time is
+    asserted alongside the status."""
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "timeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call("_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 137, repr(result)
+    # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
+    # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
+    assert elapsed < 15, f"SIGTERM-immune child took {elapsed:.1f}s — the -k grace did not fire"
 
 
 def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
@@ -1648,6 +1833,82 @@ def test_fragment_invokes_git_known_false_positive_on_quoted_argument_text() -> 
     assert _fragment_invokes_git('grep -n "not a git repo" file.py')
 
 
+def _reviewer_persona_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
+    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
+
+    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
+    this literal. A new harness built-in added to the review-only roster with
+    the exclusion left untouched passes, since the name lands on both sides.
+    """
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+
+
+def _is_reviewer_persona(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
+    roster = _reviewer_persona_agents()
+    assert roster, "reviewer-persona roster must not be empty"
+    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
+    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        "Explore",
+        "Plan",
+        "code-writer",
+        "plan-architect",
+        "general-purpose",
+        "",
+        "staff-sdet-x",
+        "staff-sde",
+        "STAFF-SDET",
+        "ciso-reviewer comment-discipline-reviewer",
+    ],
+)
+def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
+    agent_type: str,
+) -> None:
+    """Every agent outside the reviewer-persona array is rejected.
+
+    Explore and Plan are review-only roster members but harness built-ins.
+    code-writer is an implementer. plan-architect is a design consultant that a
+    caller branches on separately. general-purpose is a harness built-in outside
+    the review-only roster. The empty case is a dispatch payload with no
+    subagent_type. The staff-sdet variants pin that the predicate is not doing
+    prefix or case-insensitive matching. The space-joined pair of two real
+    roster members pins that a value is not accepted as a substring or word
+    list of the roster.
+    """
+    assert not _is_reviewer_persona(agent_type)
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied
@@ -1989,11 +2250,12 @@ def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -
 
     stub_dir = tmp_path / "stub-bin-find"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_find = stub_dir / "find"
-    stub_find.write_text(f'#!/bin/bash\nsleep 10\nexec {real_find} "$@"\n')
+    stub_find.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
     stub_find.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5):
         result = subprocess.run(
             [
                 "bash",
@@ -2025,7 +2287,10 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
     the real `cat`, which would emit the marker's stored PID and grant the
     bypass; a working cap kills the stub before that exec runs, so this
     fails on a missing/broken `_lib_capped` wrap instead of passing
-    regardless of whether the cap engaged."""
+    regardless of whether the cap engaged.
+
+    cat and tr share the same 5s cap on this pipe; command="cat" isolates
+    cat's kill from tr's."""
     marker = _write_active_bypass_marker(tmp_path, "sess-cat-hang", str(os.getpid()))
 
     real_cat = shutil.which("cat")
@@ -2036,11 +2301,12 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
 
     stub_dir = tmp_path / "stub-bin-cat"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_cat = stub_dir / "cat"
-    stub_cat.write_text(f'#!/bin/bash\nsleep 10\nexec {real_cat} "$@"\n')
+    stub_cat.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
     stub_cat.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=1, command="cat"):
         result = subprocess.run(
             [
                 "bash",
@@ -3981,23 +4247,205 @@ def _autonomous_shipping_sentinel_present(home: Path, config_dir: str) -> bool:
     return result.returncode == 0
 
 
+# _lib_worktree_enforcement_active — direct unit coverage for the
+# machine-sentinel delegation arm only (the committed-repo-sentinel and
+# per-repo-optout arms are exercised via a bare filesystem check with no
+# config-dir involvement, so they're left to this function's callers'
+# integration tests). worktree_required is the highest-blast-radius of the
+# five enforcement-critical keys and the only one whose schema row carries
+# legacy-probe-on-resolution-failure: true, so a config-dir resolution
+# failure still probes the legacy $HOME/.claude location rather than
+# falling through to "not enforced" the way every other key's row does.
+
+
+def _worktree_enforcement_active(repo_root: Path, env: dict) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_worktree_enforcement_active "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestWorktreeEnforcementActive:
+    def test_inactive_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert not _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_dir_absent_sentinel_but_home_claude_has_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Union, not swap: a resolved config dir differentiated from
+        $HOME/.claude, holding no sentinel of its own, must not mask a
+        sentinel armed at the legacy $HOME/.claude location."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "worktree-required").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_dir_unresolvable_but_home_claude_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """worktree_required's schema row alone carries
+        legacy-probe-on-resolution-failure: true, so a relative
+        CLAUDE_CONFIG_DIR (resolution failure) still probes the legacy
+        $HOME/.claude location instead of falling through to "not
+        enforced" -- the opposite of every other config-dir-or-home key's
+        row."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "worktree-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_inactive_when_config_dir_unresolvable_and_home_empty(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert not _worktree_enforcement_active(
+            repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must not
+        silently disarm worktree enforcement -- worktree_required's own safe
+        direction is enforced, the same as the accepted exit-2
+        (config-dir-unresolvable) tradeoff above, not "not enforced"."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_worktree_enforcement_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    def test_active_when_config_keys_psv_readable_but_missing_worktree_required_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A config-keys.psv that is readable and non-empty but missing
+        worktree_required's own row (the interrupted stow-relink/git-pull
+        shape, distinct from the wholly-unreadable case above) must not
+        silently disarm worktree enforcement either -- _config_enabled's
+        exit 4 for this shape routes to the same stays-armed arm as exit 3.
+        Copies the real config-keys.psv with only worktree_required's own
+        row removed."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+        real_schema = (_LIB_SH.parent / "config-keys.psv").read_text().splitlines()
+        pruned_schema = [line for line in real_schema if not line.startswith("worktree_required|")]
+        (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_worktree_enforcement_active "$1"',
+                "bash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+
+def test_sourcing_lib_sh_fails_when_config_sh_is_missing(tmp_path: Path) -> None:
+    """A missing _config.sh must make _lib.sh's own sourcing fail (non-zero),
+    the same as a syntax-broken _lib.sh already does, so the standard
+    `if ! . ".../_lib.sh"; then exit 0/deny; fi` guard every hook uses trips
+    instead of _lib.sh silently defining every function against a
+    _config_*-namespace that no longer exists."""
+    isolated_lib_sh = _lib_sh_with_missing_config_sh(tmp_path)
+    result = subprocess.run(
+        ["bash", "-c", f'. "{isolated_lib_sh}"'],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.returncode != 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_standard_hook_guard_trips_when_config_sh_is_missing(tmp_path: Path) -> None:
+    """The idiom every hook uses (`if ! . ".../_lib.sh"; then exit 0; fi`)
+    must actually take its failure branch when _config.sh is missing,
+    matching how it already behaves for a syntax-broken _lib.sh."""
+    isolated_lib_sh = _lib_sh_with_missing_config_sh(tmp_path)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'if ! . "{isolated_lib_sh}" 2>/dev/null; then echo GUARD_TRIPPED; exit 0; fi; echo GUARD_NOT_TRIPPED',
+        ],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.stdout.strip() == "GUARD_TRIPPED", f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
+# sentinel-presence check only, not the full autonomous-shipping-active
+# verdict. Zero-arity: delegates to _config_enabled's autonomous_shipping
+# schema row, which resolves and unions both locations itself, so these
+# tests drive it via CLAUDE_CONFIG_DIR/HOME env vars instead of a
+# positional argument.
+# The per-repo optout is covered separately by TestAutonomousShippingActive
+# below, which calls through this helper.
+
+
+def _autonomous_shipping_sentinel_present_status(home: Path | str, config_dir: str | None = None) -> int:
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+    if config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode
+
+
 class TestAutonomousShippingSentinelPresent:
     def test_absent_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
-        assert not _autonomous_shipping_sentinel_present(home, str(config_dir))
-
-    def test_absent_when_home_empty_and_neither_location_has_sentinel(
-        self, tmp_path: Path
-    ) -> None:
-        """Mirrors test_absent_when_neither_location_has_sentinel above with
-        HOME empty instead of populated. Covers the unguarded $HOME-empty
-        case documented on the helper itself."""
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        assert not _autonomous_shipping_sentinel_present("", str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 1
 
     def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -4005,7 +4453,7 @@ class TestAutonomousShippingSentinelPresent:
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
         (config_dir / "autonomous-shipping-required").touch()
-        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
 
     def test_present_when_only_legacy_home_claude_sentinel_present(
         self, tmp_path: Path
@@ -4019,44 +4467,89 @@ class TestAutonomousShippingSentinelPresent:
         (home / ".claude" / "autonomous-shipping-required").touch()
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
-        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
 
-    def test_absent_on_empty_config_dir_argument(self, tmp_path: Path) -> None:
+    def test_present_when_config_dir_unset_and_home_claude_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """No CLAUDE_CONFIG_DIR set: the resolved config dir and the literal
+        $HOME/.claude legacy location are the same directory, so the
+        sentinel there governs with no union arm involved at all."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".claude" / "autonomous-shipping-required").touch()
-        assert not _autonomous_shipping_sentinel_present(home, "")
+        assert _autonomous_shipping_sentinel_present_status(home) == 0
 
-    def test_absent_on_wrong_arity(self, tmp_path: Path) -> None:
-        """Extra positional so $2 stays bound under set -u, isolating the
-        [ "$#" -eq 1 ] guard itself — mirrors
-        TestAutonomousShippingActive.test_inactive_on_wrong_arity below."""
+    def test_absent_when_config_dir_unresolvable(self, tmp_path: Path) -> None:
+        """autonomous_shipping's config-keys.psv row carries
+        legacy-probe-on-resolution-failure: false, unlike worktree_required
+        -- a config-dir resolution failure (relative CLAUDE_CONFIG_DIR) must
+        not fall through to a raw $HOME/.claude probe, even with a sentinel
+        sitting right there, and _config_enabled's exit code 2 propagates
+        through unchanged."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".claude" / "autonomous-shipping-required").touch()
         result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1" "$2"',
-                "bash",
-                str(tmp_path / "profile"),
-                "unexpected-extra-arg",
-            ],
+            ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_absent_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        propagate as its own distinct exit code (3), fail toward NOT
+        shipping the same as every other resolution failure -- autonomous
+        shipping's own documented safe direction is off, so this must not
+        collapse into (or be mistaken for) an enabled sentinel."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_sentinel_present'],
             capture_output=True,
             text=True,
             env={"HOME": str(home), "PATH": os.environ["PATH"]},
             check=False,
         )
-        assert result.returncode != 0
-        assert "unbound variable" not in result.stderr
+        assert result.returncode == 3
+
+    def test_absent_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors the exit-3 test above, but for config-keys.psv readable
+        and non-empty while missing autonomous_shipping's own row (the
+        interrupted stow-relink/git-pull shape, distinct from the wholly-
+        unreadable case) -- must propagate its own distinct exit code (4),
+        the same fail-toward-NOT-shipping direction as every other
+        resolution failure. Every other enforcement-critical key already
+        has both an exit-3 and exit-4 test; this closes the one asymmetry
+        for autonomous_shipping."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_sentinel_present'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 4
 
 
 # _lib_autonomous_shipping_active — direct unit coverage.
 #
-# _lib_worktree_enforcement_active has no such coverage anywhere in this
-# suite; only its callers' integration tests guard it. This function does
-# not inherit that gap — see
+# See TestWorktreeEnforcementActive above for _lib_worktree_enforcement_active's
+# own direct coverage of its config-dir-delegation arm. This function's
+# central guarantee is the one _lib_worktree_enforcement_active does not
+# share — see
 # test_inactive_when_repo_commits_required_file_but_machine_file_absent
 # below for the property that most needs pinning.
 
@@ -4222,6 +4715,56 @@ class TestAutonomousShippingActive:
         assert result.returncode != 0
         assert "unbound variable" not in result.stderr
 
+    def test_inactive_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        fail toward NOT shipping through the full active check too, not
+        just the sentinel-presence check above -- the `||` in this
+        function's own body already treats any nonzero
+        _lib_autonomous_shipping_sentinel_present exit identically."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_inactive_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors TestWorktreeEnforcementActive's own
+        test_active_when_config_keys_psv_readable_but_missing_worktree_required_row,
+        but through the full _lib_autonomous_shipping_active entry point
+        rather than only the lower-level
+        _lib_autonomous_shipping_sentinel_present function above -- a
+        config-keys.psv that is readable and non-empty but missing
+        autonomous_shipping's own row (the interrupted stow-relink/git-pull
+        shape) must fail toward NOT shipping here too, the opposite
+        direction from worktree_required's own stays-armed verdict for the
+        identical schema shape."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
 
 # _lib_permission_prompt_tracking_active — direct unit coverage, mirroring
 # TestAutonomousShippingActive above minus the cases specific to the
@@ -4292,6 +4835,100 @@ class TestPermissionPromptTrackingActive:
         fails deterministically rather than depending on ambient
         root-filesystem state."""
         assert not _permission_prompt_tracking_active({"HOME": "/", "PATH": os.environ["PATH"]})
+
+
+# _lib_round_consult_gate_disabled — direct unit coverage. Delegates to
+# _config_enabled's round_consult_gate schema row (presence-disables,
+# default true, i.e. armed) but cannot collapse exit codes 1 (disabled) and
+# 2 (unresolvable config dir) the way a bare `! _config_enabled ...` would:
+# this gate must stay armed (not disabled) on a resolution failure, the
+# opposite verdict a naive negation would produce.
+
+
+def _round_consult_gate_disabled(env: dict) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_round_consult_gate_disabled"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestRoundConsultGateDisabled:
+    def test_not_disabled_when_sentinel_absent(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        assert not _round_consult_gate_disabled({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_disabled_when_sentinel_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _round_consult_gate_disabled({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_not_disabled_when_config_dir_unresolvable(self, tmp_path: Path) -> None:
+        """The critical case this function's own case-statement exists for:
+        an unresolvable config dir (relative CLAUDE_CONFIG_DIR) must leave
+        the gate armed, even with a disable sentinel sitting right at
+        $HOME/.claude -- a bare `! _config_enabled round_consult_gate`
+        would instead treat _config_enabled's exit code 2 the same as its
+        exit code 1 and wrongly report disabled."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert not _round_consult_gate_disabled(
+            {"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_not_disabled_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        leave the gate armed, the same as the accepted exit-2
+        (config-dir-unresolvable) tradeoff above -- round_consult_gate's own
+        safe direction is armed, so this must not collapse into (or be
+        mistaken for) a legitimately disabled gate."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_round_consult_gate_disabled'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0, "the gate must stay armed (not disabled) when the schema is unreadable"
+
+    def test_not_disabled_when_config_keys_psv_readable_but_missing_round_consult_gate_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A config-keys.psv that is readable and non-empty but missing
+        round_consult_gate's own row (the interrupted stow-relink/git-pull
+        shape, distinct from the wholly-unreadable case above) must leave
+        the gate armed too -- _config_enabled's exit 4 for this shape falls
+        into this function's own `*)` catch-all, the same as exit 3. Copies
+        the real config-keys.psv with only round_consult_gate's own row
+        removed."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+        real_schema = (_LIB_SH.parent / "config-keys.psv").read_text().splitlines()
+        pruned_schema = [line for line in real_schema if not line.startswith("round_consult_gate|")]
+        (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_round_consult_gate_disabled'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0, "the gate must stay armed (not disabled) when its schema row is missing"
 
 
 # --- Shared credential-guard constants -------------------------------------
@@ -4925,6 +5562,44 @@ def _redact_credential_shaped_strings(
 
 
 class TestRedactCredentialShapedStrings:
+    @pytest.fixture
+    def jq_invocation_counter(self, tmp_path: Path):
+        """`install(match_condition)` writes a `jq` shim that always execs
+        the real binary, but first appends one line to a counter file for
+        every invocation matching `match_condition` -- same conditional-
+        match, PATH-override idiom as conftest.py's git_timeout_shim/
+        gh_timeout_shim, counting invocations instead of sleeping past a
+        timeout. Class-local (not conftest.py) since only one test here
+        uses it.
+
+        `match_condition` is a `[ ... ]`/`[[ ... ]]` test expression
+        evaluated against the shim's own positional args, e.g.
+        `[ "$1" = "-R" ]` to count only the batched-validation call shape.
+
+        `install` returns `(path_env, counter_file)`: the PATH-override
+        dict, and the Path whose line count is the invocation count.
+        """
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+
+        counter_file = tmp_path / "jq-invocations.count"
+        counter_file.write_text("")
+
+        def install(match_condition: str) -> tuple[dict[str, str], Path]:
+            fake_binary = tmp_path / "jq"
+            fake_binary.write_text(
+                f"#!/bin/bash\n"
+                f"if {match_condition}; then\n"
+                f"  echo x >> {shlex.quote(str(counter_file))}\n"
+                f"fi\n"
+                f'exec {real_jq} "$@"\n'
+            )
+            fake_binary.chmod(0o755)
+            return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}, counter_file
+
+        return install
+
     def test_credential_shaped_string_is_redacted(self, tmp_path: Path) -> None:
         token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
         payload = json.dumps(f"token={token}")
@@ -5020,6 +5695,115 @@ class TestRedactCredentialShapedStrings:
         assert token not in result.stdout
         assert "dpl_abcdefghijklmno" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+
+    def test_multiple_malformed_addition_lines_each_reported_individually(
+        self, tmp_path: Path
+    ) -> None:
+        """Two or more unparseable regexes in the additions file are each
+        attributed to their own line by the single batched validation call
+        -- per-addition fate, not one aggregate pass/fail for the whole
+        file."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad one: [unterminated(\n"
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Bad two: (unterminated\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+        assert "credential-value-patterns.md line 3" in result.stderr
+        assert "[unterminated(" not in result.stderr
+        assert "(unterminated" not in result.stderr
+
+    def test_batched_call_failure_falls_back_to_per_line_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """When the single batched jq invocation itself fails outright
+        (jq crashing, timing out, or erroring on the call as a whole) --
+        not merely one addition failing to compile within it -- the
+        function falls back to validating each addition individually, so
+        only the genuinely malformed pattern is skipped and the rest still
+        apply, rather than the batch failure silently dropping every
+        custom pattern for the invocation."""
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        fake_jq = shim_dir / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "-R" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad line: [unterminated(\nInternal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(
+            payload, home, extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        )
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+
+    def test_additions_file_only_comments_and_blanks_builtin_still_applies(
+        self, tmp_path: Path
+    ) -> None:
+        """An additions file present but empty after comment/blank
+        filtering must not spuriously warn, and built-in redaction still
+        applies -- there is nothing to batch-validate, so the validator
+        must not fire (and fail) on an empty candidate set."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text("# just a comment\n\n   \n")
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"token={token}")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert _REDACTED in result.stdout
+        assert result.stderr == ""
+
+    def test_batched_validation_makes_exactly_one_jq_call_with_multiple_additions(
+        self, tmp_path: Path, jq_invocation_counter
+    ) -> None:
+        """Directly pins the fork-count reduction this phase exists to
+        deliver: two or more valid addition lines still validate through
+        exactly one jq invocation, not one fork per pattern. Counts only
+        the batched-validation call shape (`jq -R ...`), distinguishing it
+        from the always-present final combined gsub call (`jq -c ...`)."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Another internal token: xyz_[A-Za-z0-9]{8,}\n"
+        )
+        path_env, counter_file = jq_invocation_counter('[ "$1" = "-R" ]')
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno c=xyz_12345678")
+        result = _redact_credential_shaped_strings(payload, home, extra_env=path_env)
+        assert result.returncode == 0
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert "xyz_12345678" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED} c={_REDACTED}")
+        assert len(counter_file.read_text().splitlines()) == 1
 
 
 # --- _lib_config_lines -------------------------------------------------
@@ -5229,3 +6013,1442 @@ def test_sweep_stale_files_report_disabled_is_silent(tmp_path: Path) -> None:
 def test_sweep_stale_files_absent_directory_is_a_no_op(tmp_path: Path) -> None:
     result = _sweep_stale_files(tmp_path / "never-created", dry_run=0, report=0)
     assert result.returncode == 0, result.stderr
+
+
+# --- _lib_length_ratchet_exceeded -----------------------------------------
+#
+# Extracted out of _lib_staged_length_gate's loop body in _lib.sh so the
+# growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable without
+# a real git repo. _lib_staged_length_gate calls this same predicate for
+# both its line-count check and its byte-count check, so the boundary
+# matrix below stands in for the pure-triple cases pruned out of
+# test_check_claude_md_length.py and test_check_skill_length.py (see the
+# hook length-limit tests' end-to-end matrices for the second-dimension
+# cases -- path pattern, command parsing, message text, fail-closed
+# posture -- that stay end-to-end).
+
+
+def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_length_ratchet_exceeded "$@"',
+            "bash",
+            str(new),
+            str(old),
+            str(limit),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestLengthRatchetExceeded:
+    def test_new_at_exactly_limit_not_exceeded(self) -> None:
+        """new == limit is not "over" it -- migrated from
+        test_claude_md_at_exactly_200_allows / test_skill_at_exactly_200_allows."""
+        assert not _length_ratchet_exceeded(200, 190, 200)
+
+    def test_new_over_limit_and_over_old_exceeded(self) -> None:
+        """Crossing the limit for the first time -- migrated from
+        test_claude_md_growing_to_201_denies / test_skill_growing_to_201_denies."""
+        assert _length_ratchet_exceeded(201, 190, 200)
+
+    def test_new_over_limit_growing_further_while_already_over_exceeded(self) -> None:
+        """Already over the limit and growing further still denies --
+        migrated from test_already_over_limit_growing_denies."""
+        assert _length_ratchet_exceeded(215, 210, 200)
+
+    def test_new_over_limit_but_shrinking_from_old_not_exceeded(self) -> None:
+        """Reducing an already-over-limit file is allowed -- migrated from
+        test_already_over_limit_reducing_allows."""
+        assert not _length_ratchet_exceeded(205, 210, 200)
+
+    def test_new_over_limit_same_size_as_old_not_exceeded(self) -> None:
+        """Different content, same count, still over limit: not growing, so
+        allowed -- migrated from test_already_over_limit_same_size_allows."""
+        assert not _length_ratchet_exceeded(210, 210, 200)
+
+    def test_new_under_limit_growing_not_exceeded(self) -> None:
+        """Growing but never crossing the limit -- migrated from
+        test_byte_cap_under_limit_growing_allows."""
+        assert not _length_ratchet_exceeded(190, 180, 200)
+
+    def test_new_zero_not_exceeded(self) -> None:
+        """NEW=0 (a capped-timeout read or a staged deletion) can never be
+        "over" a positive limit, regardless of OLD -- boundary case not
+        pinned by name in either hook's own test file, since there NEW=0
+        arises only as a side effect of git plumbing (deletion, timeout, or
+        a missing HEAD) rather than as a directly-asserted value."""
+        assert not _length_ratchet_exceeded(0, 300, 200)
+
+    def test_empty_limit_not_exceeded(self) -> None:
+        """Non-integer/empty LIMIT makes the underlying `[ -gt ]` test exit 2
+        ("integer expression expected") rather than 0 or 1 -- characterizes
+        the current fail-open behavior documented on the function's header:
+        every caller's `if ...; then deny; fi` treats that exit 2 the same
+        as "not exceeded", i.e. allow."""
+        assert not _length_ratchet_exceeded(250, 300, "")
+
+
+# --- _lib_list_contains ----------------------------------------------------
+#
+# Shared by _lib_is_review_only_agent, _lib_is_no_gate_release_agent, and
+# _lib_is_reviewer_persona -- three byte-identical membership scans over
+# three derived arrays, collapsed to one helper following
+# _lib_words_start_with's flatten-as-positional-args idiom.
+
+
+def _list_contains(value: str, items: tuple[str, ...]) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_list_contains "$@"', "bash", value, *items],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestListContains:
+    def test_empty_list_does_not_crash_under_set_dash_u(self) -> None:
+        """Zero ITEM args (an empty array flattened via "${arr[@]}") must
+        reach the "$@" loop safely rather than aborting on an unbound
+        variable."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_list_contains "$@"',
+                "bash",
+                "anything",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "unbound variable" not in result.stderr
+
+    def test_single_item_list_matches(self) -> None:
+        assert _list_contains("staff-sdet", ("staff-sdet",))
+
+    def test_single_item_list_rejects_non_match(self) -> None:
+        assert not _list_contains("staff-sdet", ("ciso-reviewer",))
+
+    def test_value_matching_more_than_one_item_still_found(self) -> None:
+        """No dedup required -- VALUE need only equal one ITEM among several
+        equal ones for the scan to report a match."""
+        assert _list_contains("staff-sdet", ("staff-sdet", "staff-sdet", "ciso-reviewer"))
+
+    def test_value_matching_later_position_still_found(self) -> None:
+        """Pins the loop-continuation branch directly: a match past the
+        first ITEM must still be found, not just one at index 0."""
+        assert _list_contains("c", ("a", "b", "c"))
+
+    def test_empty_string_value_matches_empty_string_item(self) -> None:
+        assert _list_contains("", ("a", "", "b"))
+
+    def test_empty_string_value_does_not_match_list_without_it(self) -> None:
+        assert not _list_contains("", ("a", "b"))
+
+    def test_glob_metacharacter_item_does_not_spuriously_match(self) -> None:
+        """The three call sites rely on [ "$a" = "$b" ] string equality, not
+        a case glob match -- an ITEM shaped like a glob pattern must match
+        only that literal string, never a value it would otherwise
+        glob-match."""
+        assert not _list_contains("code-writer", ("code*",))
+
+    def test_glob_metacharacter_item_matches_its_own_literal_value(self) -> None:
+        assert _list_contains("code*", ("code*",))
+
+
+# --- _lib_command_concludes_commit / _lib_command_concludes_marker_gated_commit --
+#
+# The rebase carve-out's two named tri-state predicates: both delegate to
+# one private shape-set matcher, so the narrow predicate excludes exactly
+# one case (git rebase --continue) from the broad one.
+# Pure string processors, no repo needed -- same fast, no-repo,
+# fixed-string shape TestCommandInvokesGitSubcmd already uses above.
+
+
+def _command_concludes_commit(command: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_command_concludes_commit "$1"', "bash", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+def _command_concludes_marker_gated_commit(command: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_command_concludes_marker_gated_commit "$1"', "bash", command],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestCommandConcludesCommit:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit",
+            "git -c core.editor=true commit",
+            "GIT_EDITOR=true git merge --continue",
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+        ],
+    )
+    def test_broad_predicate_true_for_concluding_shapes(self, command: str) -> None:
+        assert _command_concludes_commit(command) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+            "git status",
+        ],
+    )
+    def test_broad_predicate_false_for_non_concluding_shapes(self, command: str) -> None:
+        assert _command_concludes_commit(command) == 1
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit",
+            "git -c core.editor=true commit",
+            "GIT_EDITOR=true git merge --continue",
+            "git merge --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+            "git status",
+        ],
+    )
+    def test_narrow_predicate_agrees_with_broad_except_rebase_continue(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_marker_gated_commit(command) == _command_concludes_commit(command)
+
+    def test_narrow_predicate_excludes_rebase_continue_while_broad_includes_it(self) -> None:
+        """The one input where the two predicates must diverge -- a
+        fixture asserting only the narrow predicate's false here would not
+        catch a regression that accidentally narrowed both."""
+        assert _command_concludes_commit("git rebase --continue") == 0
+        assert _command_concludes_marker_gated_commit("git rebase --continue") == 1
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_command_concludes_commit'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_sed_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_concludes_commit("git commit -m x", env=env) == 2
+        assert _command_concludes_marker_gated_commit("git commit -m x", env=env) == 2
+
+    def test_tr_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_concludes_commit("git commit -m x", env=env) == 2
+        assert _command_concludes_marker_gated_commit("git commit -m x", env=env) == 2
+
+    def test_continue_flag_outside_matched_verb_does_not_conclude_commit(self) -> None:
+        """The fragment-boundary case _lib_command_concludes_commit_shape's
+        own comment names: `--continue` present elsewhere in COMMAND, not
+        as the matched verb's own argument, must not read as concluding a
+        commit."""
+        assert _command_concludes_commit("git rebase origin/main && echo --continue") == 1
+
+
+# --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash --
+#
+# Detection precedence, trust anchors, and reference-tree computation for the
+# four in-progress git states (merge/rebase/cherry-pick/revert). See
+# git-state-safety/SKILL.md's Rule of thumb for the detection recipe and
+# docs/hooks.md's "Which tree a marker describes" section for how a gate
+# consumes the resulting base.
+
+
+def _git_inprogress_state(repo: Path, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_git_inprogress_state "$1"', "bash", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+
+
+def _gate_diff_base(
+    repo: Path, env: dict | None = None, timeout: float | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_gate_diff_base "$1"', "bash", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+        timeout=timeout,
+    )
+
+
+def _staged_diff_hash(
+    repo: Path, base: str, *pathspecs: str, env: dict | None = None, timeout: float | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; _lib_staged_diff_hash "$1" "$2" "${{@:3}}"',
+            "bash", str(repo), base, *pathspecs,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+        timeout=timeout,
+    )
+
+
+def _forge_state_marker(gitdir: Path, state: str, oid: str) -> None:
+    """Write the on-disk shape _lib_git_inprogress_state/_lib_gate_diff_base
+    read for `state`, without running the real git operation -- for
+    precedence and forged-ref tests that only need the marker shape, not a
+    genuine conflict."""
+    if state == "rebase":
+        (gitdir / "rebase-merge").mkdir(exist_ok=True)
+        (gitdir / "rebase-merge" / "head-name").write_text("refs/heads/feature\n")
+        (gitdir / "REBASE_HEAD").write_text(oid + "\n")
+    elif state == "merge":
+        (gitdir / "MERGE_HEAD").write_text(oid + "\n")
+    elif state == "cherry-pick":
+        (gitdir / "CHERRY_PICK_HEAD").write_text(oid + "\n")
+    elif state == "revert":
+        (gitdir / "REVERT_HEAD").write_text(oid + "\n")
+    else:
+        raise ValueError(state)
+
+
+def _assert_valid_tree_oid(repo: Path, oid: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{oid}^{{tree}}"],
+        capture_output=True,
+    )
+    assert result.returncode == 0, f"{oid!r} is not a valid tree oid"
+
+
+def _git_supports_sha256_object_format() -> bool:
+    """Probed once at collection time: whether this git binary can create a
+    SHA-256 repository (`git init --object-format=sha256`). Gates the
+    SHA-256 fixture below rather than failing outright on a git build too
+    old for the flag, or one built without SHA-256 support."""
+    with tempfile.TemporaryDirectory() as probe_dir:
+        result = subprocess.run(
+            ["git", "init", "-q", "--object-format=sha256", "-b", "main", probe_dir],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+
+class TestGitInprogressStateDetection:
+    def test_detects_merge(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo)
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == "merge"
+
+    def test_detects_cherry_pick(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo)
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == "cherry-pick"
+
+    def test_detects_revert(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == "revert"
+
+    def test_detects_rebase_plain(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_rebase(repo)
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == "rebase"
+
+    def test_rebase_precedence_over_stale_cherry_pick_head(self, tmp_path: Path) -> None:
+        """The precedence table requires rebase to win a tie against a
+        stale CHERRY_PICK_HEAD alongside rebase-merge/. Older git
+        left a real CHERRY_PICK_HEAD during an interactive rebase's pick
+        step (each "pick" reuses cherry-pick's own machinery); confirmed
+        empirically that the git version running this suite no longer does,
+        so the CHERRY_PICK_HEAD half of this fixture is forged directly
+        here, alongside a genuine conflicted interactive rebase for the
+        rebase half."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        feature_tip = build_conflicted_rebase(repo, interactive=True)
+        gitdir = repo / ".git"
+        (gitdir / "CHERRY_PICK_HEAD").write_text(feature_tip + "\n")
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == "rebase"
+
+    def test_no_state_in_ordinary_repo(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_undetermined_when_git_missing(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        farm_dir = tmp_path / "path-without-git"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("git", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        result = _git_inprogress_state(repo, env=env)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "higher, lower",
+        [
+            ("rebase", "merge"),
+            ("rebase", "revert"),
+            ("merge", "cherry-pick"),
+            ("merge", "revert"),
+            ("cherry-pick", "revert"),
+        ],
+    )
+    def test_precedence_pair_via_forged_files(
+        self, tmp_path: Path, higher: str, lower: str
+    ) -> None:
+        """The remaining five precedence pairs: forge two of the four marker
+        shapes directly (no real conflicting operation) and assert the
+        higher-precedence state wins, per the table's strict order
+        rebase > merge > cherry-pick > revert. Without this, a future
+        reordering of the detection if/elif chain regresses silently on any
+        pair but rebase-vs-cherry-pick, which the previous test covers with
+        a real fixture."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        gitdir = repo / ".git"
+        head = _run_git(repo, "rev-parse", "HEAD").strip()
+        _forge_state_marker(gitdir, higher, head)
+        _forge_state_marker(gitdir, lower, head)
+        result = _git_inprogress_state(repo)
+        assert result.returncode == 0
+        assert result.stdout == higher
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_git_inprogress_state'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def test_build_conflicted_rebase_pre_resolution_checkpoint_has_all_three_stages(
+    tmp_path: Path,
+) -> None:
+    """build_conflicted_rebase's docstring claims genuine stage 1/2/3
+    entries at the pre-resolution checkpoint -- distinct from a 2-way
+    add/add conflict, which would carry only stages 2 and 3 with no common
+    ancestor. `git ls-files --unmerged` reports one line per populated
+    stage for the conflicted path."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    build_conflicted_rebase(repo)
+    unmerged = _run_git(repo, "ls-files", "--unmerged")
+    stages = {line.split()[2] for line in unmerged.splitlines() if line}
+    assert stages == {"1", "2", "3"}
+
+
+def test_resolve_conflicted_rebase_advances_to_staged_checkpoint(tmp_path: Path) -> None:
+    """The rebase fixture's two checkpoints: pre-add (unresolved, genuine
+    stage 1/2/3 entries) and post-resolution (staged, ready for
+    `git rebase --continue`)."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    build_conflicted_rebase(repo)
+    resolve_conflicted_rebase(repo)
+    status = _run_git(repo, "status", "--porcelain=v1")
+    assert "UU" not in status and "AA" not in status
+    staged_names = _run_git(repo, "diff", "--cached", "--name-only")
+    assert "f" in staged_names
+    continue_result = subprocess.run(
+        ["git", "rebase", "--continue"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_EDITOR": "true"},
+    )
+    assert continue_result.returncode == 0, continue_result.stderr
+
+
+def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
+    tmp_path: Path,
+) -> None:
+    """What `git diff --cached` does against an index still carrying
+    unmerged (stage 1/2/3) entries, pinned as a git-primitive fact
+    independent of any hook. A later change wiring deny-pii-in-commits.sh
+    onto `git rebase --continue` recognition needs an end-to-end hook-level
+    version of this same assertion, once that routing exists."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    build_conflicted_rebase(repo)  # pre-`git add` checkpoint: unresolved
+    result = subprocess.run(
+        ["git", "diff", "--cached"], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    # git's diff machinery has no single index blob to diff against HEAD for
+    # an unmerged path, so `--cached` reports only an "Unmerged path" marker
+    # line for it, never the file's actual conflicting content -- a scanner
+    # relying on this recipe alone would not see a conflicted file's real
+    # content pre-resolution. Substring match, not an exact-stdout pin: the
+    # leading marker glyph is git's own free-text diff-output wording, not a
+    # machine-stable contract.
+    assert "Unmerged path f" in result.stdout
+
+
+class TestGateDiffBaseNoState:
+    def test_no_state_exits_1_with_empty_base(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "f.txt").write_text("y\n")
+        _run_git(repo, "add", "f.txt")
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_no_state_staged_diff_hash_matches_production_recipe(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves no marker on disk invalidates: with no base override,
+        _lib_staged_diff_hash must produce the exact byte-identical digest
+        today's production `git diff --cached | sha256sum` recipe does."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "f.txt").write_text("y\n")
+        _run_git(repo, "add", "f.txt")
+        result = _staged_diff_hash(repo, "")
+        assert result.returncode == 0
+        assert result.stdout == staged_diff_hash(repo)
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_gate_diff_base'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+class TestGateDiffBaseTrustedAnchor:
+    """Verification: for each of the four states, with a trusted anchor
+    present, _lib_gate_diff_base exits 0 and prints a tree OID."""
+
+    def test_merge_trusted_via_origin_default_branch(self, tmp_path: Path) -> None:
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        (clone / "f").write_text("ours-edit\n")
+        _run_git(clone, "add", "f")
+        _run_git(clone, "commit", "-qm", "ours edits f")
+        push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+        _run_git(clone, "fetch", "-q", "origin")
+        result = subprocess.run(
+            ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (clone / ".git" / "MERGE_HEAD").exists()
+
+        base_result = _gate_diff_base(clone)
+        assert base_result.returncode == 0
+        assert base_result.stdout != ""
+        _assert_valid_tree_oid(clone, base_result.stdout)
+
+    def test_cherry_pick_trusted_via_origin_when_source_already_upstream(
+        self, tmp_path: Path
+    ) -> None:
+        """A cherry-pick passes only when its source is already upstream
+        (backporting a landed hotfix)."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        push_conflicting_edit_to_origin(tmp_path, bare, "f", "source-edit\n")
+        _run_git(clone, "fetch", "-q", "origin")
+        source_oid = _run_git(clone, "rev-parse", "origin/main").strip()
+        (clone / "f").write_text("local-edit\n")
+        _run_git(clone, "add", "f")
+        _run_git(clone, "commit", "-qm", "local edits f")
+        result = subprocess.run(
+            ["git", "cherry-pick", source_oid], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (clone / ".git" / "CHERRY_PICK_HEAD").exists()
+
+        base_result = _gate_diff_base(clone)
+        assert base_result.returncode == 0
+        _assert_valid_tree_oid(clone, base_result.stdout)
+
+    def test_revert_trusted_via_head(self, tmp_path: Path) -> None:
+        """REVERT_HEAD is an ancestor of HEAD by construction, so a
+        genuine revert always trusts via the HEAD anchor."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        base_result = _gate_diff_base(repo)
+        assert base_result.returncode == 0
+        _assert_valid_tree_oid(repo, base_result.stdout)
+
+    def test_rebase_trusted_via_origin_when_replayed_commit_already_pushed(
+        self, tmp_path: Path
+    ) -> None:
+        """Atypical in practice -- a rebase fails both anchors in the
+        ordinary case, since REBASE_HEAD is the pre-rebase commit being
+        replayed and mid-rebase HEAD is the new base plus already-replayed
+        commits -- but this exercises the anchor mechanism uniformly across
+        all four states: REBASE_HEAD reaches
+        origin/<default> when the replayed commit was already pushed there
+        before the rebase started."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        _run_git(clone, "checkout", "-qb", "upstream")
+        (clone / "f").write_text("upstream-edit\n")
+        _run_git(clone, "add", "f")
+        _run_git(clone, "commit", "-qm", "upstream edits f")
+        _run_git(clone, "checkout", "-q", "main")
+        (clone / "f").write_text("feature-edit\n")
+        _run_git(clone, "add", "f")
+        _run_git(clone, "commit", "-qm", "feature edits f")
+        _run_git(clone, "push", "-q", "origin", "main")
+        result = subprocess.run(
+            ["git", "rebase", "upstream"], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        gitdir = clone / ".git"
+        assert (gitdir / "rebase-apply").exists() or (gitdir / "rebase-merge").exists()
+
+        base_result = _gate_diff_base(clone)
+        assert base_result.returncode == 0
+        _assert_valid_tree_oid(clone, base_result.stdout)
+
+
+@pytest.mark.skipif(
+    not _git_supports_sha256_object_format(),
+    reason="git build does not support --object-format=sha256",
+)
+class TestGateDiffBaseSha256ObjectFormat:
+    def test_sha256_repo_mid_revert_returns_valid_64_hex_tree_oid(
+        self, tmp_path: Path
+    ) -> None:
+        """state_oid's shape validation accepts both a 40-hex SHA-1 and a
+        64-hex SHA-2 oid (_lib.sh's `_lib_gate_diff_base`), but every other
+        fixture in this file builds an ordinary SHA-1 repo -- this is the
+        only one that exercises the 64-hex branch end-to-end."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", "--object-format=sha256", "-b", "main", str(repo)],
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        build_conflicted_revert(repo)
+
+        result = _gate_diff_base(repo)
+
+        assert result.returncode == 0
+        assert re.fullmatch(r"[0-9a-f]{64}", result.stdout), (
+            f"expected a 64-hex SHA-256 tree oid, got {result.stdout!r}"
+        )
+        _assert_valid_tree_oid(repo, result.stdout)
+
+
+class TestGateDiffBaseUntrustedAnchor:
+    def test_reaches_neither_anchor_falls_back_to_empty_base(self, tmp_path: Path) -> None:
+        """A cherry-pick whose source was never pushed anywhere over-gates
+        -- the right answer, since that content genuinely has not been
+        reviewed on this branch."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "merge", "cherry-pick", "revert"])
+    def test_forged_ref_pointing_at_unreachable_commit_falls_back(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """A state ref pointed at a commit reachable from neither anchor
+        -- an orphan-history commit, sharing no ancestry with the
+        checked-out branch at all -- must not be trusted."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _run_git(repo, "checkout", "-q", "--orphan", "orphan")
+        (repo / "orphan.txt").write_text("z\n")
+        _run_git(repo, "add", "orphan.txt")
+        _run_git(repo, "commit", "-qm", "orphan commit")
+        orphan_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _forge_state_marker(repo / ".git", state, orphan_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "merge", "cherry-pick", "revert"])
+    def test_reachable_only_from_fabricated_remote_tracking_ref_still_falls_back(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """A declined third anchor, pinned as a negative assertion: a
+        commit reachable only from a hand-created
+        refs/remotes/origin/<fabricated-name> must not be trusted, since
+        _lib_resolve_default_branch's candidate probe is deliberately
+        narrow (exactly main/master/develop, never a refs/remotes/* pattern)
+        and never resolves to this name."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "f.txt").write_text("side\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "side commit")
+        side_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        _run_git(repo, "update-ref", "refs/remotes/origin/totally-not-the-default", side_oid)
+        _forge_state_marker(repo / ".git", state, side_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "merge", "cherry-pick", "revert"])
+    def test_resolvable_non_hex_state_ref_falls_back(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """A state ref file is plain, unauthenticated content anyone with
+        filesystem access could write directly -- not proof of a real git
+        operation. `HEAD` is syntactically valid and trivially its own
+        ancestor, so without state_oid's own shape validation it would
+        sail past the anchor check and reach merge-tree, producing a real
+        tree OID (rc=0) instead of falling back. A `--flag`-shaped payload
+        would not discriminate here: git's own CLI parser already rejects
+        an unrecognized option in merge-base/merge-tree, independent of
+        state_oid's shape guard, so it can't prove the guard is
+        load-bearing."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _forge_state_marker(repo / ".git", state, "HEAD")
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
+class TestGateDiffBaseTopologyFallback:
+    def test_octopus_merge_falls_back_to_empty_base(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_octopus_merge_conflict(repo)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_octopus_merge_head_falls_back_even_when_first_line_alone_is_trusted(
+        self, tmp_path: Path
+    ) -> None:
+        """The stronger adversarial sub-case, distinct from the
+        both-untrusted-lines fixture above: line 1 of MERGE_HEAD is by
+        itself a genuine ancestor of HEAD, with only line 2 unreachable.
+        state_oid's own shape validation rejects the multi-line value
+        outright before any anchor check runs; even without that guard,
+        `git merge-base --is-ancestor` fails to parse a multi-line revision
+        regardless of which line would individually pass. Either way this
+        must still fall back to the empty base -- not treat line 1's own
+        trust as good enough for the whole value."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        trusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-qb", "untrusted-line")
+        (repo / "f.txt").write_text("untrusted\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "untrusted commit")
+        untrusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        (repo / ".git" / "MERGE_HEAD").write_text(f"{trusted_oid}\n{untrusted_oid}\n")
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rebase_merges_replay_of_merge_commit_falls_back_to_empty_base(
+        self, tmp_path: Path
+    ) -> None:
+        """The --rebase-merges hazard: REBASE_HEAD names a merge commit, so
+        REBASE_HEAD^ would silently resolve to parent 1 rather than
+        erroring. Closed because the replayed merge commit reaches neither
+        anchor, not by a second mechanism."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_rebase_merges_replay_conflict(repo)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
+class TestMergeBaseIsAncestorPrimitiveContract:
+    """Pins git's own documented `merge-base --is-ancestor` exit contract
+    as a suite fact, since _lib_gate_diff_base's trust check depends on
+    treating every non-zero exit identically as "not trusted"."""
+
+    def test_ancestor_returns_zero(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        first = _run_git(repo, "rev-parse", "HEAD").strip()
+        (repo / "f.txt").write_text("y\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "second")
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", first, "HEAD"], cwd=repo, capture_output=True
+        )
+        assert result.returncode == 0
+
+    def test_non_ancestor_returns_nonzero(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "f.txt").write_text("side\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "side commit")
+        side = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", side, "HEAD"], cwd=repo, capture_output=True
+        )
+        assert result.returncode != 0
+
+    def test_unresolvable_oid_returns_nonzero(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "0" * 40, "HEAD"], cwd=repo, capture_output=True
+        )
+        assert result.returncode != 0
+
+
+def test_git_diff_cached_accepts_bare_tree_oid(tmp_path: Path) -> None:
+    """_lib_gate_diff_base's stdout is a bare tree OID, and callers diff
+    staged content against it directly -- pins that `git diff --cached`
+    accepts one."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
+    (repo / "f.txt").write_text("y\n")
+    _run_git(repo, "add", "f.txt")
+    result = subprocess.run(
+        ["git", "diff", "--cached", tree_oid], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode == 0
+
+
+def test_merge_tree_merge_base_flag_changes_computed_tree(tmp_path: Path) -> None:
+    """--merge-base='s effect on the computed tree is observed here, not
+    merely its acceptance as a flag. root -> middle (changes "a") -> tip
+    (changes "b" only, so
+    tip still carries middle's "a" change). Auto-detecting the merge-base
+    of (root, tip) yields root (an ancestor), so merging root and tip
+    trivially reproduces tip's own tree. Forcing --merge-base=middle
+    instead treats "a" as also having changed on root's side (a revert of
+    middle's change), producing a materially different, still
+    non-conflicting tree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(repo, "init", "-q", "-b", "main")
+    _run_git(repo, "config", "user.email", "t@t.com")
+    _run_git(repo, "config", "user.name", "t")
+    (repo / "a").write_text("1\n")
+    (repo / "b").write_text("1\n")
+    _run_git(repo, "add", "a", "b")
+    _run_git(repo, "commit", "-qm", "root")
+    root = _run_git(repo, "rev-parse", "HEAD").strip()
+    (repo / "a").write_text("2\n")
+    _run_git(repo, "add", "a")
+    _run_git(repo, "commit", "-qm", "middle changes a")
+    middle = _run_git(repo, "rev-parse", "HEAD").strip()
+    (repo / "b").write_text("2\n")
+    _run_git(repo, "add", "b")
+    _run_git(repo, "commit", "-qm", "tip changes b")
+    tip = _run_git(repo, "rev-parse", "HEAD").strip()
+
+    auto = _run_git(repo, "merge-tree", "--write-tree", root, tip).strip().splitlines()[0]
+    forced = _run_git(
+        repo, "merge-tree", "--write-tree", f"--merge-base={middle}", root, tip
+    ).strip().splitlines()[0]
+    assert auto != forced
+    assert auto == _run_git(repo, "rev-parse", f"{tip}^{{tree}}").strip()
+
+
+def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
+    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
+    Every other subcommand proxies to the real git (resolved via
+    $REAL_GIT), matching test_check_branch_divergence.py's _make_fake_git
+    shim shape."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--write-tree" ]; then\n'
+        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
+        '    exit 129\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
+    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
+    is rejected."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    --merge-base=*)\n'
+        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
+        '      exit 129\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git: for `merge-tree` specifically, writes a partial
+    line to stdout then blocks past the 5s cap; every other subcommand
+    proxies to the real git. Sleeps 20s, ~4x the 5s cap -- the same bounded
+    overshoot convention test_lib_capped_for_enforces_cap_when_timeout_present
+    uses (5s sleep against a 1s cap) to keep a cap regression from hanging
+    the test."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "merge-tree" ]; then\n'
+        '    printf "partialline"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_absolute_git_dir_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git: for `rev-parse --absolute-git-dir` specifically,
+    writes a partial line to stdout then blocks past the 5s cap; every other
+    subcommand proxies to the real git. Same shape as
+    _make_blocking_merge_tree_git above, targeting _lib_gate_diff_base's
+    initial `git rev-parse --absolute-git-dir` call instead of its
+    merge-tree call."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--absolute-git-dir" ]; then\n'
+        '    printf "partialline"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_tree_verify_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git: for a `<tree-oid>^{tree}` revision argument
+    specifically, writes a partial line to stdout then blocks past the 5s
+    cap; every other subcommand proxies to the real git. Same shape as
+    _make_blocking_merge_tree_git above, targeting _lib_gate_diff_base's
+    final `git rev-parse --verify --quiet "${tree_oid}^{tree}"` validation
+    call instead of its merge-tree call."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    *"^{tree}")\n'
+        '      printf "partialline"\n'
+        '      sleep 20\n'
+        '      exit 0\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_diff_git(bin_dir: Path) -> Path:
+    """Shim at bin_dir/git: for `diff` specifically, writes a partial line to
+    stdout then blocks past the 5s cap; every other subcommand proxies to the
+    real git. Same shape as _make_blocking_merge_tree_git above, targeting
+    _lib_staged_diff_hash's `git diff --cached` call instead of
+    _lib_gate_diff_base's `merge-tree` call."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "diff" ]; then\n'
+        '    printf "partialline"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_call_logging_git(bin_dir: Path, log_file: Path) -> Path:
+    """Shim at bin_dir/git: appends the full argument list to log_file, one
+    invocation per line, then proxies to the real git."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        f'printf "%s\\n" "$*" >> "{log_file}"\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+class TestGateDiffBaseGitVersionFallback:
+    """Two stub-git fallback bands, run against a real conflicted,
+    HEAD-anchor-trusted fixture so the merge-tree call is actually reached,
+    plus a genuine (non-stubbed) git-primitive band below: a root commit
+    (no parent), where REBASE_HEAD^/CHERRY_PICK_HEAD^ is itself invalid
+    regardless of git version."""
+
+    def test_write_tree_rejected_outright_falls_back_to_empty_base(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-reject-write-tree"
+        _make_git_rejecting_write_tree(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_merge_base_flag_rejected_falls_back_to_empty_base(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)  # revert's merge-tree call uses --merge-base=
+        bin_dir = tmp_path / "bin-reject-merge-base"
+        _make_git_rejecting_merge_base_flag(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("state", ["rebase", "cherry-pick"])
+    def test_root_commit_state_oid_falls_back_to_empty_base(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        """REBASE_HEAD^/CHERRY_PICK_HEAD^ is invalid when the state ref
+        names a root commit (no parent) -- a git-primitive fact, not a
+        version-specific stub, so the merge-tree call this design issues
+        fails the same way the stubbed-rejection bands above do."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        root_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        (repo / "f.txt").write_text("y\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "second")
+        _forge_state_marker(repo / ".git", state, root_oid)
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
+def _timeout_binary_present() -> bool:
+    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
+
+
+class TestGateDiffBaseCapFaultInjection:
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocking_merge_tree_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the safety property directly -- a partial or candidate
+        OID interrupted mid-write must never escape onto stdout, since
+        every caller consumes stdout unconditionally regardless of exit
+        status. timeout=30 bounds a cap regression to a fast failure
+        instead of a 20s hang (the shim's own sleep)."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-blocking-merge-tree"
+        _make_blocking_merge_tree_git(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env, timeout=30)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocking_absolute_git_dir_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        """Same safety property as the merge-tree case above, for
+        _lib_gate_diff_base's initial `git rev-parse --absolute-git-dir`
+        call -- its own independent `|| return 2` must not let a partial
+        gitdir escape onto stdout either."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        bin_dir = tmp_path / "bin-blocking-absolute-git-dir"
+        _make_blocking_absolute_git_dir_git(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env, timeout=30)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocking_tree_verify_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        """Same safety property as the merge-tree case above, for
+        _lib_gate_diff_base's final `git rev-parse --verify --quiet
+        "${tree_oid}^{tree}"` validation call -- its own independent
+        exit-code-match block must not let the unvalidated tree_oid escape
+        onto stdout either."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-blocking-tree-verify"
+        _make_blocking_tree_verify_git(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env, timeout=30)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: exits exit_status at once when any argument
+    matches the shell `case` pattern arg_pattern, printing nothing; every
+    other invocation proxies to the real git. Stands in for a capped call
+    whose wrapper reports a cap-kill status without waiting for the cap."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      exit {exit_status}\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+class TestGateDiffBaseCapKillStatusesAreUndetermined:
+    """Every status a cap kill can produce -- 124 (GNU SIGTERM kill), 143
+    (BusyBox SIGTERM kill), and 137 (SIGKILL after the grace, on both) --
+    must read as undetermined (exit 2), not as the "no override" answer
+    (exit 1). See _lib_capped_for's header in _lib.sh for the mapping. No
+    real cap is engaged: the shim exits with the status directly."""
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    @pytest.mark.parametrize(
+        "arg_pattern",
+        ["merge-tree", '*"^{tree}"'],
+        ids=["merge-tree", "tree-verify"],
+    )
+    def test_cap_kill_status_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path, arg_pattern: str, cap_kill_status: int
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, arg_pattern, cap_kill_status)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+class TestGateDiffBaseMergeTreeSkippedWhenAnchorFails:
+    def test_merge_tree_never_invoked_when_state_reaches_no_anchor(
+        self, tmp_path: Path
+    ) -> None:
+        """merge-tree runs only after an ancestry check succeeds, never
+        unconditionally and discarded on failure -- otherwise the 5s
+        cap and merge-tree's rename-detection cost would be charged on
+        every ordinary conflicted rebase, the exact arm this design newly
+        gates."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo)  # source never pushed: untrusted
+        log_file = tmp_path / "git-calls.log"
+        bin_dir = tmp_path / "bin-logging"
+        _make_call_logging_git(bin_dir, log_file)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 1
+        calls = log_file.read_text() if log_file.exists() else ""
+        assert "merge-tree" not in calls
+
+
+class TestGateDiffBaseSingleCallInvocationCount:
+    """One call to _lib_gate_diff_base must not internally invoke state
+    detection, merge-tree, or the ancestor checks more than the documented
+    number of times -- a per-call invocation-count property. Whether a
+    caller resolves the base once per hook invocation and threads it
+    through, rather than re-resolving inside a per-file loop, is a property
+    of that caller's own call site (e.g. a while-loop body iterating staged
+    files), which has no such call site in this codebase yet to test."""
+
+    def test_single_invocation_computes_merge_tree_and_ancestor_check_once(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)  # HEAD-anchor trusted, no origin configured
+        log_file = tmp_path / "git-calls.log"
+        bin_dir = tmp_path / "bin-logging"
+        _make_call_logging_git(bin_dir, log_file)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 0
+        calls = log_file.read_text().splitlines()
+        merge_tree_calls = [c for c in calls if "merge-tree" in c]
+        ancestor_calls = [c for c in calls if "merge-base" in c and "--is-ancestor" in c]
+        assert len(merge_tree_calls) == 1
+        # No origin is configured in this fixture, so _lib_resolve_default_branch
+        # returns empty and the origin leg's is-ancestor call never runs --
+        # only the HEAD leg does.
+        assert len(ancestor_calls) == 1
+
+
+class TestGateDiffBaseNoCapBinary:
+    def test_runs_uncapped_and_still_succeeds_without_timeout_or_gtimeout(
+        self, tmp_path: Path
+    ) -> None:
+        """With neither timeout(1) nor gtimeout(1) on PATH, the wrapped git
+        commands run to completion uncapped rather than failing or
+        returning a cap-driven status 2 -- proving the *absence* of a cap
+        actually degrades to running uncapped, not only that the capped
+        path works."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        farm_dir = tmp_path / "path-without-timeout"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("timeout", farm_dir)
+        gtimeout_shim = farm_dir / "gtimeout"
+        if gtimeout_shim.exists():
+            gtimeout_shim.unlink()
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 0
+        assert result.stdout != ""
+
+
+class TestGateDiffBaseOriginForgeryDocumentedBehavior:
+    def test_explicit_destination_fetch_forges_origin_default_and_is_trusted(
+        self, tmp_path: Path
+    ) -> None:
+        """A documented-behavior assertion, not a self-healing guarantee.
+        The payload must be a descendant of origin/<default>'s
+        current tip -- an explicit-destination fetch to an existing
+        remote-tracking ref is still subject to ordinary non-fast-forward
+        rejection without a leading + or --force, and this is specifically
+        meant to demonstrate the ordinary, unforced form."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        _run_git(clone, "checkout", "-qb", "payload-branch")
+        (clone / "f").write_text("payload\n")
+        _run_git(clone, "add", "f")
+        _run_git(clone, "commit", "-qm", "unreviewed payload")
+        payload_oid = _run_git(clone, "rev-parse", "HEAD").strip()
+        _run_git(clone, "checkout", "-q", "main")
+
+        # Ordinary, unforced explicit-destination fetch from the local repo
+        # itself -- no attacker infrastructure needed to demonstrate.
+        _run_git(clone, "fetch", "-q", ".", "payload-branch:refs/remotes/origin/main")
+        assert _run_git(clone, "rev-parse", "origin/main").strip() == payload_oid
+
+        _forge_state_marker(clone / ".git", "merge", payload_oid)
+        result = _gate_diff_base(clone)
+        assert result.returncode == 0, (
+            "the forged origin/main ref must be trusted exactly as a genuine one would be"
+        )
+        _assert_valid_tree_oid(clone, result.stdout)
+
+
+class TestReviewerRoundStateKeyDuringRebase:
+    """HEAD is detached for the whole duration of a rebase, so
+    _lib_reviewer_round_state_key (keyed on branch name) cannot resolve --
+    the round-3 architect-consult gate is disarmed for the operation's
+    duration. This is a property of _lib_reviewer_round_state_key's
+    existing branch-keying design, unrelated to and unaffected by the
+    novel-content base this file's other tests cover."""
+
+    def test_plain_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_rebase(repo)
+        symbolic_ref = subprocess.run(
+            ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
+        )
+        assert symbolic_ref.returncode != 0
+        assert reviewer_round_state_key(repo) == ""
+
+    def test_interactive_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_rebase(repo, interactive=True)
+        symbolic_ref = subprocess.run(
+            ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
+        )
+        assert symbolic_ref.returncode != 0
+        assert reviewer_round_state_key(repo) == ""
+
+
+class TestStagedDiffHash:
+    def test_empty_base_matches_production_recipe(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "f.txt").write_text("changed\n")
+        _run_git(repo, "add", "f.txt")
+        result = _staged_diff_hash(repo, "")
+        assert result.returncode == 0
+        assert result.stdout == staged_diff_hash(repo)
+
+    def test_non_empty_base_matches_independent_oracle(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
+        (repo / "f.txt").write_text("changed\n")
+        _run_git(repo, "add", "f.txt")
+        result = _staged_diff_hash(repo, tree_oid)
+        assert result.returncode == 0
+        assert result.stdout == staged_diff_hash_at_base(repo, tree_oid)
+
+    def test_pathspec_restricts_diff(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "other.txt").write_text("z\n")
+        _run_git(repo, "add", "other.txt")
+        _run_git(repo, "commit", "-qm", "add other.txt")
+        (repo / "f.txt").write_text("changed\n")
+        (repo / "other.txt").write_text("changed too\n")
+        _run_git(repo, "add", "f.txt", "other.txt")
+        result = _staged_diff_hash(repo, "", "f.txt")
+        expected_diff = subprocess.run(
+            ["git", "diff", "--cached", "--", "f.txt"], cwd=repo, capture_output=True, check=True
+        ).stdout
+        expected = hashlib.sha256(expected_diff).hexdigest()
+        assert result.returncode == 0
+        assert result.stdout == expected
+
+    def test_sha256sum_absent_returns_empty_and_fails_closed(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "f.txt").write_text("changed\n")
+        _run_git(repo, "add", "f.txt")
+        farm_dir = tmp_path / "path-without-sha256sum"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sha256sum", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        result = _staged_diff_hash(repo, "", env=env)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocking_diff_returns_empty_stdout_not_partial_hash(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the same safety property TestGateDiffBaseCapFaultInjection
+        proves for `merge-tree` -- ${PIPESTATUS[0]} must catch a `git diff`
+        killed past the cap so a partial or interrupted diff never gets
+        hashed onto stdout. timeout=30 bounds a cap regression to a fast
+        failure instead of a 20s hang (the shim's own sleep)."""
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        (repo / "f.txt").write_text("changed\n")
+        _run_git(repo, "add", "f.txt")
+        bin_dir = tmp_path / "bin-blocking-diff"
+        _make_blocking_diff_git(bin_dir)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _staged_diff_hash(repo, "", env=env, timeout=30)
+        assert result.returncode == 1
+        assert result.stdout == ""

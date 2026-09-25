@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: deny Claude's Read tool on data-shaped files before their content
 # enters the conversation context. A data dump (CSV export, database
 # backup, statistical dataset) read into context is PII/PHI exposure.
@@ -57,14 +58,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

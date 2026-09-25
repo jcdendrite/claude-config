@@ -1,0 +1,556 @@
+# Narrow the provenance-redaction rule to permit pooled behavioral aggregates
+
+## Context
+
+Narrow `claude-config`'s root `CLAUDE.md` provenance-redaction rule so a
+pooled, undecomposed behavioral aggregate about this repo's own tooling
+(Claude Code tool calls, sessions, agents) can be published, while making
+the per-project/per-account/per-engagement prohibition absolute rather than
+a factor to weigh.
+
+The current sentence (root `CLAUDE.md`, "Also redact structural
+fingerprints and provenance" section) says "a figure drawn from a corpus
+mixing private and public sources inherits the private half," with no
+carve-out for a pooled aggregate that carries no per-project decomposition.
+That sentence is broader than the section's own stated purpose (stopping
+content that identifies a specific private project, engagement, or
+codebase). Three existing sites in this repo have already applied the
+broader rule by withholding legitimate, publishable pooled figures as bare
+directional claims with no supporting numbers, making them unverifiable:
+
+- `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md:7`
+- `docs/design-decisions/schedulewakeup-misapplied-documented.md:14`
+- `docs/cost-levers-considered.md:501`
+
+This PR does not publish any actual measurement figure — it only changes
+what the rule permits. A separate, currently unimplemented sibling branch
+(`standardize-background-wait-mechanism`, one plan-only commit today) holds
+the actual measurement write-up that will consume this rule change once
+merged.
+
+## Approach
+
+Rewrite the provenance paragraph in root `CLAUDE.md` so it carries one
+explicit carve-out — a pooled measurement of this repo's own tooling in
+use, with no per-project, per-account, or per-engagement dimension, is
+publishable — plus an absolute prohibition on decomposing that figure along
+any of those three axes. Then update the one downstream site that
+operationalizes this rule as a review check,
+`.claude/skills/code-review-claude-config/SKILL.md`, so it defers to the
+narrowed rule instead of contradicting it. No hook changes, no new test, no
+new file.
+
+**Two findings from exploration that reshape the brief.**
+
+First, the brief scopes the edit to the "corpus mixing private and public
+sources" sentence. That sentence is not the only thing blocking the pooled
+aggregate. The paragraph's *first* sentence — "If the only reason you know
+a fact is exposure to private engagement material, publishing it carries
+that engagement's fingerprint — whatever the datatype, and whether you
+quoted it, computed it, or recalled it" (`CLAUDE.md:152-155`) —
+independently prohibits it, since a figure computed from the mixed
+transcript corpus is known only through that exposure and the clause names
+"computed it" explicitly. A carve-out that only replaces the corpus-mixing
+clause leaves the paragraph still prohibiting the target content. The
+carve-out has to be positioned to govern the whole paragraph.
+
+Second, `.claude/skills/code-review-claude-config/SKILL.md:9-11` currently
+reads "Flag any measurement, example, log excerpt, or command output the
+diff adds whose only known source is private engagement material." That is
+the project layer `/code-review` loads on every commit in this repo. Left
+as written, the very first commit publishing a pooled figure draws a P1
+finding, and the reviewer has no basis in its own checklist for the
+carve-out. The rule change is inert without this edit, which puts it inside
+Axis 1's "required to make the ticket's change correct," not scope creep.
+
+**Chosen scope for the carve-out.** The carve-out is scoped to measurements
+of this repo's own tooling in use (Claude Code tool calls, sessions,
+agents), not written as a bare decomposition test with no subject-matter
+scope. Reason: the paragraph's first sentence (finding one, above) is
+broader than the corpus-mixing clause — it covers any fact learned only
+through private-engagement exposure, not only tooling stats. A bare
+decomposition test with no subject-matter scope would therefore also
+legalize publishing pooled facts *about the engagements themselves* (e.g.,
+"engagements typically run N weeks") as long as they're not broken down per
+account — a channel nothing else in the rule would catch, since that's not
+a structural-fingerprint shape either. Scoping the carve-out to tooling
+measurements matches the task's own stated motivation and closes that
+channel. The sibling structural-fingerprints paragraph (`CLAUDE.md:147-150`,
+untouched) already catches project-shape claims through a separate
+channel, which is why the decomposition test can carry the rest of the
+load *within* that scope.
+
+**Recommended replacement text** for `CLAUDE.md:152-159` (the paragraph
+under `### Also redact structural fingerprints and provenance`):
+
+```
+Provenance leaks the same way. If the only reason you know a fact is
+exposure to private engagement material, publishing it carries that
+engagement's fingerprint — whatever the datatype, and whether you
+quoted it, computed it, or recalled it. The test is where the
+knowledge came from, not what shape it takes.
+
+One carve-out, for measurements of this repo's own tooling in use
+(Claude Code tool calls, sessions, agents): a figure pooled across a
+corpus that mixes private and public sources is publishable when it
+carries no per-project, per-account, or per-engagement dimension.
+Cite the command or script that produced it. Decomposing that same
+figure by project, account, or engagement is prohibited outright — in
+any artifact and any form, a commit message, PR body, decision entry,
+or illustrative example included. Not a factor to weigh, not a
+borderline case to raise.
+
+Content derived only from this repo's own history, from public
+sources, or from synthetic fixtures is not in this class.
+```
+
+The final sentence is preserved verbatim per the fixed decision. Splitting
+the old semicolon-joined compound into separate sentences also brings the
+paragraph into line with root `CLAUDE.md`'s own "Split multi-fact comments"
+rule.
+
+**Recommended edit** to `.claude/skills/code-review-claude-config/SKILL.md`,
+replacing only the first sentence of P1 and adding one:
+
+```
+P1. **Private-corpus provenance** — Flag any measurement, example, log excerpt,
+or command output the diff adds whose only known source is private engagement
+material, against CLAUDE.md's "Also redact structural fingerprints and
+provenance" rule and the one carve-out it names. A figure decomposed by
+project, account, or engagement is a P1 finding on sight.
+```
+
+The remaining four lines of P1 (rounded-figure scrutiny, no-stated-source
+finding) stay verbatim. This defers to `CLAUDE.md` rather than restating
+the carve-out, per single-source-of-truth.
+
+**Alternatives set aside.** Adding a numeric or percentage detector to
+`deny-private-project-refs.sh` — ruled out by the brief, and correctly: it
+would false-positive against public-only percentages already published in
+`docs/cost-levers-considered.md`. Adding a pytest pinning the carve-out's
+wording, or pinning `CLAUDE.md` and the code-review layer in sync — a
+substring assertion over prose is brittle and becomes its own drift source;
+for this convention the enforcing mechanism *is* the `/code-review` P1
+item, which is the answer to "write the enforcing test in the same PR" for
+a rule no test can evaluate. A "concentration disclosure" requirement —
+excluded by fixed decision.
+
+### Assumption ledger
+
+**Root:** root `CLAUDE.md`'s provenance rule is broader than its section's
+stated purpose (stopping content that identifies a specific private
+project, engagement, or codebase), so it suppresses pooled tooling
+measurements that identify nothing; narrow it without opening any
+per-project channel.
+
+**Givens:**
+
+- **G1.** The `test_legacy_numbers_form_contiguous_range` conflict in
+  `claude/.claude/hooks/tests/test_design_decision_files.py` blocks adding
+  a post-split decision entry here. Its fix lives on an unlanded sibling
+  branch — another change owns it. `[verified:
+  standardize-background-wait-mechanism branch, commit 85eac0b7 fixes the
+  test_legacy_numbers_form_contiguous_range conflict]` — the engineer's own
+  decision, made this session, is the
+  separate choice of how to sequence around G1 (ship the rule change now,
+  add the decision entry once the sibling branch's fix lands), not the
+  underlying fact G1 states.
+- **G2.** The three withholding sites are dated records under Axis 3's
+  preserved-content exception; amending them needs a task that scopes
+  them. `[engineer-verified]`
+- **G3.** `deny-private-project-refs.sh` has no numeric/ratio detector, so
+  nothing mechanical enforces this paragraph in either direction; the rule
+  is reviewer discipline by construction. `[verified: CLAUDE.md:131-135
+  lists provenance under "Reviewer discipline only — hook doesn't catch
+  these"; README.md:433 states the same tier split]`
+
+**Rows:**
+
+| # | Assumption | Tag |
+|---|---|---|
+| 1 | The paragraph to edit is `CLAUDE.md:152-159`, under the heading at `:145`; the parent section's purpose statement is at `:112-113`. | `[verified: CLAUDE.md read in full this session]` |
+| 2 | The paragraph's first sentence independently prohibits the pooled aggregate, so the carve-out must govern the whole paragraph rather than replace one clause. | `[verified: CLAUDE.md:152-155 — "whatever the datatype, and whether you quoted it, computed it, or recalled it"]` |
+| 3 | `docs/private-project-redaction.md` does not restate the provenance sentence anywhere; no edit needed there. | `[verified: two greps over the file — provenance/corpus/inherits/derived-only returned zero hits; measurement/figure/aggregate/number/percent/ratio/statistic returned only :12 (hook scan target), :63 (SSH-path detector), :156-161 (blocklist worked example), :218 (hook latency measurement)]` |
+| 4 | `.claude/skills/code-review-claude-config/SKILL.md:9-11` operationalizes this rule and would flag the now-permitted figure; it is the only site that does. | `[verified: file read in full; repo-wide grep for provenance/corpus/fingerprint surfaced no other operational restatement]` |
+| 5 | `README.md:433` paraphrases the tier but needs no edit — it summarizes the reviewer-discipline tier's role, and `:435` explicitly routes definitional authority to root `CLAUDE.md` ("defines *what* to keep out"). | `[verified: README.md:427-435]` |
+| 6 | Editing `.claude/skills/**/SKILL.md` is **not** hook-gated by `require-skill-review.sh` — its pathspecs are `claude-skills/skills/**/SKILL.md` and `plugins/*/skills/**/SKILL.md` only. `/skill-review` is still the documented convention. | `[verified: plugins/skill-management/hooks/require-skill-review.sh:108, :186, :221; convention at .claude/rules/skill-and-agent-self-review.md]` |
+| 7 | `select-tests.py` maps root `CLAUDE.md` to the hooks test dir (via a repo-wide `rglob("*.md")` content scan, no by-path reader) and `.claude/skills` to the skills test dir. Expect both domains, not an empty selection. | `[verified: claude/.claude/scripts/select-tests.py:167-171 (ROOT_CLAUDE_MD), :181-184 (ROOT_SKILLS_DIR)]` |
+| 8 | Root `CLAUDE.md` is 174 lines pre-edit; the recommended text adds roughly 12. Whether a 200-line budget binds this file (as distinct from `claude/.claude/CLAUDE.md`) is not established here — README.md:450 names the budget only in the global-CLAUDE.md context. | `[unverified]` — resolved by the `/ai-instruction-and-memory-files` run in Verification |
+| 9 | No test asserts the content of this `CLAUDE.md` section, so the prose edit breaks nothing mechanically. | `[unverified]` — the `select-tests.py` run in Verification is what settles it |
+
+**Mechanisms:**
+
+- **Prose edit to `CLAUDE.md:152-159`** — `anchors: root`. The rule is
+  reviewer discipline with no mechanical enforcer (G3), so editing the rule
+  text is the entire available lever; there is no lighter primitive than
+  changing the sentence that states the rule.
+- **Prose edit to the `/code-review` project layer** — `anchors: row4`.
+  Lighter alternatives considered and rejected: leaving it unchanged
+  (fails — the layer contradicts the narrowed rule and blocks the content
+  on first use); adding the carve-out text to the layer instead of a
+  deferral pointer (fails — duplicates the rule across two files, which
+  drifts, against single-source-of-truth). The chosen deferral is the
+  lightest form that resolves the contradiction.
+- **No hook detector, no new test, no new file** — `anchors: root`. The
+  over-powered options here are a numeric detector in
+  `deny-private-project-refs.sh` and a wording-pinning pytest; both are
+  rejected above with reasons, and G3 records that the surrounding rule was
+  already reviewer-discipline-only before this change.
+
+## Critical files
+
+Exactly two files change. `git diff --name-only` naming any third file is a
+defect.
+
+- **`CLAUDE.md`** (repo root) — replace the paragraph at `:152-159` with
+  the recommended text above. Do not touch the heading at `:145`, the
+  structural-fingerprints paragraph at `:147-150`, the tier list at
+  `:112-143`, the pointer at `:135`, or the `### Secrets, tokens,
+  credentials` and `### Enforcement` subsections at `:161-173`. Re-locate
+  the paragraph by its opening words "Provenance leaks the same way" rather
+  than by line number.
+- **`.claude/skills/code-review-claude-config/SKILL.md`** — replace P1's
+  first sentence and add the decomposition-on-sight sentence, per the text
+  above. Lines 12-16 (rounded-figure scrutiny, no-stated-source finding)
+  stay byte-identical. Frontmatter unchanged.
+
+Both edits are one `code-writer` dispatch: the two files are small, the
+second's wording depends on the first's, and splitting would force
+restating the same rule-design context in both prompts.
+
+**Reuse:** the SKILL.md edit reuses the existing citation form already in
+the file — `CLAUDE.md "Also redact structural fingerprints and
+provenance"` — rather than introducing a new pointer style.
+
+## Verification
+
+1. `git diff --name-only` — must list exactly `CLAUDE.md` and
+   `.claude/skills/code-review-claude-config/SKILL.md`. This is the check
+   for the fixed decision that the three dated records stay untouched.
+2. `.venv/bin/python3 claude/.claude/scripts/select-tests.py` — the repo's
+   documented scoped command. Per assumption-ledger row 7 this should
+   select the hooks and skills test dirs, not an empty set: root
+   `CLAUDE.md` is picked up by `test_nudge_transcript_toolkit.py`'s
+   repo-wide `rglob("*.md")` content scan, and `.claude/skills` by
+   `test_skills.py`'s `_all_skill_md_files()`. Read the actual selection
+   from the output rather than assuming this prediction holds; a genuinely
+   empty selection means the rule table missed a path, which is a bug to
+   report, not a reason to widen by hand.
+3. `.venv/bin/ruff check claude/.claude/ claude-skills/` — the documented
+   Python lint. No Python changes here, so it is a no-op regression guard.
+4. `/ai-instruction-and-memory-files` against the edited `CLAUDE.md` text.
+   This is the pass that settles row 8 (length budget) and applies the
+   per-line behavior test to the new sentences. Invariants that must
+   survive any tightening it proposes: the carve-out reaches the whole
+   paragraph, not one clause; the prohibition names all three axes
+   (project, account, engagement); the prohibition reads as absolute
+   rather than as a factor; the final sentence stays verbatim.
+5. `/skill-review` on the `.claude/skills/code-review-claude-config/SKILL.md`
+   diff, per `.claude/rules/skill-and-agent-self-review.md`. Row 6
+   establishes this is not hook-gated for this path, so it will not block
+   the commit — run it regardless, and expect the behavioral-equivalence
+   table to cover the replaced P1 sentence.
+6. `/code-review`. Note that this diff edits the project layer
+   `/code-review` itself loads, so run it after both edits are in the
+   working tree — the review then exercises the updated P1 wording against
+   a real diff.
+
+## Amendment: length reduction (PR #928 review)
+
+The originally drafted carve-out paragraph added 26 lines to a
+`CLAUDE.md` that sits at the hook-enforced 200-line cap with zero
+headroom, against row 8's (above) budgeted "roughly 12" — resolving
+row 8 from `[unverified]`. The full procedure (scope list, two
+pre-publication checks, citation requirement, remediation path) is
+reachable only by a session that has already decided to publish a
+figure, so it does not need to live in the always-loaded file; the
+failure mode of a session not knowing the procedure is over-redaction,
+which fails closed. `CLAUDE.md` now keeps only the absolute
+prohibition plus a conditional pointer; the rest moved to a new
+`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement" section, with `.claude/skills/code-review-claude-config/SKILL.md`'s
+P1 citation redirected to it. This supersedes Critical Files' "exactly
+two files change" and Out of scope's "no edit" for
+`docs/private-project-redaction.md` — a three-file diff is correct for
+this PR.
+
+## Out of scope
+
+- **Publishing any measurement figure.** This PR changes what the rule
+  permits and publishes nothing. The write-up that consumes it lives on
+  the `standardize-background-wait-mechanism` sibling branch; do not pull
+  it forward, and add nothing to `docs/cost-levers-considered.md`.
+- **Any per-project, per-account, or per-engagement breakdown, anywhere.**
+  Not in the plan file, the commit message, the PR body, a code comment, or
+  an illustrative example. The prohibition binds this PR's own artifacts,
+  not only future ones.
+- **A `docs/design-decisions/` entry.** Deferred per G1 until the sibling
+  branch's `test_design_decision_files.py` fix lands on `origin/main`. The
+  commit message carries the record instead: that this narrows a rule
+  applied three times, naming
+  `docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md:7`,
+  `docs/design-decisions/schedulewakeup-misapplied-documented.md:14`, and
+  `docs/cost-levers-considered.md:501`. Also cite
+  `.claude/plans/private-corpus-provenance-redaction.md` (commit `ddeb74b`,
+  PR #687) in the commit message as the mechanism's original design record.
+  It authored both the CLAUDE.md paragraph and the
+  `code-review-claude-config` P1 checklist item this PR edits. Note in the
+  commit message that its two-arm verification experiment (`:95`) concluded
+  "inherits the private half" was necessary for a "mixed aggregate" fixture
+  case — a conclusion this narrowing changes for the undecomposed case.
+  This file is a preserved historical record (Axis 3) and is not edited
+  here, distinct from the three sites above, which *applied* the rule to
+  withhold a figure rather than designed it.
+- **Amending those three sites.** Preserved records per G2.
+- **Any numeric, percentage, or ratio detector in
+  `deny-private-project-refs.sh`,** or any other hook change. It would
+  false-positive against public-only percentages already published in this
+  repo.
+- **Any other part of the redaction section.** The tracker-ID tier, the
+  blocklist tier, the remaining reviewer-discipline bullets, the
+  structural-fingerprints paragraph, and the secrets subsection are
+  untouched. In particular the structural-fingerprints paragraph must stay
+  as-is: the decomposition-only test relies on it to cover the
+  project-shape channel.
+- **`docs/private-project-redaction.md`** — no edit. Row 3 verified it
+  carries no copy of the provenance sentence, so there is nothing to
+  convert into a cross-reference.
+- **`README.md:427-435`** — no edit. Row 5: it is a one-line tier summary
+  that already defers to root `CLAUDE.md` for the definition.
+- **`claude-skills/skills/error-mode-analysis/SKILL.md:99,103`** — no edit.
+  It restates the structural-fingerprints paragraph and the hook's tier
+  coverage, neither of which this PR changes.
+- **A test pinning the new rule's wording or the two files' agreement.**
+  Rejected above; the enforcing mechanism for this convention is the
+  `/code-review` project-layer P1 item.
+
+## Amendment: secrets-subsection actor fix (PR #928 review, round 2)
+
+A `plan-architect` consult, dispatched per the engineer's explicit
+request rather than a routine code-review trigger, found an actor
+ambiguity in the pooled-figure remediation line: "ask the owner, then
+rewrite history" reads as instructing the agent to run the rewrite. The
+same ambiguity predates this PR in `CLAUDE.md:176-177`'s
+secrets-remediation line, "ask the owner to rotate it *then* rewrite
+history." The engineer authorized folding a matching one-sentence fix
+into this PR rather than deferring it. This supersedes Out of scope's
+"the secrets subsection are untouched" for that one sentence only — the
+rest of the subsection, and the structural-fingerprints paragraph,
+remain untouched as originally scoped.
+
+## Amendment: approval gate replaces the four-check gauntlet (PR #928 review, round 3)
+
+A further cumulative-review round on PR #928 found the "Before
+publishing, check four things" enumeration in
+`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement" was itself the source of repeated `ciso-reviewer`
+findings: each round's fix to one check opened a new attack surface
+the next round's review caught, a compounding-defensive-layers pattern
+CLAUDE.md's own "wrong-foundation tell" names directly. A
+`plan-architect` consult, dispatched per the engineer's explicit
+request rather than a routine code-review trigger, confirmed the
+enumeration itself as the wrong foundation — scoped specifically to
+the four checks, not to the two closed scope lists ("what may be
+counted" and "how it may be reported"), which the consult found sound
+as written.
+
+The engineer adopted the consult's recommended fix: replace the
+four-check gauntlet with a human-approval gate. An agent proposes a
+figure, the exact command or script that produced it, and the
+destination artifact; the owner approves that specific figure before
+it ships; absent approval, don't publish. The gate is figure-scoped
+rather than artifact-scoped, so it binds every artifact a figure could
+land in without needing its own enumeration. Two of the four retired
+checks — the correlated-proxy check and the repeated-publication-trend
+check — had assigned evaluation to the agent despite requiring
+knowledge of the real-world engagement calendar the agent structurally
+does not have; the approval gate moves that judgment to the owner, who
+does.
+
+This supersedes the "Amendment: length reduction" section's
+characterization of what the pooled-measurement section in
+`docs/private-project-redaction.md` contains: that amendment moved the
+four-check procedure, the citation requirement, and the remediation
+path into the new doc section; this amendment replaces most of what
+was moved with the approval-gate paragraph above. The scope list and
+the remediation paragraph (adjusted only for the same secrets-subsection
+actor-clause fix as the prior amendment) remain as that amendment left
+them.
+
+## Amendment: composition closure and citation form (PR #928 review, round 4)
+
+A `/code-review` round on the round-3 rewrite spawned `ciso-reviewer`
+against the approval-gate implementation. It returned three findings.
+Two — the approval sentence's grammatical binding to the figure alone
+rather than the (figure, artifact) pair, and "cited owner approval"
+having no defined evidentiary form — were straightforward wording
+fixes applied directly to the Approval gate paragraph: approval now
+scopes to a specific artifact and needs a fresh proposal for a
+different one, and a citation must be a durable, independently-checkable
+record, not a narrative claim.
+
+The third — that round 3's deletion removed the retired four checks'
+search methodology along with the checks themselves, leaving
+cross-artifact and arithmetic-reconstruction risk uncovered even
+though (unlike the two checks round 3's own rationale addressed) those
+two need no real-world engagement-calendar knowledge to catch — went
+to a second `plan-architect` consult rather than a direct fix, since
+reinstating search machinery risked recreating the mechanism round 3
+deliberately cut. The consult's verdict: round 3 over-executed its own
+rationale by two checks, but the gap isn't a missing search — it's a
+missing closure property. The "how it may be reported" scope list
+stated per-figure limits with nothing binding what two permitted
+figures compose to, which fails within a single proposal, not only
+across sessions. The fix adopted is a composition-closure bullet
+appended to that list (published figures are bound by what they
+compose to, not only what each states alone) plus a disclosure
+sentence in the Approval gate paragraph (the proposal names any prior
+publication of the same or a composing statistic found, and where the
+agent looked — input to the owner's decision, not a clearance).
+
+The consult explicitly rejected two alternatives: a published-figures
+ledger (this repo's `design-decisions.md` already rules out a
+hand-maintained index, citing `docs/case-studies.md`'s index as a
+precedent for going stale), and barring raw count totals outright
+(guts the carve-out for two of its three motivating withholding
+sites, both of which withhold counts specifically).
+
+**Forward tripwire, recorded per the consult's own request, narrowed in
+round 5 below and again in round 6:** the two composing shapes above —
+rate × count, and successive whole-period figures — are settled as rule
+text. A future round proposing to reword either shape's rule text is
+the compounding-layers pattern recurring, not a new gap. A report that
+a specific already-published figure actually violates one of the two
+settled shapes is not rule-patch churn — it is a compliance finding and
+is always evaluated on its own facts, never dismissed by this tripwire.
+A structurally different composing shape neither example covers is
+likewise a new finding, not a recurrence, and gets evaluated on its own
+merits.
+
+The consult separately flagged, as a question only the engineer can
+settle and explicitly out of scope for this PR: whether
+`docs/cost-levers-considered.md:509-512`'s published "Mean $/PR fell
+47.5% ($49.55→$26.01, pooled n=19 before / n=49 after)" is itself an
+instance of the reconstruction shape the composition clause now bars.
+Not evaluated or edited here — Axis 3 (preserved record) and this
+plan's Out of scope both apply regardless of the answer; raised to the
+engineer directly, not resolved in this PR.
+
+## Amendment: computation-boundary, checklist-completeness, and approval-identity gaps (PR #928 review, round 5)
+
+A fresh, unnarrowed cumulative `/code-review` pass — reading the whole
+PR diff as one artifact rather than any single round's delta —
+spawned `ciso-reviewer` against the full four-round result. It
+returned a Foundation concern plus three findings, all on axes none of
+the prior four rounds had touched:
+
+- **Computation-boundary gap.** All four prior rounds hardened what
+  gets *published*; none constrained what the agent may *read* to
+  compute the figure in the first place. As written, "cite the command
+  or script that produced it" was satisfiable by a direct read over raw
+  private-project transcript content, which is a materially larger
+  exposure (raw private content sitting in the computing agent's own
+  context) than anything the publication-side rules address. Fixed by
+  requiring the cited command or script to itself be an aggregation
+  boundary — it may read the mixed corpus internally, but its output to
+  the agent is the rounded pooled figure only, never per-session or
+  per-project raw content.
+- **Checklist-completeness gap.** The `code-review-claude-config`
+  P1 item — the sole per-commit review trigger for this reviewer-
+  discipline-only tier — named only two of the doc's roughly six
+  disqualifying shapes (decomposition, raw total) explicitly, leaving
+  the composition-closure, cadence, and time-series bars reachable only
+  by a reviewer who re-reads the full doc from memory. Fixed by naming
+  all the disqualifying shapes explicitly in the checklist item.
+- **Approval-identity gap.** The approval gate's citation requirement
+  never bound the citation to the owner's own identity — "a durable,
+  checkable link" was satisfiable by a link to any commenter on this
+  public repo, including an external contributor citing their own
+  comment. Fixed by requiring the citation to come from the owner's own
+  account, in both the doc and the SKILL.md checklist item.
+- **Tripwire overreach.** The round-4 forward tripwire, as worded,
+  pre-labeled *any* future finding touching the composition clause's
+  boundary as compounding-layers noise, regardless of the finding's
+  actual content — collapsing "another patch to an already-settled
+  shape" (correctly dismissible) with "a structurally new composing
+  shape neither existing example covers" (a genuine finding). Narrowed
+  above to dismiss only re-patches of the two settled shapes.
+
+**On the reviewer's own meta-observation** (that the four-round trail's
+shape — retire an enumeration, re-add an enumerated bullet to cover
+what the retirement opened, then a tripwire trying to foreclose a fifth
+round — is itself the compounding-layers pattern recurring at the meta
+level): evaluated and rejected as the frame for this round's fixes. The
+four findings above name four axes none of the prior rounds
+touched — input-side computation, checklist citation completeness,
+approver identity, and process-instruction scope — rather than a fifth
+iteration on the same output-composition axis rounds 3 and 4 already
+settled. None reinstates machinery a prior round deliberately removed,
+and none adds a mechanism heavier, more privileged, or wider in scope
+than what the diff already carries; each is a bounded textual addition
+or narrowing within an already-in-scope sentence. Per `code-review`'s
+own new-primitive-route gate, none of the four fixes qualifies for a
+`plan-architect` consult on that basis. The genuinely closest call is
+the computation-boundary fix, since it touches a dimension no prior
+round named at all — resolved as in-scope because the doc already
+states a citation requirement ("cite the command or script") that this
+round tightens, not a new implementation task; the actual measurement
+tooling remains deferred to the `standardize-background-wait-mechanism`
+sibling branch, unchanged from this plan's original Out of scope.
+
+## Amendment: fix-verification pass and a deliberate stop (PR #928 review, round 6)
+
+A fix-verification `ciso-reviewer` pass, checking whether round 5's four
+fixes actually closed the gaps they targeted, returned `[BLOCKER] None`
+and four `[CONCERN]`-level findings: (1) the computation-boundary
+sentence sets no minimum cohort size, so a query narrowed to exactly
+one private-engagement session could pass through an "aggregation"
+function and remain per-project in substance; (2) "the owner's own
+account" names a requirement with no stated, reviewer-resolvable
+reference value to check a citation against; (3) the round-5 tripwire's
+"another patch to either shape" phrasing could be read to dismiss a
+genuine compliance finding, not only a proposed rule-text reword; (4)
+the checklist's citation check confirms a source is cited, not that
+the cited script actually satisfies the new aggregation-boundary
+property. The reviewer's own report names (3) and (4) as the same
+enforceability-gap pattern its prior round already found, reappearing
+one layer down.
+
+Two of the four are fixed here: (3) is a wording ambiguity in text this
+same session wrote in round 5, costs nothing to disambiguate, and
+introduces no new mechanism — fixed above by separating "reword the
+settled rule text" (dismissible) from "a compliance finding against the
+settled rule" (never dismissible). (4) is folded into acknowledging the
+same limit that findings (1) and (2) hit directly: this control is
+documented as reviewer discipline, not a hook, from its very first
+sentence, and a checklist line cannot make "open the script and verify
+its behavior" mechanically checkable any more than "cite the command"
+already was — both rest on the same good-faith reviewer act, so adding
+a second instruction to perform it is not a new safeguard, only a
+repetition of the existing one.
+
+(1) and (2) are deliberately not fixed, for a reason distinct from (4):
+each names a genuine gap, but closing it requires something a wording
+change cannot supply. A cohort-size floor needs an actual number, and
+no source — vendor doc, protocol spec, or this repo's own established
+convention — grounds what that number should be; inventing one is a
+policy judgment about how much anonymity a given pool size buys, not a
+textual precision fix, and is the engineer's call, not this session's.
+A resolvable identity reference for "the owner's own account" means
+recording a specific person's account identity in a public security
+policy document, which is a content decision about what to publish
+about a real person, not a wording tightening — also the engineer's
+call.
+
+Stopping here, rather than continuing to a seventh round, is itself the
+decision this amendment records: the reviewer's own verdict carries no
+blocker, two of its four findings are explicitly the same
+enforceability-gap shape recurring, and the control being hardened has
+been reviewer-discipline-only since its first sentence — no round of
+this policy's prose can convert it into a mechanically-enforced gate.
+Continuing to iterate wording against an adversarial security review
+that will, by construction, always be able to name one more residual
+enforceability gap in an advisory control is the compounding-layers
+pattern this whole plan file's round-3 amendment already diagnosed,
+recurring at a third level. Findings (1) and (2) are left open for the
+engineer to resolve directly, not silently dropped.

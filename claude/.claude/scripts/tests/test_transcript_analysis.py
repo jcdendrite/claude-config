@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import os
+import random
 import re
 import shutil
 import stat
@@ -163,6 +164,46 @@ def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
     assert tmp_path / "projects" == scope_mod.PROJECTS_DIR
 
 
+def test_scope_import_does_not_crash_when_home_unset(monkeypatch):
+    """Importing transcript_analysis.scope must not raise even when $HOME is
+    unset/empty and CLAUDE_CONFIG_DIR is not set -- PROJECTS_DIR resolves
+    lazily, on first access, not at import time, so an importer that never
+    touches PROJECTS_DIR (e.g. analyze-context.py's own `--help` path) never
+    pays for a $HOME-unset resolution failure it doesn't need to hit."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)  # must not raise
+
+
+def test_resolve_scan_roots_default_root_when_home_unset(monkeypatch, tmp_path):
+    """resolve_scan_roots' own internal `PROJECTS_DIR` references -- converted
+    to `_projects_dir()` calls so they go through PEP 562 lazy resolution --
+    must still resolve correctly when $HOME is unset. A bare-name reference
+    left unconverted after PROJECTS_DIR became a lazy module attribute would
+    raise NameError here: a bare global reference inside the module's own
+    function bodies never reaches scope.py's __getattr__, unlike external
+    `scope.PROJECTS_DIR` attribute access.
+    """
+    monkeypatch.setenv("HOME", "")
+    config_dir = tmp_path / "active-account"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_resolve_roots_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)
+
+    roots = scope_mod.resolve_scan_roots(argparse.Namespace())
+
+    assert roots == [config_dir / "projects"]
+
+
 class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
     distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
@@ -242,12 +283,13 @@ class TestConfigDirFlag:
         assert "--config-dir" in err
         assert "buckets" in err
 
-    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_WITH_OWN_CONFIG_DIR)
+    @pytest.mark.parametrize("subcommand", _mod.scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR)
     def test_top_level_config_dir_refused_for_subcommands_with_their_own(
         self, monkeypatch, tmp_path, capsys, subcommand
     ):
-        """Every subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR resolves its
-        own scan roots via its own --config-dir (_resolve_cost_roots ->
+        """Every subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        refuses the top-level --config-dir outright. Most resolve their own
+        scan roots via their own --config-dir (_resolve_cost_roots ->
         config_dir() + declared_transcript_roots()), never reading the
         module-global PROJECTS_DIR this top-level flag reassigns. Letting the
         top-level flag through silently would reassign an unused global while
@@ -280,6 +322,23 @@ class TestConfigDirFlag:
         err = capsys.readouterr().err
         assert "--config-dir" in err
         assert subcommand in err
+
+    def test_message_recommends_the_subcommands_own_flag_when_it_has_one(self, monkeypatch, tmp_path, capsys):
+        """Regression coverage for the other branch of main()'s hasattr
+        check: a subcommand that DOES register its own --config-dir (e.g.
+        "cost") must still get the "use that instead" recommendation --
+        cost-counts's own no-flag test above only pins the branch that
+        omits it."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "use that instead: transcript-analysis.py cost --config-dir PATH" in err
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +742,102 @@ class TestBuckets:
         assert cols["Proj"] == "2"
         assert cols["Sess"] == "2"
 
+    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_three_worktree_dirs_into_one_main_repo(self, tmp_path, monkeypatch, capsys):
+        """Cardinality beyond a single worktree pair: a main checkout plus two
+        differently-suffixed worktree dirs off the same repo all collapse to
+        Proj == 1."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree_x = projects / "-home-u-repo-a--claude-worktrees-feat-x"
+        proj_worktree_y = projects / "-home-u-repo-a--claude-worktrees-feat-y"
+        proj_main.mkdir(parents=True)
+        proj_worktree_x.mkdir(parents=True)
+        proj_worktree_y.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_x / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_y / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "3"
+
+    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount Proj."""
+        projects = tmp_path / "projects"
+        proj_alice = projects / "-home-alice-repo"
+        proj_bob = projects / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_sibling = projects / "-home-v-repo-a"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_sibling / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "3"
+
+
+class TestProjectFamily:
+    def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
+        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+
+    def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
+        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+
 
 # ---------------------------------------------------------------------------
 # fail-seq end-to-end (core parsing logic, via shared helper)
@@ -827,6 +982,22 @@ def _subagent_mix_args(
         "reprice_as": reprice_as,
         "extra_config_dirs": extra_config_dirs,
     })()
+
+
+def _cost_counts_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    branches: str | None = None,
+    this_repo_slugs: list[str] | None = None,
+) -> object:
+    """this_repo_slugs, when given, pre-seeds args._this_repo_slugs -- the
+    cache _resolve_project_scope reads first (see its own docstring), so a
+    direct cmd_cost_counts() call under --this-repo never shells out to git."""
+    attrs = {"projects": projects, "this_repo": this_repo, "branches": branches}
+    if this_repo_slugs is not None:
+        attrs["_this_repo_slugs"] = this_repo_slugs
+    return type("A", (), attrs)()
 
 
 class TestSubagentMix:
@@ -1722,6 +1893,254 @@ class TestRepoTrackedAgentTypeNames:
         assert "code-writer" in _mod._repo_tracked_agent_type_names()
 
 
+class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:
+    """cost-counts prints a disclosed agent-type label raw with no escaping
+    step, on the assumption every tracked agents/*.md stem already matches
+    _AGENT_TYPE_NAME_RE's charset. A future filename outside this charset
+    must fail this test, not silently reach a GFM table cell raw once that
+    agent is dispatched."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def test_every_tracked_agent_stem_matches_the_charset(self):
+        names = _mod._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
+        assert names, "expected at least one repo-tracked agent definition"
+        for name in names:
+            assert _mod._AGENT_TYPE_NAME_RE.fullmatch(name), name
+
+
+class TestSpawnCountsByAgentType:
+    """_spawn_counts_by_agent_type: main-thread-only raw spawn counts,
+    feeding cost-counts's ### Subagent spawns table."""
+
+    def test_spawn_nested_inside_a_subagent_is_excluded(self):
+        """A spawn dispatched from inside another agent's own transcript
+        (isSidechain: true) is not counted. Only main-thread dispatches
+        decide this count, mirroring cmd_subagent_mix's own exclusion order
+        (see _spawn_counts_by_agent_type's own docstring)."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
+        ]
+        counts = _mod._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
+        assert counts == {"staff-sdet": 1}
+
+
+class TestCostCounts:
+    """cost-counts: per-branch review-round and subagent-spawn counts for a
+    public PR body -- counts only, no dollar attribution."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_agent_type_cache(self):
+        """Same process-global lru_cache isolation as
+        TestRepoTrackedAgentTypeNames -- a monkeypatched
+        _REPO_AGENT_DEFINITIONS_DIR from one test here must never leak a
+        stale cached result into the next."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _isolate_allowlist(self, tmp_path, monkeypatch, tracked: list[str]) -> None:
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def test_this_repo_required(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=False, branches="feat"))
+        assert exc_info.value.code == 2
+        assert "--this-repo" in capsys.readouterr().err
+
+    def test_non_default_projects_refused(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, projects="some-glob", branches="feat"))
+        assert exc_info.value.code == 2
+        assert "--projects" in capsys.readouterr().err
+
+    def test_branches_required(self, fake_projects, capsys):
+        """--branches is refused at runtime, inside cmd_cost_counts, not made
+        argparse-required -- an argparse-level requirement would fire during
+        parse_args(), before main()'s own top-level --config-dir refusal
+        check ever runs."""
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
+        assert exc_info.value.code == 2
+        assert "--branches" in capsys.readouterr().err
+
+    def test_review_round_table_renders_actual_round_counts(self, fake_projects, capsys):
+        """Every other TestCostCounts fixture seeds spawn records only, so
+        round_counts is all-zero in every one of them. This test seeds a
+        real round-opening record (a Skill tool_use matching a
+        REVIEW_SKILLS member) and asserts the ### Review rounds table's
+        actual rendered row values and caption, through the real
+        cmd_cost_counts rendering path."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
+        assert "| plan-review | 0 |" in out
+        assert "| ready-for-review | 0 |" in out
+        assert "| **total** | **1** |" in out
+        assert _mod._COST_COUNTS_ROUNDS_CAPTION in out
+
+    def test_untracked_subagent_type_is_withheld_under_this_repo(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "totally-untracked-agent")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "staff-sdet" in out
+        assert "totally-untracked-agent" not in out
+        assert "(withheld — untracked agent type)" in out
+
+    def test_withheld_row_stays_last_even_when_its_total_exceeds_a_disclosed_row(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """The withheld row is appended after the (-count, name) sort, never
+        merged into it -- a withheld total that outweighs every disclosed
+        row's own count must still render last, not sort ahead of a named
+        row and get mistaken for one (see
+        _partition_spawn_counts_by_disclosure's own docstring)."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "untracked-agent-a")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "untracked-agent-b")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a4", "untracked-agent-c")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert out.index("| staff-sdet | 1 |") < out.index("(withheld — untracked agent type)")
+
+    def test_backstop_assertion_fires_on_bypassed_partition_step(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        """cost-counts's own render-time backstop: a future regression to a
+        _stype_label-style direct reuse (bypassing
+        _partition_spawn_counts_by_disclosure's own allowlist gate) must
+        fail loudly, not silently disclose an untracked subagent_type."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        monkeypatch.setattr(
+            _mod, "_partition_spawn_counts_by_disclosure",
+            lambda raw_counts: [("some-untracked-agent-type", 1)],
+        )
+        with pytest.raises(AssertionError) as exc_info:
+            _mod.cmd_cost_counts(_cost_counts_args(
+                this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+            ))
+        assert "some-untracked-agent-type" not in str(exc_info.value)
+
+    def test_more_than_five_distinct_agent_types_all_render(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """This is the test that would have caught a top-5-scrape
+        reimplementation: cmd_subagent_mix's own table truncates to the top
+        5 spawn types per branch, but cost-counts must not."""
+        tracked = [f"agent-{i}" for i in range(6)]
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=tracked)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use(f"a{i}", name)])
+            for i, name in enumerate(tracked)
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        for name in tracked:
+            assert name in out
+
+    def test_zero_spawns_renders_the_sentence_not_a_table(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "No subagent spawns found in scope." in out
+        assert "| Agent type | Spawns |" not in out
+
+    def test_no_branch_name_appears_anywhere_in_output(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="my-secret-branch-name", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="my-secret-branch-name", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "my-secret-branch-name" not in out
+
+    def test_second_declared_root_contributes_nothing(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """cost-counts always resolves to [config_dir() / "projects"] alone
+        -- a populated ~/.claude/transcript-config-dirs must not pull
+        another account's activity into a public PR body's counts."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        declared_root = tmp_path / "declared-root"
+        declared_proj = declared_root / "projects" / "-home-user-other-repo"
+        declared_proj.mkdir(parents=True)
+        _write_jsonl(declared_proj / "sess-other.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "staff-sdet")]),
+        ])
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{declared_root}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| staff-sdet | 1 |" in out
+
+    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys):
+        """cost-counts registers no --config-dir flag of its own, unlike
+        every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member -- the
+        shared refusal message must not recommend a flag that doesn't exist
+        on its own parser."""
+        other_account = tmp_path / "other-account"
+        (other_account / "projects").mkdir(parents=True)
+        monkeypatch.setattr(
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost-counts"],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "cost-counts" in err
+        assert "use that instead" not in err
+        assert "with no override" in err
+
+
 class TestSubagentMixMultiRoot:
     """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
 
@@ -1896,8 +2315,8 @@ class TestSubagentMixMultiRoot:
         test in this class uses fake_projects, whose active root is always
         a path-prefix ancestor of any fake_config_dir_factory root and
         therefore always sorts first regardless — that shared setup cannot
-        catch this regression class, the same blind spot PR #603's own
-        pre-fix edit-format test had."""
+        catch this regression class, the same blind spot the pre-fix
+        edit-format test in PR #603 had."""
         monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
@@ -2313,21 +2732,6 @@ class TestPrLink:
         assert "77" in out
         assert "feat-pr" in out
 
-    def test_missing_gh_binary_shows_error_marker(self, fake_projects, monkeypatch, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat-x"),
-        ])
-
-        def fake_run(*_, **__):
-            raise FileNotFoundError("gh not found")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        args = type("A", (), {"repo": "owner/repo", "branches": "feat-x", "author": "", "projects": "*", "this_repo": False})()
-        _mod.cmd_pr_link(args)
-        out = capsys.readouterr().out
-        assert "gh-err" in out or "?" in out
-
     def test_branch_with_no_pr_shows_none(self, fake_projects, monkeypatch, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-4-6", branch="no-pr-branch"),
@@ -2349,6 +2753,329 @@ class TestPrLink:
         _mod.cmd_pr_link(args)
         out = capsys.readouterr().out
         assert "none" in out
+
+    @staticmethod
+    def _recording_run(origin_url: str, gh_stdout_by_verb: dict[str, str] | None = None):
+        """subprocess.run double answering `git remote get-url origin` with
+        origin_url and every gh call from gh_stdout_by_verb (keyed on
+        "list" / "issues" / "pulls"); returns (fake_run, recorded_gh_argvs)."""
+        recorded: list[list[str]] = []
+        stdout_by_verb = gh_stdout_by_verb or {"list": json.dumps([{"number": 5}]), "issues": "", "pulls": ""}
+
+        def fake_run(cmd, *_, **__):
+            if cmd[:3] == ["git", "remote", "get-url"]:
+                return subprocess.CompletedProcess(cmd, 0, origin_url + "\n", "")
+            recorded.append(list(cmd))
+            joined = " ".join(cmd)
+            verb = "list" if "list" in cmd else "issues" if "issues" in joined else "pulls"
+            return subprocess.CompletedProcess(cmd, 0, stdout_by_verb[verb], "")
+
+        return fake_run, recorded
+
+    @staticmethod
+    def _pr_link_args(**overrides):
+        fields = {"repo": None, "branches": "feat-y", "author": "", "projects": "*", "this_repo": False}
+        fields.update(overrides)
+        return type("A", (), fields)()
+
+    def test_omitted_repo_derives_host_qualified_slug_from_origin(self, fake_projects, monkeypatch):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+        fake_run, recorded = self._recording_run("git@ghe.example.com:Acme/Widget.git")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args())
+
+        pr_list_argv = next(argv for argv in recorded if "list" in argv)
+        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "ghe.example.com/acme/widget"
+        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
+        assert api_argvs
+        for argv in api_argvs:
+            assert argv[argv.index("--hostname") + 1] == "ghe.example.com"
+            assert any(part.startswith("repos/acme/widget/") for part in argv)
+
+    def test_omitted_repo_derives_host_qualified_slug_from_github_com_origin(self, fake_projects, monkeypatch):
+        """github.com origin, not just a GHE host: _gh_host_qualified_repo
+        host-qualifies unconditionally (see TestGhHostQualifiedRepo), so
+        --repo carries "github.com/" the same way a GHE origin's host does."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+        fake_run, recorded = self._recording_run("git@github.com:Acme/Widget.git")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args())
+
+        pr_list_argv = next(argv for argv in recorded if "list" in argv)
+        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "github.com/acme/widget"
+        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
+        assert api_argvs
+        for argv in api_argvs:
+            assert argv[argv.index("--hostname") + 1] == "github.com"
+            assert any(part.startswith("repos/acme/widget/") for part in argv)
+
+    def test_supplied_repo_wins_over_origin(self, fake_projects, monkeypatch):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+        fake_run, recorded = self._recording_run("git@ghe.example.com:Acme/Widget.git")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="other/thing"))
+
+        pr_list_argv = next(argv for argv in recorded if "list" in argv)
+        assert pr_list_argv[pr_list_argv.index("--repo") + 1] == "other/thing"
+        assert all("--hostname" not in argv for argv in recorded)
+        api_argvs = [argv for argv in recorded if argv[:2] == ["gh", "api"]]
+        assert api_argvs
+        for argv in api_argvs:
+            assert any(
+                part.startswith("repos/other/thing/issues/") or part.startswith("repos/other/thing/pulls/")
+                for part in argv
+            )
+            assert "--hostname" not in argv
+
+    def test_no_usable_origin_names_repo_flag_as_escape_hatch(self, fake_projects, monkeypatch, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            raise subprocess.CalledProcessError(128, cmd)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_link(self._pr_link_args())
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("pr-link:")
+        assert "--repo" in err
+
+    def test_unrecognizable_origin_names_repo_flag_as_escape_hatch(self, fake_projects, monkeypatch, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+        fake_run, _recorded = self._recording_run("not a remote")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_link(self._pr_link_args())
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("pr-link:")
+        assert "--repo" in err
+
+    @pytest.mark.parametrize("stderr,expected_kind", [
+        ("gh: Not logged into any GitHub hosts. Run gh auth login", "auth"),
+        ("none of the git remotes configured for this repository correspond to the GH_HOST environment variable",
+         "host_mismatch"),
+        ("API rate limit exceeded for user", "rate_limit"),
+        ("GraphQL: Could not resolve to a Repository with the name 'no/such-repo'.", "network or unrecognized"),
+    ])
+    def test_gh_failure_prints_classified_diagnostic_without_raw_stderr(
+        self, fake_projects, monkeypatch, capsys, stderr, expected_kind,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr=stderr)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="no/such-repo"))
+        captured = capsys.readouterr()
+        assert "gh-err" in captured.out
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert diagnostic_lines == [f"pr-link: gh pr list failed for branch feat-y ({expected_kind})"]
+        assert "no/such-repo" not in captured.err
+
+    def test_gh_pr_list_unparseable_stdout_prints_unparseable_gh_output_diagnostic(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """gh pr list succeeding (check=True passes) but emitting non-JSON
+        stdout -- the json.JSONDecodeError path, distinct from the
+        CalledProcessError-shaped failures above."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            return subprocess.CompletedProcess(cmd, 0, "not json", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        assert "gh-err" in captured.out
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-y (unparseable gh output)"]
+
+    def test_missing_gh_binary_prints_gh_not_found_diagnostic(self, fake_projects, monkeypatch, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(*_, **__):
+            raise FileNotFoundError("gh")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        assert "gh-err" in captured.out
+        assert "gh not found" in captured.err
+
+    def test_gh_pr_list_timeout_prints_timeout_diagnostic(self, fake_projects, monkeypatch, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        assert "gh-err" in captured.out
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-y (timeout)"]
+
+    def test_first_branch_gh_failure_does_not_abort_remaining_branches(self, fake_projects, monkeypatch, capsys):
+        """The per-branch loop degrades and continues: a gh pr list failure on
+        the first branch must not prevent the second branch's own row."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat-fail"),
+            _asst("claude-sonnet-4-6", branch="feat-ok"),
+        ])
+
+        def fake_run(cmd, *_, **__):
+            if "feat-fail" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 9}]), "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo", branches="feat-fail,feat-ok"))
+        captured = capsys.readouterr()
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert diagnostic_lines == ["pr-link: gh pr list failed for branch feat-fail (rate_limit)"]
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-ok")
+        assert cols["PR"] == "9"
+
+    def test_comment_count_failure_prints_diagnostic_and_keeps_minus_one_cells(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
+        assert cols["PR"] == "5"
+        assert cols["IssueCmt"] == "-1"
+        assert cols["ReviewCmt"] == "-1"
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert len(diagnostic_lines) == 1
+        assert "gh api comments" in diagnostic_lines[0]
+
+    def test_pulls_comment_count_failure_after_issues_success_keeps_minus_one_cells(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """The issues call succeeding while only the pulls call fails still
+        degrades both counters to -1 -- the try block's own shared except
+        clause, not per-call recovery."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
+            if "issues" in " ".join(cmd):
+                return subprocess.CompletedProcess(cmd, 0, "alice\n", "")
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="API rate limit exceeded")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
+        assert cols["PR"] == "5"
+        assert cols["IssueCmt"] == "-1"
+        assert cols["ReviewCmt"] == "-1"
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert len(diagnostic_lines) == 1
+        assert "gh api comments" in diagnostic_lines[0]
+
+    def test_comment_count_os_error_prints_diagnostic_and_keeps_minus_one_cells(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """A bare OSError at the comments call site (e.g. the gh binary
+        vanishing mid-run) degrades to -1 the same as CalledProcessError or
+        TimeoutExpired, rather than propagating uncaught."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
+            raise OSError("gh binary vanished mid-call")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
+        assert cols["PR"] == "5"
+        assert cols["IssueCmt"] == "-1"
+        assert cols["ReviewCmt"] == "-1"
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert len(diagnostic_lines) == 1
+        assert "gh api comments" in diagnostic_lines[0]
+
+    def test_comment_count_timeout_prints_diagnostic_and_keeps_minus_one_cells(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+
+        def fake_run(cmd, *_, **__):
+            if "list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": 5}]), "")
+            raise subprocess.TimeoutExpired(cmd, _mod._GH_CALL_TIMEOUT_S)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo"))
+        captured = capsys.readouterr()
+        cols = _table_cols(captured.out, header_contains="Branch", row_contains="feat-y")
+        assert cols["PR"] == "5"
+        assert cols["IssueCmt"] == "-1"
+        assert cols["ReviewCmt"] == "-1"
+        diagnostic_lines = [ln for ln in captured.err.splitlines() if ln.startswith("pr-link:")]
+        assert diagnostic_lines == ["pr-link: gh api comments failed for branch feat-y (timeout)"]
+
+    @staticmethod
+    def _kwarg_recording_run(pr_list_stdout: str, issues_stdout: str, pulls_stdout: str):
+        """subprocess.run spy recording each call's kwargs, keyed on gh verb
+        ("list" / "issues" / "pulls"), so a test can assert timeout= was
+        passed at every call site."""
+        recorded: dict[str, dict] = {}
+
+        def fake_run(cmd, *_, **kwargs):
+            joined = " ".join(cmd)
+            verb = "list" if "list" in cmd else "issues" if "issues" in joined else "pulls"
+            recorded[verb] = kwargs
+            stdout = {"list": pr_list_stdout, "issues": issues_stdout, "pulls": pulls_stdout}[verb]
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+        return fake_run, recorded
+
+    def test_every_gh_call_passes_configured_timeout(self, fake_projects, monkeypatch):
+        """Guards the timeout= kwarg on all three subprocess.run call sites
+        (gh pr list, gh api issues comments, gh api pulls comments)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat-y")])
+        fake_run, recorded = self._kwarg_recording_run(
+            pr_list_stdout=json.dumps([{"number": 5}]), issues_stdout="alice\n", pulls_stdout="alice\n",
+        )
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_pr_link(self._pr_link_args(repo="owner/repo", author="alice"))
+
+        assert set(recorded) == {"list", "issues", "pulls"}
+        for kwargs in recorded.values():
+            assert kwargs["timeout"] == _mod._GH_CALL_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
@@ -3938,7 +4665,7 @@ class TestReviewTrace:
         records = [
             _hook_deny_current(
                 "Skill length gate: one or more SKILL.md files grew past their "
-                "per-skill limit. Reduce to the limit or fewer lines before committing."
+                "per-skill limit. Reduce to the limit before committing."
             ),
         ]
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
@@ -7764,15 +8491,20 @@ class TestCacheEfficiencyArgparseWiring:
 
 @pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
-    _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, so its sentinel check
-    (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
-    never scope.py's _resolve_cost_roots."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel. Sets
+    CLAUDE_CONFIG_DIR explicitly, rather than relying on
+    _isolate_transcript_corpus_lookups' autouse fixture landing on the same
+    literal tmp-path string by coincidence: _cost_ledger_report's sentinel
+    check goes through _config.config_enabled, which resolves config_dir via
+    _config.py's own independent binding, not _mod's -- patching _mod's
+    config_dir binding alone has no effect on it. Setting the env var instead
+    makes both _mod.config_dir() (the ledger-path resolution
+    _cost_ledger_path() reads) and _config.config_enabled()'s own resolution
+    agree on the same directory."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
-    monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
     return cfg_dir
 
 
@@ -7819,6 +8551,7 @@ def _cache_rebuild_args(
     threshold: int | None = None,
     no_redact: bool = False,
     extra_config_dirs: list[str] | None = None,
+    ttl_verdict: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -7827,6 +8560,7 @@ def _cache_rebuild_args(
         "threshold": threshold,
         "no_redact": no_redact,
         "extra_config_dirs": extra_config_dirs,
+        "ttl_verdict": ttl_verdict,
     })()
 
 
@@ -7900,6 +8634,134 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
         "uncovered_w5m": int(uncovered.group(1).replace(",", "")),
         "pooled_subagent_w5m": int(uncovered.group(2).replace(",", "")),
     }
+
+
+def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
+    """Read --ttl-verdict's own per-bucket summary line ('main: consistent
+    5m roots=N  consistent 1h roots=N  excluded (near-tie or no
+    data) roots=N  verdict=...') for one bucket."""
+    match = re.search(
+        rf"^{re.escape(origin)}: consistent 5m roots=(\d+)  consistent 1h roots=(\d+)"
+        r"  excluded \(near-tie or no data\) roots=(\d+)  verdict=(.+)$",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"ttl-verdict summary line not found for origin {origin!r}"
+    return {
+        "consistent_5m": match.group(1),
+        "consistent_1h": match.group(2),
+        "excluded": match.group(3),
+        "verdict": match.group(4),
+    }
+
+
+def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dict[str, str]:
+    """Read one per-root row from --ttl-verdict's own per-bucket table (the
+    '### {origin}' section) by its leading account label. _table_cols can't
+    be reused directly since this section's header repeats once per origin.
+    Matching on the exact leading token, not a startswith prefix, avoids
+    "account-1" matching "account-10"."""
+    lines = out.splitlines()
+    section_start = lines.index(f"### {origin}")
+    section_end = len(lines)
+    for i in range(section_start + 1, len(lines)):
+        if lines[i].startswith("### ") or lines[i].startswith(f"{origin}: consistent"):
+            section_end = i
+            break
+    section_lines = lines[section_start:section_end]
+    header_line = next(ln for ln in section_lines if ln.startswith("Root"))
+    labels = header_line.split()
+    rows = [ln for ln in section_lines if ln.split() and ln.split()[0] == root_label]
+    assert len(rows) == 1, f"row not found for {root_label!r} in {origin!r} section: {rows!r}"
+    return dict(zip(labels, rows[0].split(), strict=False))
+
+
+def _extract_ttl_verdict_tier_split_line(out: str, root_label: str) -> dict[str, str] | None:
+    """Parse one root's 'tier-split {label}: 5m-slice favors X, 1h-slice
+    favors Y (agree|disagree)' line, if present. Returns None when the
+    root has no tier-split line (not a mixed root)."""
+    match = re.search(
+        rf"^tier-split {re.escape(root_label)}: 5m-slice favors (\w+), "
+        rf"1h-slice favors (\w+) \((\w+)\)$",
+        out, re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return {
+        "favors_5m_slice": match.group(1),
+        "favors_1h_slice": match.group(2),
+        "agreement": match.group(3),
+    }
+
+
+def _ttl_verdict_5m_tier_adopt_records() -> list[dict]:
+    """Record list for a clean 5m-tier root that reaches --ttl-verdict's
+    'adopt' verdict (W5m=1,000,000, X=500,000, comfortably clearing
+    margin), shared by test_main_bucket_5m_tier_root_reaches_adopt and by
+    root_a in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:06:00.000Z", request_id="m2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=300_000,
+            ts="2026-08-01T10:12:00.000Z", request_id="m3",
+        ),
+    ]
+
+
+def _ttl_verdict_1h_tier_non_wash_disagreement_records() -> list[dict]:
+    """Record list for a 1h-tier root whose dollar accounting and
+    tiebreaker disagree (W1h=1,000,000, primary Z=800,000, favors 1h,
+    does not clear), shared by
+    test_1h_tier_root_declines_on_a_non_wash_disagreement and by root_b in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
+        _priced(
+            "claude-sonnet-5", cache_read=800_000,
+            ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=400_000,
+            ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
+        ),
+    ]
+
+
+def _ttl_verdict_near_tie_mixed_root_records(request_id_prefix: str = "a") -> list[dict]:
+    """Record list for a mixed root at share 0.870, below
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN (5m 500,000 @10:00, 5m
+    500,000 @10:06, 1h 150,000 @10:13). request_id_prefix keeps request
+    IDs unique when this shape is reused for a second bucket or origin
+    in the same test's output."""
+    return [
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:00:00.000Z", request_id=f"{request_id_prefix}1",
+        ),
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:06:00.000Z", request_id=f"{request_id_prefix}2",
+        ),
+        _priced(
+            "claude-sonnet-5", ephemeral_1h=150_000,
+            ts="2026-08-01T10:13:00.000Z", request_id=f"{request_id_prefix}3",
+        ),
+    ]
+
+
+def _ttl_verdict_dominant_1h_mixed_root_records() -> list[dict]:
+    """Record list for a mixed root at share 0.800, below the dominance
+    threshold and excluded/near-tie (5m 200,000 @10:00, 1h 800,000 @10:06,
+    read 150,000 @10:12)."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:00:00.000Z", request_id="dom-1"),
+        _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="dom-2"),
+        _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="dom-3"),
+    ]
 
 
 def _tool_result_record(tool_id: str, *, ts: str, text: str = "ok") -> dict:
@@ -9682,6 +10544,28 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
             _mod._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
 
+    def test_no_redact_refused_with_ttl_verdict_and_multi_root(self, tmp_path, capsys):
+        """--ttl-verdict's own accumulation family is keyed on
+        (origin, root_ordinal), carrying the identical multi-root +
+        --no-redact leak risk as the pooled figures the sibling test above
+        covers. This needs its own test rather than an edit to the sibling
+        test, since ttl_verdict defaults to False on _cache_rebuild_args and
+        every other test in this class leaves it there."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_rebuild_report(
+                _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[root_a, root_b],
+            )
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "acct-a" not in out
+        assert "acct-b" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+
 
 class TestCacheRebuildArgparseWiring:
     def test_parses_since_threshold_and_extra_config_dirs(self):
@@ -9703,6 +10587,2090 @@ class TestCacheRebuildArgparseWiring:
         assert args.since == "7d"
         assert args.threshold == 50_000
         assert args.extra_config_dirs == ["/tmp/acct-b"]
+
+
+class TestCacheRebuildTtlVerdictArgparseWiring:
+    def test_ttl_verdict_flag_defaults_false_and_parses_true(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-rebuild"])
+        assert args.ttl_verdict is False
+
+        args = parser.parse_args(["cache-rebuild", "--ttl-verdict"])
+        assert args.ttl_verdict is True
+
+
+class TestClassifyCacheRebuildCauseIdle5mBoundaryOverride:
+    """Direct edge-value coverage for _classify_cache_rebuild_cause's
+    idle_5m_boundary_seconds override, at its own exact boundary. The
+    classifier forwards the override to _cache_rebuild_in_idle_5m_1h_band,
+    whose own class (TestCacheRebuildIdle5m1hBandPredicate) covers the band
+    edges. TestCacheRebuildTtlVerdictSensitivityBoundary covers the
+    --ttl-verdict block's wiring of the sensitivity boundary."""
+
+    def test_gap_at_the_overridden_boundary_classifies_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=60, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_IDLE_5M_1H
+
+    def test_gap_one_second_under_the_overridden_boundary_does_not_classify_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=59, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_UNEXPLAINED
+
+
+class TestCacheRebuildIdle5m1hBandPredicate:
+    """Direct edge-value coverage for _cache_rebuild_in_idle_5m_1h_band: the
+    gap test alone, [idle_5m_boundary_seconds, 3600) for a non-first call
+    with a parseable gap."""
+
+    def test_gap_at_the_default_lower_bound_is_in_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 300) is True
+
+    def test_gap_just_under_the_default_lower_bound_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 299.999) is False
+
+    def test_gap_just_under_the_upper_bound_is_in_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 3599.99) is True
+
+    def test_gap_at_the_upper_bound_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 3600) is False
+
+    def test_first_call_with_an_in_band_gap_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(True, 600) is False
+
+    def test_unparseable_gap_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, None) is False
+
+    def test_overridden_lower_bound_is_inclusive(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 60, idle_5m_boundary_seconds=60) is True
+
+    def test_gap_one_second_under_the_overridden_lower_bound_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 59, idle_5m_boundary_seconds=60) is False
+
+    def test_overridden_lower_bound_with_gap_at_the_hardcoded_upper_bound_is_out_of_band(self):
+        assert _mod._cache_rebuild_in_idle_5m_1h_band(False, 3600, idle_5m_boundary_seconds=60) is False
+
+
+class TestCacheRebuild1hTo5mDeltaPricing:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars,
+    mirroring TestCacheRebuildSwitchDeltaPricing's three cases for the
+    sibling 5m-to-1h formula -- fast-mode/US-geo multiplier parity, the
+    unpriced-model sentinel, and the reduced-cache-read-rate coefficient
+    are exercised nowhere else."""
+
+    def test_fast_mode_multiplier_applies_to_the_expiry_leg(self):
+        """A wholly idle-5m-1h-cause call (eph_1h=0, all read tokens) nets
+        1,000,000/1e6*(2.5-0.2) = $2.30 at the default rate; fast mode
+        doubles every dollar class, so this call's own delta doubles too."""
+        usage = _priced("claude-sonnet-5", cache_read=1_000_000, speed="fast")["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_delta_not_a_silent_zero(self):
+        """Mirrors the sibling's own unpriced-model contract: None, not a
+        silently priced $0, so callers can distinguish the two."""
+        usage = _priced("claude-unknown-model", ephemeral_1h=1_000_000, input=10, output=5)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-unknown-model", usage, is_idle_5m_1h_cause=False
+        )
+        assert delta is None
+        assert unpriced_tokens > 0
+
+    def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_15(self):
+        """A hardcoded (1.25 - 0.1) = 1.15 coefficient would price this
+        call's expiry leg at 1,000,000/1e6 * (12.5 - 1.0) = $11.50. The
+        correct, per-model-resolved coefficient uses Fable 5.1's own
+        reduced 0.025x cache-read multiplier (read rate $0.25, expiry
+        coefficient 12.5-0.25=12.25), giving $12.25 instead."""
+        usage = _priced("claude-fable-5-1", cache_read=1_000_000)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(12.25)
+        assert unpriced_tokens == 0
+
+
+class TestCacheRebuild1hTo5mDeltaArithmetic:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars' own
+    per-call arithmetic at, above, and below its algebraic break-even
+    (Z/W1h = 0.75/(1.25-r) ~= 0.6522 at the default rate) -- the mirror of
+    TestCacheRebuildSwitchDeltaArithmetic's own coverage for the sibling
+    5m-to-1h formula. W1h=1,150,000 (one session-start call, contributing
+    only the always-on base term) pairs with a second, idle-5m-1h-cause
+    call's own read tokens (Z) at each of the three points."""
+
+    def test_below_break_even_z_favors_dropping_to_5m(self):
+        """Z=500,000: 500,000/1,150,000 = 0.435 is well under 0.6522, so
+        dropping to 5m nets a savings (a negative, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=500_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(-0.575)
+
+    def test_exact_rational_break_even_nets_exactly_zero(self):
+        """Z=750,000 is the exact rational break-even (750,000/1,150,000 =
+        15/23 = 0.75/1.15), not the rounded 0.6522 display figure."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=750_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.0, abs=1e-9)
+
+    def test_above_break_even_z_disfavors_dropping_to_5m(self):
+        """Z=1,000,000: 1,000,000/1,150,000 = 0.870 clears 0.6522, so
+        dropping to 5m nets a cost (a positive, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=1_000_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.575)
+
+
+class TestCacheRebuildMarginClears:
+    """Direct unit coverage for _cache_rebuild_margin_clears -- shared by
+    both directions' own per-root check, at, above, and below the plan's
+    10% margin threshold (_CACHE_REBUILD_TTL_MARGIN_FRACTION)."""
+
+    def test_exactly_at_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(10.0, 100.0) is True
+
+    def test_above_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(50.0, 100.0) is True
+
+    def test_below_the_margin_threshold_does_not_clear(self):
+        assert _mod._cache_rebuild_margin_clears(5.0, 100.0) is False
+
+    def test_non_positive_volume_never_clears(self):
+        """A root with zero (or, degenerately, negative) dollar-equivalent
+        volume never clears, rather than dividing by zero or by a negative
+        number."""
+        assert _mod._cache_rebuild_margin_clears(0.0, 0.0) is False
+        assert _mod._cache_rebuild_margin_clears(5.0, -1.0) is False
+
+
+class TestCacheRebuildTokenTiebreakerFavors5m:
+    """Direct unit coverage for _cache_rebuild_token_tiebreaker_favors_5m --
+    the raw-token, zero-price, zero-tolerance sign check, exercised
+    independently of any verdict-decision branch test."""
+
+    def test_z_below_w1h_favors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(5, 10) is True
+
+    def test_z_above_w1h_disfavors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(15, 10) is False
+
+    def test_z_equal_to_w1h_is_a_disagreement_not_a_favorable_tie(self):
+        """Z == W1h counts as a disagreement, never a wash --
+        including the degenerate 0 == 0 case (a root with no data in
+        either direction never reaches this function in the report's
+        own per-root reduction, but the function itself must not
+        special-case zero)."""
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
+
+
+class TestCacheRebuildDominantTierShare:
+    """Direct unit coverage for _cache_rebuild_dominant_tier_share, the
+    ratio --ttl-verdict's per-root eligibility test compares against
+    _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN. Exercised independently of
+    the full-pipeline boundary tests below."""
+
+    def test_share_exactly_at_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(900_000, 100_000) == pytest.approx(0.9)
+
+    def test_share_just_above_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(901_000, 99_000) == pytest.approx(0.901)
+
+    def test_share_just_below_the_threshold(self):
+        assert _mod._cache_rebuild_dominant_tier_share(899_000, 101_000) == pytest.approx(0.899)
+
+    def test_share_is_symmetric_in_which_tier_is_dominant(self):
+        """max() makes the dominant tier's own identity irrelevant to the
+        ratio: swapping which argument is larger yields the same share."""
+        assert _mod._cache_rebuild_dominant_tier_share(
+            100_000, 900_000
+        ) == _mod._cache_rebuild_dominant_tier_share(900_000, 100_000)
+
+    def test_no_data_root_raises_instead_of_returning_an_undefined_ratio(self):
+        """Pins that the no-data case raises `ZeroDivisionError` rather than
+        returning a sentinel. The docstring's `w5m == w1h == 0` exclusion is
+        a caller obligation, not a guard inside the function."""
+        with pytest.raises(ZeroDivisionError):
+            _mod._cache_rebuild_dominant_tier_share(0, 0)
+
+
+class TestCacheRebuildRootIsDominant:
+    """Direct unit coverage for _cache_rebuild_root_is_dominant, the
+    boolean the print loop's own eligibility branch decides on. Exercised
+    independently of the full-pipeline boundary test below."""
+
+    def test_share_exactly_at_the_threshold_counts_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.900) is True
+
+    def test_share_just_above_the_threshold_counts_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.901) is True
+
+    def test_share_just_below_the_threshold_does_not_count_as_dominant(self):
+        assert _mod._cache_rebuild_root_is_dominant(0.899) is False
+
+
+class TestCacheRebuildRootVerdictInput:
+    """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
+    per-root reduction the report's own per-bucket loop calls once per
+    5m-tier root and once per 1h-tier root. For a 5m-tier root,
+    apply_tiebreaker=False and the tiebreaker never runs, since W1h is
+    always 0 for a 5m-tier root by construction, making a raw-token
+    comparison against it degenerate. For a 1h-tier root, apply_tiebreaker=
+    True and the tiebreaker gates clears."""
+
+    def test_5m_tier_root_clears_despite_disagreeing_tiebreaker_value(self):
+        """apply_tiebreaker is False for a 5m-tier root, so clears is
+        decided by the margin alone even when tiebreaker_favors_5m is
+        passed a value that would disagree with the dollar accounting's
+        own sign."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_clears_despite_tiebreaker_wash(self):
+        """A 5m-tier root's most common would-be tiebreaker outcome is
+        Z == W1h == 0, a wash -- but apply_tiebreaker is False for it, so
+        the wash never gates clears the way it does for a 1h-tier root."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_favoring_5m_when_net_primary_is_non_positive(self):
+        """A 5m-tier root whose own net$ is non-positive (no savings from
+        adopting 1h) favors staying at 5m, never clearing -- apply_tiebreaker
+        is always False for a 5m-tier root, so the margin failure alone is
+        what fails it here."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=-1.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_when_sensitivity_boundary_fails_margin(self):
+        """Clears at the primary boundary's own margin but not at the
+        sensitivity boundary's -- the two-point AND-gate fails the
+        whole root even with a tiebreaker that agrees."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_disagreement_despite_clearing_margin(self):
+        """A dollar margin that clears comfortably at both boundaries
+        still declines when the raw-token tiebreaker disagrees with the
+        dollar accounting's own sign."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_wash(self):
+        """A 1h-tier root's own raw-token tiebreaker wash (Z == W1h) counts
+        as a disagreement, never a favorable tie, even when the dollar
+        margin clears comfortably -- apply_tiebreaker is True here, unlike
+        a 5m-tier root, so the wash still gates clears."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10),
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_adopts_when_margin_clears_and_tiebreaker_agrees(self):
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": True}
+
+    def test_5m_tier_root_favors_5m_at_the_net_primary_zero_sign_boundary(self):
+        """favors resolves via net_primary > 0, not net_primary >= 0, so an
+        exact 0.0 net_primary -- a real dollar-delta accumulation can land
+        exactly on zero -- takes the negative_favors branch for a 5m-tier
+        root's own orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_favors_1h_at_the_net_primary_zero_sign_boundary(self):
+        """The same net_primary == 0.0 sign boundary, at a 1h-tier root's
+        own positive_favors/negative_favors orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "1h", "clears": False}
+
+
+class TestCacheRebuildTierSplitAgreement:
+    """Direct unit coverage for _cache_rebuild_tier_split_agreement -- the
+    two-slice cross-check's sign-resolution and agreement comparison the
+    report's own per-bucket loop calls once per mixed root. Exercised
+    independently of the full-pipeline tests below."""
+
+    def test_positive_net_5m_slice_resolves_to_favors_1h(self):
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(1.0, 0.0)
+        assert favors_5m_slice == "1h"
+
+    def test_negative_net_5m_slice_resolves_to_favors_5m(self):
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(-1.0, 0.0)
+        assert favors_5m_slice == "5m"
+
+    def test_exact_zero_net_5m_slice_resolves_to_favors_5m(self):
+        """Resolves via net_5m_slice > 0, not >= 0, so an exact wash takes
+        the favors-5m branch. This is the same sign convention
+        `_cache_rebuild_root_verdict_input` applies."""
+        favors_5m_slice, _, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert favors_5m_slice == "5m"
+
+    def test_positive_net_1h_slice_resolves_to_favors_5m(self):
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 1.0)
+        assert favors_1h_slice == "5m"
+
+    def test_negative_net_1h_slice_resolves_to_favors_1h(self):
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, -1.0)
+        assert favors_1h_slice == "1h"
+
+    def test_exact_zero_net_1h_slice_resolves_to_favors_1h(self):
+        """Resolves via net_1h_slice > 0, not >= 0, so an exact wash takes
+        the favors-1h branch."""
+        _, favors_1h_slice, _ = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert favors_1h_slice == "1h"
+
+    def test_both_slices_favoring_5m_agree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(-1.0, 1.0)
+        assert agreement == "agree"
+
+    def test_both_slices_favoring_1h_agree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(1.0, -1.0)
+        assert agreement == "agree"
+
+    def test_slices_favoring_opposite_tiers_disagree(self):
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(1.0, 1.0)
+        assert agreement == "disagree"
+
+    def test_exact_zero_wash_on_both_slices_disagrees(self):
+        """The two slices' independent wash conventions resolve to opposite
+        tiers: favors-5m for the 5m slice, favors-1h for the 1h slice. A
+        double wash therefore reports disagree rather than a vacuous
+        agree."""
+        *_, agreement = _mod._cache_rebuild_tier_split_agreement(0.0, 0.0)
+        assert agreement == "disagree"
+
+
+class TestCacheRebuildTtlVerdictDecision:
+    """Direct unit coverage for _cache_rebuild_ttl_verdict's own four-way
+    reduction, with hand-fed per-root {"favors", "clears"} inputs -- one
+    test per branch."""
+
+    def test_zero_consistent_roots_is_no_verdict(self):
+        assert _mod._cache_rebuild_ttl_verdict([]) == _mod._TTL_VERDICT_NO_VERDICT
+
+    def test_single_direction_all_clearing_is_adopt(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ADOPT
+
+    def test_single_direction_one_not_clearing_is_decline(self):
+        """A margin/boundary miss on one otherwise-agreeing root declines
+        the whole bucket, even though every root points the same way."""
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": False},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_dollar_vs_token_tiebreaker_disagreement_declines(self):
+        """A root whose dollar accounting and raw-token tiebreaker
+        disagree never clears, regardless of its own dollar margin --
+        modeled here by resolving "clears" through the tiebreaker exactly
+        as the report's own per-root reduction does, then feeding the
+        result into the pure verdict function."""
+        dollar_favors_5m = True
+        tiebreaker_favors_5m = _mod._cache_rebuild_token_tiebreaker_favors_5m(900_000, 100_000)
+        assert tiebreaker_favors_5m is False  # Z > W1h disfavors 5m
+        tiebreaker_agrees = tiebreaker_favors_5m is not None and tiebreaker_favors_5m == dollar_favors_5m
+        root_inputs = [{"favors": "5m", "clears": tiebreaker_agrees}]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_differing_favored_directions_is_roots_disagree(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "5m", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ROOTS_DISAGREE
+
+
+class TestCacheRebuildTtlVerdictPerRootAccumulation:
+    """Full-report coverage of --ttl-verdict's own per-(origin, root_ordinal)
+    accumulation and reduction, on synthetic corpora built via fake_projects/
+    fake_config_dir_factory."""
+
+    def test_main_bucket_5m_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 5m-tier main-thread root (W5m=1,000,000, X=500,000,
+        comfortably clearing margin) reaches 'adopt' for the main bucket.
+        A third, idle-gap warm read (300,000 tokens, no write at all)
+        accumulates Z=300,000 for this root, but apply_tiebreaker is False
+        for a 5m-tier root, so this read's presence or absence never gates
+        its own clears (see
+        test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash
+        below for the same root reaching 'adopt' with no read at all)."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "0"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash(self, fake_projects, capsys):
+        """Regression test guarding the tiebreaker-scope fix: apply_tiebreaker
+        is False for a 5m-tier root, so its own Z==W1h==0 wash (no idle-gap
+        read at all) never gates clears, and this root adopts despite the
+        wash -- same clean 5m-tier root as
+        test_main_bucket_5m_tier_root_reaches_adopt above (W5m=1,000,000,
+        X=500,000), but with no third call at all."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_subagent_bucket_1h_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 1h-tier subagent-origin root (W1h nonzero from a
+        single session-start write, Z=0) reaches 'adopt' for the subagent
+        bucket, favoring a drop to 5m."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="s1"),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "0"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Clears"] == "True"
+
+    def test_dominance_gate_evaluates_each_origin_independently_for_the_same_root(
+        self, fake_projects, capsys
+    ):
+        """The main-origin and subagent-origin buckets share the same root
+        ordinal (account-1) but accumulate independently, so one origin's
+        traffic can clear the dominance threshold while the other's stays
+        near-tie for that same root ordinal.
+
+        - Main gets a clean 5m-tier root (share 1.000, clears).
+        - Subagent gets the near-tie mixed root shape (share 0.870, excluded(near-tie))."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
+        subagent_records = _ttl_verdict_near_tie_mixed_root_records(request_id_prefix="sa")
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_summary = _extract_ttl_verdict_summary(out, "main")
+        assert main_summary["consistent_5m"] == "1"
+        assert main_summary["excluded"] == "0"
+
+        subagent_summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert subagent_summary["consistent_5m"] == "0"
+        assert subagent_summary["excluded"] == "1"
+
+        main_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert main_row["Share"] == "1.000"
+        assert main_row["Clears"] == "True"
+
+        subagent_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert subagent_row["Share"] == "0.870"
+        assert subagent_row["Clears"] == "excluded(near-tie)"
+
+    def test_per_root_w5m_cells_sum_to_the_pooled_per_origin_w5m_row(self, tmp_path, capsys):
+        """Reconciliation guard (plan Verification section): the new
+        per-(origin, root_ordinal) W5m accumulator must never drift from
+        the existing pooled w5m_by_origin figure it duplicates at finer
+        grain -- reuses the dispersion coverage-disclosure extractor's own
+        "sum the parts, compare to the pooled row" pattern
+        (TestCacheRebuildSubagentDispersion, around line 9549)."""
+        session_id = "sess-reconcile-root"
+        proj_slug = "-home-user-repo"
+        root_x = _write_cost_root(tmp_path, "acct-x", proj_slug, session_id, [])
+        root_y = _write_cost_root(tmp_path, "acct-y", proj_slug, session_id, [])
+
+        records_x = [
+            _priced("claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z", request_id="x-1"),
+        ]
+        for rec in records_x:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_x / proj_slug, session_id, "agent-x", records_x)
+
+        records_y = [
+            _priced("claude-sonnet-5", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="y-1"),
+        ]
+        for rec in records_y:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_y / proj_slug, session_id, "agent-y", records_y)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_x, root_y])
+        out = capsys.readouterr().out
+
+        pooled_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        pooled_w5m = int(pooled_row["W5m"].replace(",", ""))
+
+        root_1 = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        root_2 = _extract_ttl_verdict_root_row(out, "subagent", "account-2")
+        per_root_sum = int(root_1["W5m/W1h"].replace(",", "")) + int(root_2["W5m/W1h"].replace(",", ""))
+
+        assert per_root_sum == pooled_w5m == 350_000
+        # Redacted by default: the raw account names/paths never leak into
+        # the per-root table, matching this file's own convention for every
+        # other redacted per-account table.
+        assert "acct-x" not in out
+        assert "acct-y" not in out
+        assert str(root_x) not in out
+        assert str(root_y) not in out
+
+    def test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict(
+        self, tmp_path, capsys
+    ):
+        """Two roots landing in the same bucket but on different tiers must
+        both feed that bucket's verdict through the real accumulation loop,
+        not just the pure verdict function directly. account-1 (5m-tier)
+        reuses _ttl_verdict_5m_tier_adopt_records; account-2 (1h-tier)
+        reuses _ttl_verdict_1h_tier_non_wash_disagreement_records -- closing
+        the multi-tier wiring gap those single-root tests can't cover on
+        their own."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(
+            tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+            _ttl_verdict_1h_tier_non_wash_disagreement_records(),
+        )
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "decline"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["X/Z"] == "500,000"
+        assert root_1["Favors"] == "1h"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["W5m/W1h"] == "1,000,000"
+        assert root_2["X/Z"] == "800,000"
+        assert root_2["Favors"] == "1h"
+        assert root_2["Clears"] == "False"
+
+    def test_hand_computed_w1h_and_z_totals_match_known_fixture(self, fake_projects, capsys):
+        """A small, hand-computed 1h-tier fixture.
+
+        call1 (session start) writes 200,000 ephemeral_1h tokens (W1h
+        only -- session start is never idle-gap-caused).
+        call2, a 6-minute-gap warm read of 150,000 tokens with no write
+        at all, is idle 5m-1h under a live 1h tier (W1h unchanged,
+        Z += 150,000).
+        call3, a further 6-minute-gap PURE ephemeral_1h-tier write of
+        100,000 tokens, reclassifies unexplained (the 1h cache can't have
+        expired inside 6 minutes), so it adds to W1h. It adds 0 to Z only
+        because its own cache_read is 0 -- a pure-1h write that also read
+        would add those read tokens to Z.
+
+        Expected totals -- W1h=300,000, Z=150,000 -- are known in
+        advance, not derived from the code under test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=200_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", cache_read=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=100_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="w3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "300,000"
+        assert root_row["X/Z"] == "150,000"
+
+    def test_root_with_both_w5m_and_w1h_nonzero_contributes_no_verdict_for_that_bucket(
+        self, fake_projects, capsys
+    ):
+        """A root paying both tiers simultaneously in this window has a
+        share of 0.500, below _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN,
+        so it is excluded(near-tie). The break-even algebra assumes a
+        single live tier per root per window, so a root with no data gets
+        the same treatment. The row still prints with its own exclusion
+        reason. The four summary fields below are unaffected by the row
+        now always printing -- showing the row never moves the gate."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="mix-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "0"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "no verdict"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "excluded(near-tie)"
+
+    def test_tie_between_w5m_and_w1h_resolves_deterministically_to_5m_tier_for_display(
+        self, fake_projects, capsys
+    ):
+        """A root whose W5m and W1h accumulate to exactly the same nonzero
+        total is still excluded(near-tie) -- the tie only decides which
+        tier's own accumulators the display row names, via the per-root
+        loop's `if root_w5m >= root_w1h` comparison resolving equality to
+        the 5m branch. Pins today's tie resolution (`>=`, defaults to the
+        5m branch) as display-only -- it has no verdict consequence, since
+        the row is excluded either way."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=400_000, ts="2026-08-01T10:00:00.000Z", request_id="tie-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=400_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="tie-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Tier"] == "5m"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Share"] == "0.500"
+        assert root_row["Clears"] == "excluded(near-tie)"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+    def test_zero_consistent_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
+        """A corpus with cache activity but no cache-write/read tokens
+        crossing either direction's own accumulation gate (plain
+        input/output tokens only) leaves neither direction with data --
+        'no verdict', never a vacuous 'adopt'. The root's own row still
+        prints, labelled excluded(no-data), in both buckets."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["consistent_5m"] == "0"
+            assert summary["consistent_1h"] == "0"
+            assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
+
+    def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
+        """root_label's own redact branch prints "account-N"; the
+        --no-redact branch must print scan_roots[0]'s own real parent path
+        instead -- no prior test pinned this for the per-root table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="nr1"),
+        ])
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[fake_projects.parent],
+        )
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", str(fake_projects.parent.parent))
+        assert root_row["W5m/W1h"] == "500,000"
+        assert "account-1" not in out
+
+    def test_empty_corpus_reaches_no_verdict_without_crashing(self, fake_projects, capsys):
+        """--ttl-verdict against zero in-scope calls prints clean
+        no-verdict output for both buckets rather than crashing (e.g. a
+        division by zero in the margin check, already guarded by
+        _cache_rebuild_margin_clears' own non-positive-volume branch). The
+        zero-data root still gets its own excluded(no-data) row rather than
+        vanishing from the table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["verdict"] == "no verdict"
+
+            root_row = _extract_ttl_verdict_root_row(out, origin, "account-1")
+            assert root_row["Clears"] == "excluded(no-data)"
+            assert root_row["Net$"] == "n/a"
+            assert root_row["Share"] == "n/a"
+
+    def test_no_data_root_alongside_a_real_root_leaves_the_real_roots_verdict_untouched(
+        self, tmp_path, capsys
+    ):
+        """Two roots in the same bucket:
+        - account-1 has real 5m-tier data and reaches 'adopt' on its own.
+        - account-2 has no cache-tier data at all.
+
+        The no-data root's presence must not change account-1's own
+        verdict, and its own Net$/Share render as n/a rather than
+        $0.00/0.000."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["Clears"] == "excluded(no-data)"
+        assert root_2["Net$"] == "n/a"
+        assert root_2["Share"] == "n/a"
+
+    def test_no_data_root_and_a_near_tie_root_in_the_same_bucket_both_count_toward_excluded(
+        self, tmp_path, capsys
+    ):
+        """Two roots in the same bucket, excluded for different reasons:
+
+        - account-1 has no cache-tier data at all.
+        - account-2 is the mixed root shape at share 0.870 (below the
+          dominance threshold).
+
+        The no-data and near-tie branches each independently increment
+        excluded_roots; this pins that the bucket's printed total sums
+        both reasons rather than only the last branch reached."""
+        no_data_root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-no-data", "sess-no-data", [])
+        near_tie_root = _write_cost_root(
+            tmp_path, "acct-b", "-home-user-repo-near-tie", "sess-near-tie",
+            _ttl_verdict_near_tie_mixed_root_records(),
+        )
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[no_data_root, near_tie_root],
+        )
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["excluded"] == "2"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["Clears"] == "excluded(no-data)"
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["Share"] == "0.870"
+        assert root_2["Clears"] == "excluded(near-tie)"
+
+    def test_mixed_root_row_shows_the_dominant_tiers_own_accumulators_not_a_combined_figure(
+        self, tmp_path, capsys
+    ):
+        """A mixed root's displayed row must match a control root carrying
+        only the dominant tier's data -- isolating whether the minority
+        write leaks into the row."""
+        mixed_records = _ttl_verdict_dominant_1h_mixed_root_records()
+        pure_1h_records = [
+            # Leading no-cache-tokens call mirrors the mixed fixture's own
+            # session-start/idle-gap timing, so the 1h write and read
+            # classify identically in both.
+            _priced("claude-sonnet-5", input=10, output=5, ts="2026-08-01T10:00:00.000Z", request_id="pure-0"),
+            _priced("claude-sonnet-5", ephemeral_1h=800_000, ts="2026-08-01T10:06:00.000Z", request_id="pure-1"),
+            _priced("claude-sonnet-5", cache_read=150_000, ts="2026-08-01T10:12:00.000Z", request_id="pure-2"),
+        ]
+        mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
+        pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_1h_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        mixed_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        pure_out = capsys.readouterr().out
+
+        mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
+        pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
+        assert mixed_row["W5m/W1h"] == pure_row["W5m/W1h"] == "800,000"
+        assert mixed_row["X/Z"] == pure_row["X/Z"] == "150,000"
+        assert mixed_row["Net$"] == pure_row["Net$"]
+        assert mixed_row["Favors"] == pure_row["Favors"]
+        assert mixed_row["Clears"] == "excluded(near-tie)"
+        assert mixed_row["Share"] == "0.800"
+        assert pure_row["Clears"] == "True"
+        assert pure_row["Share"] == "1.000"
+
+
+class TestCacheRebuildTtlVerdictDominantTierShareThreshold:
+    """Boundary coverage for _CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN
+    (0.900) -- the comparison is >=, so a root sitting exactly at the
+    threshold counts, never just above it."""
+
+    def _mixed_root_records(self, *, w1h: int, w5m: int) -> list[dict]:
+        """A 1h-dominant mixed root: a 1h write, then a 5m write 10s later --
+        inside the idle band's lower bound, so it never classifies as an
+        idle-gap rebuild. Share is decided purely by w1h/w5m."""
+        return [
+            _priced("claude-sonnet-5", ephemeral_1h=w1h, ts="2026-08-01T10:00:00.000Z", request_id="w1h"),
+            _priced("claude-sonnet-5", ephemeral_5m=w5m, ts="2026-08-01T10:00:10.000Z", request_id="w5m"),
+        ]
+
+    def test_share_exactly_at_threshold_counts_as_consistent(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", self._mixed_root_records(w1h=900_000, w5m=100_000))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.900"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+    def test_share_exactly_at_threshold_counts_as_consistent_for_subagent_origin(self, fake_projects, capsys):
+        subagent_records = self._mixed_root_records(w1h=900_000, w5m=100_000)
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert root_row["Share"] == "0.900"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+
+class TestCacheRebuildTtlVerdictDominanceReduction:
+    """Full-pipeline coverage that a dominance-resolved mixed root's own
+    dominant-tier accumulators, and only those, reach
+    _cache_rebuild_root_verdict_input and the bucket's consistent-root
+    counts -- the reduction mechanics .claude/plans/cache-ttl-verdict-gate-fix.md's
+    Approach section describes."""
+
+    def test_minority_5m_write_outside_the_idle_band_never_changes_the_1h_rows_own_verdict_inputs(
+        self, tmp_path, capsys
+    ):
+        """A pure-1h corpus (W1h=1,000,000, one idle-gap read Z=400,000)
+        is compared against the same corpus plus one small 5m write
+        placed 100 seconds after the read. That write sits under the idle
+        band's own 300-second lower bound, so it classifies as
+        unexplained, not idle, and never reaches the displayed 1h-tier
+        row's own accumulators. The 1h row's own W5m/W1h, X/Z, Net$,
+        Favors, and Clears must be byte-identical across both runs; only
+        Share (1.000 vs 0.971) and the presence of an informative
+        tier-split line differ."""
+        pure_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="p1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="p2"),
+        ]
+        mixed_records = [
+            *pure_records,
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="p3"),
+        ]
+        pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_records)
+        mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        pure_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        mixed_out = capsys.readouterr().out
+
+        pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
+        mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
+        assert pure_row["W5m/W1h"] == mixed_row["W5m/W1h"] == "1,000,000"
+        assert pure_row["X/Z"] == mixed_row["X/Z"] == "400,000"
+        assert pure_row["Net$"] == mixed_row["Net$"]
+        assert pure_row["Favors"] == mixed_row["Favors"]
+        assert pure_row["Clears"] == mixed_row["Clears"] == "True"
+        assert pure_row["Share"] == "1.000"
+        assert mixed_row["Share"] == "0.971"
+        assert _extract_ttl_verdict_tier_split_line(pure_out, "account-1") is None
+        assert _extract_ttl_verdict_tier_split_line(mixed_out, "account-1") is not None
+
+    def test_minority_5m_write_followed_by_an_idle_gap_read_inflates_z_strictly_against_dropping_to_5m(
+        self, tmp_path, capsys
+    ):
+        """Proves the 1h-branch's idle-read disjunct, not the write
+        disjunct, drives Z inflation. Distinct from the isolation test
+        above, which only covers a minority write."""
+        control_records = [
+            # Control: read never enters the 1h branch.
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="c1"),
+            # 4,000s after c1, past the 3,600s idle->1h boundary, so Z stays 0.
+            _priced("claude-sonnet-5", cache_read=1_500_000, ts="2026-08-01T11:06:40.000Z", request_id="c2"),
+        ]
+        inflated_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+            # 10s after m1, well inside the idle band's own lower bound.
+            _priced("claude-sonnet-5", ephemeral_5m=50_000, ts="2026-08-01T10:00:10.000Z", request_id="m2"),
+            # 3,200s after m2, inside the idle 5m-1h band.
+            # The read-token disjunct fires, so Z absorbs the full read even though no 1h write expired.
+            _priced("claude-sonnet-5", cache_read=1_500_000, ts="2026-08-01T10:53:30.000Z", request_id="m3"),
+        ]
+        control_root = _write_cost_root(
+            tmp_path, "acct-control", "-home-user-repo-control", "sess-control", control_records,
+        )
+        inflated_root = _write_cost_root(
+            tmp_path, "acct-inflated", "-home-user-repo-inflated", "sess-inflated", inflated_records,
+        )
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[control_root])
+        control_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[inflated_root])
+        inflated_out = capsys.readouterr().out
+
+        control_row = _extract_ttl_verdict_root_row(control_out, "main", "account-1")
+        inflated_row = _extract_ttl_verdict_root_row(inflated_out, "main", "account-1")
+        assert control_row["X/Z"] == "0"
+        assert inflated_row["X/Z"] == "1,500,000"
+        assert control_row["Favors"] == "5m"
+        # Read size (1,500,000) exceeds W1h (1,000,000), flipping the raw-token
+        # tiebreaker from favoring a drop to 5m to favoring 1h.
+        assert inflated_row["Favors"] == "1h"
+        assert control_row["Clears"] == "True"
+        assert inflated_row["Clears"] == "False"
+
+        # Control's Net$: the always-on base term alone, with no idle-read cost.
+        assert control_row["Net$"] == "$1.50"
+        # Inflated's Net$ adds the phantom read's expiry-cost term.
+        # That term is strictly switch-cost-positive, so it can only move Net$ down, never up.
+        assert inflated_row["Net$"] == "-$1.95"
+
+    def test_dominance_resolved_mixed_root_counts_once_never_twice(self, tmp_path, capsys):
+        """A dominance-resolved mixed root (share 0.971) increments
+        consistent-1h by exactly one. It must never increment consistent_5m,
+        and must never increment consistent_1h more than once."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="u2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="u3"),
+        ]
+        root = _write_cost_root(tmp_path, "acct", "-home-user-repo", "sess", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+    def test_dominance_resolved_mixed_root_counts_once_never_twice_for_subagent_origin(
+        self, fake_projects, capsys
+    ):
+        """Same dominance-resolved mixed root shape (share 0.971) as
+        test_dominance_resolved_mixed_root_counts_once_never_twice above,
+        on the subagent bucket instead of main."""
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="u2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="u3"),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "1"
+        assert summary["excluded"] == "0"
+
+    def test_dominance_resolved_mixed_roots_own_favors_agrees_with_the_tier_splits_same_tier_slice(
+        self, tmp_path, capsys
+    ):
+        """A dominance-resolved mixed root's displayed Favors and its own
+        tier-split line's same-tier slice favors are computed from the
+        identical net_primary/net_5m_slice or net_1h_slice expression
+        (transcript-analysis.py's own "Keep both call sites in sync"
+        comment) -- this pins that the two stay equal, for both a
+        5m-dominant and a 1h-dominant root (share 0.971 each)."""
+        dominant_5m_root = _write_cost_root(tmp_path, "acct-dom5m", "-home-user-repo-dom5m", "sess-dom5m", [
+            _priced("claude-sonnet-5", ephemeral_5m=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="e1"),
+            _priced("claude-sonnet-5", ephemeral_1h=30_000, ts="2026-08-01T10:00:10.000Z", request_id="e2"),
+        ])
+        dominant_1h_root = _write_cost_root(tmp_path, "acct-dom1h", "-home-user-repo-dom1h", "sess-dom1h", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="f1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="f2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="f3"),
+        ])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_5m_root])
+        dominant_5m_out = capsys.readouterr().out
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_1h_root])
+        dominant_1h_out = capsys.readouterr().out
+
+        dominant_5m_row = _extract_ttl_verdict_root_row(dominant_5m_out, "main", "account-1")
+        assert dominant_5m_row["Tier"] == "5m"
+        assert dominant_5m_row["Share"] == "0.971"
+        dominant_5m_tier_split = _extract_ttl_verdict_tier_split_line(dominant_5m_out, "account-1")
+        assert dominant_5m_tier_split is not None
+        assert dominant_5m_row["Favors"] == dominant_5m_tier_split["favors_5m_slice"]
+
+        dominant_1h_row = _extract_ttl_verdict_root_row(dominant_1h_out, "main", "account-1")
+        assert dominant_1h_row["Tier"] == "1h"
+        assert dominant_1h_row["Share"] == "0.971"
+        dominant_1h_tier_split = _extract_ttl_verdict_tier_split_line(dominant_1h_out, "account-1")
+        assert dominant_1h_tier_split is not None
+        assert dominant_1h_row["Favors"] == dominant_1h_tier_split["favors_1h_slice"]
+
+    def test_dominance_resolved_root_and_a_pure_root_favoring_opposite_directions_disagree(
+        self, tmp_path, capsys
+    ):
+        """Two roots in one bucket:
+        - pure 5m-tier root (favors 1h)
+        - dominance-resolved mixed 1h-tier root (share 0.971, favors 5m)
+
+        The bucket verdict must read 'roots disagree', proving the
+        dominance-resolved root entered the reduction rather than being
+        silently dropped."""
+        pure_5m_root = _write_cost_root(
+            tmp_path, "acct-pure5m", "-home-user-repo-pure5m", "sess-pure5m",
+            _ttl_verdict_5m_tier_adopt_records(),
+        )
+        dominant_1h_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="d1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="d2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="d3"),
+        ]
+        dominant_1h_root = _write_cost_root(
+            tmp_path, "acct-dom1h", "-home-user-repo-dom1h", "sess-dom1h", dominant_1h_records,
+        )
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[pure_5m_root, dominant_1h_root],
+        )
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "roots disagree"
+
+        # Ordinal assignment is path-sort-order-derived, not root-list-order,
+        # so the two rows are told apart by their own Share instead of a
+        # fixed account-N mapping.
+        rows = [
+            _extract_ttl_verdict_root_row(out, "main", "account-1"),
+            _extract_ttl_verdict_root_row(out, "main", "account-2"),
+        ]
+        pure_row = next(row for row in rows if row["Share"] == "1.000")
+        dominant_row = next(row for row in rows if row["Share"] == "0.971")
+        assert pure_row["Favors"] == "1h"
+        assert dominant_row["Favors"] == "5m"
+
+
+class TestCacheRebuildTtlVerdictTierSplitCrossCheck:
+    """Full-pipeline coverage for the two-slice cross-check's own
+    'tier-split' note lines -- informative only, so every test here also
+    confirms the line never moves a count or the verdict."""
+
+    def test_near_tie_excluded_mixed_root_prints_its_own_disagreeing_tier_split_line(
+        self, fake_projects, capsys
+    ):
+        """A mixed root at share 0.870 sits below the dominance threshold,
+        so it is excluded(near-tie). Its two tiers' own accumulators
+        disagree:
+
+        - 5m-tier slice: idle rebuild ratio (X/W5m = 0.5, above the
+          ~0.3947 break-even) favors switching to 1h.
+        - 1h-tier slice: the minority 1h write carries no idle-read
+          evidence of its own, favors staying at -- i.e. dropping to --
+          5m.
+
+        The tier-split line must name exactly this disagreement.
+        _extract_ttl_verdict_root_row must still find exactly one row for
+        the root, and the summary counts must reflect only the near-tie
+        exclusion, unmoved by the cross-check."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_near_tie_mixed_root_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "0"
+        assert summary["excluded"] == "1"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.870"
+        assert root_row["Clears"] == "excluded(near-tie)"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+
+    def test_dominance_resolved_mixed_root_prints_its_own_disagreeing_tier_split_line(
+        self, fake_projects, capsys
+    ):
+        """Same disagreeing per-slice shape as the near-tie test above:
+
+        - 5m-tier slice favors switching to 1h.
+        - 1h-tier slice favors staying at 5m.
+
+        Here the minority 1h write is smaller (90,000, share 0.917),
+        clearing the dominance threshold, so the root counts toward the
+        verdict this time. The tier-split line must still print and
+        still name the same disagreement, unaffected by which side of the
+        threshold the root landed on."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="a2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=90_000,
+                ts="2026-08-01T10:13:00.000Z", request_id="a3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["excluded"] == "0"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Share"] == "0.917"
+        assert root_row["Clears"] == "True"
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+
+    def test_two_simultaneously_mixed_roots_each_print_their_own_directions_not_the_others(
+        self, tmp_path, capsys
+    ):
+        """Two mixed roots in the same bucket disagree in different,
+        distinguishable directions:
+
+        - account-1: idle-heavy 5m block plus a minority 1h write
+          disagrees one way.
+        - account-2: 1h-dominant block plus a minority 5m write agrees
+          the other way.
+
+        Each root's own tier-split line must name only its own data.
+        With only these two roots, the test demonstrates that their
+        tier-split lines do not cross-contaminate each other.
+        `_extract_ttl_verdict_root_row` cannot catch that gap on its own,
+        since it skips these lines by design."""
+        root_a_records = _ttl_verdict_near_tie_mixed_root_records()
+        root_b_records = _ttl_verdict_dominant_1h_mixed_root_records()
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", root_a_records)
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", root_b_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        tier_split_1 = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        tier_split_2 = _extract_ttl_verdict_tier_split_line(out, "account-2")
+        assert tier_split_1 == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert tier_split_2 == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+    def test_root_row_extraction_stays_singular_across_mixed_no_data_and_pure_roots_in_one_corpus(
+        self, tmp_path, capsys
+    ):
+        """One corpus carries all three per-root shapes at once:
+        - account-1: dominance-resolved mixed root (share 0.917)
+        - account-2: no cache-tier data
+        - account-3: pure 5m-tier root, from _ttl_verdict_5m_tier_adopt_records
+
+        _extract_ttl_verdict_root_row must still return exactly one row per
+        root despite the tier-split line sitting between rows in the same
+        table."""
+        mixed_root = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-mixed", "sess-mixed", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="a2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=90_000,
+                ts="2026-08-01T10:13:00.000Z", request_id="a3",
+            ),
+        ])
+        no_data_root = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-no-data", "sess-no-data", [])
+        pure_root = _write_cost_root(
+            tmp_path, "acct-c", "-home-user-repo-pure", "sess-pure", _ttl_verdict_5m_tier_adopt_records(),
+        )
+
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True), roots=[mixed_root, no_data_root, pure_root],
+        )
+        out = capsys.readouterr().out
+
+        mixed_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        no_data_row = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        pure_row = _extract_ttl_verdict_root_row(out, "main", "account-3")
+
+        assert mixed_row["Share"] == "0.917"
+        assert mixed_row["Clears"] == "True"
+        assert no_data_row["Clears"] == "excluded(no-data)"
+        assert pure_row["Share"] == "1.000"
+        assert pure_row["Clears"] == "True"
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert _extract_ttl_verdict_tier_split_line(out, "account-2") is None
+        assert _extract_ttl_verdict_tier_split_line(out, "account-3") is None
+
+    def test_minority_slice_net_delta_of_exactly_zero_resolves_like_the_dominant_tiers_own_wash(
+        self, fake_projects, capsys
+    ):
+        """A minority 5m-tier write small enough (100 tokens) that its own
+        switch-delta rounds to exactly $0.00 pins the slice-favors wash
+        boundary. _cache_rebuild_root_verdict_input's own net > 0 test
+        resolves a net of exactly 0 to negative_favors, never the positive
+        direction. The two-slice cross-check's own hand-rolled sign test
+        must resolve the same way at that boundary."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            # 10s later, well inside the idle band's own lower bound, so
+            # unexplained rather than idle.
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split is not None
+        assert tier_split["favors_5m_slice"] == "5m"
+
+    def test_minority_1h_slice_net_delta_of_exactly_zero_resolves_like_the_dominant_tiers_own_wash(
+        self, fake_projects, capsys
+    ):
+        """Mirror of the test above for a 5m-dominant root: a minority
+        1h-tier write small enough (100 tokens) that its own switch-delta
+        rounds to exactly $0.00 pins the same wash boundary on the
+        tier == 5m branch's own net_1h_slice > 0 test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="a1"),
+            # 10s later, well inside the idle band's own lower bound, so
+            # unexplained rather than idle.
+            _priced("claude-sonnet-5", ephemeral_1h=100, ts="2026-08-01T10:00:10.000Z", request_id="a2"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split is not None
+        assert tier_split["favors_1h_slice"] == "1h"
+
+    def test_both_origins_mixed_with_different_directions_each_print_only_their_own_line(
+        self, fake_projects, capsys
+    ):
+        """The same root ordinal (account-1) is mixed in both the main and
+        subagent buckets at once, disagreeing in a different direction per
+        origin:
+
+        - main is the near-tie mixed root shape (share 0.870, excluded,
+          disagree).
+        - subagent is the dominance-resolved mixed root shape (share
+          0.971, clears, agree).
+
+        Every other test in this class matches its tier-split line as an
+        unscoped substring of the whole report; here that would pass even
+        if a line leaked into the wrong origin's own '### {origin}'
+        section, so each assertion below is scoped to that section."""
+        main_records = _ttl_verdict_near_tie_mixed_root_records()
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="d1"),
+            _priced("claude-sonnet-5", cache_read=400_000, ts="2026-08-01T10:06:00.000Z", request_id="d2"),
+            _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="d3"),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", main_records)
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_section = out[out.index("### main"):out.index("### subagent")]
+        subagent_section = out[out.index("### subagent"):]
+        main_tier_split = _extract_ttl_verdict_tier_split_line(main_section, "account-1")
+        subagent_tier_split = _extract_ttl_verdict_tier_split_line(subagent_section, "account-1")
+        assert main_tier_split == {"favors_5m_slice": "1h", "favors_1h_slice": "5m", "agreement": "disagree"}
+        assert subagent_tier_split == {"favors_5m_slice": "5m", "favors_1h_slice": "5m", "agreement": "agree"}
+
+        main_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        subagent_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert main_row["Clears"] == "excluded(near-tie)"
+        assert subagent_row["Clears"] == "True"
+
+
+class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
+    """Full-pipeline coverage that the per-root tiebreaker reduction reads
+    z_by_origin_root at the primary, 300s boundary, never the 60s
+    sensitivity boundary. Each fixture below adds a read call idle only at
+    the 60s sensitivity boundary (gap in [60s, 300s)) alongside one idle at
+    both boundaries, so the primary and sensitivity Z totals genuinely
+    diverge. That divergence is observable only through a 1h-tier root's
+    own printed Z figure in its X/Z column, since apply_tiebreaker is False
+    for a 5m-tier root."""
+
+    def test_5m_tier_root_adopts_regardless_of_which_boundary_z_is_read_at(self, fake_projects, capsys):
+        """apply_tiebreaker is False for a 5m-tier root, so a Z/W1h wash at
+        either boundary never gates clears."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w5m-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w5m-2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=300_000,
+                ts="2026-08-01T10:07:30.000Z", request_id="w5m-3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_1h_tier_root_declines_on_a_non_wash_disagreement(self, fake_projects, capsys):
+        """W1h=1,000,000 (call1, session start). call2 reads 800,000
+        tokens at a 400s gap, idle at both boundaries. call3 reads a
+        further 400,000 at a 100s gap after call2, idle only at the 60s
+        sensitivity boundary.
+
+        The primary Z is 800,000: nonzero, unequal to W1h, and 0.8 below
+        the 1.0 tiebreaker threshold favors dropping to 5m, disagreeing
+        with the dollar accounting's own "favors 1h" sign.
+
+        0.8 also exceeds the ~0.652 dollar break-even, so net$ is negative
+        here too. This ratio band structurally always fails the margin
+        alongside the tiebreaker, since the break-even sits below the
+        tiebreaker's own threshold.
+
+        Gating Z's own increment on the sensitivity boundary instead of
+        the primary one would total 1,200,000, a different printed X/Z
+        figure than the 800,000 asserted below."""
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_1h_tier_non_wash_disagreement_records())
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "decline"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "800,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictSensitivityBoundary:
+    def test_clears_margin_at_300s_but_fails_at_60s_never_adopts(self, fake_projects, capsys):
+        """A 1h-tier root whose margin clears using the primary
+        (300s-boundary) accumulation but fails once a gap in [60s, 300s)
+        is also reclassified idle at the 60s sensitivity boundary -- the
+        two-point check is an explicit AND-gate, so this must
+        decline, never adopt, even though the primary boundary alone
+        clears comfortably.
+
+        call1 (session start) writes 1,150,000 ephemeral_1h tokens (W1h),
+        contributing only the always-on base term (-$1.725) at both
+        boundaries. call2, a 100s gap, reads 900,000 tokens:
+        - at the 300s boundary, this call is unexplained (gap < 300) and
+          never touches Z or the expiry term, leaving net$ = +$1.725
+          (margin 1.725/4.6 = 37.5%, clears).
+        - at the 60s boundary, the same call is idle 5m-1h, adding a
+          +$2.07 expiry term that flips the total to -$0.345 (a negative
+          margin, failing)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_150_000, ts="2026-08-01T10:00:00.000Z", request_id="b1"),
+            _priced(
+                "claude-sonnet-5", cache_read=900_000,
+                ts="2026-08-01T10:01:40.000Z", request_id="b2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] != "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "False"
+
+
+def _ttl_verdict_ts(seconds_after_start: float) -> str:
+    """ISO timestamp `seconds_after_start` after the fixed 10:00:00 start the
+    hand-derived --ttl-verdict fixtures below share."""
+    start = datetime(2026, 8, 1, 10, 0, 0, tzinfo=UTC)
+    return (start + timedelta(seconds=seconds_after_start)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _pure_1h_write_plus_read_records(
+    gap_seconds: float, *, second_write: int = 100_000, read_tokens: int = 200_000,
+) -> list[dict]:
+    """A 1h-tier root: a session-start 1,000,000-token ephemeral_1h write,
+    then one call `gap_seconds` later that both writes `second_write`
+    ephemeral_1h tokens (no ephemeral_5m) and reads `read_tokens`."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts=_ttl_verdict_ts(0), request_id="p1"),
+        _priced(
+            "claude-sonnet-5", ephemeral_1h=second_write, cache_read=read_tokens,
+            ts=_ttl_verdict_ts(gap_seconds), request_id="p2",
+        ),
+    ]
+
+
+class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
+    """A call inside the idle band whose own write is purely ephemeral_1h
+    still read its prefix warm from the live 1h tier, so its reads count
+    toward Z and its (write_5m - read) expiry term counts toward the
+    1h-to-5m net. The band flags feeding those accumulators are the gap test
+    alone, unlike the cause table's own "idle 5m-1h" row.
+
+    Fixture arithmetic, claude-sonnet-5 per MTok (base $2.00 x the vendor's
+    1.25 / 2 / 0.1 multipliers): write_5m $2.50, write_1h $4.00, read $0.20.
+    That is a $1.50 saving per 1h-tier write token and a $2.30 expiry cost
+    per read token.
+
+    Base corpus (_pure_1h_write_plus_read_records): call1 writes 1,000,000
+    ephemeral_1h at session start; call2, after gap G, writes 100,000
+    ephemeral_1h and reads 200,000. W1h = 1,100,000; margin volume =
+    1.1 x $4.00 = $4.40.
+    - Without the expiry term: net = 1.1 x $1.50 = $1.65.
+    - With it (G in [300, 3600)): net = $1.65 - 0.2 x $2.30 = $1.19, a 27%
+      margin, still clearing; Z = 200,000 < W1h so the token tiebreaker
+      agrees the root favors 5m."""
+
+    def test_in_band_read_beside_a_pure_1h_write_counts_toward_z(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(360))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Tier"] == "1h"
+        assert root_row["W5m/W1h"] == "1,100,000"
+        assert root_row["X/Z"] == "200,000"
+
+    def test_in_band_read_beside_a_pure_1h_write_restores_the_expiry_cost_in_net(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(360))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Net$"] == "$1.19"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Clears"] == "True"
+
+    def test_gap_of_exactly_300s_counts_toward_z(self, fake_projects, capsys):
+        """The band's lower bound is inclusive, so the same shape at exactly
+        300s counts its reads."""
+        _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(300))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+        assert root_row["Net$"] == "$1.19"
+
+    def test_gap_in_the_60s_to_300s_band_fails_the_sensitivity_margin_only(self, fake_projects, capsys):
+        """At G = 200s the call is outside the primary band (Z stays 0, primary
+        net stays $1.65) but inside the 60s sensitivity band, so its expiry
+        term lands in the sensitivity net only. Net$ prints only the primary
+        net, so Clears is the observable.
+
+        Read = 660,000 (0.6 x W1h): sensitivity net = $1.65 - 0.66 x $2.30 =
+        $0.132, which cents-rounds to $0.13, a 3% margin on the $4.40 volume.
+        It falls under the 10% margin whenever read / W1h exceeds
+        (1.5 - 0.4) / 2.3 ~ 0.478, so 0.6 sits well clear of the edge
+        cent rounding could flip."""
+        _write_jsonl(
+            fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(200, read_tokens=660_000)
+        )
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "0"
+        assert root_row["Net$"] == "$1.65"
+        assert root_row["Clears"] == "False"
+
+    @pytest.mark.parametrize("gap_seconds", [3600, 3601], ids=["at-3600s-exclusive-upper-bound", "above-3600s"])
+    def test_read_at_or_above_the_upper_bound_contributes_nothing_to_z(self, fake_projects, capsys, gap_seconds):
+        _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(gap_seconds))
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "0"
+        assert root_row["Net$"] == "$1.65"
+
+    def test_first_call_pure_1h_write_with_reads_contributes_nothing_to_z(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=1_000_000, cache_read=200_000,
+                ts=_ttl_verdict_ts(0), request_id="f1",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "0"
+
+    @pytest.mark.parametrize("ttl_verdict", [False, True], ids=["without-ttl-verdict", "with-ttl-verdict"])
+    def test_cause_table_keeps_the_pure_1h_write_unexplained_with_or_without_the_flag(
+        self, fake_projects, capsys, ttl_verdict
+    ):
+        """The widened band applies to --ttl-verdict's own accumulators, never
+        to the cause table: the same invariant
+        TestCacheRebuildCacheTierGapMismatch.test_pure_1h_tier_write_in_5m_1h_gap_reclassifies_unexplained
+        pins without the flag."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts=_ttl_verdict_ts(0), request_id="c1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=200_000, cache_read=100_000,
+                ts=_ttl_verdict_ts(360), request_id="c2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=ttl_verdict), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 1
+
+    def test_negative_gap_record_completes_the_report_and_contributes_nothing_to_z(self, fake_projects, capsys):
+        """A clock-skewed record (earlier timestamp than its predecessor) has
+        no gap at all, so the band predicate must treat it as out of band
+        rather than compare against None. Run under a non-None --since, the
+        production-shaped path. The record carries ephemeral_1h > 0 so it
+        enters the W1h branch: under a None gap, in_w1h_branch would
+        otherwise be False and "contributes nothing to Z" vacuous."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts=_ttl_verdict_ts(600), request_id="n1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=100_000, cache_read=200_000,
+                ts=_ttl_verdict_ts(0), request_id="n2",
+            ),
+        ])
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(ttl_verdict=True, since="36500d"), roots=[fake_projects.parent]
+        )
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,100,000"
+        assert root_row["X/Z"] == "0"
+
+    def test_unparseable_timestamp_record_completes_the_report_and_contributes_nothing_to_z(
+        self, fake_projects, capsys
+    ):
+        """An unparseable timestamp also yields a None gap. Only a run with
+        --since unset reaches the --ttl-verdict block with such a record,
+        since the block sits behind the in-scope check."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts=_ttl_verdict_ts(0), request_id="u1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=100_000, cache_read=200_000,
+                ts="not-a-timestamp", request_id="u2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,100,000"
+        assert root_row["X/Z"] == "0"
+
+    def test_pure_1h_in_band_write_with_a_model_changed_miss_reason_prints_no_cross_tab(
+        self, fake_projects, capsys
+    ):
+        """The cache-miss-reason cross-tab stays keyed on the cause table's
+        own "idle 5m-1h" population -- calls whose write the gap is claimed
+        to have forced. A warm in-band read has no cache miss to explain, so
+        the widened accumulator flag must not feed it."""
+        records = _pure_1h_write_plus_read_records(360)
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 100_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert "cache-miss-reason cross-tab" not in out
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+
+
+class TestCacheRebuildTtlVerdictTierSplitInBandPure1hRead:
+    """The mixed root's tier-split cross-check reads the 1h-to-5m switch
+    delta, so a pure-1h write's in-band read moves its 1h slice.
+
+    Fixture arithmetic, claude-sonnet-5 per MTok: write_5m $2.50, write_1h
+    $4.00, read $0.20. call1 (session start) writes 100,000 ephemeral_5m;
+    call2, 360s later, writes 200,000 ephemeral_1h and reads 200,000.
+    - 5m slice: call1 is a session start, so no rescue term; switch cost =
+      0.1 x $1.50 = $0.15, net = -$0.15, so the slice favors 5m.
+    - 1h slice: tier saving = 0.2 x $1.50 = $0.30. Without the read's expiry
+      term net = +$0.30 (favors 5m, "agree"). With it: $0.30 - 0.2 x $2.30 =
+      -$0.16 (favors 1h, "disagree").
+    The 1h slice changes sign only when read / W1h_slice exceeds
+    (4.00 - 2.50) / (2.50 - 0.20) ~ 0.652; here it is 1.0."""
+
+    def test_in_band_read_beside_a_pure_1h_write_flips_the_1h_slice_and_the_agreement_label(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100_000, ts=_ttl_verdict_ts(0), request_id="t1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=200_000, cache_read=200_000,
+                ts=_ttl_verdict_ts(360), request_id="t2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
+        assert tier_split == {
+            "favors_5m_slice": "5m",
+            "favors_1h_slice": "1h",
+            "agreement": "disagree",
+        }
+
+
+# Per-call net and margin volume for the rate-footing fixtures, claude-sonnet-5
+# per MTok: write_5m $2.50, write_1h $4.00, read $0.20. A fast-mode call is
+# 2x, a US-inference-geo call 1.1x, and a call with both 2.2x.
+_RATE_FOOTING_VARIANTS = {
+    "fast": {"speed": "fast", "inference_geo": None},
+    "us": {"speed": None, "inference_geo": "us"},
+    "fast+us": {"speed": "fast", "inference_geo": "us"},
+}
+# Plain-run and per-variant Net$ for _rate_footing_records, hand-derived in
+# TestCacheRebuildTtlVerdictRateMultiplierFooting's docstring.
+_RATE_FOOTING_NET = {
+    ("5m", None): "$47.70", ("5m", "fast"): "$95.40", ("5m", "us"): "$52.47", ("5m", "fast+us"): "$104.94",
+    ("1h", None): "$76.44", ("1h", "fast"): "$152.88", ("1h", "us"): "$84.08", ("1h", "fast+us"): "$168.17",
+}
+
+
+def _rate_footing_records(tier: str, variant: str | None) -> list[dict]:
+    """Two-call corpus for one tier, every record carrying the named rate
+    variant's speed/inference_geo (None for the plain run)."""
+    rate_fields = _RATE_FOOTING_VARIANTS[variant] if variant else {}
+    if tier == "5m":
+        return [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=108_500_000, ts=_ttl_verdict_ts(0),
+                request_id="rf-1", **rate_fields,
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=91_500_000, ts=_ttl_verdict_ts(360),
+                request_id="rf-2", **rate_fields,
+            ),
+        ]
+    return [
+        _priced(
+            "claude-sonnet-5", ephemeral_1h=200_000_000, ts=_ttl_verdict_ts(0),
+            request_id="rf-1", **rate_fields,
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=97_200_000, ts=_ttl_verdict_ts(360),
+            request_id="rf-2", **rate_fields,
+        ),
+    ]
+
+
+def _run_ttl_verdict_on_origin(fake_projects, capsys, origin: str, records: list[dict]) -> tuple[dict, dict]:
+    """Write `records` as the named origin's only traffic, run --ttl-verdict,
+    and return (root row, bucket summary). Re-running on the same
+    fake_projects overwrites the previous corpus."""
+    if origin == "subagent":
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+    else:
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+    _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+    out = capsys.readouterr().out
+    return (
+        _extract_ttl_verdict_root_row(out, origin, "account-1"),
+        _extract_ttl_verdict_summary(out, origin),
+    )
+
+
+class TestCacheRebuildTtlVerdictRateMultiplierFooting:
+    """The margin denominator carries the same fast-mode (2x) and
+    US-inference-geo (1.1x) multipliers the per-call net does, so a uniform
+    rate multiplier scales Net$ and leaves every ratio-derived cell
+    unchanged.
+
+    A pre-fix denominator omitting the multiplier is m x the correct ratio
+    too large, so Clears differs between a plain and a multiplied run only
+    when the plain ratio lies in [0.10 / m, 0.10). The fixtures place the
+    plain ratio inside the tightest window, m = 1.1 -> [0.0909, 0.10), with
+    ~0.0045 of headroom either side, so it also sits inside m = 2 ->
+    [0.05, 0.10) and m = 2.2 -> [0.0455, 0.10). Token counts are ~100x a
+    minimal fixture so cent rounding of Net$ moves the ratio by ~1e-5.
+
+    Rates per MTok (claude-sonnet-5): write_5m $2.50, write_1h $4.00, read
+    $0.20.
+
+    5m-tier corpus: call1 (session start, not idle) writes 108,500,000
+    ephemeral_5m; call2 (360s later, idle) writes 91,500,000 -> W5m = 200M,
+    X = 91.5M. Net = 91.5 x (4.00 - 0.20) - 200 x (4.00 - 2.50) = 347.70 -
+    300 = $47.70; volume = 200 x $2.50 = $500; ratio 0.0954.
+
+    1h-tier corpus: call1 writes 200,000,000 ephemeral_1h at session start;
+    call2 (360s later, read-only so this class does not depend on how a
+    pure-1h write is banded) reads 97,200,000 -> W1h = 200M, Z = 97.2M <
+    W1h. Net = 200 x $1.50 - 97.2 x $2.30 = 300 - 223.56 = $76.44; volume =
+    200 x $4.00 = $800; ratio 0.09555.
+
+    Multiplying every record by m scales Net$ by m (expected values in
+    _RATE_FOOTING_NET) and leaves W5m/W1h, X/Z, Favors, Clears and Share
+    as-is."""
+
+    @pytest.mark.parametrize("origin", ["main", "subagent"])
+    @pytest.mark.parametrize("tier", ["5m", "1h"])
+    @pytest.mark.parametrize("variant", ["fast", "us", "fast+us"])
+    def test_uniform_rate_multiplier_scales_net_and_leaves_every_ratio_cell_unchanged(
+        self, fake_projects, capsys, origin, tier, variant
+    ):
+        plain_row, plain_summary = _run_ttl_verdict_on_origin(
+            fake_projects, capsys, origin, _rate_footing_records(tier, None)
+        )
+        multiplied_row, multiplied_summary = _run_ttl_verdict_on_origin(
+            fake_projects, capsys, origin, _rate_footing_records(tier, variant)
+        )
+
+        # Absolute assertions on the plain run: a price-table change or a
+        # mis-bucketed fixture must fail loudly rather than pass vacuously.
+        assert plain_row["Tier"] == tier
+        assert plain_row["W5m/W1h"] == "200,000,000"
+        assert plain_row["Net$"] == _RATE_FOOTING_NET[(tier, None)]
+        assert plain_row["Clears"] == "False"
+
+        assert multiplied_row["Net$"] == _RATE_FOOTING_NET[(tier, variant)]
+        for cell in ("Tier", "W5m/W1h", "X/Z", "Favors", "Clears", "Share"):
+            assert multiplied_row[cell] == plain_row[cell], cell
+        assert multiplied_summary == plain_summary
+
+    @pytest.mark.parametrize("origin", ["main", "subagent"])
+    def test_mixed_rate_5m_tier_root_denominator_carries_every_records_multiplier(
+        self, fake_projects, capsys, origin
+    ):
+        """One 5m-tier root interleaving default, fast, US-geo and fast+US
+        records. Per-record weight (tokens in millions, m the multiplier,
+        idle = 360s after the prior call):
+        - call1: 650, m 1, session start (not idle)
+        - call2: 40, m 2 (fast), idle
+        - call3: 350, m 1.1 (US geo), idle
+        - call4: 40, m 2.2 (both), idle
+
+        Net = -1.5 x 650 + 2.3 x (2 x 40 + 1.1 x 350 + 2.2 x 40) = -975 +
+        184 + 885.5 + 202.4 = $296.90.
+        Volume = 2.5 x (650 + 80 + 385 + 88) = $3,007.50; ratio 0.09872,
+        under the 10% margin.
+
+        Dropping any one record's multiplier from the volume raises the
+        ratio to at least 0.10: fast 0.1021, US 0.1017, fast+US 0.1028. The
+        window is [0.10 x (1 - s_min), 0.10) with s_min = 0.0291 (the US
+        record's excess share of the volume), i.e. [0.0971, 0.10)."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=650_000_000, ts=_ttl_verdict_ts(0), request_id="m1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=40_000_000, speed="fast",
+                ts=_ttl_verdict_ts(360), request_id="m2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=350_000_000, inference_geo="us",
+                ts=_ttl_verdict_ts(720), request_id="m3",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=40_000_000, speed="fast", inference_geo="us",
+                ts=_ttl_verdict_ts(1080), request_id="m4",
+            ),
+        ]
+        root_row, _summary = _run_ttl_verdict_on_origin(fake_projects, capsys, origin, records)
+
+        assert root_row["Tier"] == "5m"
+        assert root_row["W5m/W1h"] == "1,080,000,000"
+        assert root_row["Net$"] == "$296.90"
+        assert root_row["Clears"] == "False"
+
+    @pytest.mark.parametrize("origin", ["main", "subagent"])
+    def test_mixed_rate_1h_tier_root_denominator_carries_every_records_multiplier(
+        self, fake_projects, capsys, origin
+    ):
+        """One 1h-tier root interleaving default, fast, US-geo and fast+US
+        1h writes (tokens in millions, m the multiplier; writes 30s apart, so
+        never in either idle band), then two read-only idle calls:
+        - writes: 100 (m 1, session start), 80 (m 2), 550 (m 1.1), 40 (m 2.2)
+        - reads, 360s after the prior call: 300 (m 1), 80 (m 2)
+
+        Net = 1.5 x (100 + 160 + 605 + 88) - 2.3 x (300 + 160) = 1,429.50 -
+        1,058.00 = $371.50. Volume = 4 x 953 = $3,812; ratio 0.09746, under
+        the 10% margin. Z = 380M < W1h = 770M, so the token tiebreaker
+        agrees with the dollar sign and only the margin can fail.
+
+        Dropping any one write's multiplier from the volume raises the ratio
+        to at least 0.10: fast 0.1064, US 0.1034, fast+US 0.1026. The window
+        is [0.10 x (1 - s_min), 0.10) with s_min = 0.0504 (the fast+US
+        write's excess share of the volume), i.e. [0.0950, 0.10)."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=100_000_000, ts=_ttl_verdict_ts(0), request_id="h1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=80_000_000, speed="fast",
+                ts=_ttl_verdict_ts(30), request_id="h2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=550_000_000, inference_geo="us",
+                ts=_ttl_verdict_ts(60), request_id="h3",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=40_000_000, speed="fast", inference_geo="us",
+                ts=_ttl_verdict_ts(90), request_id="h4",
+            ),
+            _priced("claude-sonnet-5", cache_read=300_000_000, ts=_ttl_verdict_ts(450), request_id="h5"),
+            _priced(
+                "claude-sonnet-5", cache_read=80_000_000, speed="fast",
+                ts=_ttl_verdict_ts(810), request_id="h6",
+            ),
+        ]
+        root_row, _summary = _run_ttl_verdict_on_origin(fake_projects, capsys, origin, records)
+
+        assert root_row["Tier"] == "1h"
+        assert root_row["W5m/W1h"] == "770,000,000"
+        assert root_row["X/Z"] == "380,000,000"
+        assert root_row["Net$"] == "$371.50"
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictUnpricedDisclosure:
+    """--ttl-verdict's own unpriced-model disclosure (pooled across both
+    directions and every root) -- mirrors the sibling
+    unpriced_switch_delta_turns disclosure's own coverage
+    (TestCacheRebuildSubagentDispersion, around line 9593)."""
+
+    def test_unpriced_model_call_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call is priced once per record, before
+        either the W5m or W1h branch runs, rather than once per boundary
+        iteration -- the disclosure count must reflect the one underlying
+        call, not the two boundaries (primary and sensitivity) it would
+        otherwise be priced at."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-unknown-model", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+    def test_unpriced_mixed_tier_write_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call carrying both ephemeral_1h and
+        ephemeral_5m tokens (a mixed-tier write) enters both the W5m and
+        the W1h branch, but must be counted once, not twice, since both
+        branches price the same underlying call."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced(
+                "claude-unknown-model", ephemeral_1h=100_000, ephemeral_5m=150_000,
+                ts="2026-08-01T10:00:00.000Z", request_id="u2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+
+class TestCacheRebuildTtlVerdictCacheMissReasonValidator:
+    """Cross-tab the gap-derived idle-5m-1h cause against
+    pricing._cache_miss_reason's own model_changed signal -- disclosed
+    only, never overriding the gap-derived accumulation."""
+
+    def test_agreeing_cache_miss_reason_prints_no_discrepancy_line(self, fake_projects, capsys):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "excessive_gap", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert "cache-miss-reason cross-tab" not in out
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+    def test_disagreeing_cache_miss_reason_prints_discrepancy_but_never_overrides_the_accumulator(
+        self, fake_projects, capsys
+    ):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(r"cache-miss-reason cross-tab: (\d+) of (\d+)", out)
+        assert match is not None, "cache-miss-reason cross-tab discrepancy line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "1"
+
+        # The gap-derived classification still governs the cause breakdown
+        # and the per-root accumulator, never pricing._cache_miss_reason's
+        # own signal.
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+
+class TestCacheRebuildTtlVerdictDefaultPathRegression:
+    def test_output_without_the_flag_is_unchanged_and_omits_the_new_section(self, fake_projects, capsys):
+        """Same fixture and assertions as
+        TestCacheRebuildSwitchDeltaArithmetic.test_default_rate_model_break_even_arithmetic
+        -- a spot-check of the subagent row's W5m/X/Net$ cells, plus
+        confirmation the new TTL-verdict section never appears, when
+        --ttl-verdict is omitted."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "1,000,000"
+        assert subagent_row["X"] == "500,000"
+        assert subagent_row["Net$"] == "0.40"
+        assert "## TTL-verdict" not in out
 
 
 def _reviewer_dispatch_records(
@@ -10439,7 +13407,7 @@ class TestCostLedgerPublishSafety:
         """A distinctive project/session marker present in the scanned
         corpus must not reach the ledger file or stdout — cost-ledger's row
         is aggregate-only by construction (no path/session/project field in
-        its schema), mirroring #601's cited-path join test shape."""
+        its schema), mirroring the cited-path join test shape from PR #601."""
         projects = tmp_path / "projects"
         proj = projects / "SENTINEL-PROJECT-marker"
         proj.mkdir(parents=True)
@@ -10580,6 +13548,73 @@ class TestCostLedgerSentinelGate:
             _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
+
+    def test_record_exits_when_config_dir_unresolvable_distinct_from_missing_sentinel(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled("cost_ledger_recording") returning None
+        (config dir unresolvable) is distinguished from a resolved dir that
+        simply lacks the sentinel file (test_record_refuses_without_sentinel
+        above) -- forces the condition via _config's own config_dir binding,
+        the one _config.config_enabled actually reads (see cost_ledger_enabled
+        fixture's docstring for why patching _mod's binding has no effect
+        on it)."""
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod._config, "config_dir", _raise_value_error)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled raising KeyError with an empty schema()
+        means config-keys.psv itself was unreadable -- the message must
+        name that cause, not an unknown-key bug."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_record_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """The same KeyError with a non-empty schema() means config-keys.psv
+        parsed fine -- a real unknown-key bug at the call site, not the
+        stow-relink/git-pull infrastructure cause. The message must name the
+        actual key and must not misattribute it to config-keys.psv being
+        unreadable."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "cost_ledger_recording" in err
+        assert "could not read config-keys.psv" not in err
 
     def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
         _write_jsonl(fake_projects / "sess.jsonl", [
@@ -11108,6 +14143,26 @@ class TestSpendOverThreshold:
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert int(cols["Sessions"]) == 1
+
+    def test_nudge_log_diagnostic_footer_swallows_unresolvable_config_dir(
+        self, fake_projects, capsys, monkeypatch
+    ):
+        """An unresolvable config dir (e.g. $HOME unset) inside the trailing
+        _print_nudge_log_diagnostic() footer must not crash an
+        already-successful report -- the primary table has already printed."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
+        assert "Diagnostic" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -13203,6 +16258,67 @@ class TestCmdUserInput:
         assert "### claude-config ·" in out
         assert "### private-project-1 ·" in out
 
+    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        the Scope line's project count must collapse the worktree-suffixed slug back
+        to the main slug before counting. Same as cmd_buckets's Proj column."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount the Scope line's project
+        count. Same invariant as TestBuckets's Proj-column sibling guard for
+        cmd_buckets — see that test for the mirrored intent, not identical setup
+        mechanics."""
+        proj_alice = fake_projects.parent / "-home-alice-repo"
+        proj_bob = fake_projects.parent / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [
+            _ui_user("prompt from alice's repo", branch="feat"),
+        ])
+        _write_jsonl(proj_bob / "sess.jsonl", [
+            _ui_user("prompt from bob's repo", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, fake_projects, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family. Same invariant as TestBuckets's combined sibling test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        proj_sibling = fake_projects.parent / "-home-otheruser-testrepo"
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_sibling / "sess.jsonl", [
+            _ui_user("prompt from a same-named repo under a different home dir", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 3 sessions, 3 fresh prompts" in out
+
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
         with the user-input-specific stderr message; nothing is printed to stdout."""
@@ -13791,13 +16907,12 @@ class TestSkillInvocationRepoScope:
 
     def test_scope_matches_by_literal_name_not_glob(self, tmp_path, monkeypatch, capsys):
         """A derived slug is matched as a literal directory name, not a glob. A
-        slug containing a glob metacharacter (from a `*`/`?`/`[` in the home or
-        username path) must not widen the read to a sibling project dir the
-        wildcard would otherwise match — string equality does not; Path.glob
-        would."""
+        slug containing a glob metacharacter (`*`/`?`/`[` in any path component)
+        must not widen the read to a sibling project dir the wildcard would
+        otherwise match — string equality does not; Path.glob would."""
         projects = tmp_path / "projects"
-        mine = projects / "-home-u-r*-main"       # in-scope slug carries a '*'
-        theirs = projects / "-home-u-rX-main"     # a wildcard on 'mine' would match this
+        mine = projects / "-r*-main"       # in-scope slug carries a '*'
+        theirs = projects / "-rX-main"     # a wildcard on 'mine' would match this
         mine.mkdir(parents=True)
         theirs.mkdir(parents=True)
         monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
@@ -13807,17 +16922,17 @@ class TestSkillInvocationRepoScope:
         _write_jsonl(theirs / "s.jsonl", [
             _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y2", "plan-review")]),
         ])
-        # The real _path_to_project_slug maps "/home/u/r*/main" -> "-home-u-r*-main"
+        # The real _path_to_project_slug maps "/r*/main" -> "-r*-main"
         # ('/' and '.' -> '-'; the '*' is preserved), so no monkeypatch is needed —
         # letting it run is what makes this a real test of the '*' surviving into a
         # slug and still being matched literally.
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/home/u/r*/main")
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/r*/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/home/u/r*/main"), "")
+                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/r*/main"), "")
             assert cmd == ["git", "rev-parse", "--show-toplevel"]
-            return subprocess.CompletedProcess(cmd, 0, "/home/u/r*/main\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "/r*/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
@@ -14051,6 +17166,16 @@ class TestBuildParser:
         parsed = parser.parse_args(["buckets", "--this-repo"])
         assert parsed.projects == "*"
         assert parsed.this_repo is True
+
+    def test_pr_link_without_repo_flag_defaults_to_none(self):
+        parser = _mod.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y"])
+        assert parsed.repo is None
+
+    def test_pr_link_with_repo_flag_parses_value(self):
+        parser = _mod.build_parser()
+        parsed = parser.parse_args(["pr-link", "--branches", "feat-y", "--repo", "owner/repo"])
+        assert parsed.repo == "owner/repo"
 
 
 class TestIterSessionsOrdering:
@@ -14606,8 +17731,8 @@ class TestSubagentsMultiRoot:
         test in this class uses fake_projects, whose active root is always
         a path-prefix ancestor of any fake_config_dir_factory root and
         therefore always sorts first regardless — that shared setup cannot
-        catch this regression class, the same blind spot PR #603's own
-        pre-fix edit-format test had."""
+        catch this regression class, the same blind spot the pre-fix
+        edit-format test in PR #603 had."""
         monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
@@ -15966,6 +19091,8 @@ class TestDenialHookLabelEnumeration:
         ("enforce-marker-script-shape.sh:353",
          "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus",
          "marker.sh"),
+        # These two rows must land unedited: they pin legacy pre-DENY_GATE_LABEL wording,
+        # not today's hooks/*.sh text (see TestDenialHookLabelEnumerationRealHooks for that).
         ("check-claude-md-length.sh:85",
          "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
          "Reduce to the limit or fewer lines before committing.",
@@ -15987,7 +19114,7 @@ class TestDenialHookLabelEnumeration:
 
 
 # Every gate hook bootstraps identically: `set -uo pipefail`, define a raw
-# emit_deny stub, then `. "$(dirname "$0")/_lib.sh"` — if that source fails,
+# emit_deny stub, then `. "${0%/*}/_lib.sh"` — if that source fails,
 # the stub denies with "Blocked by <label> gate/hook: could not source
 # _lib.sh." before ever reading stdin. Copying one hook script alone (no
 # _lib.sh alongside it, see _isolated_hook_copy) into a fresh directory
@@ -16059,6 +19186,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
+    ("deny-no-op-dispatch.sh", "no-op-dispatch"),
 )
 
 
@@ -16089,7 +19217,7 @@ def test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label()
 
 def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
     """Copy one hooks/*.sh script alone into an isolated directory, with no
-    _lib.sh alongside it, so the hook's own `. "$(dirname "$0")/_lib.sh"`
+    _lib.sh alongside it, so the hook's own `. "${0%/*}/_lib.sh"`
     bootstrap line genuinely fails to source."""
     dest_dir = tmp_path / "isolated-hook"
     dest_dir.mkdir(exist_ok=True)
@@ -16267,12 +19395,12 @@ _DENIAL_HOOK_NAME_SHAPE_RE = re.compile(r"[\w .-]+")
 # Call shapes that carry a deny-message literal: emit_deny, its
 # emit_deny_folding_fresh_lock_context wrapper
 # (require-worktree-for-git-writes.sh), and _lib_parse_tool_input_or_deny's
-# own argument. _lib_staged_length_gate's second (message) argument is
-# reached via its distinct two-argument call shape, since its first argument
-# is a single-quoted grep -E pattern rather than a deny literal.
+# own argument. _lib_staged_length_gate's third (message) argument is
+# reached via its distinct three-argument call shape — "$REPO_ROOT", then a
+# single-quoted grep -E pattern, then the deny literal.
 _DENY_LITERAL_CALL_START_RE = re.compile(
     r"(?<![\w])(?:emit_deny|emit_deny_folding_fresh_lock_context|_lib_parse_tool_input_or_deny)\s+\""
-    r"|_lib_staged_length_gate\s+'[^']*'\s+\""
+    r"|_lib_staged_length_gate\s+\"\$REPO_ROOT\"\s+'[^']*'\s+\""
 )
 
 
@@ -18120,10 +21248,8 @@ class TestSkillFilesReportObservedScopeNotUnionGuarantee:
 
     def test_transcript_analysis_names_the_summary_scope_line_as_the_carrier(self):
         skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
-        assert (
-            "`cost --summary` prints no resolved-scope header — it is always scoped to the active"
-            " account only, and states so on its own `Scope: this account only (...)` line instead"
-        ) in skill_text
+        assert "`cost --summary` prints no resolved-scope header" in skill_text
+        assert "on its own `Scope:` line" in skill_text
 
     def test_transcript_analysis_no_longer_claims_the_header_is_unconditional_for_every_subcommand(self):
         skill_text = (SKILLS_DIR / "transcript-analysis" / "SKILL.md").read_text()
@@ -18301,7 +21427,7 @@ class TestHookObservableBoundaries:
 
 class TestRampCurveFromCorpus:
     def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
-        """PR #605's own table never labeled turn index 10-19 (its bands jump
+        """The table in PR #605 never labeled turn index 10-19 (its bands jump
         from "5-10" to "20-40"); the cascading less-than lookup this reuses
         from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range
         into "20-40" rather than leaving it unbucketed."""
@@ -18781,6 +21907,24 @@ class TestRearmBacktestReport:
         _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "1 excluded" in out
+
+    def test_unresolvable_config_dir_exits_cleanly(self, fake_projects, capsys, monkeypatch):
+        """An unresolvable config dir (e.g. $HOME unset) at the
+        .handoff-nudge.log read exits 1 with a diagnostic, rather than an
+        uncaught ValueError traceback -- mirrors _cost_ledger_path's own
+        callers' stderr+exit convention."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        assert exc_info.value.code == 1
+        assert "HOME is unset or empty" in capsys.readouterr().err
 
     def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
         """A session on a 200k-context-window model crosses its own real fire
@@ -20347,6 +23491,118 @@ class TestPrCostReportOrchestration:
         assert len(calls) == 1
 
 
+class TestPrCostRecordingConfigDirUnresolvable:
+    """_config.config_enabled("pr_cost_recording", ...) returning None --
+    distinct from a resolved account simply lacking .pr-cost-enabled. Not
+    reachable through account_config_dir itself (root.parent is always a
+    concrete Path, per this call site's own comment), so these force the
+    condition directly through _config.config_enabled rather than through
+    any real config-dir input."""
+
+    def test_single_account_exits_1_with_its_own_diagnostic(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording":
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
+
+    def test_all_accounts_skips_the_affected_account_and_continues_the_sweep(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """acct_a's own config_enabled call is forced to None; acct_b's own
+        call is untouched and opted in normally -- the sweep must count
+        acct_a via skipped_other and still record acct_b's row, rather than
+        aborting the whole run on the first account's unresolvable dir."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_b / ".pr-cost-enabled").touch()  # acct_a deliberately forced to None below
+        proj_b = roots[1] / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording" and config_dir_override == acct_a:
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        rows_b = _mod._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_b) == 1
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        captured = capsys.readouterr()
+        assert "account-1's config directory could not be resolved -- skipped" in captured.err
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+
+
+class TestPrCostRecordingKeyError:
+    """_config.config_enabled("pr_cost_recording", ...) raising KeyError is
+    ambiguous on its own -- config-keys.psv unreadable and a genuine
+    unknown-key bug both raise the identical KeyError. These force each
+    schema() outcome directly to pin the message picks the right cause."""
+
+    def test_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "pr_cost_recording" in err
+        assert "could not read config-keys.psv" not in err
+
+
 class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
     """Pure args-object-driven refusals in _pr_cost_report -- each must fire
     before any subprocess call, confirmed by a subprocess double that raises
@@ -20756,6 +24012,40 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         )
         assert _mod._git_remote_origin_host_and_owner_repo() == expected
 
+    def test_default_args_prefix_failure_with_pr_cost_and_no_repo_hint(self, monkeypatch, capsys):
+        """Calls _git_remote_origin_host_and_owner_repo with no arguments --
+        pr-cost's own call shape -- against an unparseable origin. Confirms
+        the new subcommand/failure_hint params don't change this default
+        path: the message stays prefixed "pr-cost:" with no --repo hint."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": "not a remote\n", "stderr": ""})(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("pr-cost:")
+        assert "--repo" not in err
+
+    def test_default_args_prefix_failure_when_origin_remote_unresolvable(self, monkeypatch, capsys):
+        """Calls _git_remote_origin_host_and_owner_repo with no arguments --
+        pr-cost's own call shape -- where `git remote get-url origin` itself
+        fails. Confirms the "could not resolve this repo's own remote"
+        branch, distinct from the regex-mismatch branch covered above, also
+        stays prefixed "pr-cost:" with no --repo hint."""
+
+        def fake_run(cmd, *a, **kw):
+            raise subprocess.CalledProcessError(128, cmd)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("pr-cost:")
+        assert "--repo" not in err
+
     def test_attacker_substring_shape_does_not_resolve(self, monkeypatch, capsys):
         """A malicious/misconfigured remote embedding "github.com/owner/repo"
         as a path segment on a different host must not spoof the real
@@ -20968,7 +24258,7 @@ class TestGhCallWithBackoffFailureClassBehavior:
         def fake_run(cmd, *a, **kw):
             nonlocal call_count
             call_count += 1
-            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._GH_CALL_TIMEOUT_S)
 
         sleep_calls: list[float] = []
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -20991,7 +24281,7 @@ class TestGhCallWithBackoffFailureClassBehavior:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._PR_COST_GH_TIMEOUT_S)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod._GH_CALL_TIMEOUT_S)
             return type("R", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""})()
 
         sleep_calls: list[float] = []
@@ -22181,8 +25471,8 @@ class TestPrCostAllAccounts:
         out = capsys.readouterr().out
         pr1_line = next(line for line in out.splitlines() if "PR #1" in line)
         pr2_line = next(line for line in out.splitlines() if "PR #2" in line)
-        # "aaa-extra" (PR #1's branch) resolved-path-sorts before "zzz-active"
-        # (PR #2's branch) despite being scanned second -- account-1 must be
+        # "aaa-extra" (the PR #1 branch) resolved-path-sorts before "zzz-active"
+        # (the PR #2 branch) despite being scanned second -- account-1 must be
         # the extra root's row.
         assert "account-1/branch-1" in pr1_line
         assert "account-2/branch-1" in pr2_line
@@ -22268,3 +25558,1387 @@ class TestCmdPrCostEndToEndViaRealArgparse:
         assert len(rows) == 1
         out = capsys.readouterr().out
         assert "recorded 1 of 1 declared accounts (0 not opted in, 0 skipped)" in out
+
+
+# ---------------------------------------------------------------------------
+# handoff-signal-response
+# ---------------------------------------------------------------------------
+
+def _handoff_signal_response_args(
+    *, projects: str = "*", this_repo: bool = False, config_dir: str | None = None,
+    no_redact: bool = False, sample: int = 0, seed: int | None = None,
+    output_format: str = "json", context_turns: int = 0,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "config_dir": config_dir,
+        "no_redact": no_redact,
+        "sample": sample,
+        "seed": seed,
+        "output_format": output_format,
+        "context_turns": context_turns,
+    })()
+
+
+def _check_result_json(
+    *, status: str = "ok", over_threshold: bool = False, already_fired: bool = False,
+    estimate: int = 200_000, threshold: int = 150_000,
+) -> str:
+    """The exact JSON shape nudge-handoff-near-context-cap.sh --check prints
+    (run_check_mode's own jq -n object)."""
+    return json.dumps({
+        "status": status, "session_id": "s", "estimate": estimate, "threshold": threshold,
+        "over_threshold": over_threshold, "model": "claude-sonnet-5", "context_window": 1_000_000,
+        "model_recognized": True, "already_fired": already_fired, "nudge_disabled": False,
+    })
+
+
+def _handoff_advisory_attachment() -> dict:
+    """The real advisory-fire attachment record shape (a "hook_success"
+    attachment whose stdout is nudge-handoff-near-context-cap.sh's own
+    injected-additionalContext JSON envelope)."""
+    return {
+        "type": "attachment",
+        "attachment": {
+            "type": "hook_success",
+            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
+            "hookEvent": "PostToolBatch",
+            "stdout": json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolBatch",
+                    "additionalContext": (
+                        "Context is past this session's handoff-nudge threshold (150000 tokens)."
+                        " If the current task is not close to done, suggest running /handoff to the"
+                        " user. If the task is nearly complete, ignore this and finish -- judge that"
+                        " by what the remaining work costs, not by how many steps are left."
+                    ),
+                },
+            }),
+            "stderr": "",
+            "exitCode": 0,
+        },
+    }
+
+
+def _handoff_hard_block_attachment() -> dict:
+    """The real hard-block attachment record shape ("hook_stopped_continuation",
+    carrying "message" but no "command"/"stdout" -- nudge-handoff-near-context-cap.sh
+    lines 644-649)."""
+    return {
+        "type": "attachment",
+        "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": (
+                "[~/.claude/hooks/nudge-handoff-near-context-cap.sh]: Context (507297 tokens) is"
+                " past this session's handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=470000),"
+                " after 4 ignored re-arms. Blocking rather than advising: run /handoff now -- it"
+                " captures state in a /tmp file and resumes in a fresh session."
+            ),
+            "hookName": "PostToolBatch",
+            "hookEvent": "PostToolBatch",
+        },
+    }
+
+
+def _check_call_turn(tool_id: str = "chk1", **usage_kwargs) -> dict:
+    """A main-thread assistant turn whose only tool call is the real --check
+    invocation (handoff/SKILL.md's own command text)."""
+    return _priced(
+        "claude-sonnet-5",
+        content=[_bash_use(tool_id, "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")],
+        **usage_kwargs,
+    )
+
+
+class TestHandoffSignalDetectorHelpers:
+    """Unit coverage for the small Bash-command/tool_use classifiers
+    _handoff_signal_response_session_rows' own single pass reuses."""
+
+    def test_bash_check_call_detected_in_plain_invocation(self):
+        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
+        assert _mod._handoff_signal_bash_check_call(block) is True
+
+    def test_bash_check_call_detected_inside_chained_segment(self):
+        block = _bash_use("t1", "cd /tmp && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
+        assert _mod._handoff_signal_bash_check_call(block) is True
+
+    def test_bash_call_without_check_flag_is_not_a_check_call(self):
+        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh")
+        assert _mod._handoff_signal_bash_check_call(block) is False
+
+    def test_non_bash_tool_use_is_not_a_check_call(self):
+        block = _skill_use("t1", "handoff")
+        assert _mod._handoff_signal_bash_check_call(block) is False
+
+    def test_marker_activate_ready_for_review_detected(self):
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "activate"
+
+    def test_marker_deactivate_ready_for_review_detected(self):
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh deactivate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
+
+    def test_marker_transition_for_a_different_skill_is_ignored(self):
+        """A marker.sh call for a DIFFERENT skill (e.g. handoff's own) must
+        not be misread as a ready-for-review transition."""
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate handoff")
+        assert _mod._handoff_signal_marker_transition(block) is None
+
+    def test_marker_activate_detected_inside_an_and_chained_segment(self):
+        block = _bash_use("m1", "cd /tmp && ~/.claude/scripts/marker.sh activate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "activate"
+
+    def test_marker_deactivate_detected_inside_a_semicolon_chained_segment(self):
+        block = _bash_use("m1", "cd /tmp ; ~/.claude/scripts/marker.sh deactivate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
+
+    def test_skill_handoff_invocation_is_a_handoff_event(self):
+        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
+
+    def test_skill_invocation_for_a_different_skill_is_not_a_handoff_event(self):
+        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "plan-review")) is False
+
+    def test_write_to_handoffs_file_is_a_handoff_event(self):
+        block = _write_use("w1", "body", path="/repo/.claude/handoffs/my-task-handoff.md")
+        assert _mod._handoff_signal_is_handoff_event(block) is True
+
+    def test_write_to_an_unrelated_path_is_not_a_handoff_event(self):
+        block = _write_use("w1", "body", path="/repo/scratch/notes.md")
+        assert _mod._handoff_signal_is_handoff_event(block) is False
+
+
+class TestHandoffSignalExcerptEligibility:
+    """The source-turn-eligibility filter: an excerpt candidate is only
+    ever a main-thread assistant record's own "text" content block."""
+
+    _RATIONALIZATION_TEXT = "nearly complete, ignore this and finish -- no cost reasoning needed"
+
+    def test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible(self):
+        """The record itself IS type=="assistant" -- pins that eligibility is
+        filtered at the block level (type=="text" only), not merely by the
+        record's own top-level type."""
+        rec = _priced("claude-sonnet-5", content=[_bash_use("t1", f"echo '{self._RATIONALIZATION_TEXT}'")])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_tool_result_record_is_never_excerpt_eligible(self):
+        rec = _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_plain_user_turn_record_is_never_excerpt_eligible(self):
+        rec = _user_msg(self._RATIONALIZATION_TEXT)
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_sidechain_assistant_text_is_not_excerpt_eligible(self):
+        """A subagent's own text turn: the nudge never fires inside a
+        subagent, so this isn't the orchestrating session's own rationalization."""
+        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
+        rec["isSidechain"] = True
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_plain_main_thread_assistant_text_is_excerpt_eligible(self):
+        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == self._RATIONALIZATION_TEXT
+
+    def test_excerpt_skips_ineligible_records_and_finds_next_eligible_assistant_text(self):
+        deduped = [
+            _priced("claude-sonnet-5", content=[_bash_use("t1", "echo hi")], request_id="r1"),
+            _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)]),
+            _priced(
+                "claude-sonnet-5", request_id="r2",
+                content=[{"type": "text", "text": "Continuing because remaining steps are few."}],
+            ),
+        ]
+        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
+            "Continuing because remaining steps are few."
+        )
+
+    def test_excerpt_truncates_eligible_text_to_max_chars(self):
+        # Sequential digits, not a repeated character: a wrong-window slice
+        # (e.g. text[50:450]) is byte-distinguishable from the correct prefix.
+        long_text = "".join(str(i % 10) for i in range(_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS + 50))
+        turn = _priced("claude-sonnet-5", content=[{"type": "text", "text": long_text}], request_id="r1")
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
+            long_text[:_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
+        )
+
+    def test_tool_use_block_content_never_leaks_into_the_base_excerpt(self):
+        """Mirrors TestHandoffSignalForwardContext's own
+        test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking:
+        a tool_use block mixed into an otherwise-eligible assistant record's
+        content must never surface in the excerpt -- pinned as a
+        security-invariant regression, not just a coverage gap, since a
+        future refactor could otherwise leak tool-call content into a
+        published case-study excerpt."""
+        identifiable_command = "cat /scratch/api-keys.txt"
+        rec = _priced(
+            "claude-sonnet-5",
+            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
+        )
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == "wrapping up now"
+        assert identifiable_command not in _mod._handoff_signal_excerpt_eligible_text(rec)
+
+
+class TestHandoffSignalForwardContext:
+    """_handoff_signal_forward_context's own turn-walking, truncation, and
+    thinking-block contract. Unlike _handoff_signal_excerpt_eligible_text
+    (text blocks only), this reads both text and thinking content -- closing
+    the base excerpt's own blind spot for an agent's extended-thinking
+    reasoning."""
+
+    def test_returns_up_to_n_turns_in_order_with_correct_turn_offset(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn three"}], request_id="r3"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        assert [(c["turn_offset"], c["text"]) for c in contexts] == [(1, "turn one"), (2, "turn two")]
+
+    def test_returns_fewer_than_n_turns_when_the_transcript_runs_out(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "only turn"}], request_id="r1"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        assert len(contexts) == 1
+        assert contexts[0]["turn_offset"] == 1
+
+    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_base_excerpt(self):
+        """Regression test for the base excerpt's own thinking-block blind
+        spot: a turn with a thinking block and no text block is invisible to
+        _handoff_signal_excerpt_eligible_text, but must still appear here."""
+        turn = _priced("claude-sonnet-5", content=[_thinking_block()], request_id="r1")
+        assert _mod._handoff_signal_excerpt_eligible_text(turn) == ""
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
+
+    def test_truncates_text_and_thinking_independently_to_max_chars(self):
+        long_text = "t" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        long_thinking = "k" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        turn = _priced(
+            "claude-sonnet-5", request_id="r1",
+            content=[{"type": "text", "text": long_text}, {"type": "thinking", "thinking": long_thinking}],
+        )
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts[0]["text"] == long_text[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+        assert contexts[0]["thinking"] == long_thinking[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+
+    def test_sidechain_and_non_assistant_records_are_never_counted_as_turns(self):
+        sidechain = _priced("claude-sonnet-5", content=[{"type": "text", "text": "subagent text"}], request_id="r1")
+        sidechain["isSidechain"] = True
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _user_msg([_tool_result("t1", "irrelevant")]),
+            sidechain,
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "real turn"}], request_id="r2"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        assert len(contexts) == 1
+        assert contexts[0]["text"] == "real turn"
+
+    def test_no_session_id_or_path_field_ever_appears_in_an_entry(self):
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn"}], request_id="r1"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert set(contexts[0]) == {"turn_offset", "text", "thinking"}
+
+    def test_n_turns_zero_or_negative_returns_empty_list(self):
+        """Docstring says "up to n_turns" entries -- n_turns<=0 must return
+        none at all, not one spurious entry from appending before checking
+        the length guard (the CLI-reachable --context-turns -1 boundary)."""
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
+        ]
+        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=0) == []
+        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=-1) == []
+
+    def test_interior_turn_with_only_tool_use_content_still_consumes_a_turn_slot(self):
+        """A turn with no text/thinking content (only a tool_use block) must
+        still count as a visited turn -- keeping turn_offset stable for every
+        turn that follows it -- not be silently skipped like a sidechain or
+        non-assistant record is."""
+        empty_turn = _priced("claude-sonnet-5", content=[_bash_use("t1", "git status")], request_id="r1")
+        deduped = [
+            _priced("claude-sonnet-5", request_id="r0"),
+            empty_turn,
+            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
+        ]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        assert contexts[0] == {"turn_offset": 1, "text": "", "thinking": ""}
+        assert contexts[1]["turn_offset"] == 2
+        assert contexts[1]["text"] == "turn two"
+
+    def test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking(self):
+        """Mirrors TestHandoffSignalExcerptEligibility's own
+        test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible:
+        a tool_use block mixed into an otherwise-eligible assistant record's
+        content must never surface in either forward_context field -- pinned
+        as a security-invariant regression, not just a coverage gap, since a
+        future refactor could otherwise leak tool-call content into a
+        published case-study excerpt."""
+        identifiable_command = "cat /scratch/api-keys.txt"
+        turn = _priced(
+            "claude-sonnet-5", request_id="r1",
+            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
+        )
+        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
+        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts[0]["text"] == "wrapping up now"
+        assert identifiable_command not in contexts[0]["text"]
+        assert identifiable_command not in contexts[0]["thinking"]
+
+
+class TestHandoffSignalResponseSessionRows:
+    """_handoff_signal_response_session_rows' own signal-detection and
+    row-composition contract, per
+    .claude/plans/handoff-nudge-rationalization-gap.md."""
+
+    def test_over_threshold_true_already_fired_false_emits_one_check_signal(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=False))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
+
+    def test_over_threshold_false_already_fired_true_emits_one_check_signal(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
+
+    def test_over_threshold_and_already_fired_both_true_is_still_one_row_not_two(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+
+    def test_neither_over_threshold_nor_already_fired_emits_no_signal(self):
+        records = [
+            _check_call_turn(input=50_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=False))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_cannot_resolve_status_emits_no_signal(self):
+        """A --check refusal (status != "ok") must never be misread as a
+        qualifying over_threshold/already_fired result."""
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", json.dumps({"status": "cannot-resolve", "reason": "transcript-not-found"}))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_session_with_check_and_advisory_signals_emits_two_distinct_rows(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _handoff_advisory_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_CHECK, _mod._HANDOFF_SIGNAL_ADVISORY]
+
+    def test_advisory_then_later_hard_block_emits_two_distinct_rows_not_collapsed(self):
+        """The only shape a hard-block signal occurs in: an earlier
+        same-session advisory record (the hook's LAST_FIRED_AT invariant
+        makes a session's first-ever fire always advisory) followed by a
+        later hard-block record."""
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r2"),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_ADVISORY, _mod._HANDOFF_SIGNAL_HARD_BLOCK]
+        assert rows[0]["record_index"] < rows[1]["record_index"]
+
+    def test_hard_block_record_shape_alone_is_detected_in_isolation(self):
+        """Parser-level supplement to the session-level fixture above --
+        does not substitute for it."""
+        records = [
+            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r1"),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_HARD_BLOCK
+
+    def test_marker_active_state_reflects_the_most_recent_transition_at_signal_time(self):
+        records = [
+            _priced(
+                "claude-sonnet-5", input=160_000, output=1_000, request_id="r1",
+                content=[_bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")],
+            ),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", input=480_000, output=1_000, request_id="r2",
+                content=[_bash_use("m2", "~/.claude/scripts/marker.sh deactivate ready-for-review")],
+            ),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["marker_active"] is True
+        assert rows[1]["marker_active"] is False
+
+    def test_handoff_followed_true_when_handoff_skill_invoked_after_signal_same_session(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2", content=[_skill_use("h1", "handoff")]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is True
+
+    def test_handoff_followed_false_when_no_handoff_event_this_session(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2"),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is False
+
+    def test_handoff_followed_true_via_write_to_handoffs_file(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", input=170_000, output=1_000, request_id="r2",
+                content=[_write_use("w1", "body", path="/repo/.claude/handoffs/task-handoff.md")],
+            ),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is True
+
+    def test_turns_and_dollars_after_signal_count_only_turns_strictly_after_the_signal(self):
+        rec_before = _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1")
+        rec_after_1 = _priced("claude-sonnet-5", input=170_000, output=2_000, request_id="r2")
+        rec_after_2 = _priced("claude-sonnet-5", input=180_000, output=2_000, request_id="r3")
+        records = [rec_before, _handoff_advisory_attachment(), rec_after_1, rec_after_2]
+
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+
+        dollars_after_1, _ctx1, _u1 = _mod._price_turn("claude-sonnet-5", rec_after_1["message"]["usage"])
+        dollars_after_2, _ctx2, _u2 = _mod._price_turn("claude-sonnet-5", rec_after_2["message"]["usage"])
+        expected_dollars = sum(dollars_after_1.values()) + sum(dollars_after_2.values())
+
+        assert rows[0]["turns_after_signal"] == 2
+        assert rows[0]["dollars_after_signal"] == pytest.approx(expected_dollars)
+
+    def test_pct_spend_after_signal_is_relative_to_the_whole_session_not_the_tail(self):
+        """Two signals in one session, at different positions: each row's
+        own pct_spend_after_signal must divide by the WHOLE session's total
+        dollars (session_total_dollars), not by the spend remaining between
+        the two signals -- a bug here would make the second signal's
+        percentage look artificially high."""
+        rec1 = _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1")
+        rec2 = _priced("claude-sonnet-5", input=110_000, output=2_000, request_id="r2")
+        rec3 = _priced("claude-sonnet-5", input=120_000, output=3_000, request_id="r3")
+        records = [
+            rec1,
+            _handoff_advisory_attachment(),  # signal A fires after rec1
+            rec2,
+            _handoff_hard_block_attachment(),  # signal B fires after rec2
+            rec3,
+        ]
+
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 2
+        row_a, row_b = rows
+
+        d1 = sum(_mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])[0].values())
+        d2 = sum(_mod._price_turn("claude-sonnet-5", rec2["message"]["usage"])[0].values())
+        d3 = sum(_mod._price_turn("claude-sonnet-5", rec3["message"]["usage"])[0].values())
+        total = d1 + d2 + d3
+
+        assert row_a["session_total_dollars"] == pytest.approx(total)
+        assert row_a["dollars_after_signal"] == pytest.approx(d2 + d3)
+        assert row_a["pct_spend_after_signal"] == pytest.approx((d2 + d3) / total)
+
+        assert row_b["session_total_dollars"] == pytest.approx(total)
+        assert row_b["dollars_after_signal"] == pytest.approx(d3)
+        assert row_b["pct_spend_after_signal"] == pytest.approx(d3 / total)
+
+    def test_pct_spend_after_signal_is_none_when_session_total_dollars_is_zero(self):
+        """A session whose every priced turn is $0 (zero usage counts) must
+        report pct_spend_after_signal as None rather than raising
+        ZeroDivisionError."""
+        records = [
+            _check_call_turn(input=0, output=0, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["session_total_dollars"] == 0.0
+        assert rows[0]["pct_spend_after_signal"] is None
+
+    def test_signal_at_transcript_end_reports_zero_turns_and_dollars_after_not_none(self):
+        """The firing tool_result is the LAST record, with nothing after it --
+        distinct from the zero-cost-session case above (session_total_dollars
+        is nonzero here), this pins that "no turns follow" still resolves to
+        0.0/0.0, never None, when there IS spend to divide against."""
+        records = [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1"),
+            _check_call_turn(input=200_000, output=1_000, request_id="r2"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["turns_after_signal"] == 0
+        assert rows[0]["dollars_after_signal"] == 0.0
+        assert rows[0]["pct_spend_after_signal"] == 0.0
+
+    def test_malformed_json_in_check_tool_result_content_emits_no_signal(self):
+        """The --check tool_result's own content is not valid JSON -- the
+        (json.JSONDecodeError, ValueError) guard around that parse must
+        swallow it silently, emitting no signal, rather than raise."""
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", "not valid json{")]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_malformed_json_in_advisory_attachment_stdout_emits_no_signal(self):
+        """The advisory hook_success attachment's own stdout is not valid
+        JSON -- the (json.JSONDecodeError, ValueError) guard around that
+        parse must swallow it silently, emitting no signal, rather than raise."""
+        records = [
+            {
+                "type": "attachment",
+                "attachment": {
+                    "type": "hook_success",
+                    "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
+                    "hookEvent": "PostToolBatch",
+                    "stdout": "not valid json{",
+                    "stderr": "",
+                    "exitCode": 0,
+                },
+            },
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+
+class TestCmdHandoffSignalResponseScopeAndRedaction:
+    """cmd_handoff_signal_response's own CLI-boundary contract: the
+    resolved-scope banner and the context-distribution-style multi-root
+    --no-redact refusal (.claude/plans/handoff-nudge-rationalization-gap.md)."""
+
+    def test_resolved_scope_banner_reports_a_single_root(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        out = capsys.readouterr().out
+        assert "HANDOFF SIGNAL RESPONSE SOURCES" in out
+        assert "1 root" in out
+
+    @pytest.mark.parametrize("sample", [0, 5])
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, sample):
+        """sample=5 pins the higher-risk curation-card path (raw excerpts and
+        text), which sample=0's aggregate-only fixture never reached."""
+        _two_declared_roots(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True, sample=sample))
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--no-redact" in err
+        assert "more than one root" in err
+
+    def test_no_redact_allowed_and_stamps_banner_at_single_root(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+
+
+class TestCmdHandoffSignalResponseSampleCards:
+    """--sample curation-card output: session-id redaction and the excerpt
+    join against the real (re-read) session file."""
+
+    def test_sample_redacts_session_id_by_default(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 1
+        assert cards[0]["session_id"] == "session-1"
+        assert cards[0]["session_id"] != "sess"  # "sess" is the real jsonl.stem this must not leak
+
+    def test_sample_no_redact_emits_raw_session_id(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        # DO NOT PUBLISH banner (stdout) + resolved-scope header precede the JSON array.
+        json_start = out.index("[")
+        cards = json.loads(out[json_start:])
+        assert len(cards) == 1
+        assert cards[0]["session_id"] == "sess"
+
+    def test_sample_card_excerpt_matches_next_eligible_assistant_text_turn(self, fake_projects, capsys):
+        """Drives the excerpt seam through the real CLI path (file write ->
+        cmd_handoff_signal_response -> card), not just the in-memory unit
+        test. _handoff_signal_response_cards re-reads the session file
+        independently of the initial scan's own deduped list."""
+        excerpt_text = "Continuing because remaining steps are few, not because of cost."
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced(
+                "claude-sonnet-5", input=210_000, output=500, request_id="r2",
+                content=[{"type": "text", "text": excerpt_text}],
+            ),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["excerpt"] == excerpt_text
+
+    def test_multiple_signals_from_the_same_session_get_the_same_redacted_label(self, fake_projects, capsys):
+        """Two signals from one real session must redact to the same
+        session-N label, not session-1/session-2 for the same underlying
+        session -- pins _assign_session_redact_label's per-session (not
+        per-row) keying."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn("chk1", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _check_call_turn("chk2", input=210_000, output=1_000, request_id="r2"),
+            _user_msg([_tool_result("chk2", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 2
+        assert cards[0]["session_id"] == cards[1]["session_id"] == "session-1"
+
+
+class TestCmdHandoffSignalResponseContextTurns:
+    """--context-turns wiring through the CLI: the --sample precondition,
+    the omitted-flag no-op contract, and the forward_context shape --
+    including the thinking-block regression the flag exists to close."""
+
+    def test_context_turns_without_sample_exits_2_naming_both_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=0, context_turns=2))
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--context-turns" in err
+        assert "--sample" in err
+
+    def test_negative_context_turns_exits_2_with_stderr_message(self, fake_projects, capsys):
+        """--sample is set here so this isolates the negative-value check
+        from the --context-turns-requires---sample check above."""
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=1, context_turns=-1))
+        assert exc_info.value.code == 2
+        assert "--context-turns must not be negative" in capsys.readouterr().err
+
+    def test_context_turns_omitted_forward_context_key_absent_from_every_card(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 1
+        assert "forward_context" not in cards[0]
+
+    def test_context_turns_surfaces_up_to_n_turns_with_turn_offset(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn one text"}]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r3",
+                    content=[{"type": "text", "text": "turn two text"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=2)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        forward_context = cards[0]["forward_context"]
+        assert [(t["turn_offset"], t["text"]) for t in forward_context] == [
+            (1, "turn one text"), (2, "turn two text"),
+        ]
+
+    def test_context_turns_returns_fewer_than_n_when_the_transcript_runs_out(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "only turn"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=5)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards[0]["forward_context"]) == 1
+
+    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_the_excerpt(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2", content=[_thinking_block()]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=1)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["excerpt"] == ""
+        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
+
+    @pytest.mark.parametrize("no_redact", [False, True])
+    def test_forward_context_never_contains_session_id_or_path_fields(self, fake_projects, capsys, no_redact):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn text"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(
+                sample=5, seed=1, output_format="json", context_turns=1, no_redact=no_redact,
+            )
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        for turn in cards[0]["forward_context"]:
+            assert set(turn) == {"turn_offset", "text", "thinking"}
+
+
+class TestCmdHandoffSignalResponseContextTurnsViaRealArgparse:
+    """Exercises --context-turns through the real argparse CLI
+    (build_parser()), not the _handoff_signal_response_args() test-helper
+    shortcut every other handoff-signal-response test uses -- cmd_handoff_signal_response
+    reads the flag via getattr(args, "context_turns", 0), a silent
+    fallback-to-0 read that a dest/flag-string wiring bug would pass
+    unnoticed by every helper-driven test above."""
+
+    def test_context_turns_flag_drives_cmd_handoff_signal_response_through_the_real_parser(
+        self, fake_projects, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "turn one text"}]),
+        ])
+        parser = _mod.build_parser()
+        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "2"])
+        assert args.context_turns == 2
+        assert args.func == _mod.cmd_handoff_signal_response
+
+        _mod.cmd_handoff_signal_response(args)
+
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "turn one text", "thinking": ""}]
+
+    def test_negative_context_turns_through_the_real_parser_exits_2(self, fake_projects, capsys):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "-1"])
+        assert args.context_turns == -1
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(args)
+        assert exc_info.value.code == 2
+
+
+class TestCmdHandoffSignalResponseSampleTruncation:
+    """--sample N ranks by post-signal spend and truncates to exactly N
+    cards. TestCmdHandoffSignalResponseSampleCards' own fixtures build exactly
+    one signal-bearing session each, so truncation itself is untested there."""
+
+    def test_sample_n_truncates_more_than_n_signal_rows_to_exactly_n_cards(self, fake_projects, capsys):
+        for i in range(8):
+            _write_jsonl(fake_projects / f"sess{i}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=3, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 3
+
+
+class TestCmdHandoffSignalResponseSampleRanking:
+    """--sample ranks by post-signal spend (.claude/plans/handoff-nudge-rationalization-gap.md
+    row 14): the highest-spend rows are where a wrong continue-decision
+    actually cost something."""
+
+    @staticmethod
+    def _signal_session(post_signal_output: int) -> list[dict]:
+        return [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=post_signal_output, request_id="r2"),
+        ]
+
+    def test_sample_sorted_descending_by_dollars_after_signal(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "low.jsonl", self._signal_session(1_000))
+        _write_jsonl(fake_projects / "mid.jsonl", self._signal_session(20_000))
+        _write_jsonl(fake_projects / "high.jsonl", self._signal_session(50_000))
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=3, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert [c["session_id"] for c in cards] == ["high", "mid", "low"]
+
+    def test_seed_produces_reproducible_tie_break_order_across_invocations(self, fake_projects, capsys):
+        """Multiple $0.00 rows (no turns after the signal) tie on
+        dollars_after_signal; a given --seed must break the tie the same way
+        every run, via a pre-shuffle before the stable sort."""
+        names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        for name in names:
+            _write_jsonl(fake_projects / f"{name}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+        expected_order = list(names)
+        random.Random(99).shuffle(expected_order)
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
+        )
+        first_out = capsys.readouterr().out
+        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
+        )
+        second_out = capsys.readouterr().out
+        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
+
+        assert first_order == second_order == expected_order
+
+    def test_omitting_seed_keeps_ties_in_scan_order_and_is_repeatable(self, fake_projects, capsys):
+        """No --seed means no shuffle at all, not an unseeded-but-fixed RNG:
+        ties keep the rows' scan order (alphabetical by session filename),
+        deterministically across repeated runs."""
+        names = ["alpha", "bravo", "charlie", "delta"]
+        for name in names:
+            _write_jsonl(fake_projects / f"{name}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
+        )
+        first_out = capsys.readouterr().out
+        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
+        )
+        second_out = capsys.readouterr().out
+        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
+
+        assert first_order == second_order == names
+
+    def test_sample_with_no_signal_rows_in_scope_produces_empty_cards(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert cards == []
+
+
+class TestRankSignalRowsBySpend:
+    """_rank_signal_rows_by_spend's own ranking/tie-break contract, exercised
+    directly against fabricated rows rather than through the CLI."""
+
+    def test_ranks_descending_by_dollars_after_signal(self):
+        rows = [
+            {"dollars_after_signal": 1.0, "session_id": "low"},
+            {"dollars_after_signal": 5.0, "session_id": "high"},
+            {"dollars_after_signal": 3.0, "session_id": "mid"},
+        ]
+        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=3, seed=None)
+        assert [r["session_id"] for r in ranked] == ["high", "mid", "low"]
+
+    def test_seeded_tie_break_is_reproducible_across_calls(self):
+        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
+        first = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
+        second = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
+        assert [r["session_id"] for r in first] == [r["session_id"] for r in second]
+
+    def test_omitting_seed_keeps_ties_in_input_order(self):
+        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
+        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=None)
+        assert [r["session_id"] for r in ranked] == list("abcdef")
+
+
+class TestHandoffSignalResponseAggregateReport:
+    """_handoff_signal_response_aggregate_report's own conversion-rate and
+    per-group breakdown math, pinned against hand-computed values for a
+    mixed kind/marker-context row set -- the census run's headline numbers."""
+
+    def test_conversion_rate_and_breakdown_match_hand_computed_values(self, capsys):
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0},
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 3.0},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 2.0},
+            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 5.0},
+        ]
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=None,
+        )
+        out = capsys.readouterr().out
+
+        assert "Sessions with at least one signal: 3" in out
+        assert "Conversion rate (a same-session /handoff followed the signal): 50.0% (2/4)" in out
+
+        def _breakdown_row(label: str) -> list[str]:
+            for line in out.splitlines():
+                if line.startswith(label):
+                    return line[len(label):].split()
+            raise AssertionError(f"breakdown row not found for {label!r}")
+
+        # By signal kind: check={rows 0,2} advisory={row 1} hard-block={row 3}.
+        assert _breakdown_row("check") == ["2", "50.0%", "1.50"]
+        assert _breakdown_row("advisory") == ["1", "0.0%", "3.00"]
+        assert _breakdown_row("hard-block") == ["1", "100.0%", "5.00"]
+
+        # By ready-for-review active-marker context: active={rows 1,2} inactive={rows 0,3}.
+        assert _breakdown_row("active") == ["2", "0.0%", "2.50"]
+        assert _breakdown_row("inactive") == ["2", "100.0%", "3.00"]
+
+    def test_benchmark_line_and_exceeded_summary_printed_when_available(self, capsys):
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": False, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
+        ]
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=2.00,
+        )
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
+        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
+
+    def test_benchmark_reported_unavailable_when_none(self, capsys):
+        _mod._handoff_signal_response_aggregate_report(
+            [], log_diagnostic=None, benchmark_dollars=None,
+        )
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
+
+    def test_breakdown_and_benchmark_output_never_pairs_a_count_with_a_summable_dollar_figure(self, capsys):
+        """Pins the composition-reconstruction invariant itself, not just
+        today's output string: no printed breakdown row may carry both a
+        Signals/count column and a mean or per-unit-rate dollar column for
+        the same group, and the startup-burn benchmark line must never
+        surface a session/branch count alongside its dollar figure --
+        pairing either would let a reader recombine the two halves into a
+        raw pooled dollar total (docs/private-project-redaction.md
+        "Composition is publication")."""
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 3.0, "exceeds_startup_burn_benchmark": True},
+            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": True,
+             "handoff_followed": True, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
+        ]
+        _mod._handoff_signal_response_aggregate_report(
+            rows, log_diagnostic=None, benchmark_dollars=2.00,
+        )
+        out = capsys.readouterr().out
+
+        expected_header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
+        header_lines = [line for line in out.splitlines() if line.startswith("Group")]
+        assert header_lines, "no breakdown header printed"
+        for header_line in header_lines:
+            assert header_line == expected_header
+        assert "Mean" not in out
+
+        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
+        assert "per continuation session." in out
+        assert "non-first sessions" not in out
+        assert "branches with corpus activity" not in out
+
+
+class TestStartupBurnBenchmark:
+    """_startup_burn_benchmark's own weighted-average formula, exercised
+    directly against fabricated workstream dicts (_compute_workstream_dollars'
+    own per-branch shape) rather than through a full corpus scan --
+    complements TestCmdHandoffSignalResponseStartupBurnBenchmark's own
+    end-to-end wiring test below."""
+
+    def test_weighted_average_across_a_solo_branch_and_a_continuation_branch(self):
+        workstream = {
+            "solo": {"session_count": 1, "total_dollars": 2.41, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+            "cont": {"session_count": 2, "total_dollars": 1.61, "startup_burn_dollars": 1.41, "last_activity_ts": 0.0},
+        }
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
+        assert benchmark == pytest.approx(1.41)
+        assert total_continuations == 1
+        assert branch_count == 2
+
+    def test_benchmark_is_weighted_by_continuation_count_not_averaged_per_branch(self):
+        """Two branches with very different continuation counts: the
+        benchmark must be sum-of-burn / sum-of-continuations (weighted), not
+        the mean of each branch's own per-branch average -- an unweighted
+        average would let the low-volume branch skew the result as much as
+        the high-volume one."""
+        workstream = {
+            # 10 continuations at $10.00/continuation.
+            "high-volume": {
+                "session_count": 11, "total_dollars": 0.0, "startup_burn_dollars": 100.0, "last_activity_ts": 0.0,
+            },
+            # 1 continuation at $2.00/continuation.
+            "low-volume": {
+                "session_count": 2, "total_dollars": 0.0, "startup_burn_dollars": 2.0, "last_activity_ts": 0.0,
+            },
+        }
+        benchmark, total_continuations, _branch_count = _mod._startup_burn_benchmark(workstream)
+        # An unweighted mean of (10.00, 2.00) would be 6.00; the correct
+        # weighted figure is (100 + 2) / (10 + 1).
+        assert benchmark == pytest.approx(102.0 / 11)
+        assert total_continuations == 11
+
+    def test_benchmark_is_none_when_no_branch_has_a_continuation_session(self):
+        workstream = {
+            "solo-a": {"session_count": 1, "total_dollars": 1.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+            "solo-b": {"session_count": 1, "total_dollars": 2.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
+        }
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
+        assert benchmark is None
+        assert total_continuations == 0
+        assert branch_count == 2
+
+    def test_empty_workstream_reports_unavailable_benchmark_and_zero_branches(self):
+        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark({})
+        assert benchmark is None
+        assert total_continuations == 0
+        assert branch_count == 0
+
+
+class TestCmdHandoffSignalResponseStartupBurnBenchmark:
+    """cmd_handoff_signal_response's own end-to-end startup-burn benchmark
+    wiring: a second, independent _resolve_project_scope pass feeds
+    _compute_workstream_dollars, and _startup_burn_benchmark's weighted-average
+    formula (.claude/plans/handoff-nudge-rationalization-gap.md) sets
+    exceeds_startup_burn_benchmark on every signal row."""
+
+    def test_benchmark_and_exceeds_flag_match_hand_computed_values(self, fake_projects, capsys):
+        # Branch "solo": exactly one session -- contributes zero to both the
+        # benchmark's numerator (startup_burn_dollars) and denominator
+        # (session_count - 1 == 0). Its own signal's post-signal spend
+        # ($2.00) ends up well above the benchmark computed below.
+        _write_jsonl(fake_projects / "solo.jsonl", [
+            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
+            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
+        ])
+
+        # Branch "cont": two sessions -- cont-1 (chronologically first)
+        # contributes nothing; cont-2 (non-first) contributes both of its own
+        # main-thread turns' dollars as startup burn (until_first_n_turns=5
+        # is never reached with only 2 turns). Its own signal's post-signal
+        # spend ($1.00) ends up below the benchmark.
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])  # $0.20, first session by time
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            _check_call_turn(
+                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
+            ),  # $0.41
+            _user_msg(
+                [_tool_result("chk2", _check_result_json(over_threshold=True))],
+                branch="cont", ts="2026-08-02T10:00:01.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        # Hand-computed benchmark: total_burn = cont-2's own two main-thread
+        # turns ($0.41 + $1.00 = $1.41); total_continuations = 1 (only
+        # branch "cont" has a non-first session); benchmark = $1.41 / 1.
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): $1.41 per continuation session." in out
+        # solo's $2.00 exceeds $1.41; cont's $1.00 does not -- 1 of 2 signals.
+        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
+
+    def test_exceeds_flag_set_per_card_above_and_below_the_benchmark(self, fake_projects, capsys):
+        """Same fixture as above, read through the --sample curation-card
+        path instead of the aggregate report, to pin exceeds_startup_burn_benchmark
+        on the per-row/per-card data itself."""
+        _write_jsonl(fake_projects / "solo.jsonl", [
+            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
+            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
+        ])
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            _check_call_turn(
+                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
+            ),
+            _user_msg(
+                [_tool_result("chk2", _check_result_json(over_threshold=True))],
+                branch="cont", ts="2026-08-02T10:00:01.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=2, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        by_session = {c["session_id"]: c for c in cards}
+        assert by_session["solo"]["exceeds_startup_burn_benchmark"] is True
+        assert by_session["cont-2"]["exceeds_startup_burn_benchmark"] is False
+
+    def test_exceeds_flag_is_false_on_an_exact_tie_with_the_benchmark(self, fake_projects, capsys):
+        """dollars_after_signal == benchmark_dollars exactly must resolve to
+        False -- pins the "> benchmark_dollars" (not ">=") comparison."""
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            # $0 pre-signal turn, then a $1.00 post-signal turn -- cont-2's
+            # own startup burn (both of its main-thread turns, since
+            # until_first_n_turns=5 is never reached) is therefore exactly
+            # $1.00, the same $1.00 dollars_after_signal below.
+            _priced(
+                "claude-sonnet-5", branch="cont", input=0, output=0, request_id="r1",
+                ts="2026-08-02T10:00:00.000Z",
+            ),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", branch="cont", input=500_000, output=0, request_id="r2",
+                ts="2026-08-02T10:01:00.000Z",
+            ),  # $1.00
+        ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert cards[0]["dollars_after_signal"] == pytest.approx(1.0)
+        assert cards[0]["exceeds_startup_burn_benchmark"] is False
+
+    def test_benchmark_unavailable_and_exceeds_flag_none_with_no_continuation_sessions(
+        self, fake_projects, capsys
+    ):
+        """A degenerate corpus with zero continuation sessions anywhere in
+        scope -- every branch has exactly one session -- reports the
+        benchmark as unavailable rather than raising, and every row's
+        exceeds_startup_burn_benchmark is None rather than a bool."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        out = capsys.readouterr().out
+        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
+        assert "Signals whose post-signal spend exceeded the benchmark" not in out
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert len(cards) == 1
+        assert cards[0]["exceeds_startup_burn_benchmark"] is None
+
+
+class TestCmdHandoffSignalResponseOperatorLagDiagnostic:
+    """.handoff-nudge.log's operator-response-lag cross-check, wired
+    end-to-end through cmd_handoff_signal_response -- mirrors
+    TestRearmBacktestReport's own .handoff-nudge.log fixture/config_dir
+    pattern (fake_projects already monkeypatches config_dir() to tmp_path,
+    the log's own real location)."""
+
+    def test_log_diagnostic_reports_joined_count_and_median_lag(self, fake_projects, tmp_path, capsys):
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=sess est=150000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        out = capsys.readouterr().out
+        assert (
+            "Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 1 joined"
+            " (0 excluded -- no matching session in scope), median lag 51,000 tokens past the fire point" in out
+        )
+
+
+class TestFormatHandoffSignalCardsAsMarkdown:
+    """_format_handoff_signal_cards_as_markdown's own document shape --
+    mirrors _format_samples_as_markdown's own curation-card format."""
+
+    _CARD = {
+        "session_id": "session-1",
+        "kind": _mod._HANDOFF_SIGNAL_CHECK,
+        "position": 10,
+        "context_at_turn": 200_000,
+        "threshold": 150_000,
+        "marker_active": False,
+        "handoff_followed": True,
+        "turns_after_signal": 3,
+        "dollars_after_signal": 1.23,
+        "session_total_dollars": 4.00,
+        "pct_spend_after_signal": 0.3075,
+        "exceeds_startup_burn_benchmark": True,
+        "excerpt": "Confirmed over threshold, running /handoff now.",
+    }
+
+    def test_header_names_signal_count_sample_n_and_seed(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=5, seed=7, benchmark_dollars=0.50,
+        )
+        assert out.startswith("# handoff-signal-response curation — 1 signal(s)")
+        assert "--sample 5" in out
+        assert "--seed 7" in out
+
+    def test_header_reports_unset_seed_as_none_placeholder(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=5, seed=None, benchmark_dollars=0.50,
+        )
+        assert "--seed (none)" in out
+
+    def test_header_names_the_startup_burn_benchmark_dollar_figure(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50,
+        )
+        assert "Startup-burn benchmark (this scope): $0.50 per continuation session." in out
+
+    def test_header_reports_benchmark_unavailable_when_none(self):
+        out = _mod._format_handoff_signal_cards_as_markdown(
+            [self._CARD], sample_n=1, seed=1, benchmark_dollars=None,
+        )
+        assert "Startup-burn benchmark (this scope): unavailable" in out
+
+    def test_one_section_header_per_card(self):
+        cards = [dict(self._CARD, session_id=f"session-{i}") for i in range(3)]
+        out = _mod._format_handoff_signal_cards_as_markdown(cards, sample_n=3, seed=1, benchmark_dollars=0.50)
+        section_headers = [line for line in out.splitlines() if line.startswith("## ")]
+        assert len(section_headers) == 3
+
+    def test_section_names_session_kind_and_position(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "session `session-1` — check signal at turn 10" in out
+
+    def test_excerpt_is_interpolated_into_a_blockquote(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "> Confirmed over threshold, running /handoff now." in out
+
+    def test_empty_excerpt_renders_the_no_eligible_text_placeholder(self):
+        card = dict(self._CARD, excerpt="")
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "> (no eligible assistant text turn followed the signal)" in out
+
+    def test_verdict_checklist_present_in_each_section(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "Verdict: [ ] cost-grounded" in out
+
+    def test_card_line_shows_pct_spend_and_exceeds_benchmark(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "% of session spend after signal: 30.8%  ·  exceeds startup-burn benchmark: yes" in out
+
+    def test_card_line_reports_pct_and_exceeds_as_not_applicable_when_none(self):
+        card = dict(self._CARD, pct_spend_after_signal=None, exceeds_startup_burn_benchmark=None)
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=None)
+        assert "% of session spend after signal: n/a  ·  exceeds startup-burn benchmark: n/a" in out
+
+    def test_forward_context_key_absent_renders_no_forward_context_block(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "Forward context" not in out
+
+    def test_forward_context_present_renders_a_labeled_turn_line(self):
+        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "wrapping up now", "thinking": ""}])
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "**Forward context (next 1 turn(s)):**" in out
+        assert "- turn +1: text: wrapping up now" in out
+
+    def test_forward_context_turn_with_both_fields_empty_is_skipped(self):
+        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "", "thinking": ""}])
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
+        assert "turn +1" not in out
+
+
+class TestCmdHandoffSignalResponseMarkdownFormat:
+    """cmd_handoff_signal_response(..., output_format='md') integration:
+    --format md produces the curation document, not the JSON array. Models
+    the sibling audit-routing-samples subcommand's own md-format test shape."""
+
+    def test_format_md_emits_curation_document_with_a_verdict_checklist(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="md"))
+        out = capsys.readouterr().out
+        assert "# handoff-signal-response curation" in out
+        assert "Verdict: [ ] cost-grounded" in out
+
+    def test_context_turns_renders_a_forward_context_subsection(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
+                    content=[{"type": "text", "text": "wrapping up now"}]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="md", context_turns=1)
+        )
+        out = capsys.readouterr().out
+        assert "**Forward context (next 1 turn(s)):**" in out
+        assert "- turn +1: text: wrapping up now" in out

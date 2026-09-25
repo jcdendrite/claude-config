@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Read tool on .env* files that commonly hold secrets.
 # Allows the three conventional non-secret template suffixes:
 #   .env.example  .env.template  .env.sample
@@ -25,6 +26,7 @@
 # Scope: Read tool only. Bash(cat .env.*) is out of scope by design — CLAUDE.md
 # directs Claude to the ! shell-escape valve for non-Read inspection, which
 # depends on Bash being unrestricted for these paths.
+# deny-credential-bash-reads.sh's env-variant token match is this gate's own backstop against that Bash-side gap, including a steered attempt to read the file through it.
 
 set -uo pipefail
 
@@ -39,14 +41,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

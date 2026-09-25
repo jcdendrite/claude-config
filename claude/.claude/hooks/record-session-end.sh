@@ -27,14 +27,26 @@ set -uo pipefail
 # when $CLAUDE_PID is set and numeric) plus jq and find. See the script
 # below for the exact call sequence.
 #
-# SessionEnd's ~1.5s execution budget is unconfirmed in Anthropic's docs --
-# the per-fire cost above is a caution, not a proven-safe margin.
+# SessionEnd hooks share a 1.5s default execution budget across every
+# SessionEnd hook registered for the session (confirmed:
+# code.claude.com/docs/en/hooks, "Common fields"/SessionEnd section). A
+# per-hook `timeout` field raises that budget, up to a 60s ceiling.
+# settings.json sets `"timeout": 10` on this hook's registration for that
+# reason. The self-sweep below is capped at 2s, or 4s counting _lib_capped_for's
+# -k SIGKILL grace. The per-fire cost above is comfortably sub-second, and 10
+# is well under the 60s ceiling.
+#
+# Two 5s-capped _lib_jq calls run before the first exit gate that depends on
+# jq output, so a systemic jq stall exhausts that 10s budget after two calls:
+# 10s if jq honors SIGTERM, which equals the budget, and 14s if it ignores
+# SIGTERM (7s per call with the grace), which exceeds it.
+# The only consequence is a dropped best-effort record.
 #
 # Self-sweep: after a successful write, deletes any file in its own records
-# directory older than 30 days -- this repo's established idiom for
-# hook-owned state directories (docs/error-mode-nudge.md). Swept after the
-# write, not before, so a sweep failure can never cost the record just
-# written.
+# directory older than 30 days. That's this repo's established idiom for
+# hook-owned state directories (docs/error-mode-nudge.md). It runs
+# synchronously after the write, so a sweep failure can't cost the record
+# just written.
 
 INPUT=$(cat 2>/dev/null)
 if [ -z "$INPUT" ]; then
@@ -42,8 +54,8 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  echo "[record-session-end] could not source _lib.sh; no SessionEnd record written" >&2
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
+  echo "[record-session-end] could not source _lib.sh (run ./install.sh to pick up hook files this update added); no SessionEnd record written" >&2
   exit 0
 fi
 

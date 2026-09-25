@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -12,11 +11,14 @@ from helpers import (
     HOOKS_DIR,
     agent_input,
     architect_consult_latch_path,
+    assert_cap_engaged,
     bash_input,
     reviewer_round_state_value,
     run_hook,
     run_hook_reason,
+    scaled_shim_sleep,
     write_reviewer_round_state,
+    write_scaled_timeout_shim,
 )
 
 REQUIRE_ARCHITECT_CONSULT_HOOK = HOOKS_DIR / "require-architect-consult.sh"
@@ -59,6 +61,21 @@ def _repo_at_cap(isolated_home: Path, tmp_path: Path, name: str) -> tuple[Path, 
     config_dir = isolated_home / ".claude"
     write_reviewer_round_state(config_dir, repo, [round1, round2])
     return repo, round1, round2
+
+
+def _repo_at_one_state(isolated_home: Path, tmp_path: Path, name: str) -> tuple[Path, str]:
+    """Build a repo with exactly one distinct recorded round state -- "at
+    cap" under the round-2 pilot's cap=1 -- and return (repo, round1_value).
+    Repo is left at round1's exact state (its own staged diff reproduces
+    round1 exactly), one state short of _repo_at_cap's shape, since cap=1
+    trips at a single recorded state rather than two."""
+    repo = tmp_path / name
+    _init_repo(repo)
+    _stage_change(repo, "first\nround-one\n")
+    round1 = reviewer_round_state_value(repo)
+    config_dir = isolated_home / ".claude"
+    write_reviewer_round_state(config_dir, repo, [round1])
+    return repo, round1
 
 
 class TestRequireArchitectConsult:
@@ -159,8 +176,8 @@ class TestRequireArchitectConsult:
         call-counter stub would also catch any later, unrelated jq call
         this hook happens to make (e.g. a deny path's own reason-encoding
         call), which would add an unrelated timeout cycle to elapsed time."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")
@@ -168,29 +185,25 @@ class TestRequireArchitectConsult:
         _stage_change(repo, "first\nround-one\nround-three\n")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            '  *subagent_type*) sleep 10 ;;\n'
+            f'  *subagent_type*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
             "esac\n"
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_ARCHITECT_CONSULT_HOOK,
-            agent_input(session_id="s-hung-jq", subagent_type=REVIEWER_PERSONA),
-            cwd=repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_ARCHITECT_CONSULT_HOOK,
+                agent_input(session_id="s-hung-jq", subagent_type=REVIEWER_PERSONA),
+                cwd=repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "allow"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_jq timeout to fire on the second (subagent_type) "
-            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
     def test_live_plan_review_active_marker_allows(self, isolated_home, tmp_path):
         """A live /plan-review fan-out must not consume a round-counting
@@ -307,10 +320,17 @@ class TestRequireArchitectConsult:
         ) == "deny"
 
     def test_deny_message_contents(self, isolated_home, tmp_path):
-        """Pins the deny message's content requirement: names the
-        plan-architect MODE=consult dispatch, tells the agent to escalate to
-        the engineer rather than resolve it unilaterally, and never
-        instructs touching the disable sentinel directly."""
+        """Pins the deny message's content requirements:
+
+        - names the plan-architect MODE=consult dispatch
+        - points at the Round-cap architect consult skill section for routing
+          the consult's return
+        - tells the agent to escalate to the engineer rather than resolve it
+          unilaterally
+        - never instructs touching the disable sentinel directly
+        - states the cap threshold as "2 distinct reviewed states"
+        - mentions "subagent" in the deny message
+        """
         repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "deny-message")
         _stage_change(repo, "first\nround-one\nround-three\n")
         reason = run_hook_reason(
@@ -320,6 +340,128 @@ class TestRequireArchitectConsult:
         )
         assert reason is not None
         assert "plan-architect MODE=consult" in reason
+        assert "Round-cap architect consult" in reason
         assert "report this block to the engineer" in reason
         assert ".round-consult-gate-disabled" not in reason
+        assert "2 distinct reviewed states " in reason
         assert "subagent" in reason
+
+
+class TestRound2PilotCap:
+    """The round-2 pilot sentinel (`.round-consult-round2-pilot`) lowers the
+    resolved cap from 2 to 1 -- see
+    docs/design-decisions/round2-consult-trigger-pilot.md. Every case here
+    pins that the sentinel changes only the cap-comparison outcome, never
+    the bypass-check ordering that precedes cap resolution."""
+
+    def test_one_recorded_state_new_state_denies_under_pilot(self, isolated_home, tmp_path):
+        """At cap=1 under the pilot, a single recorded state plus a
+        genuinely new second state denies -- the pilot's whole point, one
+        round earlier than the default cap=2's third-state trigger."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-one-state-new")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-new", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "deny"
+
+    def test_one_recorded_state_new_state_allows_without_pilot_sentinel(self, isolated_home, tmp_path):
+        """Default-path regression guard: the identical one-recorded-state,
+        new-second-state setup that denies under the pilot
+        (test_one_recorded_state_new_state_denies_under_pilot) must still
+        allow with the sentinel absent -- the resolver's default branch
+        keeps the cap at 2, so a single recorded state stays below cap."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "no-pilot-one-state-new")
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-no-pilot-new", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
+    def test_empty_state_file_allows_under_pilot(self, isolated_home, tmp_path):
+        """No recorded state yet -- even under cap=1, allow without paying
+        for the current state's own hash (the below-cap fast path is
+        unaffected by which cap is in effect)."""
+        repo = tmp_path / "pilot-empty-state"
+        _init_repo(repo)
+        _stage_change(repo, "first\nonly-round\n")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-empty", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
+    def test_live_plan_review_active_marker_allows_under_pilot(self, isolated_home, tmp_path):
+        """Regression guard for the pilot plan's row 15: under cap=1, the
+        active-bypass marker check must still run BEFORE cap resolution, or
+        the pilot silently degrades into the round-1 trigger design the
+        case study rejected. The sibling sentinel-absent test
+        (test_live_plan_review_active_marker_allows) never exercises the
+        pilot sentinel at all, so it would keep passing unchanged even if
+        the resolver's sentinel-present branch were wired in after the
+        marker check instead of before it -- this variant, with the
+        sentinel present and the fixture at cap=1, is the only one that
+        actually pins the ordering under pilot conditions."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-plan-review-active")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        sid = "s-pilot-plan-review-active"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
+    def test_live_ready_for_review_active_marker_allows_under_pilot(self, isolated_home, tmp_path):
+        """Same regression guard as
+        test_live_plan_review_active_marker_allows_under_pilot, for the
+        sibling /ready-for-review active marker."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-ready-for-review-active")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        sid = "s-pilot-ready-for-review-active"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"
+
+    def test_deny_message_singular_noun_under_pilot(self, isolated_home, tmp_path):
+        """Under the pilot (cap=1), the deny message's STATE_NOUN variable
+        must read "state" (singular) rather than the cap=2 default's
+        "states" (plural), and must name the literal cap value 1."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-deny-message")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-deny-message", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "1 distinct reviewed state " in reason
+        assert "states" not in reason
+
+    def test_disable_sentinel_wins_even_with_pilot_sentinel_present(self, isolated_home, tmp_path):
+        """Precedence: the machine-wide kill switch is checked before any
+        git call or cap resolution, so it silences the gate even with the
+        pilot sentinel also present."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-and-disabled")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-and-disabled", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        ) == "allow"

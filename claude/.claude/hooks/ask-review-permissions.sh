@@ -11,8 +11,8 @@
 
 INPUT=$(cat)
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  echo "[ask-review-permissions] could not source _lib.sh; settings.json edits will silently proceed without the ask decision" >&2
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
+  echo "[ask-review-permissions] could not source _lib.sh (run ./install.sh to pick up hook files this update added); settings.json edits will silently proceed without the ask decision" >&2
   exit 0
 fi
 

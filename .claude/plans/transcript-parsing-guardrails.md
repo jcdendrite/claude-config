@@ -10,10 +10,9 @@ While investigating cache-rebuild costs, a session (this one) needed corpus-wide
 transcript statistics. It wrote an ad-hoc Python script globbing
 `~/.claude/projects/*/*.jsonl` and ran it, rather than invoking the
 `transcript-analysis` skill. That glob covers one config root. This machine
-declares six in `~/.claude/transcript-config-dirs`, and every
+resolves more than one root via `~/.claude/transcript-config-dirs`, and every
 `transcript-analysis.py` subcommand already unions across all of them by
-default. The resulting figure was understated by roughly 48% ($1,463 vs the
-correct $2,162 over 30 days).
+default. The resulting figure was understated by roughly 48%.
 
 The error then survived a full `/plan-review` round. The plan recorded the
 narrow scope as a ledger given tagged `[engineer-verified]`, citing a

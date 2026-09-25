@@ -1,6 +1,7 @@
 """Tests for transcript_analysis/review_rounds.py (review-round-cost)."""
 import importlib.util
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -708,6 +709,192 @@ class TestComputeReviewRoundCosts:
         assert data["branch_totals"][(1, "feat")] == pytest.approx(0.40)
 
 
+def _corpus_multi_window(fake_projects) -> None:
+    """Skill-shape round immediately followed by a /slash-shape round, zero
+    fresh-user-prompt records between them -- one session, two windows."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _slash_user("plan-review", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        _priced("claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        _user_msg("done", branch="feat", ts="2026-08-01T10:03:00.000Z"),
+    ])
+
+
+def _corpus_nested_dispatch(fake_projects) -> None:
+    """A round whose own subagent dispatch itself dispatches a further
+    nested subagent."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    nested_spawn_rec = _priced(
+        "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:10.000Z",
+        content=[_agent_use("n1", "staff-sdet")],
+    )
+    nested_spawn_rec["isSidechain"] = True
+    _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
+    nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
+    nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")
+    nested_rec["isSidechain"] = True
+    _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+
+
+def _corpus_slash_path_open(fake_projects) -> None:
+    """A /slash-shape round with no Skill tool_use block anywhere."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _slash_user("code-review", branch="feat", ts="2026-08-01T10:00:00.000Z"),
+        _user_msg("done reviewing", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
+def _corpus_dedup_affecting_requestid_run(fake_projects) -> None:
+    """Two contiguous same-requestId records, each carrying a Skill
+    tool_use block for the same skill -- models the harness splitting one
+    API call's content across multiple JSONL records. Without dedup running
+    before detection, this opens two rounds instead of one."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=50_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            request_id="req-1", content=[_skill_block("s1", "code-review")],
+        ),
+        _priced(
+            "claude-sonnet-5", input=50_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            request_id="req-1", content=[_skill_block("s2", "code-review")],
+        ),
+        _user_msg("done", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
+def _corpus_branch_carry_forward_mid_window(fake_projects) -> None:
+    """A round's window drifts to a different gitBranch mid-window; the
+    round's own branch stays the opening record's branch."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _priced(
+            "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:02:00.000Z"),
+    ])
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-1", "a1",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],
+    )
+
+
+def _corpus_non_round_dollar_interleaving(fake_projects) -> None:
+    """Non-round dollars before and after one round window, plus a
+    dispatch outside the window -- proves round detection isn't perturbed
+    by unrelated dollar-bearing activity."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced("claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T09:00:00.000Z"),
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T11:00:00.000Z",
+            content=[_agent_use("a2", "staff-sdet")],
+        ),
+    ])
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-1", "a1",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z")],
+    )
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-2", "a2",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T11:00:10.000Z")],
+    )
+
+
+# Every distinct round shape TestComputeReviewRoundCosts already exercises
+# elsewhere in this file, reused for the bidirectional agreement guard below
+# rather than one new hand-picked corpus.
+_ROUND_SHAPE_CORPUS_BUILDERS = [
+    pytest.param(_corpus_multi_window, id="multi_window_skill_then_slash"),
+    pytest.param(_corpus_nested_dispatch, id="nested_dispatch"),
+    pytest.param(_corpus_slash_path_open, id="slash_path_open"),
+    pytest.param(_corpus_dedup_affecting_requestid_run, id="dedup_affecting_requestid_run"),
+    pytest.param(_corpus_branch_carry_forward_mid_window, id="branch_carry_forward_mid_window"),
+    pytest.param(_corpus_non_round_dollar_interleaving, id="non_round_dollar_interleaving"),
+]
+
+
+class TestComputeReviewRoundCounts:
+    """compute_review_round_counts: count-only round detection, exercised
+    directly against exact per-skill counts."""
+
+    def test_skill_and_slash_invocations_both_counted(self, fake_projects):
+        _corpus_multi_window(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts == {"code-review": 1, "plan-review": 1, "ready-for-review": 0}
+
+    def test_absent_skills_report_zero(self, fake_projects):
+        """Every REVIEW_SKILLS member is a key in the result, zeros
+        included, even when a skill has no invocations anywhere in scope."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts == {"code-review": 1, "plan-review": 0, "ready-for-review": 0}
+
+    def test_branch_filter_narrows_counts_to_matching_branch(self, fake_projects):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+        ])
+        counts = review_rounds.compute_review_round_counts(
+            _session_iter(fake_projects), branch_filter={"feat-a"},
+        )
+        assert counts == {"code-review": 1, "plan-review": 0, "ready-for-review": 0}
+
+    def test_dedup_merges_split_requestid_run_before_counting(self, fake_projects):
+        """Without dedup running before detection, this would open two
+        rounds instead of one -- guards compute_review_round_counts's own
+        dedup-before-detection contract."""
+        _corpus_dedup_affecting_requestid_run(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts["code-review"] == 1
+
+
+class TestReviewRoundCountsAgreesWithComputeReviewRoundCosts:
+    """compute_review_round_counts must never disagree with
+    compute_review_round_costs's own rounds list about how many rounds of
+    each skill exist -- checked across every distinct round shape this
+    file's dollar tests already exercise, not one new hand-picked corpus."""
+
+    @pytest.mark.parametrize("build_corpus", _ROUND_SHAPE_CORPUS_BUILDERS)
+    def test_per_skill_tally_matches_across_shapes(self, fake_projects, build_corpus):
+        build_corpus(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        costs_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        expected = Counter(r["skill"] for r in costs_data["rounds"])
+        assert counts == {skill: expected.get(skill, 0) for skill in review_rounds.REVIEW_SKILLS}
+
+
 class TestCmdReviewRoundCost:
     """cmd_review_round_cost: CLI-surface rendering, redaction, and
     zero/degenerate-fixture rendering."""
@@ -910,12 +1097,15 @@ class TestCmdReviewRoundCost:
         total_round_dollars = branch_a_round + branch_b_round
         non_round_dollars = total_branch_dollars - total_round_dollars
         expected_pct = render._pct_of(non_round_dollars, total_branch_dollars)
+        total_agent_dollars = 0.0  # no _agent_use dispatch in this fixture
+        expected_agent_pct = render._pct_of(total_agent_dollars, total_branch_dollars)
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "Totals: 2 branches, 2 rounds (code-review=1  plan-review=1  ready-for-review=0)" in out
         assert "Mean rounds per branch: 1.00" in out
         assert f"Non-round dollars: {expected_pct} of branch dollars fell outside every round window" in out
+        assert f"Reviewer-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
 
     def test_footer_is_partitioned_per_root_and_does_not_blend_dollars_or_round_counts_across_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -923,18 +1113,28 @@ class TestCmdReviewRoundCost:
         """Under more than one declared root, the footer prints one
         account-<K>-prefixed block per root, summed only from that root's
         own branches. A blended block would let a reader subtract out one
-        account's known spend to recover the other's."""
+        account's known spend to recover the other's. Root A's round also
+        carries a resolved (non-dangling) subagent dispatch, so its
+        Reviewer-dispatch-dollars figure is nonzero while root B's stays at
+        0%. A shared accumulator that summed total_agent_dollars across
+        roots instead of partitioning it would leak root A's dollars into
+        root B's line -- indistinguishable from a correct partition if both
+        figures were 0%."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         proj_a = roots[0] / "-home-user-repo-a"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a1.jsonl", [
             _priced("claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.20
-            _priced(
+            _priced(  # round open: $0.20, also spawns dispatch a1
                 "claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
-            ),  # round: $0.20
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
             _user_msg("thanks", branch="feat-a1", ts="2026-08-01T10:01:00.000Z"),
         ])
+        _write_subagent_dispatch(
+            proj_a, "sess-a1", "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat-a1", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+        )
         _write_jsonl(proj_a / "sess-a2.jsonl", [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
@@ -952,12 +1152,15 @@ class TestCmdReviewRoundCost:
             _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        root_a_branch_dollars = 0.20 + 0.20 + 0.20
-        root_a_round_dollars = 0.20 + 0.20
+        root_a_agent_dollars = 1.00  # dispatch a1, priced above
+        root_a_branch_dollars = 0.20 + 0.20 + 0.20 + root_a_agent_dollars
+        root_a_round_dollars = 0.20 + 0.20 + root_a_agent_dollars
         root_a_pct = render._pct_of(root_a_branch_dollars - root_a_round_dollars, root_a_branch_dollars)
+        root_a_agent_pct = render._pct_of(root_a_agent_dollars, root_a_branch_dollars)
         root_b_branch_dollars = 0.40
         root_b_round_dollars = 0.40
         root_b_pct = render._pct_of(root_b_branch_dollars - root_b_round_dollars, root_b_branch_dollars)
+        root_b_agent_pct = render._pct_of(0.0, root_b_branch_dollars)  # no _agent_use dispatch in root B's fixture
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
@@ -965,9 +1168,11 @@ class TestCmdReviewRoundCost:
         assert "account-1 Totals: 2 branches, 2 rounds (code-review=2  plan-review=0  ready-for-review=0)" in out
         assert "account-1 Mean rounds per branch: 1.00" in out
         assert f"account-1 Non-round dollars: {root_a_pct} of branch dollars fell outside every round window" in out
+        assert f"account-1 Reviewer-dispatch dollars: {root_a_agent_pct} of branch dollars, inside round windows" in out
         assert "account-2 Totals: 1 branches, 1 rounds (code-review=0  plan-review=1  ready-for-review=0)" in out
         assert "account-2 Mean rounds per branch: 1.00" in out
         assert f"account-2 Non-round dollars: {root_b_pct} of branch dollars fell outside every round window" in out
+        assert f"account-2 Reviewer-dispatch dollars: {root_b_agent_pct} of branch dollars, inside round windows" in out
         # Asserts the footer never blends root A's and root B's totals into one combined figure.
         assert "3 branches, 3 rounds" not in out
         assert "code-review=2  plan-review=1" not in out

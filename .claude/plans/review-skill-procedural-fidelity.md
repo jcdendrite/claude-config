@@ -6,7 +6,7 @@
 skips that skill's procedure, make the deviation visible to a reader who does
 not share the deviating session's reasoning.
 
-An error-mode analysis over a six-week, two-repo window found that a session
+An error-mode analysis over several weeks, across more than one repo, found that a session
 invoked a skill by explicit name, loaded its full procedure into context, and in
 the next message reframed it as a "lens" rather than a procedure to execute —
 offering a rationale that text in the same loaded skill body already anticipates

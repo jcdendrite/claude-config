@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
 # machine-local or session-scoped keys staged relative to the repo's default
 # branch — see GUARDED_KEYS_JSON below for the guarded set.
@@ -37,14 +38,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

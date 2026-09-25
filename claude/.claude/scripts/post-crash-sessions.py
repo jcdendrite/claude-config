@@ -154,6 +154,11 @@ CLASS_UNKNOWN = "unknown"
 CLASS_POSSIBLE_CRASH = "possible-crash"
 CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"
 
+# "other" also fires on non-deliberate exits (docs/hooks.md's
+# record-session-end.sh bullet), so it must not count as exculpatory evidence
+# in _graceful_end_record.
+_INCONCLUSIVE_REASON = "other"
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -905,9 +910,10 @@ def _read_session_end_records(
 def _graceful_end_record(
     entry: RegistryEntry | LookupEntry, records: dict[tuple[Path, int], SessionEndRecord],
 ) -> SessionEndRecord | None:
-    """The match rule: a record explains a dead entry iff all three hold:
+    """The match rule: a record explains a dead entry iff all four hold:
     (1) both sides' config dir resolve and are equal, (2) pids are equal,
-    (3) the record's mtime is not older than the entry's. Condition 1 is
+    (3) the record's mtime is not older than the entry's, (4) the record's
+    reason is not _INCONCLUSIVE_REASON. Condition 1 is
     satisfied by looking the record up under entry's own resolved config
     dir, since records is keyed the same way. Condition 3 is >=, not >:
     an exact mtime tie counts as a match, and is what makes pid reuse
@@ -920,9 +926,11 @@ def _graceful_end_record(
     (RegistryEntry), the same soundness rests on an unverified assumption
     about Claude Code's own undocumented registry-write behavior on pid
     reuse -- unconfirmed against any primary source, like every other
-    registry-format claim in this module's docstring.
+    registry-format claim in this module's docstring. Condition 4 leaves a
+    null/absent reason matching, since only "other" has field evidence of
+    firing on a hard kill rather than a deliberate exit.
 
-    `record.session_id` is deliberately not one of the three conditions: a
+    `record.session_id` is deliberately not one of the four conditions: a
     subagent's SessionEnd payload can carry a session id that differs from
     its parent session's, so matching on (config_dir, pid) alone -- not
     session id -- is what lets a subagent-attributed record still explain
@@ -931,7 +939,7 @@ def _graceful_end_record(
     if entry.config_dir is None or entry.mtime is None:
         return None
     record = records.get((entry.config_dir.resolve(), entry.pid))
-    if record is None or record.mtime < entry.mtime:
+    if record is None or record.mtime < entry.mtime or record.reason == _INCONCLUSIVE_REASON:
         return None
     return record
 

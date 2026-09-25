@@ -21,10 +21,10 @@ The `edit-format` subcommand of `claude/.claude/scripts/transcript-analysis.py` 
 Command (redacted form; the real invocation repeats `--config-dir` once per non-default Claude Code account profile under `~/.config/claude-accounts/`, never named literally here or in the tool's own output):
 
 ```
-transcript-analysis.py edit-format --config-dir <profile-1> --config-dir <profile-2> --config-dir <profile-3>
+transcript-analysis.py edit-format --config-dir <profile-N>  # repeated once per additional declared account profile
 ```
 
-Snapshot taken 2026-08-08 across four config dirs — the default `~/.claude/projects` plus three additional account profiles. Honest limits:
+Snapshot taken 2026-08-08 across every config dir — the default `~/.claude/projects` plus every additional declared account profile. Honest limits:
 
 - **Point-in-time.** The transcript store is mutable and grows every session, including the one that produced this snapshot. The figures are a snapshot: date, corpus size, and the command above. Re-running later will not reproduce these exact counts — only the classification *behavior* is guaranteed reproducible, via `TestEditFormat`'s synthetic fixtures in `claude/.claude/scripts/tests/test_transcript_analysis.py`.
 - **Undercounts depth-5 workflow-agent transcripts.** `edit-format` reuses this file's shared `_read_session_file`, which merges a session's direct `subagents/*.jsonl` children but not a further-nested `subagents/workflows/wf_*/agent-*.jsonl` shape some sessions also carry. Every other subcommand in this file has the same gap; widening the shared glob is out of scope here since it would silently change already-shipped output for every other subcommand too.
@@ -33,7 +33,7 @@ Snapshot taken 2026-08-08 across four config dirs — the default `~/.claude/pro
 
 ## The numbers
 
-**7,526 `Edit` + 2,745 `Write` calls**, all four config dirs combined.
+**7,526 `Edit` + 2,745 `Write` calls**, every config dir combined.
 
 | Tool | Failure | count | % of that tool's calls | Fixed by hashline? |
 |---|---|---|---|---|
@@ -90,18 +90,7 @@ Self-imposed governance blocks roughly **4.5x** more edits (262) than str_replac
 
 A residual 33 edit-family errors match neither the four known str_replace failure shapes nor the six governance patterns above — reported as an explicit `unclassified` count rather than silently dropped. Sampling them (not reproduced here, since several embed other private projects' file paths) shows a mix of user-rejected tool calls, missing-required-parameter validation errors, the harness's own auto-mode permission classifier, and other projects' own PreToolUse hooks (a migration-filename gate, a config-file protection gate) — none of them str_replace-format failures, all of them outside this repo's own scope.
 
-### Per-account breakdown
-
-Emitted by `edit-format` itself through the same `account-N` labeling `_build_redact_map` already establishes for this file's other multi-account reports — never the raw config-dir path or account name:
-
-```
-  account-1  calls= 5,952  unread=   5  not_found=  44  multi=  3  addressable=0.8%
-  account-2  calls=    59  unread=   0  not_found=   0  multi=  0  addressable=0.0%
-  account-3  calls=   611  unread=   0  not_found=   3  multi=  0  addressable=0.5%
-  account-4  calls=   904  unread=   1  not_found=   1  multi=  1  addressable=0.2%
-```
-
-The rate is not uniform across accounts, but every account's own rate is well under the 3% revisit threshold below.
+`edit-format` itself breaks this down per account, through the same `account-N` labeling `_build_redact_map` already establishes for this file's other multi-account reports — never the raw config-dir path or account name. The rate is not uniform across accounts, but every account's own rate is well under the 3% revisit threshold below.
 
 ## Why not implement hashline
 

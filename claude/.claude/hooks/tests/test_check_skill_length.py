@@ -1,6 +1,7 @@
 """Tests for check-skill-length.sh."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,22 +9,28 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_rebase,
+    build_conflicted_revert,
     build_path_without,
     edit_input,
+    push_conflicting_edit_to_origin,
+    resolve_conflicted_rebase,
     run_hook,
     run_hook_reason,
 )
 
-from .conftest import assert_cap_engaged
-
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
 SKILL_PATH = "claude-skills/skills/my-skill/SKILL.md"
+PROJECT_LAYER_SKILL_PATH = ".claude/skills/my-skill/SKILL.md"
 
 
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
-    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
+    superset entry this hook's own bootstrap does not call,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
     (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and diff --cached
@@ -57,6 +64,21 @@ def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
     skill_dir.mkdir(parents=True)
     (repo / SKILL_PATH).write_text(make_skill_content(head_lines))
     subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+def make_repo_with_project_layer_skill(tmp_path: Path, head_lines: int) -> Path:
+    """Git repo with a project-layer SKILL.md (.claude/skills/**/SKILL.md) committed at `head_lines` lines."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    skill_dir = repo / ".claude" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / PROJECT_LAYER_SKILL_PATH).write_text(make_skill_content(head_lines))
+    subprocess.run(["git", "add", PROJECT_LAYER_SKILL_PATH], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     return repo
 
@@ -121,32 +143,6 @@ class TestCheckSkillLength:
             == "allow"
         )
 
-    def test_skill_at_exactly_200_allows(self, isolated_home, skill_repo):
-        """200 lines is at the limit — the gate is `> 200`, so 200 passes."""
-        (skill_repo / SKILL_PATH).write_text(make_skill_content(200))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=skill_repo,
-            )
-            == "allow"
-        )
-
-    def test_skill_growing_to_201_denies(self, isolated_home, skill_repo):
-        """HEAD at 190, staged at 201: new > 200 and new > old → deny."""
-        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=skill_repo,
-            )
-            == "deny"
-        )
-
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
         """A quote-adjacent split (`"git" commit -m x`) must reach the same
         deny verdict as the unquoted form."""
@@ -201,6 +197,24 @@ class TestCheckSkillLength:
         repo = make_repo_with_skill(tmp_path, 210)
         (repo / SKILL_PATH).write_text(make_skill_content(215))
         subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_project_layer_skill_already_over_limit_growing_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Project-layer SKILL.md (.claude/skills/**/SKILL.md) is gated like
+        stowed and plugin-scoped skills: HEAD at 210, staged at 215: growing
+        while over limit → deny."""
+        repo = make_repo_with_project_layer_skill(tmp_path, 210)
+        (repo / PROJECT_LAYER_SKILL_PATH).write_text(make_skill_content(215))
+        subprocess.run(["git", "add", PROJECT_LAYER_SKILL_PATH], cwd=repo, check=True)
         assert (
             run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -382,10 +396,115 @@ class TestCheckSkillLength:
             == "deny"
         )
 
-    def test_pr_description_over_default_under_override_allows(
+    def test_pr_description_default_template_md_uses_default_limit(self, isolated_home, tmp_path):
+        """pr-description/DEFAULT_TEMPLATE.md has no override: at/under the 200-line default, growing → allow."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        template_path = "claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / template_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / template_path).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_pr_description_default_template_md_over_default_limit_denies(self, isolated_home, tmp_path):
+        """pr-description/DEFAULT_TEMPLATE.md over the 200-line default and growing → deny.
+
+        This length would be allowed under pr-description/SKILL.md's override,
+        so a deny proves the template takes the default instead."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        template_path = "claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / template_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / template_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", template_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_pr_description_unregistered_sibling_md_over_default_limit_allows(self, isolated_home, tmp_path):
+        """An unregistered sibling in the template's skill directory is not gated.
+
+        Only the exact registered paths are length-capped: REFERENCES.md sits
+        beside DEFAULT_TEMPLATE.md, so staging it over 200 lines and growing
+        must be allowed."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        sibling_path = "claude-skills/skills/pr-description/REFERENCES.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / sibling_path).write_text(make_skill_content(230))
+        subprocess.run(["git", "add", sibling_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / sibling_path).write_text(make_skill_content(240))
+        subprocess.run(["git", "add", sibling_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_registered_basename_under_non_root_prefix_over_default_limit_allows(
         self, isolated_home, tmp_path
     ):
-        """pr-description/SKILL.md gets a 210-line cap; 205 lines (over 200, under 210) → allow."""
+        """A registered path nested under another prefix is not gated.
+
+        The registered paths are anchored at the repo root: a vendored copy of
+        pr-description/DEFAULT_TEMPLATE.md over 200 lines and growing must be
+        allowed."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        nested_path = "vendor/claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"
+        (repo / "vendor" / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
+        (repo / nested_path).write_text(make_skill_content(230))
+        subprocess.run(["git", "add", nested_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / nested_path).write_text(make_skill_content(240))
+        subprocess.run(["git", "add", nested_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_pr_description_at_override_cap_allows(
+        self, isolated_home, tmp_path
+    ):
+        """pr-description/SKILL.md gets a 250-line cap; exactly 250 lines (over 200) → allow."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -396,7 +515,7 @@ class TestCheckSkillLength:
         (repo / pr_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / pr_path).write_text(make_skill_content(205))
+        (repo / pr_path).write_text(make_skill_content(250))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         assert (
             run_hook(
@@ -408,7 +527,7 @@ class TestCheckSkillLength:
         )
 
     def test_pr_description_over_override_denies(self, isolated_home, tmp_path):
-        """pr-description/SKILL.md over the 210-line override and growing → deny."""
+        """pr-description/SKILL.md over the 250-line override and growing → deny."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -416,10 +535,10 @@ class TestCheckSkillLength:
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         pr_path = "claude-skills/skills/pr-description/SKILL.md"
         (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
-        (repo / pr_path).write_text(make_skill_content(205))
+        (repo / pr_path).write_text(make_skill_content(245))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / pr_path).write_text(make_skill_content(211))
+        (repo / pr_path).write_text(make_skill_content(251))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         assert (
             run_hook(
@@ -428,6 +547,22 @@ class TestCheckSkillLength:
                 cwd=repo,
             )
             == "deny"
+        )
+
+    def test_byte_limit_never_fires_for_this_caller(self, isolated_home, new_skill_repo):
+        """check-skill-length.sh calls _lib_staged_length_gate in its 2-arg
+        form, omitting BYTE_LIMIT — a new SKILL.md well over 25,600 bytes but
+        under its line limit must still be allowed, proving the opt-in byte
+        check stays opt-out for this caller."""
+        (new_skill_repo / SKILL_PATH).write_text("a" * 30000 + "\n")
+        subprocess.run(["git", "add", SKILL_PATH], cwd=new_skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=new_skill_repo,
+            )
+            == "allow"
         )
 
     def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
@@ -529,12 +664,153 @@ class TestCheckSkillLength:
             == "allow"
         )
 
+    # --- Repo-root plugin layout (`skills/<name>/SKILL.md`) ---
+
+    def test_repo_root_skill_growing_to_201_denies(self, isolated_home, tmp_path):
+        """Repo-root layout (`skills/<name>/SKILL.md`, used when a
+        marketplace declares "source": "./"): HEAD at 190, staged at 201 →
+        deny. Regression test for the third staged-path alternative."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        repo_root_path = "skills/my-skill/SKILL.md"
+        (repo / "skills" / "my-skill").mkdir(parents=True)
+        (repo / repo_root_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / repo_root_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_repo_root_skill_at_exactly_200_allows(self, isolated_home, tmp_path):
+        """Repo-root layout at exactly the 200-line default: allow. There is
+        no per-skill override path for a repo-root skill, so it always
+        resolves to the 200-line default."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        repo_root_path = "skills/my-skill/SKILL.md"
+        (repo / "skills" / "my-skill").mkdir(parents=True)
+        (repo / repo_root_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / repo_root_path).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_vendored_skills_dir_not_anchored_at_repo_root_allows(
+        self, isolated_home, tmp_path
+    ):
+        """`vendor/thing/skills/x/SKILL.md` staged at 201 lines must allow:
+        the new repo-root alternative (`^skills/.+/SKILL\\.md$`) is anchored
+        at the start of the path, so it must not also match a `skills/`
+        directory nested under an unrelated prefix. The only test in this
+        set that fails if the new alternative were written unanchored —
+        every other test here passes whether or not anchoring is correct."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        vendor_path = "vendor/thing/skills/x/SKILL.md"
+        (repo / "vendor" / "thing" / "skills" / "x").mkdir(parents=True)
+        (repo / vendor_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", vendor_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_project_layer_skills_dir_not_anchored_at_repo_root_allows(
+        self, isolated_home, tmp_path
+    ):
+        """`claude/.claude/skills/x/SKILL.md` staged at 201 lines must allow:
+        the project-layer alternative (`^\\.claude/skills/.+/SKILL\\.md$`) is
+        anchored at the start of the path, so it must not also match the
+        stowed source tree's `claude/.claude/skills/` prefix. The only test
+        in this set that fails if the new alternative were written
+        unanchored — every other test here passes whether or not anchoring
+        is correct."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        stowed_source_path = "claude/.claude/skills/x/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "x").mkdir(parents=True)
+        (repo / stowed_source_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", stowed_source_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_plugin_path_skill_growing_to_201_denies(self, isolated_home, tmp_path):
+        """`plugins/some-plugin/skills/x/SKILL.md`: HEAD at 190, staged at
+        201 → deny. Pins the pre-existing `plugins/[^/]+/skills/`
+        alternative, which had no test coverage before this change — adding
+        a third `|`-joined alternative to the same combined pattern is
+        exactly the edit class that can silently corrupt a sibling
+        alternative (misplaced pipe, unbalanced paren, changed precedence)
+        with nothing else in this suite to catch it."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        plugin_path = "plugins/some-plugin/skills/x/SKILL.md"
+        (repo / "plugins" / "some-plugin" / "skills" / "x").mkdir(parents=True)
+        (repo / plugin_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", plugin_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / plugin_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", plugin_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
     # --is-inside-work-tree` (_lib_staged_length_gate) ---
+    #
+    # Every git call in _lib_staged_length_gate runs as
+    # `git -C "$repo_root" <subcommand> <operand>`, so from the shim's
+    # perspective $1/$2 are always `-C`/the repo path; predicates below
+    # match the subcommand and operand on $3/$4, not $1/$2.
 
     @pytest.mark.timing
     def test_staged_diff_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git diff --cached --name-only`'s _lib_capped wrap (added to
         _lib_staged_length_gate alongside the shared driver) must actually
@@ -545,8 +821,8 @@ class TestCheckSkillLength:
         documents for a machine lacking timeout(1)/gtimeout(1) entirely."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim('[ "$1" = "diff" ]')
-        with assert_cap_engaged():
+        env = git_timeout_shim('[ "$3" = "diff" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -557,7 +833,7 @@ class TestCheckSkillLength:
 
     @pytest.mark.timing
     def test_repo_detection_git_timeout_engages_cap(
-        self, isolated_home, skill_repo, git_timeout_shim
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
     ):
         """`git rev-parse --is-inside-work-tree`'s _lib_capped wrap (added to
         _lib_staged_length_gate alongside the shared driver) must actually
@@ -567,11 +843,14 @@ class TestCheckSkillLength:
         hanging — same degrade-not-hang shape. One instance here suffices
         for both check-skill-length.sh and check-claude-md-length.sh: the
         capped call is caller-invariant, running identically for both hooks
-        before either caller's own logic."""
+        before either caller's own logic. The predicate matches on both
+        subcommand and operand so it targets only this call, not the
+        earlier, uncapped `rev-parse --show-toplevel` REPO_ROOT-resolution
+        call each hook makes before _lib_staged_length_gate runs."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        env = git_timeout_shim('[ "$1" = "rev-parse" ]')
-        with assert_cap_engaged():
+        env = git_timeout_shim('[ "$3" = "rev-parse" ] && [ "$4" = "--is-inside-work-tree" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
                 bash_input("git commit -m foo"),
@@ -579,3 +858,450 @@ class TestCheckSkillLength:
                 extra_env=env,
             )
         assert decision == "allow"
+
+    # --- Newly-tested `git show` calls (_lib_staged_length_gate) ---
+    #
+    # These calls run as `git -C "$repo_root" show <operand>`, so predicates
+    # below match the subcommand and operand on $3/$4, not $1/$2.
+
+    @pytest.mark.timing
+    def test_new_content_show_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
+    ):
+        """`git show ":$f"`'s pre-existing _lib_capped wrap (the new-revision
+        read feeding the line-count check) must actually engage its 5s cap
+        rather than hang -- previously an admitted gap in this function's own
+        header comment. A capped, empty read means new=0, which is never
+        over the limit regardless of old, so the gate degrades to allow."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = ":{SKILL_PATH}" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_old_content_show_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim, tmp_path
+    ):
+        """`git show "HEAD:$f"`'s pre-existing _lib_capped wrap (the
+        old-revision read feeding the line-count check) must actually engage
+        its 5s cap rather than hang -- previously an admitted gap in this
+        function's own header comment. A capped, empty read means old=0; the
+        staged file (201 lines) is still over the limit and still greater
+        than 0, so the gate reaches the same deny it would reach without the
+        timeout -- unlike the shrinking-file scenario characterized below in
+        test_head_timeout_false_denies_shrinking_file, this growing-file case
+        is not an instance of the HEAD-timeout false-deny defect."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_head_timeout_false_denies_shrinking_file(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """KNOWN-BUG PIN, not a spec: `git show "HEAD:$f"` timing out yields
+        empty stdout, so `old` computes to 0 -- and a file that is shrinking
+        but still over the limit (HEAD at 300, staged at 250, limit 200)
+        flips from its correct allow to a false deny reading "was 0" instead
+        of "was 300". Asserts the deny-reason text itself (that it names the
+        zeroed old value), not just the verdict, so this test cannot be
+        satisfied by an ordinary over-limit deny for the wrong reason --
+        mirrors test_sed_absent_from_path_denies's reason-text-assertion
+        shape in test_check_claude_md_length.py. The actual fix (telling
+        _lib_capped's exit 124 apart from a legitimately new file with no
+        HEAD ancestor, via PIPESTATUS) is out of scope here and belongs in
+        its own PR; this test exists so that fix shows up as a visible,
+        intentional edit to this assertion rather than a silent behavior
+        flip."""
+        repo = make_repo_with_skill(tmp_path, 300)
+        (repo / SKILL_PATH).write_text(make_skill_content(250))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        env = git_timeout_shim(f'[ "$3" = "show" ] && [ "$4" = "HEAD:{SKILL_PATH}" ]')
+        with assert_cap_engaged(tmp_path, production_cap=5):
+            reason = run_hook_reason(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert reason is not None
+        assert "was 0" in reason
+
+
+def _make_git_rejecting_write_tree(bin_dir: Path) -> Path:
+    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
+    Every other subcommand proxies to the real git. Local copy of
+    test_lib.py's shim of the same name (DAMP test code, per CLAUDE.md's
+    named exception) -- this file's fallback assertion needs its own stub,
+    not a shared import, per the plan's "per call site" mandate."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--write-tree" ]; then\n'
+        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
+        '    exit 129\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_rejecting_merge_base_flag(bin_dir: Path) -> Path:
+    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
+    is rejected. Local copy of test_lib.py's shim of the same name."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    --merge-base=*)\n'
+        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
+        '      exit 129\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _build_clean_merge_growing_skill(tmp_path: Path) -> Path:
+    """A conflict-free merge where only upstream grows SKILL.md past the
+    limit: the clone's own commit touches an unrelated file, so the merge
+    cannot fast-forward and leaves MERGE_HEAD, but SKILL.md itself was never
+    independently edited on the clone's side."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(190))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 190"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin grows skill"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+def _build_conflicted_rebase_with_growing_skill(tmp_path: Path) -> Path:
+    """A conflicted rebase (on an unrelated file) with SKILL.md separately
+    grown past the limit as part of the staged resolution -- REBASE_HEAD
+    reaches neither anchor in this ordinary case, so the base stays empty
+    and `old` falls back to mid-rebase HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill at 100"], cwd=repo, check=True)
+
+    build_conflicted_rebase(repo)
+    resolve_conflicted_rebase(repo)
+    (repo / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    return repo
+
+
+def _build_conflicted_revert_with_growing_skill(tmp_path: Path) -> Path:
+    """A conflicted revert of an unrelated file, trusted via the HEAD anchor
+    by construction (REVERT_HEAD is a real ancestor commit), with SKILL.md
+    separately grown past the limit as part of the staged resolution --
+    state=revert is one of the three states whose merge-tree call passes
+    --merge-base=, unlike the merge-state fixture the write-tree-rejection
+    fallback test above reuses."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed skill at 100"], cwd=repo, check=True)
+
+    build_conflicted_revert(repo)
+    (repo / "f").write_text("resolved\n")
+    subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+    (repo / SKILL_PATH).write_text(make_skill_content(250))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+    return repo
+
+
+def _build_clean_merge_growing_skill_with_second_skill_file(tmp_path: Path) -> Path:
+    """Same fixture as _build_clean_merge_growing_skill, with a second,
+    independently-staged skill file added on top -- two staged paths
+    matching the length gate's pattern, so its per-file loop over staged
+    paths iterates twice against a single resolved base."""
+    clone = _build_clean_merge_growing_skill(tmp_path)
+    second_skill_dir = clone / "claude-skills" / "skills" / "my-second-skill"
+    second_skill_dir.mkdir(parents=True)
+    (second_skill_dir / "SKILL.md").write_text(make_skill_content(50))
+    subprocess.run(
+        ["git", "add", "claude-skills/skills/my-second-skill/SKILL.md"], cwd=clone, check=True
+    )
+    return clone
+
+
+def _build_delete_modify_conflict_growing_skill(tmp_path: Path) -> Path:
+    """SKILL.md-specific instance of
+    test_require_code_review.py::_build_delete_modify_conflict_via_origin's
+    fixture shape: the clone deletes SKILL.md, origin independently grows
+    it to 250 lines (past the 200-line limit), and the merge surfaces a
+    delete/modify conflict -- distinct from a two-sided content conflict,
+    since one side has no blob at all to three-way-merge against. Resolved
+    by staging content at 220 lines: over the limit either way `old` is
+    read, but strictly between the merge-tree base's `old` (250, origin's
+    surviving content) and a regressed literal-HEAD fallback's `old` (0,
+    since the file doesn't exist at literal HEAD in the clone's own
+    delete commit). That places the two candidate bases on opposite sides
+    of _lib_staged_length_gate's `new > old` deny condition, so the
+    resulting allow/deny outcome discriminates which base the gate
+    actually used -- see
+    test_delete_modify_conflict_growing_skill_allows's own docstring for
+    the two resulting outcomes."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    subprocess.run(["git", "rm", "-q", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "clone deletes skill"], cwd=clone, check=True)
+
+    push_conflicting_edit_to_origin(tmp_path, bare, SKILL_PATH, make_skill_content(250))
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    (clone / SKILL_PATH).write_text(make_skill_content(220))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    return clone
+
+
+def _build_clean_merge_mode_bit_only_skill(tmp_path: Path) -> Path:
+    """SKILL.md-specific instance of
+    test_require_code_review.py::_build_clean_merge_mode_bit_only_change's
+    fixture shape: upstream's only contribution to SKILL.md is a mode-bit
+    flip (chmod +x, no content change), auto-resolved with no conflict
+    since the clone's own side never touched the file -- so `new` and
+    `old` read back byte-identical through _lib_staged_length_gate's git
+    show pair."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_dir = clone / "claude-skills" / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (clone / SKILL_PATH).write_text(make_skill_content(100))
+    subprocess.run(["git", "add", SKILL_PATH], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "add skill at 100"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "own.txt").write_text("own\n")
+    subprocess.run(["git", "add", "own.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "own edit"], cwd=clone, check=True)
+
+    push_clone = tmp_path / "push_clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    os.chmod(push_clone / SKILL_PATH, 0o755)
+    subprocess.run(["git", "add", SKILL_PATH], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin marks skill executable"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-commit", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".git" / "MERGE_HEAD").exists()
+    return clone
+
+
+class TestCheckSkillLengthMergeAwareBase:
+    """_lib_staged_length_gate's `old` comparison is measured against
+    _lib_gate_diff_base's resolved base, and mid-merge vs. mid-rebase differ
+    in which base gets used."""
+
+    def test_mid_merge_pure_upstream_growth_does_not_fail(self, isolated_home, tmp_path):
+        """Mid-merge, a file that only upstream grew past the limit does not
+        fail the gate: `old` is the resolved base, not the pre-merge feature
+        tip, which never saw the growth at all."""
+        repo = _build_clean_merge_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mid_rebase_growth_past_mid_rebase_head_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Mid-rebase, with the base empty, the gate's `new > old` comparison
+        uses mid-rebase HEAD as `old`."""
+        repo = _build_conflicted_rebase_with_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "deny"
+        )
+
+    def test_fallback_write_tree_rejected_behaves_like_today(self, isolated_home, tmp_path):
+        """`--write-tree` outright rejection (git < 2.38) must fall back to
+        exactly today's plain HEAD-relative recipe for `old` -- literal HEAD,
+        not the resolved base. For this fixture (only upstream grew the
+        file past the limit), literal pre-merge HEAD never saw that growth,
+        so the fallback denies -- the same conservative posture this gate
+        had before the base substitution existed, not the fixed behavior
+        _lib_gate_diff_base's degraded (git-version-fallback) path cannot
+        provide."""
+        repo = _build_clean_merge_growing_skill(tmp_path)
+        bin_dir = tmp_path / "bin-fallback-write-tree"
+        _make_git_rejecting_write_tree(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, isolated_home, tmp_path):
+        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
+        the three states whose merge-tree call passes that flag -- rebase,
+        cherry-pick, revert, not merge -- so this needs its own fixture,
+        unlike the write-tree fallback test above which reuses the merge
+        fixture because that rejection band affects every state uniformly.
+        SKILL.md is untouched by the revert itself, so `old` falls back to
+        mid-revert HEAD either way -- the same "no rebase-specific
+        over-count" _lib_staged_length_gate's own docstring documents for
+        rebase. This fixture's job is proving the rejection is absorbed
+        cleanly into the fallback, not that the verdict differs from a
+        working substitution."""
+        repo = _build_conflicted_revert_with_growing_skill(tmp_path)
+        bin_dir = tmp_path / "bin-fallback-merge-base"
+        _make_git_rejecting_merge_base_flag(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    def test_delete_modify_conflict_growing_skill_allows(self, isolated_home, tmp_path):
+        """A delete/modify conflict on SKILL.md itself, resolved at 220
+        lines -- over the 200-line limit either way `old` is read, but
+        strictly between the merge-tree base's `old` (250) and a
+        regressed literal-HEAD fallback's `old` (0, the file doesn't
+        exist at literal HEAD in the clone's own delete commit). At the
+        correct merge-tree base, 220 > 250 is false, so the gate allows;
+        this discriminates the correct base from a regressed
+        literal-HEAD fallback, where 220 > 0 is true and the gate would
+        instead deny -- the fixture shape
+        .claude/plans/merge-aware-review-gates.md's Verification section
+        names as untested against this gate's own git show pair."""
+        repo = _build_delete_modify_conflict_growing_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_mode_bit_only_upstream_change_to_skill_does_not_deny(self, isolated_home, tmp_path):
+        """Upstream's only contribution to SKILL.md is a mode-bit flip --
+        the merge auto-resolves with no conflict, and since the content is
+        byte-identical, `new` never exceeds `old`."""
+        repo = _build_clean_merge_mode_bit_only_skill(tmp_path)
+        assert (
+            run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo)
+            == "allow"
+        )
+
+    def test_diff_base_resolved_once_across_multiple_staged_skill_files(
+        self, isolated_home, tmp_path
+    ):
+        """_lib_staged_length_gate resolves _lib_gate_diff_base once above
+        its per-file loop, not once per staged file -- a per-file
+        resolution would spawn state detection and a full merge-tree
+        --write-tree once per staged SKILL.md instead of once per hook run
+        (see _lib_staged_length_gate's own docstring in _lib.sh)."""
+        repo = _build_clean_merge_growing_skill_with_second_skill_file(tmp_path)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-merge-tree-invocations"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "merge-tree" ]; then\n'
+            f'    echo "$@" >> "{invocation_log}"\n'
+            '  fi\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+        extra_env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+        run_hook(CHECK_SKILL_LENGTH_HOOK, bash_input("git commit -m foo"), cwd=repo, extra_env=extra_env)
+
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert len(invocations) == 1, (
+            f"expected exactly one merge-tree invocation across both staged "
+            f"SKILL.md files, got: {invocations}"
+        )

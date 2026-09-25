@@ -49,6 +49,30 @@ CANARY_AGENTS = sorted(
     REVIEWER_AGENTS + ["comment-discipline-reviewer.md", "skill-fidelity-reviewer.md"]
 )
 
+# Reviewers /code-review dispatches that carry no Bash and therefore cannot
+# fetch their own diff — each must instead carry an ## Input contract
+# section telling it to read the diff artifact it is handed.
+DIFF_INPUT_NO_BASH_AGENTS = (
+    "comment-discipline-reviewer.md",
+    "skill-fidelity-reviewer.md",
+)
+
+# These are the sentences every no-Bash agent must state verbatim in its
+# Input contract section; checked against each agent's section here, not
+# per-agent, so the copies can't drift. The paging-instruction sentence is
+# also pinned independently in claude-skills/skills/tests/test_skills.py's
+# test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path — update
+# both on a wording change.
+DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
+    "For a path, `Read` it; if it returns a partial view, the response "
+    "says so explicitly — page onward with `offset` until one doesn't.",
+    "Never review a partial diff.",
+    "You have no `Bash`; you cannot run `git diff`.",
+    "A range expression (e.g. `main...HEAD`) is neither a path nor diff "
+    "text; if you were handed one instead, say so and stop, do not try to "
+    "reconstruct it.",
+)
+
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.
 # When a new non-reviewer agent is added, add it here; the
@@ -196,6 +220,81 @@ class TestReviewerAgentRoster:
             f"Uncategorized agent file(s): {sorted(uncategorized)}. "
             "Add each to REVIEWER_AGENTS (if it should carry the canary) or "
             "NON_REVIEWER_AGENTS (if not) in this test file."
+        )
+
+
+class TestDiffInputContractAgents:
+    """No-Bash reviewers can't self-fetch a diff, so each must carry an Input
+    contract telling it to read the artifact it's handed instead of inferring
+    scope from content."""
+
+    @staticmethod
+    def _extract_input_contract_section(path) -> str:
+        """Extract the '## Input contract' section from an agent file.
+
+        Extracts from the '## Input contract' heading line (inclusive) up to,
+        but excluding, the next line starting with '## '. There is no
+        terminating sentinel inside this section the way there is for the
+        File-based output block, so the next top-level heading is the
+        boundary instead.
+        """
+        content = path.read_text()
+        lines = content.splitlines(keepends=True)
+        in_section = False
+        section_lines = []
+        for line in lines:
+            if line.rstrip("\n") == "## Input contract":
+                in_section = True
+            elif in_section and line.startswith("## "):
+                break
+            if in_section:
+                section_lines.append(line)
+        assert section_lines, f"{path.name}: '## Input contract' section not found."
+        return "".join(section_lines)
+
+    @pytest.mark.parametrize("name", DIFF_INPUT_NO_BASH_AGENTS)
+    def test_no_bash_agent_carries_input_contract(self, name):
+        path = AGENTS_DIR / name
+        content = path.read_text()
+        assert "## Input contract" in content, (
+            f"{name}: '## Input contract' heading missing. A reviewer with no "
+            "Bash needs this section to know how to read the diff artifact it "
+            "is handed."
+        )
+        section = " ".join(self._extract_input_contract_section(path).split())
+        for sentence in DIFF_INPUT_CONTRACT_SHARED_SENTENCES:
+            normalized = " ".join(sentence.split())
+            assert normalized in section, (
+                f"{name}: expected shared sentence {sentence!r} missing from "
+                "the Input contract section — every no-Bash agent states "
+                "this identically."
+            )
+        fm = parse_frontmatter(path)
+        tools_value = fm.get("tools") or ""
+        assert "Bash" not in tools_value, (
+            f"{name}: 'tools:' now grants Bash ({tools_value!r}), but its "
+            "Input contract tells it otherwise. Either drop the contract's "
+            "no-Bash claim or revert the tools: grant."
+        )
+
+    def test_diff_input_no_bash_agents_roster_is_complete(self):
+        """DIFF_INPUT_NO_BASH_AGENTS must equal every CANARY_AGENTS member with no Bash grant.
+
+        Derives the expected set from each canary agent's own tools:
+        frontmatter rather than trusting a second hand-maintained list, so a
+        new no-Bash canary agent that omits the roster entry fails here
+        instead of silently escaping test_no_bash_agent_carries_input_contract.
+        """
+        expected_no_bash = set()
+        for name in CANARY_AGENTS:
+            fm = parse_frontmatter(AGENTS_DIR / name)
+            tools_value = fm.get("tools") or ""
+            if "Bash" not in tools_value:
+                expected_no_bash.add(name)
+        assert expected_no_bash == set(DIFF_INPUT_NO_BASH_AGENTS), (
+            f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "
+            f"DIFF_INPUT_NO_BASH_AGENTS is {sorted(DIFF_INPUT_NO_BASH_AGENTS)}. "
+            "Add the missing agent(s) to DIFF_INPUT_NO_BASH_AGENTS in this file."
         )
 
 
@@ -786,3 +885,83 @@ class TestReviewOrchestratorRosterPlacement:
         properties _LIB_BASH_MUTATION_RESTRICTED_AGENTS exists to keep
         independent."""
         assert "review-orchestrator" not in _review_only_agents()
+
+
+class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
+    """docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    rates the residual Low on the invariant that every current or future agent
+    holding Write but not Bash is confined to _LIB_REVIEW_ONLY_AGENTS. Today
+    comment-discipline-reviewer and skill-fidelity-reviewer are the only such
+    agents, and both are already listed there. Without this test, a future
+    agent added with Write and no Bash, outside that roster, would silently
+    reopen the residual."""
+
+    def test_write_without_bash_agents_are_review_only_confined(self):
+        review_only = set(_review_only_agents())
+        for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
+            fm = parse_frontmatter(path)
+            declared = fm.get("tools") or ""
+            tools = (
+                {t.strip() for t in declared.split(",")}
+                if isinstance(declared, str)
+                else {str(t).strip() for t in declared}
+            )
+            if "Write" in tools and "Bash" not in tools:
+                assert path.stem in review_only, (
+                    f"{path.name} declares Write without Bash but is not in "
+                    "_LIB_REVIEW_ONLY_AGENTS (_lib.sh). A Write-without-Bash agent "
+                    "outside that roster reopens the residual "
+                    "docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md "
+                    "rates Low. Add it to _LIB_REVIEW_ONLY_AGENTS if it is genuinely "
+                    "review-only, or grant it Bash otherwise."
+                )
+
+
+# Pinned so a future edit to ciso-reviewer.md can't silently drop any of
+# these three sentences with no CI signal.
+_CISO_NARROWER_PRINCIPAL_SET_SENTENCE = (
+    'A "narrower principal set" check must actually exclude someone who could '
+    "otherwise perform the action — a second code path the same principals "
+    "still pass isn't narrower at all."
+)
+
+_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE = (
+    "A lookup path that only hashes/compares a password when the account "
+    "exists, or short-circuits sooner for a miss, discloses existence via "
+    "latency even with normalized response bodies."
+)
+
+_CISO_PROVIDER_SETTING_SCOPE_SENTENCE = (
+    "A setting can close the gap for some operations (e.g. sign-in) while "
+    "leaving another (e.g. the initial registration call) unconditionally "
+    "exposed regardless of the setting."
+)
+
+
+class TestCisoReviewerSecurityBulletsPin:
+    """ciso-reviewer.md's "narrower principal set" clause, "Account-existence
+    disclosure" bullet, and "Provider setting scope" bullet must each carry
+    their pinned sentence verbatim -- see _CISO_NARROWER_PRINCIPAL_SET_SENTENCE,
+    _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE, and
+    _CISO_PROVIDER_SETTING_SCOPE_SENTENCE."""
+
+    def test_pinned_narrower_principal_set_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_NARROWER_PRINCIPAL_SET_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned narrower-principal-set "
+            f"sentence verbatim:\n{_CISO_NARROWER_PRINCIPAL_SET_SENTENCE!r}"
+        )
+
+    def test_pinned_account_existence_disclosure_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned account-existence-disclosure "
+            f"sentence verbatim:\n{_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE!r}"
+        )
+
+    def test_pinned_provider_setting_scope_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_PROVIDER_SETTING_SCOPE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned provider-setting-scope "
+            f"sentence verbatim:\n{_CISO_PROVIDER_SETTING_SCOPE_SENTENCE!r}"
+        )

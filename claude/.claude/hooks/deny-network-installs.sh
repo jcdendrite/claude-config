@@ -1,9 +1,12 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Bash commands that install a named package or hand downloaded
 # content to a shell/interpreter. Always on, no arming file, no bypass valve.
 # Matches on token presence, not on resolving the leading command through
 # wrappers, since position-based resolution has gaps this trade avoids.
+# This gate's threat model includes a cooperative agent steered by injected content toward an install or curl-pipe-to-shell shape, not only an accidental one.
+# The residual gaps below are limits of text matching against a deliberately obfuscated command, not a claim of safety against one (docs/security-hardening.md).
 #
 # Known gaps (accepted, not chased further — rationale: docs/security-hardening.md):
 #   - `pip install -e <VCS-URL>` allows: the editable-install marker's value
@@ -65,9 +68,9 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 

@@ -112,7 +112,12 @@ class TestSplitFragmentsCallSitesQuoteStripped:
         _SPLIT_FRAGMENTS_CALL_RE, which only recognizes the
         "$VAR"/"${VAR}" double-quoted-expansion call shape) must drop this
         count and fail loudly rather than pass silently under a >= floor.
-        Update this count when a call site is added or removed."""
+
+        The count is 12: _lib_command_invokes_git_subcmd,
+        _lib_command_invokes_tool_subcmd, and
+        _lib_command_concludes_commit_shape each add one compliant call site
+        inside _lib.sh itself. Update this count when a call site is added
+        or removed."""
         sites = _split_fragments_call_sites()
         assert len(sites) == 12, (
             f"expected 12 call sites, found {len(sites)}: "

@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import textwrap
 import time
+from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -558,7 +562,7 @@ def stop_input(
     return payload
 
 
-def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:
+def exitplanmode_input(plan_file_path: str = "/nonexistent/.claude/plans/test-plan.md") -> dict:
     """Build an ExitPlanMode event payload matching the real harness shape.
 
     The ExitPlanMode tool_input has `plan` and `planFilePath` fields — no
@@ -591,6 +595,7 @@ def agent_input(
     prompt: str | None = None,
     tool_name: str = "Agent",
     cwd: str | None = None,
+    description: str = "test",
 ) -> dict:
     """Build an Agent (or Task) dispatch payload.
 
@@ -600,9 +605,12 @@ def agent_input(
     `subagent_type` is omitted from tool_input when None, matching a
     dispatch with no reviewer-persona target. `prompt` defaults to the
     literal string "test" when None, preserving every pre-existing caller's
-    payload shape.
+    payload shape. `description` defaults to `"test"` when not provided,
+    preserving existing callers' payload shape. It is threaded through as a
+    parameter so a `deny-no-op-dispatch.sh` fixture can construct a payload
+    with a distinct description without a separate builder.
     """
-    tool_input: dict = {"description": "test", "prompt": prompt if prompt is not None else "test"}
+    tool_input: dict = {"description": description, "prompt": prompt if prompt is not None else "test"}
     if subagent_type is not None:
         tool_input["subagent_type"] = subagent_type
     payload: dict = {"tool_name": tool_name, "tool_input": tool_input}
@@ -749,10 +757,366 @@ def marker_path(
 
 
 def staged_diff_hash(repo: Path) -> str:
+    """The plain HEAD-relative preimage: `git diff --cached` with no base
+    override. This is today's production recipe, and stays exactly this
+    outside any in-progress git state (merge/rebase/cherry-pick/revert),
+    where _lib_gate_diff_base resolves no base and the real hooks issue
+    this identical command. See staged_diff_hash_at_base() below for the
+    base-relative oracle used inside a trusted in-progress state -- this
+    function is deliberately not extended to take a base, since the
+    marker-invalidation tests need exactly this old recipe to build an
+    old-preimage marker."""
     diff = subprocess.run(
         ["git", "diff", "--cached"], cwd=repo, capture_output=True, check=True
     ).stdout
     return hashlib.sha256(diff).hexdigest()
+
+
+def staged_diff_hash_at_base(repo: Path, base: str) -> str:
+    """Independent oracle for a base-relative marker preimage: computes
+    `git diff --cached <base>` directly in Python rather than by calling
+    the production `_lib_staged_diff_hash`/`_lib_gate_diff_base` shell
+    functions under test -- a test seeding a marker via the function it is
+    testing would only prove the function agrees with itself, not that its
+    output is correct (see write_plan_review_marker's docstring below for
+    the same caution applied to a different marker kind)."""
+    diff = subprocess.run(
+        ["git", "diff", "--cached", base], cwd=repo, capture_output=True, check=True
+    ).stdout
+    return hashlib.sha256(diff).hexdigest()
+
+
+def _run_git(repo: Path, *args: str) -> str:
+    """Run a git subcommand in `repo`, returning stdout. Raises on failure --
+    for the failure-is-expected calls in the in-progress-state builders
+    below (a merge/rebase/cherry-pick/revert whose whole point is to
+    conflict), use subprocess.run directly and assert on the returncode."""
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _current_branch(repo: Path) -> str:
+    return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
+
+
+def _seed_tracked_file(repo: Path, file_name: str, content: str = "base\n") -> Path:
+    """Ensure `file_name` exists, tracked, and committed in `repo`, so a
+    conflict-building fixture has a common baseline both diverging sides
+    can edit differently -- an add/add conflict (both sides create the file
+    independently) exercises different git machinery than the
+    content-conflict shape these fixtures need. Idempotent: does nothing if
+    the file is already tracked."""
+    target = repo / file_name
+    if not target.exists():
+        target.write_text(content)
+        _run_git(repo, "add", file_name)
+        _run_git(repo, "commit", "-qm", f"seed {file_name}")
+    return target
+
+
+def bare_remote_with_default_branch(
+    tmp_path: Path,
+    branch: str = "main",
+    file_name: str = "f",
+    file_content: str = "a\n",
+) -> tuple[Path, Path]:
+    """Build a bare 'origin' repo and a clone checked out on `branch`, with
+    origin/HEAD set and one shared commit -- the bare-remote-plus-clone
+    shape test_check_branch_divergence.py's bare_remote/feature_clone
+    pytest fixtures already establish, generalized to a plain function so
+    every test file needing a pushable remote (the trusted/untrusted-anchor
+    tests here, and require-ready-for-review.sh's push-anchor test) can
+    call it directly rather than duplicating the construction. Returns
+    (bare_remote, clone)."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", branch, str(bare)], check=True, capture_output=True
+    )
+    seed = tmp_path / "_bare_remote_seed"
+    seed.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", branch, str(seed)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=seed, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=seed, check=True)
+    (seed / file_name).write_text(file_content)
+    subprocess.run(["git", "add", file_name], cwd=seed, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=seed, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=seed, check=True)
+    subprocess.run(["git", "push", "-q", "origin", branch], cwd=seed, check=True)
+
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
+    subprocess.run(["git", "remote", "set-head", "origin", branch], cwd=clone, check=True)
+    return bare, clone
+
+
+def push_conflicting_edit_to_origin(
+    tmp_path: Path, bare: Path, file_name: str, content: str, branch: str = "main"
+) -> None:
+    """Push a new commit editing `file_name` to `bare`'s default branch from
+    a throwaway clone, independent of any other clone's own worktree -- the
+    "someone else pushed while I was working" shape a real sync merge
+    needs, and the shape test_check_branch_divergence.py's
+    repo_behind_conflict fixture already establishes. Does not touch any
+    other clone; callers run `git fetch origin` there afterward to see the
+    new origin/<branch> tip."""
+    push_clone = tmp_path / f"_push_{branch}_{abs(hash(content))}"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / file_name).write_text(content)
+    subprocess.run(["git", "add", file_name], cwd=push_clone, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", f"origin edits {file_name}"], cwd=push_clone, check=True
+    )
+    subprocess.run(["git", "push", "-q", "origin", branch], cwd=push_clone, check=True)
+
+
+def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
+    """Build a real conflicted two-way merge inside `repo`: branch "theirs"
+    off the checked-out branch, edit `file_name` differently on each side,
+    then `git merge theirs` on the original branch. Leaves MERGE_HEAD and
+    unresolved conflict markers staged. `repo` must already have a
+    configured user.email/user.name. Returns the merged-in branch's tip
+    oid -- MERGE_HEAD's expected content."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    _run_git(repo, "checkout", "-qb", "theirs")
+    target.write_text("theirs-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"theirs edits {file_name}")
+    theirs_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("ours-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"ours edits {file_name}")
+    result = subprocess.run(
+        ["git", "merge", "-q", "theirs"], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected merge conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    return theirs_oid
+
+
+def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
+    """Build a real conflicted cherry-pick inside `repo`: branch "source"
+    off the checked-out branch, commit a conflicting edit to `file_name` on
+    each side, then `git cherry-pick` the source commit back onto the
+    original branch. Leaves CHERRY_PICK_HEAD and unresolved conflict
+    markers staged. Returns the cherry-picked commit's oid -- CHERRY_PICK_HEAD's
+    expected content."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    _run_git(repo, "checkout", "-qb", "source")
+    target.write_text("source-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"source edits {file_name}")
+    source_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("base-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"base edits {file_name}")
+    result = subprocess.run(
+        ["git", "cherry-pick", source_oid], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected cherry-pick conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
+    return source_oid
+
+
+def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
+    """Build a real conflicted revert inside `repo`: commit A introduces an
+    edit to `file_name`, commit B further edits the same region, then
+    `git revert A`. Reverting the tip essentially never conflicts, so this
+    three-commit shape is required to exercise the conflicting case. Leaves
+    REVERT_HEAD and unresolved conflict markers staged. Returns commit A's
+    oid -- REVERT_HEAD's expected content."""
+    target = _seed_tracked_file(repo, file_name)
+    target.write_text("A-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", "commit A")
+    commit_a = _run_git(repo, "rev-parse", "HEAD").strip()
+    target.write_text("B-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", "commit B")
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", commit_a], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected revert conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (repo / ".git" / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    return commit_a
+
+
+def build_conflicted_rebase(
+    repo: Path, *, file_name: str = "f", interactive: bool = False
+) -> str:
+    """Build a real conflicted rebase inside `repo`, non-interactive by
+    default: branch "upstream" off the checked-out branch, edit
+    `file_name` differently on each side, then rebase the original branch
+    onto "upstream". Returns control at the pre-resolution checkpoint --
+    the index carries genuine stage 1/2/3 entries for `file_name` and the
+    conflict is not yet resolved -- with the replayed commit's oid
+    (REBASE_HEAD's expected content). Call resolve_conflicted_rebase() to
+    advance to the post-resolution, staged checkpoint.
+
+    `interactive=True` runs `git -c sequence.editor=true rebase -i
+    upstream` instead: an interactive rebase whose todo list is accepted
+    unmodified. Unlike the plain form, git implements each interactive
+    "pick" step via the same code path as cherry-pick, so this leaves a
+    CHERRY_PICK_HEAD alongside rebase-merge/ while paused -- the fixture
+    the state-detection precedence order (rebase before cherry-pick) is
+    verified against."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    _run_git(repo, "checkout", "-qb", "upstream")
+    target.write_text("upstream-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"upstream edits {file_name}")
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("feature-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"feature edits {file_name}")
+    feature_tip = _run_git(repo, "rev-parse", "HEAD").strip()
+
+    cmd = (
+        ["git", "-c", "sequence.editor=true", "rebase", "-i", "upstream"]
+        if interactive
+        else ["git", "rebase", "upstream"]
+    )
+    result = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
+    assert result.returncode != 0, (
+        f"expected rebase conflict, got: {result.stdout}{result.stderr}"
+    )
+    gitdir = repo / ".git"
+    assert (gitdir / "rebase-merge").is_dir() or (gitdir / "rebase-apply").is_dir(), (
+        "rebase did not leave rebase-merge/ or rebase-apply/"
+    )
+    # Whether the installed git writes REBASE_HEAD is asserted, not assumed
+    # -- git's older apply-based backend (rebase-apply/) predates
+    # REBASE_HEAD, so this is only guaranteed on the merge-based backend
+    # (the default since git 2.26) that both the plain and interactive
+    # forms exercised here use.
+    assert (gitdir / "REBASE_HEAD").exists(), "rebase did not leave REBASE_HEAD"
+    return feature_tip
+
+
+def resolve_conflicted_rebase(
+    repo: Path, *, file_name: str = "f", resolution: str = "resolved\n"
+) -> None:
+    """Advance a build_conflicted_rebase() fixture to the post-resolution,
+    staged checkpoint: write `resolution` to `file_name` and `git add` it,
+    leaving the rebase paused with a clean, staged resolution ready for
+    `git rebase --continue`."""
+    (repo / file_name).write_text(resolution)
+    _run_git(repo, "add", file_name)
+
+
+def build_octopus_merge_conflict(repo: Path, *, file_name: str = "f") -> None:
+    """Forge a genuine multi-line MERGE_HEAD naming two real, divergent
+    commits. git's own octopus merge strategy aborts outright on any
+    conflicting step rather than leaving a resolvable state to fix by
+    hand -- confirmed empirically: `git merge b1 b2` against branches
+    diverged from a shared base and conflicting on the same file exits
+    nonzero with no MERGE_HEAD left at all, unlike the two-line MERGE_HEAD
+    plus ordinary conflict markers a two-parent merge leaves. Producing
+    this on-disk shape -- which the OID-validation code must still handle
+    defensively -- means writing MERGE_HEAD directly, naming two real
+    commits so the ancestry check this fixture exercises runs against
+    genuine objects rather than fabricated ones."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    base_sha = _run_git(repo, "rev-parse", "HEAD").strip()
+    oids = []
+    for branch, content in (("b1", "b1-edit\n"), ("b2", "b2-edit\n")):
+        _run_git(repo, "checkout", "-qb", branch, base_sha)
+        target.write_text(content)
+        _run_git(repo, "add", file_name)
+        _run_git(repo, "commit", "-qm", f"{branch} edits {file_name}")
+        oids.append(_run_git(repo, "rev-parse", "HEAD").strip())
+    _run_git(repo, "checkout", "-q", base_branch)
+    (repo / ".git" / "MERGE_HEAD").write_text("\n".join(oids) + "\n")
+
+
+def build_rebase_merges_replay_conflict(repo: Path, *, file_name: str = "f") -> None:
+    """Build a `git rebase --rebase-merges upstream` replay that conflicts
+    while reconstructing a merge commit, so REBASE_HEAD names that merge
+    commit. This is the topology where REBASE_HEAD^ would silently resolve
+    to parent 1 rather than erroring.
+
+    `upstream` edits `file_name`. `side` and `feature` both edit a second
+    file, `second_file_name`, differently, so each replays cleanly onto
+    `upstream` individually -- `upstream` never touches that file. The
+    conflict surfaces only when --rebase-merges reconstructs the merge step
+    combining `side` and `feature`: this fixture replays, by hand, the same
+    conflict `feature`'s own merge of `side` hit originally. A conflict
+    placed directly in `file_name` instead would surface during an earlier
+    individual pick step and never reach the merge reconstruction at all --
+    confirmed empirically."""
+    second_file_name = f"{file_name}2"
+    target = _seed_tracked_file(repo, file_name)
+    second_target = repo / second_file_name
+    second_target.write_text("base\n")
+    _run_git(repo, "add", second_file_name)
+    _run_git(repo, "commit", "-qm", f"seed {second_file_name}")
+    base_sha = _run_git(repo, "rev-parse", "HEAD").strip()
+
+    _run_git(repo, "checkout", "-qb", "upstream", base_sha)
+    target.write_text("upstream-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"upstream edits {file_name}")
+
+    _run_git(repo, "checkout", "-qb", "side", base_sha)
+    second_target.write_text("side-edit\n")
+    _run_git(repo, "add", second_file_name)
+    _run_git(repo, "commit", "-qm", f"side edits {second_file_name}")
+
+    _run_git(repo, "checkout", "-qb", "feature", base_sha)
+    second_target.write_text("feature-edit\n")
+    _run_git(repo, "add", second_file_name)
+    _run_git(repo, "commit", "-qm", f"feature edits {second_file_name}")
+    merge_result = subprocess.run(
+        ["git", "merge", "--no-ff", "-q", "side"], cwd=repo, capture_output=True, text=True
+    )
+    assert merge_result.returncode != 0, (
+        f"expected feature's own merge of side to conflict, got: "
+        f"{merge_result.stdout}{merge_result.stderr}"
+    )
+    second_target.write_text("resolved\n")
+    _run_git(repo, "add", second_file_name)
+    subprocess.run(
+        ["git", "commit", "--no-edit", "-q"],
+        cwd=repo, check=True, capture_output=True,
+        env={**os.environ, "GIT_EDITOR": "true"},
+    )
+    merge_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+
+    result = subprocess.run(
+        ["git", "rebase", "--rebase-merges", "upstream"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert result.returncode != 0, (
+        f"expected rebase --rebase-merges conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (repo / ".git" / "rebase-merge").is_dir(), "rebase did not leave rebase-merge/"
+    rebase_head = _run_git(repo, "rev-parse", "REBASE_HEAD").strip()
+    assert rebase_head == merge_oid, (
+        "expected REBASE_HEAD to name the original merge commit, not an "
+        "individually-replayed side commit"
+    )
+    parents = _run_git(repo, "rev-list", "--parents", "-n", "1", rebase_head).split()
+    assert len(parents) >= 3, "expected REBASE_HEAD to be a merge commit with 2+ parents"
 
 
 def write_marker(
@@ -796,28 +1160,33 @@ def plan_review_marker_path(
 
 
 def write_plan_review_marker(
-    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None, base: str = ""
 ) -> Path:
     """Write a plan-review completion marker whose content is the real
     active-plan hash for `repo`, computed by shelling out to the production
     `_lib_active_plan_hash` (_lib.sh) rather than reimplementing the recipe
     in Python, which would diverge silently on any
-    newline/delimiter/normalization detail.
+    newline/delimiter/normalization detail. `base` defaults to "" (no
+    trusted in-progress state) -- pass the merge-tree base explicitly for a
+    marker meant to validate mid-merge/rebase/cherry-pick/revert.
 
     Note the tradeoff, and do not mistake this for the technique
-    `write_marker`/`write_skill_review_marker` use: those recompute the hash
-    independently in Python from a real `git diff`, so they can catch drift
-    in the shell-side recipe. This one calls the very function under test, so
-    a test that seeds a marker here and asserts the hook allows is checking
-    that the function agrees with itself across two invocations -- not that
-    its output is correct. Independent correctness is covered by the
-    relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
-    route through this helper."""
+    `write_marker` uses: its callers recompute the hash independently in
+    Python from a real `git diff` (see `staged_diff_hash`), so they can catch
+    drift in the shell-side recipe. This one calls the very function under
+    test, so a test that seeds a marker here and asserts the hook allows is
+    checking that the function agrees with itself across two invocations --
+    not that its output is correct. Independent correctness is covered by
+    the relational unit tests in `hooks/tests/test_marker_lib.py`, which do
+    not route through this helper. `write_skill_review_marker` takes the
+    same tradeoff, for the pathspec-list-drift reason its own docstring
+    states."""
     marker = plan_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     lib_sh = HOOKS_DIR / "_lib.sh"
     active_plan_hash = subprocess.run(
-        ["bash", "-c", f'. "{lib_sh}"; _lib_active_plan_hash "$1"', "write_plan_review_marker", str(repo)],
+        ["bash", "-c", f'. "{lib_sh}"; _lib_active_plan_hash "$1" "$2"',
+         "write_plan_review_marker", str(repo), base],
         capture_output=True,
         text=True,
         check=True,
@@ -847,24 +1216,39 @@ def write_skill_review_marker(
     session_id: str = DEFAULT_TEST_SESSION_ID,
     config_dir: Path | None = None,
 ) -> None:
-    diff = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--cached",
-            "--",
-            "claude-skills/skills/**/SKILL.md",
-            "plugins/*/skills/**/SKILL.md",
-            "claude-skills/skills/plan-review/ROUTING.md",
-        ],
+    """Write a skill-review completion marker by shelling out to the real
+    `marker.sh write skill-review` recipe, rather than hand-maintaining a
+    second copy of the SKILL.md pathspec list here — marker.sh's own
+    SKILL_REVIEW_PATHSPECS is the single source of truth.
+
+    marker.sh resolves its session id from the caller's own process
+    ancestry, so this seeds a $HOME/.claude/sessions/<pid> entry for the
+    current test process first. Duplicates hooks/tests/conftest.py's
+    _seed_session rather than importing it — that conftest is a pytest
+    fixture file, not importable from this unpackaged test-support module.
+    """
+    pid = os.getpid()
+    config_dir_resolved = config_dir if config_dir is not None else home / ".claude"
+    sessions_dir = config_dir_resolved / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
         capture_output=True,
+        text=True,
         check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(pid)).write_text(f"{session_id}\n{start_time}\n")
+
+    extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)} if config_dir is not None else None
+    subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "skill-review"],
         cwd=repo,
-    ).stdout
-    diff_hash = hashlib.sha256(diff).hexdigest()
-    marker = skill_review_marker_path(home, repo, session_id, config_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(diff_hash + "\n")
+        env=_build_subprocess_env(home, extra_env),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def plan_review_active_marker_path(home: Path, session_id: str) -> Path:
@@ -931,7 +1315,8 @@ def reviewer_round_state_value(repo: Path) -> str:
     """Shell out to the real _lib_reviewer_round_state_value against `repo`
     — see reviewer_round_state_key's docstring for the git_toplevel
     normalization rationale, which applies identically here. Returns ""
-    (not raising) when HEAD is unresolvable (no commits yet)."""
+    (not raising) when HEAD is unresolvable (no commits yet), or when the
+    staged-diff git call itself failed or was capped-killed."""
     result = subprocess.run(
         ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_value "$1"',
          "_", git_toplevel(repo)],
@@ -982,14 +1367,33 @@ def install_resume_context_script(isolated_home: Path) -> Path:
     )
 
 
-def install_marker_script(isolated_home: Path) -> Path:
-    """Symlink the real marker.sh, and the _lib.sh it sources, into an
-    isolated $HOME/.claude/ -- so a hook or skill recipe invoking marker.sh
-    via `$CONFIG_DIR/scripts/marker.sh` resolves the real script rather than
-    a missing one. Idempotent, so a caller under the `isolated_home` fixture
-    (which already symlinks hooks/_lib.sh itself) can call this unconditionally.
+def symlink_hooks_lib_chain(hooks_dir: Path) -> None:
+    """Symlink _lib.sh and its two BASH_SOURCE-relative siblings,
+    _config.sh and config-keys.psv, into an arbitrary hooks_dir -- the
+    single source of truth for this three-symlink chain, called by every
+    fixture/helper that needs a hooks/ dir where sourcing _lib.sh works.
+
+    _lib.sh sources _config.sh from its own directory; BASH_SOURCE does
+    not follow a symlink, so it resolves relative to the symlink's own
+    location, not _lib.sh's real target. config-keys.psv is a required
+    sibling of _config.sh for the same reason: _config.sh reads it via a
+    BASH_SOURCE-relative path too. Idempotent, so a caller that already
+    symlinked hooks/_lib.sh itself can call this unconditionally.
     """
-    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    _symlink_if_absent(hooks_dir / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    _symlink_if_absent(hooks_dir / "_config.sh", HOOKS_DIR / "_config.sh")
+    _symlink_if_absent(hooks_dir / "config-keys.psv", HOOKS_DIR / "config-keys.psv")
+
+
+def install_marker_script(isolated_home: Path) -> Path:
+    """Symlink the real marker.sh, and the hooks/_lib.sh chain it sources,
+    into an isolated $HOME/.claude/ -- so a hook or skill recipe invoking
+    marker.sh via `$CONFIG_DIR/scripts/marker.sh` resolves the real script
+    rather than a missing one. Idempotent, so a caller under the
+    `isolated_home` fixture (which already symlinks hooks/_lib.sh itself)
+    can call this unconditionally.
+    """
+    symlink_hooks_lib_chain(isolated_home / ".claude" / "hooks")
     return _symlink_if_absent(
         isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh"
     )
@@ -1170,6 +1574,227 @@ def build_no_realpath_m_path_env(tmp_path: Path) -> str:
     (shim_dir / "grealpath").write_text(FORCED_FALLBACK_GREALPATH_SHIM)
     (shim_dir / "grealpath").chmod(0o755)
     return f"{shim_dir}:{os.environ['PATH']}"
+
+
+# -- Scaled timeout(1) shim for cap-boundary tests ---------------------------
+#
+# A cap-boundary test proves timeout(1) actually killed a hung command by
+# installing a fake `timeout` into its own PATH-prepended bin dir that
+# divides the caller-supplied duration by TIMEOUT_SCALE_DIVISOR before
+# running the real binary, so the test waits a fraction of the production
+# cap. Production hooks never see this shim, so their behavior is
+# unaffected. The same shim is the suite's evidence a cap fired: it appends
+# a "<duration> <command>" line to a `started` log before running the real
+# binary, and appends the same line to a `completed` log only when the real
+# binary reports the command finished on its own. A line present in
+# `started` with no matching `completed` entry is a killed invocation.
+# The command field lets a test distinguish which stage of a same-duration
+# pipe was actually killed, rather than only that some stage at that
+# duration was.
+
+TIMEOUT_SCALE_DIVISOR = 3
+
+_SCALED_TIMEOUT_MARKER_DIRNAME = "scaled-timeout-markers"
+
+
+def write_scaled_timeout_shim(bin_dir: Path) -> bool:
+    """Write a `timeout` shim into `bin_dir` that divides an integer
+    duration by TIMEOUT_SCALE_DIVISOR before running the real
+    timeout(1)/gtimeout(1), recording each invocation's duration in a
+    started/completed log pair under bin_dir. Returns False, writing
+    nothing, when neither binary is on PATH -- every scaled value is then
+    left unscaled by the caller.
+
+    Only a `timeout` fake is written, never a `gtimeout` one:
+    _lib_capped_for probes `timeout` first, so a `gtimeout` fake would be
+    unreachable on every host.
+    """
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if real_timeout is None:
+        return False
+    marker_dir = bin_dir / _SCALED_TIMEOUT_MARKER_DIRNAME
+    marker_dir.mkdir(exist_ok=True)
+    started_log = marker_dir / "started"
+    completed_log = marker_dir / "completed"
+    shim_path = bin_dir / "timeout"
+    # A surviving symlink (the two closed-PATH sites that symlink the real
+    # timeout binary into place) would send write_text through to the real
+    # binary rather than replacing it.
+    shim_path.unlink(missing_ok=True)
+    shim_path.write_text(
+        "#!/bin/bash\n"
+        "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
+        "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
+        "# so every other $1 runs at the caller's own duration.\n"
+        "# A leading `-k <n>` pair (_lib_capped_for's SIGKILL grace) is stripped before that check runs, so it isn't\n"
+        "# misread as the duration itself. A 1-9-leading integer grace is scaled by the same divisor before being\n"
+        "# re-attached below; any other grace is forwarded unscaled.\n"
+        "grace=()\n"
+        'if [ "$1" = "-k" ]; then\n'
+        '  grace=(-k "$2")\n'
+        "  shift 2\n"
+        "fi\n"
+        'if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then\n'
+        '  requested="$1"\n'
+        f"  scaled_ms=$(( requested * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
+        '  if [ "${#grace[@]}" -gt 0 ] && [[ "${grace[1]}" =~ ^[1-9][0-9]*$ ]]; then\n'
+        f"    scaled_grace_ms=$(( grace[1] * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "    printf -v scaled_grace '%d.%03d' \"$(( scaled_grace_ms / 1000 ))\" \"$(( scaled_grace_ms % 1000 ))\"\n"
+        '    grace=(-k "$scaled_grace")\n'
+        "  fi\n"
+        "  shift\n"
+        "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
+        "  # $1 is the wrapped command; the shift above already consumed the duration.\n"
+        f"  printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(started_log))}\n"
+        f'  {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$scaled" "$@"\n'
+        "  status=$?\n"
+        "  # The statuses in _lib_capped_for's header (_lib.sh) count as the cap firing;\n"
+        "  # a child's own 137/143 signal-death is indistinguishable, so an external kill counts the same way.\n"
+        "  [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]] || \\\n"
+        f"    printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
+        '  exit "$status"\n'
+        "fi\n"
+        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n'
+    )
+    shim_path.chmod(0o755)
+    return True
+
+
+def _scaled_timeout_log_counts(bin_dir: Path, name: str) -> Counter[str]:
+    log = bin_dir / _SCALED_TIMEOUT_MARKER_DIRNAME / name
+    if not log.exists():
+        return Counter()
+    return Counter(log.read_text().splitlines())
+
+
+def caps_that_fired(bin_dir: Path) -> Counter[str]:
+    """Caller-supplied "<duration> <command>" pairs whose invocation started
+    and never completed."""
+    return _scaled_timeout_log_counts(bin_dir, "started") - _scaled_timeout_log_counts(bin_dir, "completed")
+
+
+def scaled_cap(production_seconds: float) -> float:
+    """The scaled `timeout` shim's own view of a production cap -- what it
+    actually enforces once write_scaled_timeout_shim is installed."""
+    return production_seconds / TIMEOUT_SCALE_DIVISOR
+
+
+def scaled_shim_sleep(seconds: float) -> int:
+    """Round a shim sleep up so it keeps outlasting its scaled cap --
+    rounding down could let the sleep finish before a working cap fires,
+    turning a real regression into a false pass."""
+    return math.ceil(seconds / TIMEOUT_SCALE_DIVISOR)
+
+
+def scaled_under_cap_sleep(seconds: float) -> float:
+    """Divide with no rounding, for the one site whose shim sleep must
+    finish inside its scaled cap rather than outlast it -- rounding up
+    would walk that sleep toward the cap it has to stay under."""
+    return seconds / TIMEOUT_SCALE_DIVISOR
+
+
+def _cap_key(production_cap: float) -> str:
+    """Format a production cap the way the scaled `timeout` shim recorded
+    it -- the bare, unpadded integer string a hook actually passed to
+    timeout(1)."""
+    return str(int(production_cap))
+
+
+def _log_key_duration(log_key: str) -> str:
+    """The duration field of a scaled-shim "<duration> <command>" log key."""
+    duration, _, _command = log_key.partition(" ")
+    return duration
+
+
+def _counts_at_duration(counts: Counter[str], production_cap: float) -> int:
+    """Sum a log Counter's values across every command recorded at
+    production_cap's duration, aggregating across a pipe's stages."""
+    duration_key = _cap_key(production_cap)
+    return sum(count for log_key, count in counts.items() if _log_key_duration(log_key) == duration_key)
+
+
+@contextmanager
+def assert_cap_engaged(
+    bin_dir: Path,
+    production_cap: float | None = None,
+    killed_calls: int = 1,
+    command: str | None = None,
+):
+    """Assert a timeout(1) cap killed the wrapped block's capped call(s),
+    read from the scaled `timeout` shim's started/completed logs rather
+    than a wall-clock floor. The shim logs a call as fired when it returns
+    124, 137 or 143, the statuses _lib_capped_for's header in _lib.sh lists
+    for a cap kill. 137 and 143 also occur as a child's own signal-death
+    status, so a fired call is evidence of a cap kill, not proof.
+
+    Snapshots both logs on entry so a second hook run inside the same
+    bin_dir isn't double-counted. Raises when the shim recorded nothing at
+    all (never invoked), with a message distinct from "every invocation
+    completed on its own" (invoked, but nothing killed).
+
+    command: with production_cap, asserts the kill count for that exact
+    (duration, command) pair instead of summing across commands -- needed
+    to tell which stage of a same-duration piped pair was killed.
+    """
+    started_before = _scaled_timeout_log_counts(bin_dir, "started")
+    completed_before = _scaled_timeout_log_counts(bin_dir, "completed")
+    yield
+    started_delta = _scaled_timeout_log_counts(bin_dir, "started") - started_before
+    completed_delta = _scaled_timeout_log_counts(bin_dir, "completed") - completed_before
+    if not started_delta:
+        raise AssertionError(
+            f"expected a capped timeout(1) call inside {bin_dir}, but the scaled "
+            "timeout shim was never invoked"
+        )
+    fired_delta = started_delta - completed_delta
+    if not fired_delta:
+        raise AssertionError(
+            f"expected a capped timeout(1) call to be killed inside {bin_dir}, but "
+            "every invocation completed on its own"
+        )
+    if command is not None:
+        assert production_cap is not None, "assert_cap_engaged(command=...) requires production_cap"
+        got = fired_delta[f"{_cap_key(production_cap)} {command}"]
+        cap_desc = f"at cap {_cap_key(production_cap)}s for {command!r} "
+    elif production_cap is None:
+        got = sum(fired_delta.values())
+        cap_desc = ""
+    else:
+        got = _counts_at_duration(fired_delta, production_cap)
+        cap_desc = f"at cap {_cap_key(production_cap)}s "
+    assert got == killed_calls, (
+        f"expected {killed_calls} kill(s) {cap_desc}inside {bin_dir}, got {dict(fired_delta)}"
+    )
+
+
+@contextmanager
+def assert_cap_not_engaged(bin_dir: Path, production_cap: float | None = None):
+    """The inverse of assert_cap_engaged: the scaled `timeout` shim must
+    have run inside the wrapped block (at `production_cap`, when given) and
+    nothing it wrapped may have been killed. For the one site whose shim
+    sleep must finish inside its cap rather than outlast it.
+    """
+    started_before = _scaled_timeout_log_counts(bin_dir, "started")
+    fired_before = caps_that_fired(bin_dir)
+    yield
+    started_delta = _scaled_timeout_log_counts(bin_dir, "started") - started_before
+    if not started_delta:
+        raise AssertionError(
+            f"expected the scaled timeout shim to run inside {bin_dir}, but it was "
+            "never invoked"
+        )
+    if production_cap is not None:
+        got = _counts_at_duration(started_delta, production_cap)
+        assert got >= 1, (
+            f"expected an invocation at cap {_cap_key(production_cap)}s inside {bin_dir}, "
+            f"got {dict(started_delta)}"
+        )
+    fired_delta = caps_that_fired(bin_dir) - fired_before
+    assert not fired_delta, (
+        f"expected no capped timeout(1) kill inside {bin_dir}, but got {dict(fired_delta)}"
+    )
+
 
 # (first_line, expect_consult, id) rows behind plan-architect consult
 # classification, reused by test_log_reviewer_round.py's bash-latch test and
