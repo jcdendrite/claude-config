@@ -930,6 +930,15 @@ SCRATCH_NO_RETRY_SENTENCE = (
 
 SCRATCH_READ_TOOL_SENTENCE = "Use Read, Grep, or Glob for a read the hook misjudges."
 
+# Pinned so a future edit that simplifies the exemption list back to bare
+# `git status` across all eight personas fails CI.
+SCRATCH_READ_ONLY_INSPECTION_SENTENCE = (
+    "So is read-only inspection (`git diff`, `git log`, `git show`, "
+    "`git --no-optional-locks status`, `grep`, `wc`, `cat`), but only as the "
+    "bare command with no redirect and no output flag: `git diff "
+    "--output=<path>` and `git show <ref>:<path> > <path>` are not exempt."
+)
+
 # Each incident-critical rule of the Scratch execution section, pinned verbatim.
 # The byte-identical test only catches divergence between personas, so these
 # catch a rule deleted from every persona at once.
@@ -1083,6 +1092,10 @@ class TestScratchExecutionSection:
         assert SCRATCH_READ_TOOL_SENTENCE in section, (
             f"{name}: Scratch execution section is missing the read-tool "
             f"sentence verbatim:\n{SCRATCH_READ_TOOL_SENTENCE!r}"
+        )
+        assert SCRATCH_READ_ONLY_INSPECTION_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the read-only "
+            f"inspection sentence verbatim:\n{SCRATCH_READ_ONLY_INSPECTION_SENTENCE!r}"
         )
 
     @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)

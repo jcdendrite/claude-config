@@ -7,12 +7,25 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **The eight Bash-holding reviewer personas (`ciso-reviewer` and the seven `staff-*`) now follow a shared `## Scratch execution` section, and `deny-reviewer-tree-mutation.sh` denial text is rewritten to match.** Refs GH-1099. Consumer-visible changes:
-  - Personas confirm a claim by tracing the code first and run something only when tracing cannot settle it. They work in one `mktemp -d /tmp/<name>.XXXXXX` directory, never overwrite an existing path, never create a link, copy only with plain `cp <file> <new-name>`, and run no program that writes through the home directory. A check the rules forbid is recorded in the findings instead of run.
+  - Personas confirm a claim by tracing the code first and run something only when tracing cannot settle it. They:
+    - work in one `mktemp -d /tmp/<name>.XXXXXX` directory
+    - never overwrite an existing path
+    - never create a link
+    - copy only with plain `cp <file> <new-name>`
+    - run no program that writes through the home directory
+
+    A check the rules forbid is recorded in the findings instead of run.
   - The old instruction to copy a file into `/tmp` and mutate the copy is gone from the personas and the denial text.
   - `staff-sdet` no longer runs the test suite, and `staff-platform-engineer` no longer runs a linter, when the run would need a tree copy or a virtual environment. Each records the check in its findings instead.
   - Scratch directories the personas create under `/tmp` are never cleaned up, so they accumulate.
   - `ciso-reviewer` now traces exploitability and never carries out the attack, including an attempt to evade a hook or gate that governs it. Probing a scratch copy of a gate is tracing.
-  - The hook's denial reason now tells the reviewer to treat a denial as final, to use Read, Grep, or Glob for a read the hook misjudges, and not to retry any other denied action through a script, another command form, or another tool, and to spell a `/tmp` path out literally. The hook's allow and deny logic is unchanged. Its `/tmp` link gap stays open and is tracked on GH-1103.
+  - The hook's denial reason now tells the reviewer to:
+    - treat a denial as final
+    - use Read, Grep, or Glob for a read the hook misjudges
+    - not retry any other denied action through a script, another command form, or another tool
+    - spell a `/tmp` path out literally
+
+    The hook's allow and deny logic is unchanged. Its `/tmp` link gap stays open and is tracked on GH-1103.
   - `claude-hook-review` (2.4.1) now hands `staff-platform-engineer` and `ciso-reviewer` the hook path and its diff as two artifacts, and says so when the diff is unavailable.
 - **`claude/.claude/CLAUDE.md` widens three rules and merges two.** Consumer-visible changes:
   - The verify rule now reads "Never assume how code or technology works … or what the environment, stack, or project conventions are", so it fires on any unchecked belief and not only when the agent feels uncertain. The separate "Before assuming anything about the environment" bullet is merged into it.

@@ -75,7 +75,7 @@
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #     Its symlinks entry is the /tmp link gap below.
-#   - A symlink or hard link under /tmp launders the /tmp exemption, and
+#   - A symlink or hard link under /tmp launders the /tmp exemption.
 #     GH-1103 tracks the structural fix. The facts of this one gap:
 #       - Both arms match the literal `/tmp/*` text without resolving links.
 #       - A write through such a link changes the linked file, which can be any
@@ -83,7 +83,9 @@
 #       - Resolving the path before the match would false-deny every legitimate
 #         macOS /tmp write, because /tmp is a symlink to /private/tmp there
 #         (see the macOS `/tmp` note below).
-#       - A cooperative reviewer can do this without noticing, so this gap is not waived on cooperative grounds.
+#       - A cooperative reviewer can create such a link and then write
+#         through it without noticing, so this gap is not waived on
+#         cooperative grounds.
 #       - Each Bash-holding persona's "## Scratch execution" section is the
 #         current mitigation.
 #       - Tests in test_deny_reviewer_tree_mutation.py pin this gap's current
