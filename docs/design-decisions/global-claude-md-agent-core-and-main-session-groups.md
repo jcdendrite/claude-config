@@ -68,25 +68,30 @@ Closing the first three readings needs a net-zero edit: an addition plus an equa
 The "Don't add globs" bullet lives in `claude/.claude/rules/settings-json-conventions.md`, with a one-line stub in Agent Core § Safety that reads "No wildcards in `permissions.allow`." A permission rule is composed before any settings file opens, which is why the stub stays always loaded.
 
 - The stub keeps the prohibition always loaded, which meets the relocation bar at `docs/cost-levers-considered.md` for the prohibition. The rationale and the exact-match alternative live in the rule file to pay for the opening line's bytes. The stub is a fragment on purpose.
-- The backstop is `ask-review-permissions.sh`, which asks on Edit, Write and MultiEdit of a path ending in `.claude/settings*.json`.
+- The primary guarantee of a prompt for an Edit of a path ending in `.claude/settings*.json` is the shipped `permissions.ask` entry `Edit(//**/.claude/settings*.json)`, which is Edit-tool-scoped. Explicit ask rules are documented to apply in every mode that can prompt (under `dontAsk` a prompt becomes a denial). Edit and Write prompted with the entry present and hooks disabled, in auto mode. That observation is not isolated from `.claude/` protected-path handling. The second layer is `ask-review-permissions.sh`, which has a tested regex and a MultiEdit arm. MultiEdit, case variants and Bash-mediated writes are untested for the `permissions.ask` entry.
 - The hook fails open when `_lib.sh` cannot be sourced.
-- Whether a hook `ask` reaches a human under auto mode is unverified. `docs/auto-mode.md` says auto mode replaces per-action permission prompts with a background classifier. `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the modes where a hook `ask` was verified to render, leaves auto mode untested, and calls `ask-review-permissions.sh`'s `ask` a soft gate.
-- Tests covering the backstop:
+- A hook `ask` and a `permissions.ask` rule each reached a human in a live auto-mode session, although `docs/auto-mode.md` says auto mode replaces per-action permission prompts with a background classifier. `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the observation and its limits, and calls both an `ask` soft gate.
+- Decision: both the `permissions.ask` entry and `ask-review-permissions.sh` are kept.
+  - The `permissions.ask` entry adds a harness-level prompt that is independent of `_lib.sh` and `jq`, so the no-ask outcome of gaps (e) and (g) is mitigated for Edit in auto mode; residual scope: see Known gaps below.
+  - The hook keeps its tested regex and its MultiEdit arm.
+  - A throwaway hook's reason text was not observed to render. The shipped hook's reason text was not tested, alone or with the rule.
+- Test coverage for the two layers:
   - `test_ask_review_permissions.py` covers the Edit, Write and MultiEdit arms, ask and allow paths.
   - `test_hook_alignment.py` pins that `settings.json` wires the hook on a matcher spanning all three tools.
+  - `test_hook_alignment.py` pins only that the `permissions.ask` entry is declared in the stow-source `settings.json`. Whether the harness matches it is recorded in `docs/security-hardening.md`.
   - The group test pins that the rule file keeps the guidance and both settings filenames in its `paths:`.
   - None of these tests cover when the rule loads.
 - A permission deny rule for Bash reads of settings files was considered and advised against by `plan-architect`. A narrow pattern misses `settings.local.json`, `sed`, `jq`, `head` and `grep`. A broad one also blocks `git diff` on settings paths and any `git commit -m` that names the file. It teaches the agent nothing, and it does not reach an out-of-project `~/.claude/settings.json`.
 
-Known gaps. Gap (d), Bash-mediated writes, is an accepted risk on the basis that the always-loaded stub keeps the prohibition in context. The other gaps are open:
+Known gaps. Gap (d), Bash-mediated writes, is an accepted risk on the basis that the always-loaded stub keeps the prohibition in context. Gaps (e) and (g) are mitigated for Edit only, in auto mode. The shipped `permissions.ask` entry is Edit-tool-scoped, so Write, MultiEdit, and other modes remain residual. The other gaps are open:
 
 - (a) Advice given without any settings file being opened or created, which neither the rule nor the hook reaches.
 - (b) A Write that creates a new settings file gets the hook's generic ask, but may not get the rule's guidance before the content is written.
-- (c) A settings file under a config directory whose path has no `.claude/` segment gets the rule on Read only when the config directory is inside the session's project, and never gets an ask. An out-of-project config directory gets neither, leaving only the always-loaded one-line stub.
+- (c) A settings file under a config directory whose path has no `.claude/` segment gets the rule on Read only when the config directory is inside the session's project, and never gets an ask. An out-of-project config directory gets neither, leaving only the always-loaded one-line stub. The Edit tool's symlink-write refusal and its bearing on (c) are recorded in `docs/security-hardening.md`'s Observed list; unconfirmed when the config directory has no `.claude/` segment.
 - (d) Bash-mediated writes (`jq`, `sed -i`, `tee`) get no ask, because the hook covers Edit, Write and MultiEdit only.
-- (e) A consumer who pulls without re-running `install.sh` after a hook-file addition loses the hook.
+- (e) A consumer who pulls without re-running `install.sh` after a hook-file addition loses the hook. The shipped `permissions.ask` entry asks in their place for Edit in auto mode; residual scope: see Known gaps above.
 - (f) In one-trial subagent probes, a Read-tool read of a settings file outside the session's project loaded no rule, including the user-scope `~/.claude/settings.json`, where the hook asks but the rule did not load.
-- (g) The hook fails open silently when its own `jq` call fails or is missing: it reads an empty tool name and exits 0 with no stderr. Observed on a copy of the hook.
+- (g) The hook fails open silently when its own `jq` call fails or is missing: it reads an empty tool name and exits 0 with no stderr. Observed on a copy of the hook. The shipped `permissions.ask` entry asks in their place for Edit in auto mode; residual scope: see Known gaps above.
   - `require-worktree-for-file-writes.sh`, on the same matcher, denies when it cannot parse the tool input (`_lib_parse_tool_input_or_deny`), so a missing `jq` does not fail every gate open. This hook's own `jq` call does fail open.
 - (h) The hook's regex matches the raw, case-sensitive `file_path`, so an aliased path (for example a doubled slash, `./` segment or `../` segment) or a case variant (`.CLAUDE/`, `SETTINGS.json`) produces no ask. Observed on a copy of the hook. Whether the harness normalizes `file_path` before the hook sees it is unverified.
 
@@ -94,19 +99,20 @@ Unverified: load behavior on out-of-project reads beyond one trial each, whether
 
 ## Open residuals and re-review triggers
 
-The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a)-(c), (e), (f), (g) and (h) are open. All share one ownership record:
+The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a)-(c), (f) and (h) are open. Gaps (e) and (g) are mitigated for Edit in auto mode; residual scope: see Known gaps above. All share one ownership record:
 
 - Owner: the repo owner.
 - Tracker:
-  - GH-1094 covers gaps (c), (g) and (h), which it fixes only if the hook survives its evaluation of a first-party `permissions.ask` rule.
+  - GH-1094 covers gaps (c), (g) and (h). Its decision keeps both the `permissions.ask` entry and the hook. Gap (g) is mitigated for Edit in auto mode; residual scope: see Known gaps above. Gaps (c) and (h) remain open.
   - GH-1094 also covers whether a hook `ask` reaches a human under auto mode.
   - No tracker issue exists for gaps (a), (b), (e) and (f) or for the fork and identity-gate residual.
   - GH-1093 separately tracks the Model & Effort Routing section's audiences.
 - Re-review triggers, each with how it is observed:
   - A fork or subagent commits, pushes or opens a PR contrary to the shipping clause: observed by the post-merge fork spot-check and by transcript review.
-  - A settings edit slips through gap (c), (d), (g) or (h): not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
+  - A settings edit slips through gap (c), (d) or (h), or through gap (e) or (g) by Write, MultiEdit, or outside auto mode: not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
   - The identity-keyed hook is extended to other subagents: observed at the next change to `deny-reviewer-tree-mutation.sh`.
-  - The vendor documents how a hook `ask` resolves under auto mode: observed at the next change to `docs/auto-mode.md`.
+  - New evidence on how a hook `ask` or a `permissions.ask` rule resolves under auto mode: observed at the next change to `docs/auto-mode.md` or `docs/security-hardening.md`.
+  - In-project Edit of the shipped pattern alone, this rule's primary real-world scenario, remains untested (`docs/security-hardening.md`'s Untested list): observed at the next auto-mode session that isolates it from `.claude/` protected-path handling.
 - Any later change to CLAUDE.md Agent Core reopens this section.
 
 ## The output-preferences deferral
