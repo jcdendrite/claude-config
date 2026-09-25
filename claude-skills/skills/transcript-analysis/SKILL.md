@@ -21,7 +21,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 
 **"I found nothing" is one of those statistics.** A zero-match run is the case most likely to be a scoping failure rather than a real result, so quote its header too before reporting the absence — never report an empty result without stating the corpus it was empty across.
 
-`cost --summary` prints no resolved-scope header — it is always scoped to the active account only, and states so on its own `Scope: this account only (...)` line instead; quote that line rather than asking about other accounts.
+`cost --summary` prints no resolved-scope header; it states its scope on its own `Scope:` line instead, in the form `Scope: this repository only, <branches>. This account only, <window>.` It is always scoped to this repository, the given branch filter (or all branches), and the active account only, so quote that line rather than asking about other repos, branches, or accounts.
 
 ## Which subcommand to use
 

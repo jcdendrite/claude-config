@@ -78,6 +78,8 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
+When the script below exits 0, its block is pre-cleared for publication (the account's `pr-cost-disclosure` sentinel is the standing approval), so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
+
 Resolve the section with a single script call:
 
 ```bash
@@ -108,6 +110,8 @@ per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch
 neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
 under an account that opted in; it is not a property of the output format, and an account enabling
 this for one engagement should not assume the fields are harmless in another.
+
+The `Scope:` caption also prints the local branch name. See `docs/transcript-analysis.md` § "cost" for the echo's hazards.
 
 ## Prose tightening pass
 
