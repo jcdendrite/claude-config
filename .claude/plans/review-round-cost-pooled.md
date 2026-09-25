@@ -24,9 +24,11 @@ measurement" section, replacing the ad hoc hand-summing.
 
 Add `--pooled` to `review-round-cost` as a **dedicated render path that emits percentages and nothing else** — no dollar amount, no raw count, no per-account or per-branch split — computed by summing `compute_review_round_costs`'s existing return value across its `(root_idx, branch)` keys, with a branch-cluster percentile bootstrap giving every share a 95% CI. The flag refuses every scope-narrowing flag at two layers (CLI boundary and inside the render function), suppresses the `DO NOT PUBLISH` banner that the per-round table needs, and prints an in-band pointer to the redaction doc's human approval gate. `compute_review_round_costs` itself is not touched.
 
-The design's load-bearing choice is that the pooled block emits **no absolute figure of any kind**. That single rule discharges the redaction doc's composition bar mechanically rather than case-by-case: with no dollar rate and no raw count in the block, nothing it prints can be multiplied by anything already published — including a raw round or branch count published alongside a rate — to reconstruct a raw pooled total. (The raw round count this rule was checked against at plan-review time, at `docs/cost-levers-considered.md:549`, was itself redacted by a peer PR during this branch's later sync and is not reproduced here; see the Context section's note.) It also makes the enforcing test a single grammar assertion rather than a per-figure judgment call.
+The load-bearing choice is that the pooled block emits **no absolute figure of any kind**; row 5 carries that argument and its citations.
 
-Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules.
+This revision closes the silent-exclusion bug class at every level of the traversal `--pooled` reads: scan root, project directory, and session transcript. The listing and read that already happen now record each unreadable directory or transcript in an opt-in counter, and the pooled block refuses when that counter is non-empty (rows 20-27). The pooled stderr filter also fails closed: an unrecognized diagnostic is withheld behind one fixed notice rather than printed (row 29).
+
+Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules. This revision's own set-aside alternatives sit in rows 21, 26, 29, and 30.
 
 ### Cross-machine reporting (engineer-confirmed this session)
 
@@ -66,18 +68,44 @@ this session]`
 - **G3.** `review_rounds.py` must not import `cost.py` — a documented module invariant, so `cost._LIST_PRICE_CAVEAT` / `_LIST_PRICE_CAVEAT_ALERT` are unavailable here and dissolving that boundary is a separate architectural decision. `[verified: review_rounds.py:14-18 module docstring; import line at :29]`
 - **G4.** One invocation pools only the scan roots reachable from the machine it runs on (`scope.resolve_scan_roots` = `PROJECTS_DIR` + declared roots). Cross-*machine* pooling is outside any single command's reach. `[verified: scope.py:332-366]`
 - **G5.** The transcript toolkit runs on the stdlib alone — no numpy/scipy/pandas import exists anywhere under `claude/.claude/scripts/`, so the bootstrap is hand-written. `[verified: grep for numpy|scipy|pandas under claude/.claude/scripts/ returns nothing; only `random` and `statistics` appear, at transcript-analysis.py:17,22]`
+- **G6.** `Path.glob` returns no matches, rather than raising, when it walks a directory it cannot read. This is standard-library behavior the design cannot change. `[unverified]` `scope.py:625-629` records an empirical check of it, not re-run in this revision; Verification's mutation check 1 re-establishes it.
 
 **Rows.**
 
 1. A "review round" is analogous to "agent dispatch" for `docs/private-project-redaction.md:115-116`'s closed countable list, making round-count a permitted countable unit — consistent with the "Own-history counts" section, which explicitly excludes a `transcript-analysis.py` measurement of tool calls, sessions, dispatches, dollars, or duration from its own-history exemption, keeping "review round" inside the mixed-corpus machinery this plan builds rather than sliding it into that exemption. `[engineer-verified; verified: docs/private-project-redaction.md:115-116, 265-270]`
 2. Round-count is reportable only as a share or a median, never as a raw total — stricter than the doc's own counts bullet (`:122-124`), because a raw round count composes with a permitted per-round rate. `[engineer-verified]`
 3. A branch is declined as a countable or reportable unit entirely (≈1:1 with a delivered PR/task, the reasoning that already bars a Duration share). Consequence the implementer must not miss: the existing footer's `Mean rounds per branch` line has **no pooled counterpart** and must not be carried over in any form, mean or median. `[engineer-verified]`
-4. Every pooled share the block emits carries a bootstrap confidence interval as its sample-size disclosure — not a raw count. `[engineer-verified]` CI width alone does not let a reader recover the exact branch count: width is jointly determined by branch count *and* by the variance/skew of per-branch dollar shares, so two pools of equal size but different composition produce different widths, and inverting width back to count needs information (the variance) the reader doesn't have — unlike a raw count, which a reader recovers exactly. The residual coarse trend a reader could still notice across repeated citations (narrower interval over time ⇒ pool grew) is bounded by two controls this design doesn't need to add: the "No time series" standing bar (`docs/private-project-redaction.md:176-184`) means no compliant publication ever shows two dated citations side by side in one artifact, and the approval gate's own requirement that a proposal name "any prior publication of the same or a composing statistic" (`:384-388`) puts a second citation of the same share in front of the human approver before it ships — the approver, not a mechanical rule, is the right layer to judge whether two dated CI citations together cross a line. `[verified: docs/private-project-redaction.md:176-184, 384-388]`
-5. **Mechanism — the pooled block prints percentages only.** `anchors: root`. Justification: with no dollar figure and no raw count anywhere in the block, "Composition is publication" (`:199-217`, including its Account-P worked rejection) is satisfied structurally rather than per-figure *within the block itself*. It does not, on its own, close composition against a rate/count pair published *elsewhere* in the same doc: no absolute figure in the block means nothing it prints can compose with a rate/count pair published elsewhere in the doc, whatever that doc's current content is — the general risk is why this design closes composition structurally rather than relying on any one doc's current content. That residual is closed instead by the in-band pointer's explicit composition caveat (Design detail, Output shape) rather than by this row's structural argument, since the block's own no-dollar/no-count property doesn't reach a figure it never touches. This is also why no `$`-per-round rate appears even though `:144-145` would permit one as a rate per dispatch. `[verified: docs/private-project-redaction.md:122-132, 144-145, 199-217; docs/cost-levers-considered.md — current lines 542/565]`
+4. Every pooled share the block emits carries a bootstrap confidence interval as its sample-size disclosure — not a raw count. `[engineer-verified]`
+   - CI width alone does not let a reader recover the exact branch count. Width is jointly determined by branch count *and* by the variance/skew of per-branch dollar shares, so two pools of equal size but different composition produce different widths. Inverting width back to count needs information (the variance) the reader doesn't have — unlike a raw count, which a reader recovers exactly.
+   - A residual coarse trend remains: across repeated citations, a narrower interval over time implies the pool grew. Two existing controls bound it, so this design adds none:
+     - The "No time series" standing bar (`docs/private-project-redaction.md:176-184`) means no compliant publication ever shows two dated citations side by side in one artifact.
+     - The approval gate requires a proposal to name "any prior publication of the same or a composing statistic" (`:384-388`), which puts a second citation of the same share in front of the human approver before it ships. The approver, not a mechanical rule, is the right layer to judge whether two dated CI citations together cross a line.
+
+   `[verified: docs/private-project-redaction.md:176-184, 384-388]`
+5. **Mechanism — the pooled block prints percentages only.** `anchors: root`. This is the design's load-bearing choice.
+   - Within the block: with no dollar figure and no raw count anywhere in it, "Composition is publication" (`:199-217`, including its Account-P worked rejection) is satisfied structurally rather than per-figure.
+   - Against a rate/count pair published elsewhere: the block supplies no rate, so it can never be the rate half of a rate × count product that reconstructs a raw pooled total — including against a raw round or branch count published alongside a rate. This is also why no `$`-per-round rate appears even though `:144-145` would permit one as a rate per dispatch (alternative (a) above).
+   - Residual: a share combined with an absolute figure published elsewhere can still yield a new absolute. The block's no-dollar/no-count property doesn't reach a figure it never touches, so the in-band pointer's explicit composition caveat (Design detail, Output shape) closes that residual instead.
+   - The closure is structural rather than tied to any one doc's current content. The raw round count this rule was first checked against (`docs/cost-levers-considered.md:549` at plan-review time) was later redacted by a peer PR during this branch's sync and is not reproduced here.
+   - It also makes the enforcing test a single grammar assertion rather than a per-figure judgment call.
+
+   `[verified: docs/private-project-redaction.md:122-132, 144-145, 199-217; docs/cost-levers-considered.md — current lines 542/565]`
 6. **Mechanism — two-layer refusal, mirroring `cost --summary`.** `anchors: root`. Layer 1 in `cmd_review_round_cost` before any corpus scan; layer 2 re-derived inside the pooled render function, because every direct caller of that function — this module's own tests included — bypasses the CLI boundary. This is the shape `cost.py:533-564` already uses, and its layer-2 comment states exactly that rationale. `[verified: cost.py:533-564; scope.py:556-575]`
 7. **Mechanism — `--pooled` also refuses the top-level `--config-dir`.** `anchors: row6`. Not in the flag list as briefed, but it is the most dangerous omission: `resolve_scan_roots` returns *that directory alone* when `--config-dir` is set, silently collapsing a "pooled" figure to one named account. `[verified: scope.py:353-355]`
-8. **Mechanism — `--pooled` requires more than one resolved root, machine-wide or `--this-repo` alike.** `anchors: root`. A single-root pool *is* a per-account figure and the carve-out does not reach it: "What it permits" requires a corpus that actually mixes private and public sources (`:100-109`), and a pool of exactly one account/machine has nothing to mix — every share it reports is exactly that one account's own proportion, with no other account's data diluting it. "Account and machine scope"'s share exception (`:304-310`) states a share "may span accounts or machines" — language that describes crossing a boundary between two or more, not a floor of one — and a share confined to a pool of one is functionally identical to the per-account rate that section's opening sentence already confines to a single account by default. This holds under `--this-repo` too: "Own-history counts were never inside this class" states explicitly that a `transcript-analysis.py` measurement of tool calls, sessions, dispatches, dollars, or duration — exactly what `--pooled` computes (row 1) — does not get the own-history exemption and "stays inside [Account-and-machine-scope] machinery regardless of `--this-repo` scoping." Row 1 already cites this same sentence for the same conclusion; this row and row 1 now agree rather than being in tension. `pr-cost-section.sh`'s worked precedent (`:166-169`) doesn't carry a `--this-repo` exemption either — it publishes a `$`/PR rate under the ordinary single-account default every reporting mode gets, not an own-history-exempt figure. `[verified: docs/private-project-redaction.md:100-109, 166-169, 265-270, 304-310]`
-9. **Mechanism — `--pooled` refuses `--this-repo` outright.** `anchors: row8`. This is a product-scope decision, not a policy requirement — the redaction doc permits a `--this-repo` pooled share under the same governance as machine-wide (row 8), it just isn't implemented. Three reasons to not implement it now: (a) no consumer — this plan's stated purpose is replacing the machine-wide figure at `docs/cost-levers-considered.md:565,569-572`, which was never `--this-repo`-scoped (`:552-554`); (b) on this engineer's own machine, `--this-repo` never resolves to more than one account in practice — only a small minority of this engineer's declared accounts have ever touched this repo, confirmed by listing each declared root's `projects/` directory for a claude-config entry — so a `--this-repo` pool would rarely if ever satisfy row 8's floor anyway; (c) `--this-repo` unions across every declared root by default (`scope.py`'s `_resolve_project_scope` docstring), the same width as machine-wide, so a compliant `--this-repo` variant would need the identical floor, pointer, and approval gate as machine-wide for zero exemption benefit — refusing it removes an always-untested code path from a publication surface instead of building parity machinery nothing consumes. Refuse loudly (exit 2), not a silent fallback to machine-wide scope — a scripted invocation must not believe it scoped to this repo when it didn't. `[engineer-confirmed this session]`
+8. **Mechanism — `--pooled` requires more than one resolved root, machine-wide or `--this-repo` alike.** `anchors: root`. A single-root pool *is* a per-account figure, and the carve-out does not reach it:
+   - "What it permits" requires a corpus that actually mixes private and public sources (`:100-109`). A pool of exactly one account/machine has nothing to mix: every share it reports is exactly that one account's own proportion, with no other account's data diluting it.
+   - "Account and machine scope"'s share exception (`:304-310`) states a share "may span accounts or machines". That language describes crossing a boundary between two or more, not a floor of one.
+   - A share confined to a pool of one is functionally identical to the per-account rate that section's opening sentence already confines to a single account by default.
+   - This holds under `--this-repo` too. "Own-history counts were never inside this class" states explicitly that a `transcript-analysis.py` measurement of tool calls, sessions, dispatches, dollars, or duration — exactly what `--pooled` computes (row 1) — does not get the own-history exemption and "stays inside [Account-and-machine-scope] machinery regardless of `--this-repo` scoping." Row 1 cites the same sentence for the same conclusion.
+   - `pr-cost-section.sh`'s worked precedent (`:166-169`) doesn't carry a `--this-repo` exemption either. It publishes a `$`/PR rate under the ordinary single-account default every reporting mode gets, not an own-history-exempt figure.
+
+   `[verified: docs/private-project-redaction.md:100-109, 166-169, 265-270, 304-310]`
+9. **Mechanism — `--pooled` refuses `--this-repo` outright.** `anchors: row8`. This is a product-scope decision, not a policy requirement — the redaction doc permits a `--this-repo` pooled share under the same governance as machine-wide (row 8), it just isn't implemented. Three reasons to not implement it now:
+   - (a) No consumer — this plan's stated purpose is replacing the machine-wide figure at `docs/cost-levers-considered.md:565,569-572`, which was never `--this-repo`-scoped (`:552-554`).
+   - (b) On this engineer's own machine, `--this-repo` never resolves to more than one account in practice — only a small minority of this engineer's declared accounts have ever touched this repo, confirmed by listing each declared root's `projects/` directory for a claude-config entry — so a `--this-repo` pool would rarely if ever satisfy row 8's floor anyway.
+   - (c) `--this-repo` unions across every declared root by default (`scope.py`'s `_resolve_project_scope` docstring), the same width as machine-wide, so a compliant `--this-repo` variant would need the identical floor, pointer, and approval gate as machine-wide for zero exemption benefit — refusing it removes an always-untested code path from a publication surface instead of building parity machinery nothing consumes.
+
+   Refuse loudly (exit 2), not a silent fallback to machine-wide scope — a scripted invocation must not believe it scoped to this repo when it didn't. `[engineer-confirmed this session]`
 10. **Mechanism — `--pooled` suppresses the `DO NOT PUBLISH` banner.** `anchors: root`. The banner exists because the per-round table carries real branch names and dated dollars; the pooled block emits neither, and printing "DO NOT PUBLISH" above the one output mode built to be published would defeat the feature. `[verified: review_rounds.py:478-480, 550-562; scope.py:509-511]`
 11. **Mechanism — branch-cluster percentile bootstrap, B = 2,000, fixed seed.** `anchors: row4`. Every statistic is a ratio of two branch-level sums, so the branch is the cluster; resampling rounds would leave the denominator undefined. Two lighter primitives were checked and fail: a **normal/Wilson analytic interval** assumes an unclustered binomial proportion and would understate the interval badly on a dollar ratio dominated by a few expensive branches; a **jackknife** is cheaper still but is known to be unreliable for ratio and non-smooth statistics, which is precisely this statistic's shape. Reusing an existing repo implementation is not an option (G5, and no resampling code exists anywhere in the repo — the `2,000-resample` citations at `docs/cost-levers-considered.md:205,368` are a different statistic, direction-of-effect on session-level rows). `[verified: grep for bootstrap/resample/percentile( across claude/.claude/scripts/ and claude-skills/ returns no statistical implementation]`
 12. **Mechanism — the pooled policy constants stay local to `review_rounds.py`.** `anchors: root`. Two heavier placements rejected: hoisting them beside `scope._DO_NOT_PUBLISH_BANNER` is speculative generality at one consumer (that banner earned its place in `scope.py` at three call sites — `cost.py:621-622`, `review_rounds.py:479-480`, `transcript-analysis.py`'s `cmd_subagent_mix`); and a shared `scope`-level refusal helper serving both `--summary` and `--pooled` would abstract over two policies that disagree on root count. Promotion trigger, to be stated in a one-line comment beside the constants: when a second subcommand grows a pooled mode, move the doc pointer and approval pointer to `scope.py`. `[verified: scope.py:509-511 and its three call sites]`
@@ -86,8 +114,66 @@ this session]`
 15. `docs/private-project-redaction.md:106-109` ("its output to the agent is the rounded pooled figure only — never per-session or per-project raw content") is inaccurate about what non-pooled `review-round-cost` already prints. Noted, deliberately not fixed here — separately trackable. `[verified: docs/private-project-redaction.md:100-109 against review_rounds.py:550-562]`
 16. The pool is per-invocation, therefore per-machine. Reporting each machine's pooled share separately, or as a range across machines, is already established practice in this repo's own published doc, so this design's own output is honest independent of whether a separate cross-machine merge mechanism exists elsewhere. `[verified: docs/cost-levers-considered.md:541-543 publishes per-machine figures]` (See also the engineer-confirmed note above: the engineer confirmed a cross-machine merge mechanism is under design on another branch, unidentified as of this session, and confirmed this design should not block on or coordinate with it — G4's per-invocation constraint means `--pooled`'s own output is correct regardless of what that mechanism eventually does.)
 17. **Mechanism — data-quality is reported as share-of-rounds-affected, not as counts.** `anchors: row5`. `unpriced_turns` has no denominator in the current return value, and adding one would change `compute_review_round_costs`'s per-round dict shape; "share of pooled rounds containing at least one unpriced turn / dangling dispatch" needs no new field and is a permitted count share under row 2. `[verified: review_rounds.py:305-310 return contract]`
-18. **Mechanism — the resolved-scope header suppresses its root-count clause under `--pooled`.** `anchors: root`. `scope.print_resolved_scope` → `_resolved_scope_header` → `_root_count_desc` states the number of resolved scan roots unconditionally, including at one root, by design — that count tracks the number of declared accounts reachable from the machine, a literal per-account dimension not on `docs/private-project-redaction.md:115-116`'s closed countable list. Non-pooled output was never reachable for publication because it ships under the `DO NOT PUBLISH` banner (row 10); `--pooled` is the first mode where this pre-existing header field becomes citable, so it needs its own fix rather than inheriting the shared function's behavior unchanged. `_resolved_scope_header` itself is not modified — it is a shared function with other call sites (e.g. judgment-pair's `--out` file) that still need the undercount-prevention property row 18 exists to state is correct *there*. Instead, `--pooled` builds its own header line, reusing `scope_label` — which is always the literal `*` now that `--projects` and `--this-repo` (row 9) are both refused (`scope.py:448`), never `this repo (N project dirs)` — and replacing the root-count clause with the fixed word `pooled`. The header is therefore a fixed string, not merely digit-free. `[verified: scope.py:429-451, 454-495]`
+18. **Mechanism — the resolved-scope header suppresses its root-count clause under `--pooled`.** `anchors: root`.
+    - `scope.print_resolved_scope` → `_resolved_scope_header` → `_root_count_desc` states the number of resolved scan roots unconditionally, including at one root, by design.
+    - That count tracks the number of declared accounts reachable from the machine — a literal per-account dimension not on `docs/private-project-redaction.md:115-116`'s closed countable list.
+    - Non-pooled output was never reachable for publication, because it ships under the `DO NOT PUBLISH` banner (row 10). `--pooled` is the first mode where this pre-existing header field becomes citable, so it needs its own fix rather than inheriting the shared function's behavior unchanged.
+
+    Why `_resolved_scope_header` itself stays unmodified: it is a shared function with other call sites (e.g. judgment-pair's `--out` file) that still need its undercount-prevention property.
+
+    What `--pooled` builds instead: its own header line, reusing `scope_label` — always the literal `*` now that `--projects` and `--this-repo` (row 9) are both refused (`scope.py:448`), never `this repo (N project dirs)` — with the fixed word `pooled` in place of the root-count clause. The header is therefore a fixed string, not merely digit-free.
+
+    `[verified: scope.py:429-451, 454-495]`
 19. **The "one boundary-crossing exception, ever" rule does not constrain this design.** `anchors: root`. That rule caps exactly one scarce mechanism — the whole-period before/after split — at one total use across everything ever published under the carve-out. A dimensionless share is not that mechanism: it is a standing, always-available reporting mode enumerated in `docs/private-project-redaction.md:111-169`'s closed lists, not a one-time-consumable exception to a default the way the split is. `--pooled`'s output is entirely shares (rows 2, 5, 17) and never proposes a split, so it never spends the one-time allowance and never needs to check whether it has already been spent. `[verified: docs/private-project-redaction.md:185-198]`
+20. The pooled caption's full-coverage claim ("Pooled across every scan root in scope") fails silently whenever a directory or transcript under a resolved root is unreadable. Each level fails differently today:
+    - Scan root: covered only by `_pooled_scope_refusal`'s `os.access` clause, a probe separate from the listing that reads.
+    - Project directory: `project_dir.glob("*.jsonl")` in `_iter_glob_scoped_sessions` and its sibling `_iter_scoped_sessions` drops an unreadable directory with no error (G6).
+    - Session transcript: `read_session_file` returns `[]` for an unreadable file and for a readable empty one alike, and both iterators skip `[]` identically.
+
+    `[verified: review_rounds.py:563-572; scope.py:293, 325-326; corpus.py:104-106, 135]`
+21. **Mechanism — the listing that reads is the listing that records.** `anchors: row20`. `_list_dir_recording_gaps` replaces the bare `glob()` calls at `scope.py:293`, `:325`, and `:326` with `sorted(directory.iterdir())` inside `try/except`. A missing directory returns `[]` silently. Any other `OSError` returns `[]` and records one gap at the caller's level. Alternatives checked:
+    - Extend the `os.access` probe to every project directory and transcript before scanning. Rejected: a probe walk separate from the read is the layered-probe shape that let each prior fix stop one level short, and a permission change between probe and read makes the two disagree.
+    - `os.walk(onerror=...)`. Rejected: it walks subagent directories `--pooled`'s iteration never reads, and the glob filter, sort, and cross-root dedup would all have to be re-applied on top of it.
+
+    `[verified: scope.py:292-296, 325-329]`
+22. **Mechanism — one shared inner generator for both multi-root iterators.** `anchors: row21`. `_iter_project_dir_sessions(project_dirs, include_subagents, scan_gaps)` replaces the identical four-line loop at `scope.py:292-296` and `:325-329`. Sharing it gives `_iter_scoped_sessions` the same fix as `_iter_glob_scoped_sessions` (CLAUDE.md, "Audit structural siblings"), even though `--pooled` refuses `--this-repo` and never reaches it. `[verified: scope.py:292-296, 325-329]`
+23. **Mechanism — the single-root glob branch raises instead of recording.** `anchors: row22`. `_resolve_project_scope` raises `ValueError` when a caller passes `scan_gaps` and the glob branch has one root (`scope.py:449-450`). A supplied-but-ignored counter would otherwise read as a clean scan. `corpus.iter_sessions` is not given the capability:
+    - Its one flat glob over `{projects_glob}/*.jsonl` has no per-directory listing to record against.
+    - Its flat sort across full paths is a documented ordering guarantee (`corpus.py:145-152`) that a per-directory listing would have to re-derive.
+    - `--pooled` never reaches it: the root-count refusal fires before scope resolution.
+
+    `[verified: corpus.py:138-159; scope.py:449-450; review_rounds.py:918-931]`
+24. **Mechanism — the session-transcript level reuses corpus's existing unreadable-versus-empty distinction.** `anchors: row20`. The shared generator calls `corpus._read_session_file_partitioned`. It returns `[]` for an unreadable main file and `[[], ...]` for a readable empty one, so no extra `open` is needed. The generator flattens the groups itself — a one-line comprehension duplicated from `read_session_file`, under CLAUDE.md's small-duplicated-value exception. `corpus.py`'s behavior is unchanged. Only `read_session_file`'s docstring caller list changes (`corpus.py:123-126`). `--pooled` iterates with `include_subagents=False`, so this read touches only the main transcript. `[verified: corpus.py:85-135; review_rounds.py:931; scope.py:372; transcript-analysis.py:45 already imports _read_session_file_partitioned]`
+25. **Mechanism — the counter is an opt-in keyword holding level tags only.** `anchors: row21`.
+    - `scan_gaps: collections.Counter[str] | None = None` is added to both iterators and `_resolve_project_scope`. Only the `--pooled` path in `review_rounds.py` passes one; every other `_resolve_project_scope` caller keeps the `None` default. `[verified: grep for "_resolve_project_scope(" under claude/.claude/scripts]`
+    - Keys are three module constants in `scope.py` naming the level. A key never holds a path or an account ordinal, so the counter is not itself a per-account dimension.
+    - With `scan_gaps=None`, missing and permission-denied directories are skipped silently, as today. `[unverified]` for other listing errors (e.g. `EIO`): whether the old `glob` path raised or swallowed them depends on the interpreter's `pathlib` version, and this revision does not pin that.
+    - Root-level project selection moves from `root.glob(projects_glob)` to the listing plus `fnmatch.fnmatchcase(name, projects_glob)`. The two match identically for a single-segment pattern, which is the flag's documented meaning (a project-dir glob). `[verified: transcript-analysis.py:12592, 12821-12823; grep finds no "/"-bearing --projects value in any test under claude/.claude/scripts]`
+26. **Mechanism — `--pooled` refuses on any recorded gap, after the scan and before the first print.** `anchors: row20`.
+    - Refusing, not disclosing, matches the precedent the root-level `os.access` clause set. A digit-free notice printed beside the block (the ciso finding's alternative) was set aside: a printed figure stays citable whether or not its reader saw a stderr line.
+    - `scan_gaps` fills only as `compute_review_round_costs` consumes the lazy session iterator. The earliest refusal point is therefore `_render_pooled_block`'s existing refusal call, which already runs before that function's first print. Nothing on the `--pooled` path prints to stdout before it, since the banner and the resolved-scope header are both suppressed.
+    - `_render_pooled_block` takes `scan_gaps` as a required keyword-only parameter, so a direct caller cannot skip the clause by omission — the same reasoning as its existing `roots or []`. `_pooled_scope_refusal`'s own `scan_gaps=None` defers the clause, as `roots=None` defers the root-count clause. Only `cmd_review_round_cost`'s two pre-scan calls rely on that deferral.
+    - Tradeoff: a misconfigured machine now pays a full scan before the refusal. A transcript deleted between listing and open (e.g. a concurrent cleanup) also records a gap and refuses; a rerun resolves it. Both costs fall on the fail-closed side.
+    - The message is digit-free and names no path. It asks the user to check each account's `projects/` directory for an unreadable directory or `.jsonl`, with `find <projects-dir> ! -readable` labeled as a GNU find example. A `-maxdepth 2` form would put a digit in the message and break every refusal test's digit-free assertion. `-readable` is GNU-only and README.md lists macOS as supported, hence the prose statement alongside it.
+
+    `[verified: review_rounds.py:702-726, 891-958; README.md:94]`
+27. **Mechanism — the root-level `os.access` clause is deleted.** `anchors: row26`. The traversal's root-level listing records the same condition, so keeping both re-creates the layered probe this revision exists to end. Four existing tests change premise: the two CLI-level unreadable-root tests keep their assertions but no longer refuse "before any scan"; the direct-call test and the missing-active-profile test lose the clause they targeted and are rewritten (Critical files). `[verified: review_rounds.py:563-572; test_transcript_review_rounds.py:1837-1912]`
+28. The dispatch-transcript level of the same bug class stays open. `compute_review_round_costs` reads subagent transcripts through `_price_dispatch` and `corpus._index_subagent_dispatches`, not through scope's iterators. An unreadable dispatch transcript, `meta.json`, or `subagents/` directory counts as a dangling dispatch, the same bucket as a routine lookup miss.
+    - Inside a round window, the "dangling dispatch" share discloses it.
+    - Outside every round window, its dollars leave `branch_totals` with no disclosure, which inflates the inside-round share.
+
+    Closing it needs `compute_review_round_costs` to report dangling dispatches outside rounds, a return-shape change G2 places outside this plan. See Out of scope. `[verified: corpus.py:41-62; review_rounds.py:222-230, 326, 370-376]`
+29. **Mechanism — the `--pooled` stderr filter fails closed.** `anchors: root`. Any stderr line matching no known pattern is replaced by one fixed, digit-free notice, printed once per wrapped call. Today's fail-open default already leaks: `pricing.py`'s NOTICE (`:432-437`, a raw `requestId` plus a record count) and WARNING (`:376-383`, a raw `requestId`) are both reachable under `--pooled` through `dedup_turns_by_request_id` inside the filtered compute call, and neither matches a known pattern. Alternatives checked:
+    - A regression test that scans module source for new `print(..., file=sys.stderr)` sites (the ciso finding's required control). Rejected: it asserts on source text, not behavior, which `code-review`'s checklist item 9g bars. Its module list would also already be wrong: the declared-root diagnostic originates in `_config_dir.py`, outside the three modules the finding names.
+    - A third known pattern for pricing's two lines. Rejected: it fixes today's instance and keeps the fail-open default for the next one.
+
+    Tradeoff: under `--pooled`, an operator loses in-band diagnostics; the notice routes them to a non-pooled rerun. `[verified: pricing.py:222, 266-268, 280, 297, 376-383, 432-437; review_rounds.py:229, 322, 789-790, 804-841; claude-skills/skills/code-review/SKILL.md:118]`
+30. **Mechanism — markdown heading extraction gets one home in `claude/.claude/tests/helpers.py`.** `anchors: row5`. The pointer-citation test guards the in-band pointer row 5 relies on, and it hand-rolls a heading scanner without `test_skills.py`'s normalization (backtick/emphasis stripping, whitespace collapse). Moving `_normalize_heading`/`_heading_texts` to `helpers.py` as public names gives both tests one implementation. Alternatives checked:
+    - Import them from `test_skills.py` directly. Rejected: `claude-skills/skills/tests/` has no `__init__.py` and isn't on `pyproject.toml`'s `pythonpath`, so the import would depend on pytest's collection order.
+    - Copy the normalization into the pooled test. Rejected: two homes for one rule is the finding itself.
+
+    `helpers.py` is already on `pythonpath` and already imported by `test_skills.py`. `heading_texts` doesn't skip fenced code blocks, unlike the hand-rolled scanner. A stale pointer could false-pass only if its cited text appeared as a `#` line inside a fence in the redaction doc — accepted. `[verified: pyproject.toml:18; test_skills.py:54, 3252-3279; test_transcript_review_rounds.py:1638-1669]`
+31. `_bootstrap_share_intervals` drops a resample's share when that draw's denominator is zero, so a key can get its CI from fewer than `_BOOTSTRAP_RESAMPLES` values. No test reaches a pool where only some draws hit that. The staff-sdet finding's suggested fixture (zero `agent_dollars`) wouldn't either: `spend_reviewer_only`'s denominator is `branch_dollars`, not `agent_dollars`. The new test gives two of four branches zero `branch_dollars` and zero `round_dollars`, and asserts on the resulting interval's bounds rather than the internal resample count. `[verified: review_rounds.py:603-608, 648-674]`
 
 ### Design detail
 
@@ -100,7 +186,7 @@ help: "Print only a cross-account pooled block of shares (no dollar amounts, no
        docs/private-project-redaction.md."
 ```
 
-**Refusal policy** — one function, `_pooled_scope_refusal(args, roots=None) -> str | None`, evaluated in order, returning the first applicable message; `roots=None` skips the last clause. `cmd_review_round_cost` calls it twice (once before `resolve_scan_roots`, once after, with `roots`); `_render_pooled_block` calls it a third time as the defense-in-depth layer for direct callers. Every message names the flag and its reason, and ends with the doc pointer:
+**Refusal policy** — one function, `_pooled_scope_refusal(args, roots=None, scan_gaps=None) -> str | None`, evaluated in order, returning the first applicable message. `roots=None` skips the root-count clause. `scan_gaps=None` skips the scan-gap clause. `cmd_review_round_cost` calls it twice (once before `resolve_scan_roots`, once after, with `roots`); both calls precede the scan. `_render_pooled_block` calls it a third time with `roots or []` and its required `scan_gaps`. That third call is the defense-in-depth layer for direct callers and the only point the scan-gap clause can fire. Every message names the flag or condition and its reason, and ends with the doc pointer:
 
 | Refused | Reason to state |
 |---|---|
@@ -111,10 +197,11 @@ help: "Print only a cross-account pooled block of shares (no dollar amounts, no
 | top-level `--config-dir` | collapses the pool to one named account (row 7) |
 | `--this-repo` | not implemented as a pooled scope — a product decision, not a policy bar (row 9) |
 | one resolved root | a single-account figure is a per-account figure (row 8) |
+| a resolved scan root, or a directory or transcript under one, that cannot be read | that part of the corpus would silently drop out of the pool (rows 20, 26); evaluated only after the scan |
 
 Exit code 2 on all, matching `cost --summary`. The single-root message must be actionable and must name the declared-roots file via `scope.TRANSCRIPT_CONFIG_DIRS_LABEL`, not a hardcoded path. The `--this-repo` row is evaluated in the flag block (`roots=None` layer), not the root-count clause, so it fires before the root-count check would — a run with `--this-repo` on a single-root machine must get the flag-not-supported message, not the "declare another account" message, since the latter wouldn't fix anything for a refused flag.
 
-**Ordering invariant.** Both refusal calls inside `cmd_review_round_cost` must run, and exit, before any print side effect on the `--pooled` path — including the `and not pooled` change to the `DO NOT PUBLISH` banner-suppression branch at `:478-480`. The two edits share one function body, so this is stated here as an explicit implementation and test requirement rather than left to fall out of edit order: no header, no banner-suppression, and no pooled block may print before the second refusal call (the one with `roots` in hand) has returned `None`.
+**Ordering invariant.** Both refusal calls inside `cmd_review_round_cost` must run, and exit, before any print side effect on the `--pooled` path — including the `and not pooled` change to the `DO NOT PUBLISH` banner-suppression branch at `:478-480`. The two edits share one function body, so this is stated here as an explicit implementation and test requirement rather than left to fall out of edit order: no header, no banner-suppression, and no pooled block may print before the second refusal call (the one with `roots` in hand) has returned `None`. The scan-gap clause is the one refusal that cannot run before the scan. It fires at `_render_pooled_block`'s refusal call, which still precedes that function's first print, so a refused run prints nothing to stdout.
 
 **Aggregation** (confirming the briefed estimate): yes, ~10 lines. Build one `per_branch` list, one entry per branch key present in the in-scope rounds, each holding `(round_dollars, agent_dollars, branch_dollars, per_skill_round_counts, per_skill_round_dollars, rounds_with_dangling, rounds_with_unpriced, round_count)`; `branch_dollars` comes from `branch_totals.get(branch_key, 0.0)`. Point estimates are elementwise sums over that list. The `root_idx` half of the key is simply never read — pooling *is* dropping it.
 
@@ -125,15 +212,15 @@ Comments the implementer must include (durable one-liners, no plan/PR narration)
 - On `_BOOTSTRAP_SEED`: fixed so a published figure is reproducible by whoever checks it; the value itself is arbitrary.
 - On the resampling unit: the branch is the cluster because every reported statistic is a ratio of two branch-level sums.
 
-Degenerate cases: fewer than two branches in scope, or a zero denominator, print `(95% CI not computed — too few branches in scope)` / `(95% CI not computed — no priced branch spend)`. Neither wording may contain a digit (see the enforcing test below).
+Degenerate cases: fewer than two branches in scope, fewer than two contributing roots (`review_rounds.py:761-767`), or a zero denominator, print `(95% CI not computed — too few branches in scope)` / `(95% CI not computed — no priced branch spend)`. Neither wording may contain a digit (see the enforcing test below).
 
 **Output shape.** Header: `--pooled` does not call `scope.print_resolved_scope` (row 18) — it prints its own header line via the new `_pooled_resolved_scope_header`, built from `scope_label`, which is always the literal `*` under the refusal table, with a fixed `pooled` word in place of `_root_count_desc`'s root count. Then the pointer block, then the caption, then the figure lines. **Every figure below is illustrative filler, not derived from any run — chosen as visibly round numbers specifically so this plan file cannot be read as citing a real, unapproved figure:**
 
-```
+```text
 REVIEW ROUND COST SOURCES (*; pooled)
 
 POOLED — publishable only under docs/private-project-redaction.md
-§ "Publishing a pooled tooling measurement". Propose the figure, this exact
+§ "The owner can authorize one figure, case by case". Propose the figure, this exact
 command, and the destination artifact to the owner, then cite the owner's
 approval in that artifact. Nothing here checks that for you. Before citing
 this alongside any rate or count already published elsewhere (e.g. a $/PR
@@ -170,7 +257,126 @@ Every figure is formatted by one helper, `_fmt_share_with_ci(point, lo, hi) -> s
 
 **Structure.** `_render_pooled_block` is a new module-level function; `cmd_review_round_cost` gains an early return into it after `compute_review_round_costs`, before any per-branch printing. The existing per-branch renderer is deliberately *not* extracted into a symmetric `_render_per_branch` — that is a ~180-line refactor of well-tested code with no bearing on this feature.
 
+**Traversal gap recording (`scope.py`, rows 21-25).**
+
+```python
+_SCAN_GAP_ROOT = "root"
+_SCAN_GAP_PROJECT_DIR = "project-dir"
+_SCAN_GAP_SESSION_FILE = "session-file"
+
+def _list_dir_recording_gaps(
+    directory: Path, scan_gaps: Counter[str] | None, level: str,
+) -> list[Path]: ...
+
+def _iter_project_dir_sessions(
+    project_dirs: Iterable[Path], include_subagents: bool, scan_gaps: Counter[str] | None,
+) -> Iterator[tuple[Path, list[dict]]]: ...
+
+def _iter_scoped_sessions(slugs, include_subagents, roots=None, *, scan_gaps=None): ...
+def _iter_glob_scoped_sessions(roots, projects_glob, include_subagents, *, scan_gaps=None): ...
+def _resolve_project_scope(args, subcommand, include_subagents=False, roots=None, *, scan_gaps=None): ...
+```
+
+- `_list_dir_recording_gaps`: `sorted(directory.iterdir())`. `FileNotFoundError` → `[]`, nothing recorded. Any other `OSError` → `[]`, plus `scan_gaps[level] += 1` when `scan_gaps` is not `None`. It never prints.
+- `_iter_project_dir_sessions`: for each project dir, list with `_SCAN_GAP_PROJECT_DIR` and keep entries where `fnmatch.fnmatchcase(entry.name, "*.jsonl")`. Read each with `corpus._read_session_file_partitioned`. On `[]`, record `_SCAN_GAP_SESSION_FILE` and skip. Otherwise flatten the groups in order and yield when non-empty — the existing `if records:` rule.
+- `_iter_glob_scoped_sessions`: list the root with `_SCAN_GAP_ROOT`, filter by `fnmatch.fnmatchcase(entry.name, projects_glob)`, pass through `_dedup_new_project_dirs` as today, then the shared generator. The "scanning root" print stays unchanged; `--pooled`'s stderr filter drops it.
+- `_iter_scoped_sessions`: its existing root-level `try/except OSError` and stderr diagnostic stay. The `except` also records `_SCAN_GAP_ROOT` when `scan_gaps` is not `None`. The inner loop becomes the shared generator.
+- `_resolve_project_scope`: threads `scan_gaps` into both iterators. The single-root glob branch raises `ValueError` when `scan_gaps is not None`.
+
+**Refusal and stderr wiring (`review_rounds.py`, rows 26, 27, 29).**
+
+- `cmd_review_round_cost`: `scan_gaps = Counter() if pooled else None`, passed to `scope._resolve_project_scope` and to `_render_pooled_block`.
+- `_render_pooled_block(args, roots, scope_label, rounds, branch_totals, *, scan_gaps: Counter[str])`, with `scan_gaps` required and passed to its refusal call.
+- `_pooled_scope_refusal`: the `os.access` clause is deleted. After the root-count clause: `if scan_gaps: return _POOLED_SCAN_GAP_REFUSAL + _POOLED_REFUSAL_DOC_POINTER`.
+- `_POOLED_SCAN_GAP_REFUSAL`, a module-level f-string like `_DECLARED_ROOT_SKIPPED_NOTICE`: "review-round-cost --pooled refuses a partial scan: a resolved scan root, or a directory or transcript under one, exists but could not be read, so part of the corpus would silently drop out of the pooled figure. Check each account's projects/ directory for a directory or .jsonl transcript you cannot read (with GNU find: `find <projects-dir> ! -readable`), then restore read access, or remove that account from {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
+- `_POOLED_STDERR_WITHHELD_NOTICE`: "review-round-cost --pooled: one or more diagnostics were withheld; rerun without --pooled to read them before citing any figure."
+- `_pooled_filtered_stderr_call`'s `else:` branch prints `_POOLED_STDERR_WITHHELD_NOTICE` once per call, deduped through the existing `printed_notices` set, instead of the raw line.
+
+Durable comments and docstrings to write (one fact per sentence):
+- `_list_dir_recording_gaps`: "Lists with iterdir, not glob: Path.glob returns no matches for an unreadable directory instead of raising."
+- Its `FileNotFoundError` branch: "A missing directory is an empty scope, not a gap."
+- `_resolve_project_scope`'s docstring: "`scan_gaps`, when given, records one level tag per unreadable directory or transcript the returned iterator skips. The single-root glob branch cannot record gaps, so it raises ValueError rather than ignore the counter."
+- `_pooled_scope_refusal`'s docstring: "roots=None defers the root-count check. scan_gaps=None defers the scan-gap check. Only cmd_review_round_cost's own calls may rely on either deferral, since both precede the scan. Every other caller must pass a resolved list and a counter."
+- `_render_pooled_block`'s docstring: "scan_gaps fills only as the session iterator is consumed, so this function's refusal call is the only point the scan-gap clause can fire."
+- The pattern-table comment at `review_rounds.py:804-807`: "Known diagnostic shapes and their replacements. Any stderr line matching none of them is withheld behind _POOLED_STDERR_WITHHELD_NOTICE."
+
 ## Critical files
+
+### This revision
+
+One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, its consumer in `review_rounds.py`, and the end-to-end chmod tests that pin both are one body of shared context — a CLI-level scan-gap test can only be debugged against the traversal it exercises.
+
+**Modify — `claude/.claude/scripts/transcript_analysis/scope.py`**
+- Add the three level constants, `_list_dir_recording_gaps`, and `_iter_project_dir_sessions` (Design detail, Traversal gap recording).
+- `_iter_scoped_sessions` (`:240-296`): keyword-only `scan_gaps=None`. Record `_SCAN_GAP_ROOT` in the existing `except OSError` (`:284-291`), keeping its stderr line. Replace the inner loop (`:292-296`) with the shared generator.
+- `_iter_glob_scoped_sessions` (`:299-329`): keyword-only `scan_gaps=None`. Replace `sorted(root.glob(projects_glob))` (`:325`) with the listing helper plus `fnmatch.fnmatchcase`. Replace the inner loop (`:325-329`) with the shared generator.
+- `_resolve_project_scope` (`:369-451`): keyword-only `scan_gaps=None`, threaded into both iterators. `ValueError` in the single-root glob branch (`:449-450`) when `scan_gaps is not None`. Add the docstring sentence from Design detail.
+- Imports: add `fnmatch`, `collections.Counter`, and `_read_session_file_partitioned` to the corpus import (`:31`). Drop `read_session_file` from that import if nothing else uses it (ruff F401 will say).
+- Unchanged: `_scan_root_transcripts` and its docstring caveat (`:616-634`) — cost's per-root path, not a `--pooled` path.
+- Reuse: `_dedup_new_project_dirs` (`:193-214`); `corpus._read_session_file_partitioned` (`corpus.py:85-117`).
+
+**Modify — `claude/.claude/scripts/transcript_analysis/corpus.py`** — docstring only.
+- `read_session_file`'s docstring (`:123-126`) names `_iter_scoped_sessions` as its second caller. Replace that with the durable fact: `scope._iter_project_dir_sessions` calls `_read_session_file_partitioned` directly so it can tell an unreadable file from an empty one. No behavior change.
+
+**Modify — `claude/.claude/scripts/transcript_analysis/review_rounds.py`**
+- `_pooled_scope_refusal` (`:516-573`): add the `scan_gaps=None` parameter. Delete the `os.access` clause (`:563-572`). Add the scan-gap clause after the root-count clause. Rewrite the docstring's deferral sentence per Design detail. Drop `import os` if it becomes unused.
+- New constants `_POOLED_SCAN_GAP_REFUSAL` and `_POOLED_STDERR_WITHHELD_NOTICE` (Design detail).
+- `_render_pooled_block` (`:702-785`): required keyword-only `scan_gaps: Counter[str]`, passed to its refusal call at `:721`. Add the docstring sentence.
+- `cmd_review_round_cost` (`:853-958`): build the counter under `--pooled`. Pass it at `:931` and `:957`.
+- Stderr filter (`:788-841`): fail-closed `else:` branch. Rewrite the comment at `:804-807` and the pass-through sentence in `_pooled_filtered_stderr_call`'s docstring (`:822-823`).
+
+**Modify — `claude/.claude/scripts/tests/test_transcript_analysis.py`**
+- New class `TestScanGapCounter` directly after `TestIterScopedSessionsUnreadableRoot` (`:20649-20678`). Each chmod test carries `@pytest.mark.skipif(os.geteuid() == 0, ...)` and restores permissions in `finally`, matching `:20658-20671`. Assertions reference `_mod.scope._SCAN_GAP_*`, never raw strings.
+  1. `_iter_glob_scoped_sessions` over two roots, one unreadable → counter is `{_SCAN_GAP_ROOT: 1}`, and the readable root's sessions are still yielded.
+  2. A readable root holding one readable and one unreadable project dir → `{_SCAN_GAP_PROJECT_DIR: 1}`, and the readable project's sessions are still yielded.
+  3. An unreadable `.jsonl` → `{_SCAN_GAP_SESSION_FILE: 1}`. A readable empty `.jsonl` beside it records nothing — the distinction row 24 relies on.
+  4. A root that doesn't exist → the counter stays empty.
+  5. `_iter_scoped_sessions` with an unreadable slug-matched project dir → `{_SCAN_GAP_PROJECT_DIR: 1}` — the structural sibling gets the fix (row 22).
+  6. `_resolve_project_scope(..., roots=[one_root], scan_gaps=Counter())` → `ValueError`.
+  7. Item 2's fixture with `scan_gaps` omitted → no exception, and the same sessions item 2 yields. Non-pooled callers are unchanged.
+  8. Across items 1-3, `set(counter) <= {the three constants}`: no path, no ordinal.
+- Existing tests must pass unchanged, including every multi-root `--projects` glob test (fnmatch parity, row 25) and `TestIterScopedSessionsUnreadableRoot`.
+
+**Modify — `claude/.claude/scripts/tests/test_transcript_review_rounds.py`**
+- Imports: add `pricing` to the `transcript_analysis` import (`:11`), and `REPO_ROOT`, `heading_texts`, `normalize_heading` from `helpers`.
+- Every surviving direct `_render_pooled_block(...)` call (`:1803, :1814, :1823, :1834, :2002, :2005, :2083, :2204`) passes `scan_gaps=Counter()`.
+- Scan-gap refusal, in `TestCmdReviewRoundCostPooled` (chmod tests skip under `euid == 0`):
+  1. New: `_pooled_two_root_fixture` plus a second project dir under `roots[1]` holding a round, chmod'd `000`. That account still contributes through its readable project, so the refusal can only come from the scan-gap clause. Assert `SystemExit` code 2, `out == ""`, `review_rounds._POOLED_SCAN_GAP_REFUSAL` in `err`, no digit in `err`, and the unreadable directory's path not in `err`.
+  2. New: the same fixture, with one of `roots[1]`'s two session `.jsonl` files chmod'd `000` instead → the same assertions.
+  3. `test_refuses_unreadable_scan_root_via_cmd_review_round_cost` and `test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost` (`:1837-1877`): keep their assertions. Rewrite both docstrings: the refusal now comes from the traversal's root-level record after the scan, not from a pre-scan probe.
+  4. Replace `test_render_pooled_block_called_directly_refuses_unreadable_scan_root` (`:1879-1891`) with a direct call passing two fabricated roots and `scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1})` → exit 2. No chmod needed.
+  5. `test_missing_active_profile_projects_dir_is_not_refused_as_unreadable` (`:1893-1912`): run `cmd_review_round_cost` with `--pooled` end to end on the same fixture and assert it renders without `SystemExit`. Its current `_pooled_scope_refusal` assertion targets a clause that no longer exists.
+- Stderr filter:
+  1. Rename `test_pooled_stderr_filter_passes_through_a_genuine_diagnostic` (`:2296`) to `test_pooled_stderr_filter_withholds_an_unrecognized_diagnostic` and invert it. The injected line is absent from `err`, `_POOLED_STDERR_WITHHELD_NOTICE` appears exactly once, and "scanning root" is still dropped. Rewrite the docstring to match; this supersedes the stale-name finding.
+  2. Rename `test_pooled_stderr_filter_reemits_buffered_lines_when_wrapped_call_raises` (`:2319`) to `test_pooled_stderr_filter_withholds_buffered_lines_when_wrapped_call_raises`. The `RuntimeError` still propagates, the raw line is absent, and the notice is present.
+  3. New: `monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())`, then run `pricing._log_non_contiguous_merge_decision("<placeholder-request-id>", 2, merged=True)` through `review_rounds._pooled_filtered_stderr_call`. Assert the placeholder id is absent from `err` and the notice is present. This exercises a real production print reachable under `--pooled` today (row 29), not a source scan.
+- `test_pooled_publication_and_refusal_pointers_cite_a_real_heading` (`:1638-1669`): replace the hand-rolled scanner with `heading_texts(...)` over the doc and `normalize_heading(...)` on the cited text. Use `REPO_ROOT` instead of `Path(__file__).resolve().parents[4]`. Keep only the docstring's statement of why the test exists; drop its justification for hand-rolling.
+- New `TestBootstrapShareIntervals` test (row 31). Build four branches: `_asymmetric_two_branch_pooled_totals()` (50% and 60% spend shares) plus two branches with zero `branch_dollars`, zero `round_dollars`, zero per-skill dollars, and nonzero `round_count`. An all-zero-denominator draw then has probability 1/16, well above the 2.5% lower tail. For `spend_inside`, assert `lo is not None` and `50.0 <= lo <= point <= hi <= 60.0`. Assert that `gap_unpriced`, whose denominator is `round_count`, still gets a non-`None` CI.
+- Docstring splits (one fact per sentence):
+  - `test_resample_percentile_at_the_half_index_rounding_boundary` (`:1361-1371`): give "only `hi` is asserted" and its float-error reason their own sentences, separate from "production B varies per stat because a zero-denominator draw is dropped before indexing". Drop the `--` aside.
+  - `test_no_branch_name_leak` (`:1605-1611`): "Asserts presence in the disclosed render and absence from the pooled render separately." Then: "Matches the existing disclosed/redacted pairing convention (see `TestCmdReviewRoundCost.test_branch_label_raw_under_this_repo_and_redacted_otherwise_multi_root`)."
+  - `test_pooled_run_with_unreadable_declared_root_entry_prints_no_digit_to_stderr` (`:2273-2281`): split into two sentences at "Still-poolable case:".
+
+**Modify — `claude/.claude/tests/helpers.py`**
+- Receive `_HEADING_LINE_RE`, `_HEADING_STRIP_CHARS_RE`, `_normalize_heading`, and `_heading_texts` from `test_skills.py:3252-3279`. Rename the two functions to public `normalize_heading` and `heading_texts`. Behavior is unchanged, including no fenced-code skipping.
+
+**Modify — `claude-skills/skills/tests/test_skills.py`**
+- Delete the moved definitions (`:3252-3279`). Add `heading_texts` and `normalize_heading` to the existing `from helpers import ...` line (`:54`). Rename every call site (`:3357, :3401, :3406, :3419, :3821, :4924, :4927, :4939, :4942`) and the comment at `:3908`. `test_normalize_heading` (`:3817`) stays here and now tests the helper.
+
+**Modify — `docs/transcript-analysis.md`** (`## review-round-cost`, Pooled mode paragraph, `:1148-1159`)
+- Replace the bullet at `:1157` with: "a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool; checked only after the full scan, and the refusal names neither the path nor a count".
+- Add one sentence to the paragraph at `:1159`: under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
+
+**Modify — `docs/private-project-redaction.md`**
+- Replace the six-sentence paragraph at `:193-201`, under § "The owner can authorize one figure, case by case", with two sentences. First: "`transcript-analysis.py review-round-cost --pooled` is a worked instrument for this section." Second: "`docs/transcript-analysis.md` § "review-round-cost" is the canonical home for its refusal list, contributing-account floor, and output grammar." Keep the citation on one line (`.claude/rules/citation-grammar.md`). Cite that section heading, not "Pooled mode", which is a bold lead-in, not a heading.
+- Do not touch the "What it permits" passage (row 15).
+
+**Not a repository file — PR #1009 body.** After implementation, the session runs `/pr-description` for three items. They come from this round's reviewer findings; this plan did not read the body itself.
+- DEFER row 2: drop the claim that the test's docstring calls it "a regression-guard pin, not a discriminator". No such text exists in `test_transcript_review_rounds.py` `[verified: grep for "regression-guard", "not a discriminator", "pins pre-existing" returns zero matches]`. The deferral itself stands; restate its actual reason.
+- DEFER row 3: re-evaluate for removal (Out of scope); don't edit its text in place.
+- The Notes-for-the-reviewer claim that nothing reachable on the `--pooled` path needed changing is superseded by this revision.
+
+### Original feature (implemented in earlier commits on this branch; kept for reference)
 
 One `code-writer` dispatch. Do not split: the refusal policy, the output grammar, and the tests that pin it are one body of shared context, and a second agent re-reading the redaction doc could resolve the same policy question differently.
 
@@ -211,8 +417,7 @@ One `code-writer` dispatch. Do not split: the refusal policy, the output grammar
 **Modify — `docs/transcript-analysis.md`**
 - `review-round-cost` section (`:1058-1102`): add `--pooled` to the Flags list, a short **Pooled mode** subsection stating the refusal list with its reasons, the caption, the bootstrap's resampling unit and resample count, and a sample output block. The sample must be synthetic, matching the existing section's convention.
 
-**Modify — `docs/private-project-redaction.md`**
-- One sentence only, in the worked-case paragraph at `:166-169`, naming `transcript-analysis.py review-round-cost --pooled` as the second worked aggregation boundary alongside `pr-cost-section.sh`. This file is the canonical home for which commands are aggregation boundaries, so omitting it means the next agent cannot find the mechanism from the policy. **Do not touch `:100-109`** (row 15).
+**Modify — `docs/private-project-redaction.md`** — superseded by this revision's entry above.
 
 ## Verification
 
@@ -221,7 +426,12 @@ One `code-writer` dispatch. Do not split: the refusal policy, the output grammar
 .venv/bin/ruff check claude/.claude/ claude-skills/
 ```
 
-`select-tests.py` scopes to the diff and is the command this repo documents for agents; it widens on its own when a diff warrants it. This diff's file set resolves to `{SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR, SKILLS_TESTS_DIR}` with no under-collection — `resolve_target_paths`'s containment filter (`select-tests.py:635-674`) already drops a file target subsumed by a directory target also in the selection, confirmed by an existing regression test for this exact shape.
+- `select-tests.py` decides the scope and widens on its own when a diff warrants it. This revision edits `claude/.claude/tests/helpers.py`, the shared test-helper module (`test_skills.py:54` imports it), so expect a wider selection than earlier revisions. Neither hand-widen nor hand-narrow it.
+- The run's `-ra` summary (`pyproject.toml`'s `addopts`) lists every skipped test. Confirm none of the new chmod-based tests reports as skipped. A run as root would skip them and verify nothing about rows 21-27.
+- Mutation checks, each run once locally and reverted before commit, prove the new tests discriminate:
+  1. Put `project_dir.glob("*.jsonl")` back in `_iter_project_dir_sessions` → the nested-project-dir CLI test and `TestScanGapCounter` item 2 fail. This also re-establishes G6.
+  2. Make `_bootstrap_share_intervals` append `0.0` for a `None` draw → the partial-zero-denominator test fails.
+  3. Restore pass-through in `_pooled_filtered_stderr_call`'s `else:` branch → the pricing-notice test fails.
 
 Then, once green, run the command against the real corpus at both scopes to confirm the block renders and the refusals fire:
 
@@ -232,6 +442,8 @@ python3 claude/.claude/scripts/transcript-analysis.py review-round-cost --pooled
 ```
 
 Record wall-clock time for the first invocation. The bootstrap is `2,000 × <branches in scope> × ~13` float accumulations on top of the corpus scan; if it materially lengthens the run, note the measurement as a follow-up rather than changing the design.
+
+If the first invocation now exits 2 with the scan-gap refusal, the new traversal check found a real unreadable path on this machine. Locate it with the refusal's own hint and report it to the engineer in session. Never paste that path into the PR, the commit, or this plan: it can name a private project. If it prints the withheld-diagnostics notice, rerun without `--pooled` to read the diagnostics, and report them in session only.
 
 **Do not paste any real `--pooled` output** into the PR body, the commit message, this plan file, or a doc in this PR. The approval gate at `docs/private-project-redaction.md:333-411` governs every figure the command prints, and this plan ships in the same public PR as the implementation. Verification claims in the PR body state that the command ran and what shape the output had, never the figures themselves.
 
@@ -246,3 +458,10 @@ Record wall-clock time for the first invocation. The bootstrap is `2,000 × <bra
 - **Extracting the existing per-branch renderer** into a symmetric `_render_per_branch`.
 - **Hoisting the pooled policy constants to `scope.py`, or adding a pooled mode to any other subcommand.** The promotion trigger is recorded in a comment for whoever adds the second consumer.
 - **Moving `cost._LIST_PRICE_CAVEAT` to `pricing.py`.** It would be the correct single-source home and would resolve the duplication question generally, but the pooled block needs a different, share-specific clause rather than that constant, so the move buys nothing here and would touch `cost.py` plus two assertions in `test_transcript_cost.py:2965,2978`.
+- **The dispatch-transcript level of the silent-exclusion class (row 28).** Left as a named residual: closing it changes `compute_review_round_costs`'s return shape, which G2 places outside this plan. It is a candidate follow-up issue.
+- **A source-scanning regression test for new stderr call sites (row 29).** The fail-closed filter makes it unnecessary, and `code-review`'s checklist item 9g bars the shape.
+- **Gap recording in `corpus.iter_sessions`, the single-root path (row 23).** `_resolve_project_scope` raises instead of accepting a counter it would ignore.
+- **`_scan_root_transcripts`'s nested-subdirectory caveat (`scope.py:629-632`).** That is cost's own per-root diagnostic, not a `--pooled` path; it and its docstring stay as they are.
+- **Disclosing a scan gap instead of refusing (row 26).**
+- **Unreadable subagent files for other subcommands.** `_read_session_file_partitioned` still skips an unreadable subagent file silently for `include_subagents=True` callers. `--pooled` never reads subagent files through the iterator.
+- **Editing PR #1009's DEFER row 3** (`_iter_glob_scoped_sessions` has no `OSError` guard). This revision closes exactly the function it names. Re-evaluate the row for removal after implementation, via `/pr-description`, rather than editing its text in place.
