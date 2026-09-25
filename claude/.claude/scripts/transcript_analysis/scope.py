@@ -521,7 +521,7 @@ _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
-    "instrument-authoring", "pr-cost", "cost-counts",
+    "instrument-authoring", "pr-cost", "cost-counts", "rearm-backtest",
 )
 
 
@@ -565,7 +565,7 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     try:
         resolved_config_dir = config_dir()
     except ValueError as exc:
-        # Every one of _SUBCOMMANDS_WITH_OWN_CONFIG_DIR's ~15 cmd_* handlers
+        # Every one of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR's ~15 cmd_* handlers
         # reaches this transitively with no try/except of its own -- catch
         # here, once, matching this function's own --config-dir-extra
         # refusals' stderr+exit(2) convention above.

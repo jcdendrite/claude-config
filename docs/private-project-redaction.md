@@ -199,7 +199,23 @@ named. The following each count as a fresh ask:
 
 Cite each authorized figure on its own — one citation spanning
 several figures does not establish that each was individually
-proposed and approved. Before citing an authorized figure, check
+proposed and approved.
+
+A report printed by one command invocation, shown to the owner as a
+whole and approved together, is not "several figures" in this rule's
+sense. Every value the report contains shares the same proposal and
+the same yes. Cite the whole report's approval once, beside the
+artifact that reproduces it, rather than restating each contained
+figure as its own ask. That one citation must still enumerate every
+figure category the report contains. It must also name any category
+the report printed but withheld rather than approved (e.g. a
+per-account breakdown). Enumerating keeps the check each figure still
+needs against the four bars below from silently dropping out just
+because the ask was made once — see
+[`docs/case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md)'s
+own citation for the pattern.
+
+Before citing an authorized figure, check
 whether it composes with an already-published rate or count to
 reconstruct a calendar-time series or narrow a boundary. That
 comparison source can be the grandfathered set below or an earlier
