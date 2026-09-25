@@ -154,7 +154,7 @@ class TestAskReviewPermissions:
         and `settings` specifically, so the raw string doesn't already
         contain the literal `.claude/settings` substring. A decoration
         elsewhere in the path, e.g. before `.claude`, would already pass
-        without normalization since the substring survives intact — this
+        without normalization, since the substring survives intact. This
         test doesn't cover that shape."""
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
 
