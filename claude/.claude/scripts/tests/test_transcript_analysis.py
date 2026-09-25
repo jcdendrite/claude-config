@@ -21932,6 +21932,20 @@ class TestNudgeConversionFromLog:
         assert result["no_ignored_field"] == 1
         assert result["ignored_values"] == []
 
+    def test_ignored_value_of_zero_is_counted_not_treated_as_missing(self):
+        """The lookup checks key presence, not truthiness. ignored=0 (complied
+        on the first nudge) must land in ignored_values, not no_ignored_field
+        -- a truthiness-style regression would misclassify it as missing."""
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
+             "event": "Stop", "ignored": 0},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["ignored_values"] == [0]
+        assert result["no_ignored_field"] == 0
+
     def test_ignored_value_is_read_from_the_line_immediately_preceding_handoff(self):
         """Not the first, min, max, or a sum/average -- a plausible wrong
         selection would not surface by hand-checking the report."""
