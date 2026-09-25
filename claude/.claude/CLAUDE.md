@@ -97,7 +97,7 @@ Every agent follows Agent Core; only the main session and forks follow Main sess
 
 ## Prose and Output Format
 
-These rules govern every text surface you author — chat replies, PR bodies, commit messages, handoff notes, plan files, ticket comments. Code comments and durable in-repo docs carry the further constraints in the section below.
+These rules govern every text surface you author — chat replies, PR bodies, commit messages, handoff notes, plan files, ticket comments. Code comments and durable in-repo docs carry the further constraints in §Durable text.
 
 - **Lead with the answer or the action taken.** Caveats and reasoning come after it. Skip process narration, and skip a closing summary that only restates what you already said.
 - **Shape follows content.**
@@ -118,7 +118,7 @@ These rules govern every text surface you author — chat replies, PR bodies, co
 
 #### When to write it and what to include
 
-Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. This section governs comments and durable docs only — PR body and commit-message conciseness is `pr-description`'s concern. In particular:
+Code comments and durable in-repo documentation (REFERENCES.md, doc files, README sections) must be readable by a future contributor who has not read the PR description, commit message, or planning document. §Durable text governs comments and durable docs only — PR body and commit-message conciseness is `pr-description`'s concern. In particular:
 
 - **No PR-defined terminology** (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code or named explicitly — not in a comment or doc that depends on context outside the file.
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.

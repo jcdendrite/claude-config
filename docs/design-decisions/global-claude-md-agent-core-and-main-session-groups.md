@@ -125,8 +125,6 @@ Follow-ups for dangling phrases left by verbatim moves:
 
 - The shipping clause's "Merge stays human-only", whose autonomous-shipping antecedent stays in Main session.
 - The output-preferences bullet's "the rules above", which now sits under Working Style. Tracked in GH-1091.
-- The Prose section scope line's "the section below", which now points at a subsection.
-- The Durable text scope line "This section governs comments and durable docs only", which is ambiguous inside Prose.
 
 ## Byte margin
 
