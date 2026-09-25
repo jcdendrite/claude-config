@@ -2724,9 +2724,10 @@ class TestDenyPrivateProjectRefs:
     )
     def test_structural_slack_channel_tail_alphabet_denied(self, claude_config_repo, channel):
         """GH-826: each row pins one member of the tail class that must stay flagged:
-        letter-led names, digit-led names whose first non-digit is not `s`,
-        and digit-led names whose first letter is `s` followed by another
-        name character."""
+        - letter-led names
+        - digit-led names whose first non-digit is not `s`
+        - digit-led names whose first letter is `s` followed by another name character
+        """
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
