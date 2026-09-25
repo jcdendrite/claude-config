@@ -1828,6 +1828,83 @@ class TestCmdReviewRoundCostPooled:
             review_rounds._render_pooled_block(args, [Path("/fake/root")], "*", [], {})
         assert exc.value.code == 2
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_unreadable_scan_root_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """A resolved root whose projects/ directory exists but can't be
+        listed (locked permissions) must refuse before any print, distinct
+        from the fail-open declared-root-file-entry case covered by the
+        stderr-diagnostic tests below: here the account's data provably
+        exists and would silently drop out of the pool. No session content
+        is written -- the pooled refusal checks exit(2) before any scan
+        happens, so a bare projects/ directory is all this test needs."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        os.chmod(roots[1], 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(roots[1], 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert not any(c.isdigit() for c in err)
+        assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """Same refusal as above, but for the active profile's own
+        PROJECTS_DIR (roots[0]) going unreadable, not a declared secondary
+        root (roots[1]) -- _pooled_scope_refusal's unreadable-root clause
+        loops over every resolved root uniformly via any(...), so the
+        active profile's own root must trigger it too."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        os.chmod(roots[0], 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(roots[0], 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert not any(c.isdigit() for c in err)
+        assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_render_pooled_block_called_directly_refuses_unreadable_scan_root(self, tmp_path, monkeypatch):
+        """Defense-in-depth, layer 2, for the unreadable-root clause: this
+        probe re-runs after a scan, catching a root that became unreadable
+        mid-scan and stayed that way."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        os.chmod(roots[1], 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                review_rounds._render_pooled_block(_review_round_cost_args(pooled=True), roots, "*", [], {})
+        finally:
+            os.chmod(roots[1], 0o755)
+        assert exc.value.code == 2
+
+    def test_missing_active_profile_projects_dir_is_not_refused_as_unreadable(self, tmp_path, monkeypatch):
+        """An active profile whose projects/ directory doesn't exist yet
+        (never populated) is the empty-scope case, not a permission
+        failure -- the new clause's os.path.isdir guard must not treat it
+        as an unreadable root. Two other valid, readable declared roots
+        keep the run poolable."""
+        acct_a = tmp_path / "acct-a"  # never created: PROJECTS_DIR doesn't exist
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        acct_c = tmp_path / "acct-c"
+        (acct_c / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n{acct_c}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        args = _review_round_cost_args(pooled=True)
+
+        roots = scope.resolve_scan_roots(args)
+        assert review_rounds._pooled_scope_refusal(args, roots=roots) is None
+
     def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
         """Two real `python3` subprocesses, not two in-process calls, since
         PYTHONHASHSEED is fixed per process; four branches (not two) to
@@ -2191,25 +2268,33 @@ class TestCmdReviewRoundCostPooled:
         warning fires inside scope.resolve_scan_roots(), before either
         --pooled refusal call runs, and is root-count-revealing the same
         way "scanning root N/M..." is -- both need the same filter. Still-
-        poolable case: two valid roots plus one invalid declared-roots-file
-        entry (a directory with no projects/ subdirectory).
+        poolable case: two valid roots plus two invalid declared-roots-file
+        entries (directories with no projects/ subdirectory), so the
+        replacement notice's own per-call dedup is exercised, not just its
+        digit-free wording.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
-        bare_dir = tmp_path / "bare-account"
-        bare_dir.mkdir()
+        bare_dir_1 = tmp_path / "bare-account-1"
+        bare_dir_1.mkdir()
+        bare_dir_2 = tmp_path / "bare-account-2"
+        bare_dir_2.mkdir()
         roots_file = tmp_path / "roots"
         with roots_file.open("a") as f:
-            f.write(f"{bare_dir}\n")
+            f.write(f"{bare_dir_1}\n{bare_dir_2}\n")
 
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         err = capsys.readouterr().err
         assert not any(c.isdigit() for c in err)
+        assert err.count(review_rounds._DECLARED_ROOT_SKIPPED_NOTICE) == 1
 
     def test_pooled_stderr_filter_passes_through_a_genuine_diagnostic(self, capsys):
         """The filter is selective, not a blanket stderr suppression: a
-        genuine non-"scanning root" diagnostic emitted during the wrapped
-        call still reaches stderr, while a "scanning root N/M..." line
-        does not.
+        non-"scanning root" diagnostic still reaches stderr, while a
+        "scanning root N/M..." line does not. The injected diagnostic is a
+        representative unsafe-shaped string, not one --pooled's real call
+        graph can actually emit today: only _iter_scoped_sessions emits it,
+        and the pooled path always resolves through
+        _iter_glob_scoped_sessions instead.
         """
         def fake_session_iter():
             print("scanning root 1/2...", file=sys.stderr)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import os
 import random
 import re
 import sys
@@ -471,8 +472,9 @@ _POOLED_CAPTION = (
     "the branches in scope as a sample of ongoing work."
 )
 
-# Percentile bootstrap resampled over branches; 2,000 matches this repo's
-# own prior use of the same technique at docs/cost-levers-considered.md:205.
+# Percentile bootstrap resampled over branches. The 2,000-resample count
+# matches this repo's own prior use of the same technique at
+# docs/cost-levers-considered.md:205.
 _BOOTSTRAP_RESAMPLES = 2000
 # Fixed so a published figure is reproducible by whoever checks it -- the
 # value itself is arbitrary.
@@ -522,20 +524,11 @@ def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None
     check passes -- evaluated in the table order documented in
     docs/transcript-analysis.md's Pooled mode subsection.
 
-    roots=None, or omitting roots entirely, always skips the last,
-    root-count clause. This function itself never fails closed on a
-    missing roots argument. That sentinel is reserved for
-    cmd_review_round_cost's own layer-1 call, which runs before
-    resolve_scan_roots and so genuinely has no roots yet. Every other
-    caller is responsible for coercing its own roots to an already-resolved
-    list, even an empty one, before calling in. _render_pooled_block's own
-    defense-in-depth call does this (see that function's docstring): it
-    fails the floor instead of silently skipping it, but that fail-closed
-    behavior belongs to its wrapper, not to this function.
-
-    --this-repo is checked in the flag block, not folded into the
-    root-count clause below, so it always fires first on a single-root
-    machine.
+    roots=None only defers the root-count and unreadable-root checks; it
+    does not fail open. Only cmd_review_round_cost's pre-resolution call may
+    rely on that deferral, since it runs before resolve_scan_roots and so
+    genuinely has no roots yet. Every other caller must pass an
+    already-resolved list, even an empty one.
     """
     if getattr(args, "branches", None):
         return (
@@ -571,6 +564,16 @@ def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None
         return (
             "review-round-cost --pooled requires more than one resolved scan root: a"
             " single-account figure is a per-account figure. Declare another account in"
+            f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
+        )
+    if roots is not None and any(
+        os.path.isdir(root) and not os.access(root, os.R_OK | os.X_OK) for root in roots
+    ):
+        return (
+            "review-round-cost --pooled refuses an unreadable scan root: an account's projects/"
+            " directory exists but cannot be listed, so that account would silently drop out of"
+            " the pooled figure. Restore read access to that account's projects/ directory, or"
+            " (if it's a declared entry, not the active profile) remove it from"
             f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
         )
     return None
@@ -697,10 +700,7 @@ def _pooled_resolved_scope_header(scope_label: str) -> str:
     scope.print_resolved_scope: that shared function's own root-count
     clause is unconditional, even at one root, and would otherwise
     disclose the number of resolved scan roots (a per-account dimension)
-    even under --pooled. scope_label is always the literal "*" here,
-    since --projects and --this-repo are both refused before this prints.
-    The fixed word "pooled" replaces the root-count clause entirely,
-    making this a fixed string rather than merely digit-free.
+    even under --pooled.
     """
     return f"REVIEW ROUND COST SOURCES ({scope_label}; pooled)"
 
@@ -798,25 +798,51 @@ _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
 # cmd_review_round_cost runs. The line-index it names is still a lower bound
 # on the declared-roots file's size, so it is root-count-revealing too.
 _DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared root \d+ unreadable$")
-_POOLED_STDERR_DIAGNOSTIC_RES: tuple[re.Pattern[str], ...] = (
-    _SCANNING_ROOT_DIAGNOSTIC_RE,
-    _DECLARED_ROOT_DIAGNOSTIC_RE,
+# Fail-open notice for the declared-root case: declared_roots_matching's own
+# docstring documents skipping an invalid entry as intended. This restores
+# the non-pooled path's drop-out signal without naming which account or how
+# many.
+_DECLARED_ROOT_SKIPPED_NOTICE = (
+    f"review-round-cost --pooled: one or more entries in {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} were"
+    " skipped (not a directory, no projects/ subdirectory, or unreadable); any account they name is"
+    " not in this pool."
+)
+# This is a denylist of currently-known account-revealing diagnostic shapes,
+# not an allowlist -- a new diagnostic added anywhere in this call chain
+# (scope.py, corpus.py, pricing.py) that discloses per-account info would
+# pass through unfiltered by default. Each pattern maps to its replacement.
+# A None replacement drops every matching line entirely. A string replacement
+# prints once per call, in place of every matching line however many there
+# are.
+_POOLED_STDERR_DIAGNOSTIC_RES: tuple[tuple[re.Pattern[str], str | None], ...] = (
+    (_SCANNING_ROOT_DIAGNOSTIC_RE, None),
+    (_DECLARED_ROOT_DIAGNOSTIC_RE, _DECLARED_ROOT_SKIPPED_NOTICE),
 )
 
 
 def _pooled_filtered_stderr_call(fn, *args, **kwargs):
     """Call fn with every root-count-revealing diagnostic
     (_POOLED_STDERR_DIAGNOSTIC_RES) filtered out of what it prints to
-    stderr. Every other stderr line -- an OSError diagnostic, a warning --
-    passes through unchanged, including one printed before fn raises.
+    stderr. A string replacement prints once per call, however many lines
+    matched it. A None replacement drops every matching line entirely.
+    Every other stderr line -- an OSError diagnostic, a warning -- passes
+    through unchanged, including one printed before fn raises.
     """
     captured = io.StringIO()
     try:
         with contextlib.redirect_stderr(captured):
             result = fn(*args, **kwargs)
     finally:
+        printed_notices: set[str] = set()
         for line in captured.getvalue().splitlines():
-            if not any(p.match(line.strip()) for p in _POOLED_STDERR_DIAGNOSTIC_RES):
+            stripped = line.strip()
+            for pattern, replacement in _POOLED_STDERR_DIAGNOSTIC_RES:
+                if pattern.match(stripped):
+                    if replacement is not None and replacement not in printed_notices:
+                        printed_notices.add(replacement)
+                        print(replacement, file=sys.stderr)
+                    break
+            else:
                 print(line, file=sys.stderr)
     return result
 

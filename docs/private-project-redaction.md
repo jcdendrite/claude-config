@@ -192,10 +192,10 @@ citation for a yes that was never given.
 
 `transcript-analysis.py review-round-cost --pooled` is a worked
 instrument for this section. It refuses every scope-narrowing flag and
-requires two or more resolved scan roots, at least two of which must
-actually contribute a branch to the pool — short of that, it degrades
-to the same "too few branches" wording rather than a real percentage.
-Its output is dimensionless shares with bootstrap CIs only — never a
+requires two or more resolved scan roots that actually contribute a
+branch to the pool. Short of that floor, it prints the same "too few
+branches" wording instead of a real percentage. Its output is
+dimensionless shares with bootstrap CIs only — never a
 dollar amount, raw count, or resolved root count. It prints a pointer
 to this section, since nothing in the command checks that a figure was
 ever proposed or approved.
