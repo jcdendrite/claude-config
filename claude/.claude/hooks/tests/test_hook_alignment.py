@@ -219,6 +219,22 @@ _REPO_LOCAL_SETTINGS_PATH = _REPO_ROOT / ".claude" / "settings.json"
 _ATTRIBUTION_SETTINGS_PATHS = (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH)
 
 
+def _tree_settings_paths() -> list[Path]:
+    """Return the `settings*.json` files directly under `claude/.claude/` and `.claude/`.
+
+    Reads the working tree, and excludes `*.local.json`.
+    A settings file in a subdirectory or under another name is not found.
+    """
+    candidates = [
+        *(_REPO_ROOT / "claude" / ".claude").glob("settings*.json"),
+        *(_REPO_ROOT / ".claude").glob("settings*.json"),
+    ]
+    return sorted(path for path in candidates if not path.name.endswith(".local.json"))
+
+
+_TREE_SETTINGS_PATHS = _tree_settings_paths()
+
+
 def _pretooluse_entries_for(hook: Path) -> list[dict]:
     """Every PreToolUse hook-entry dict wired to `hook`, matched by exact
     equality on the command's last shell word — not a substring/endswith
@@ -613,6 +629,44 @@ def test_attribution_commit_and_pr_stay_unset_in_both_settings(path: Path) -> No
         f"`commit`/`pr` must stay unset, since an empty `commit` makes "
         f"the session trailer the sole trailer instead of suppressing "
         f"it (docs/design-decisions.md §63)"
+    )
+
+
+def test_tree_settings_paths_include_the_known_settings_files() -> None:
+    """Keeps the wildcard test from passing vacuously when a known settings
+    file drops out of discovery."""
+    missing_paths = [path for path in _ATTRIBUTION_SETTINGS_PATHS if path not in _TREE_SETTINGS_PATHS]
+    assert not missing_paths, (
+        f"known settings file(s) {[str(path.relative_to(_REPO_ROOT)) for path in missing_paths]} "
+        f"dropped out of _TREE_SETTINGS_PATHS discovery, so the wildcard test "
+        f"would otherwise skip them silently"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    _TREE_SETTINGS_PATHS,
+    ids=[str(p.relative_to(_REPO_ROOT)) for p in _TREE_SETTINGS_PATHS],
+)
+def test_permissions_allow_stays_wildcard_free_in_tree_settings(path: Path) -> None:
+    """Pins the no-wildcards rule in `permissions.allow`.
+
+    A wildcard widens an allow rule so that it accepts injected flags,
+    chained commands and shell expansion. Only `permissions.allow` is
+    checked: `permissions.deny` legitimately carries wildcards such as
+    `Bash(sudo *)`.
+    """
+    allow = json.loads(path.read_text()).get("permissions", {}).get("allow", [])
+    non_string_entries = [entry for entry in allow if not isinstance(entry, str)]
+    assert not non_string_entries, (
+        f"permissions.allow in {path.relative_to(_REPO_ROOT)} has an allow entry "
+        f"that is not a string: {non_string_entries}"
+    )
+    wildcard_entries = [entry for entry in allow if "*" in entry]
+    assert not wildcard_entries, (
+        f"wildcard entries in permissions.allow of {path.relative_to(_REPO_ROOT)}: "
+        f"{wildcard_entries} — use exact-match rules "
+        f"(claude/.claude/rules/settings-json-conventions.md)"
     )
 
 
