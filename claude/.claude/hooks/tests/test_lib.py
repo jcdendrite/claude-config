@@ -6726,10 +6726,20 @@ class TestLedgerSweepWindowDays:
     covers this value's wiring into clear-stale's `find -mtime +N`; the
     arithmetic itself is pinned here instead."""
 
+    _MISSING_OR_NON_NUMERIC_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, "
+        "or non-numeric -- using the 30-day floor"
+    )
+    _NINE_PLUS_DIGITS_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, "
+        "implausibly large -- using the 30-day floor"
+    )
+
     def test_defaults_to_thirty_when_settings_file_absent(self, tmp_path: Path) -> None:
         result = _run_ledger_sweep_window_days(tmp_path / "nonexistent-settings.json")
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
 
     def test_custom_cleanup_period_days_is_honored(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
@@ -6737,6 +6747,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "60"
+        assert result.stderr == ""
 
     def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
@@ -6744,6 +6755,10 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert (
+            "_ledger_sweep_window_days: configured value 5 is below the "
+            "30-day floor, using the floor instead"
+        ) in result.stderr
 
     def test_malformed_settings_json_defaults_to_thirty(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
@@ -6751,6 +6766,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
 
     def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
@@ -6758,6 +6774,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
 
     def test_negative_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
         settings_file = tmp_path / "settings.json"
@@ -6765,6 +6782,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
 
     @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
     def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
@@ -6779,6 +6797,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
 
     def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
         self, tmp_path: Path
@@ -6793,6 +6812,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr
 
     def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(
         self, tmp_path: Path
@@ -6806,6 +6826,7 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "99999999"
+        assert result.stderr == ""
 
     def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(
         self, tmp_path: Path
@@ -6817,3 +6838,4 @@ class TestLedgerSweepWindowDays:
         result = _run_ledger_sweep_window_days(settings_file)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr

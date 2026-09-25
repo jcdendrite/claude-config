@@ -210,6 +210,11 @@ def _ledger_sweep_window_seconds(jsonl: Path) -> int:
     from this process's own $CLAUDE_CONFIG_DIR: a corpus scan can span
     declared_transcript_roots' several config-dir roots at once, each with
     its own settings.json and potentially different cleanupPeriodDays.
+
+    Has no production caller -- _ledger_possibly_swept compares against
+    the fixed _LEDGER_SWEEP_FLOOR_DAYS instead. Retained for cross-language
+    parity testing against clear-stale's dynamic-resolution semantics in
+    _lib.sh's own _ledger_sweep_window_days.
     """
     return _cleanup_period_days(_config_dir_root_for_session(jsonl)) * 86400
 
@@ -347,11 +352,12 @@ def _ledger_possibly_swept(
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
     file at all, and its own newest record is older than
-    review-ledger.sh's resolved sweep window (see
-    _ledger_sweep_window_seconds). False otherwise, including when no
-    record in the session has a parseable timestamp to compare. See
-    docs/transcript-analysis.md's "Ledger-possibly-swept check" section
-    for the rationale.
+    _LEDGER_SWEEP_FLOOR_DAYS -- review-ledger.sh's `append` command (the
+    dominant eviction path) passes that fixed floor directly, not the
+    dynamically-resolved window `clear-stale` uses. False otherwise,
+    including when no record in the session has a parseable timestamp to
+    compare. See docs/transcript-analysis.md's "Ledger-possibly-swept
+    check" section for the rationale.
 
     LEDGER_PATH lets a caller that already resolved this session's ledger
     path (compute_author_outcomes' loop) pass it straight through instead
@@ -370,7 +376,7 @@ def _ledger_possibly_swept(
     if not timestamps:
         return False
     now = time.time() if now is None else now
-    return max(timestamps) < now - _ledger_sweep_window_seconds(jsonl)
+    return max(timestamps) < now - _LEDGER_SWEEP_FLOOR_DAYS * 86400
 
 
 def _classify_round(

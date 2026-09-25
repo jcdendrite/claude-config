@@ -304,6 +304,20 @@ class TestLedgerPossiblySwept:
             jsonl, [(0, 1)], [], records, now=self._NOW_WITHIN_WINDOW,
         ) is False
 
+    def test_widened_cleanup_period_days_does_not_delay_possibly_swept(self, tmp_path):
+        """Mirrors test_review_ledger_script.py's
+        test_append_sweep_ignores_a_widened_cleanup_period_days: this
+        classifier must track append's fixed 30-day floor, not
+        clear-stale's dynamic cleanupPeriodDays-widened window, so a
+        session aged past the floor but still within a wider configured
+        value is still flagged as possibly swept."""
+        jsonl = self._jsonl(tmp_path)
+        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is True
+
     def test_no_code_review_rounds_is_never_possibly_swept(self, tmp_path):
         jsonl = self._jsonl(tmp_path)
         records = [{"timestamp": self._OLD_RECORD_TS}]
@@ -372,13 +386,13 @@ class TestLedgerPossiblySwept:
         ) is False
 
     def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self, tmp_path):
-        """max(timestamps) == now - _ledger_sweep_window_seconds(jsonl)
-        sits on the strict `<` inequality's excluded side, one second short
-        of swept. No settings.json exists at this session's config-dir
-        root, so the resolved window is the default 30-day floor."""
+        """max(timestamps) == now - _LEDGER_SWEEP_FLOOR_DAYS * 86400 sits on
+        the strict `<` inequality's excluded side, one second short of
+        swept -- the fixed floor _ledger_possibly_swept actually compares
+        against, not the dynamically-resolved _ledger_sweep_window_seconds."""
         jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
-        now = record_ts + ao._ledger_sweep_window_seconds(jsonl)
+        now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is False
 
@@ -387,7 +401,7 @@ class TestLedgerPossiblySwept:
         the swept side of the same strict `<` inequality."""
         jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
-        now = record_ts + ao._ledger_sweep_window_seconds(jsonl) + 1
+        now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400 + 1
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is True
 

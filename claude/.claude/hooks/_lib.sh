@@ -3582,20 +3582,34 @@ _LEDGER_SWEEP_FLOOR_DAYS=30
 # through unchanged; the digit-only case pattern below then rejects it as
 # non-integer rather than truncating it. This is deliberate and matches
 # author_outcome.py's own _cleanup_period_days.
+#
+# Side effects: each fallback branch above prints a diagnostic to stderr
+# naming why it floored, matching _lib_capped_for's stderr-diagnostic
+# pattern above.
 _ledger_sweep_window_days() {
   local settings_file="$1"
   local cleanup_period_days
   cleanup_period_days=$(_lib_jq -r '(.cleanupPeriodDays // empty) | select(type == "number")' "$settings_file" 2>/dev/null)
   case "$cleanup_period_days" in
-    ''|*[!0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+    ''|*[!0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, or non-numeric -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
     # 9+ digits (>=100 million days): far beyond any realistic retention
     # window, but an all-digit value this large can exceed bash's signed-
     # integer range and make the `-lt` comparison below error instead of
     # comparing -- floor here rather than depend on that comparison's
     # behavior on an out-of-range operand.
-    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS" ;;
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, implausibly large -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
   esac
   if [ "$cleanup_period_days" -lt "$_LEDGER_SWEEP_FLOOR_DAYS" ]; then
+    printf '_ledger_sweep_window_days: configured value %s is below the %s-day floor, using the floor instead\n' \
+      "$cleanup_period_days" "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
     printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
   else
     printf '%s' "$cleanup_period_days"

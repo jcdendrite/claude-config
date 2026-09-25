@@ -1213,13 +1213,15 @@ A session whose ledger is entirely legacy rows (no row carries a `round` key) or
 
 - It opened >=1 `code-review` round.
 - It has zero ledger rows and no matching ledger file at all.
-- Its own newest record's timestamp is older than `review-ledger.sh`'s sweep window (Claude Code's `cleanupPeriodDays` setting, floored at 30 days -- GH-973).
+- Its own newest record's timestamp is older than the fixed 30-day `_LEDGER_SWEEP_FLOOR_DAYS` (GH-973). That's the same floor `review-ledger.sh`'s `append` command passes on its dominant eviction path, not `clear-stale`'s dynamically-resolved `cleanupPeriodDays`-driven window.
 
 This can't tell a genuinely swept ledger apart from a session the kill switch simply ran clean for its entire (now-cold) lifetime, since both leave the identical zero-rows-no-file signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on any record is not evaluated by this check.
 
 **The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
 This counter is meaningful only when `--agent` is `code-writer` (the default). `review-ledger.sh`'s `--authoring-agent` enum has no case for any other value, so `declared` can never match and the counter fires on nearly every round. Treat that as reduced signal from an unsupported `--agent` value, not a data-quality problem.
+
+**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one.
 
 **Sample output.**
 ```
