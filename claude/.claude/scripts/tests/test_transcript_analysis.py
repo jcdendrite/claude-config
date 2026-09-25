@@ -3654,8 +3654,8 @@ class TestReviewTrace:
 
     def test_skill_invocation_worktree_qualified_spelling_matches_review_trace_skills(self):
         """A worktree-path-qualified spelling matches REVIEW_TRACE_SKILLS
-        membership; this test doesn't isolate the leading "/"-strip branch,
-        since the trailing ":"-strip alone already reduces every real
+        membership. This test doesn't isolate the leading "/"-strip branch:
+        the trailing ":"-strip alone already reduces every real
         fixture shape to the bare name."""
         records = [
             _asst("claude-sonnet-4-6", branch="feat",
@@ -3779,8 +3779,8 @@ class TestReviewTrace:
     def test_slash_skill_event_field_keeps_display_normalization_not_bare_form(self):
         """The emitted skill event field for a slash invocation keeps
         _normalize_skill_name's lighter directory-only strip, including any
-        plugin:/dir: prefix — mirrors the Skill-tool_use version of this test
-        but for the slash shape."""
+        plugin:/dir: prefix. This mirrors the Skill-tool_use version of this
+        test, for the slash shape."""
         records = [
             _user_msg("<command-name>/.claude/worktrees/some-branch/claude:skill-review</command-name>",
                        branch="feat", ts="2026-05-19T10:00:00.000Z"),
@@ -3823,9 +3823,9 @@ class TestReviewTrace:
 
     def test_skill_tool_use_and_slash_invocation_both_produce_events(self):
         """A Skill tool_use record and a `<command-name>` slash tag for two
-        different REVIEW_TRACE_SKILLS members both produce 'skill' events,
-        each attributed to its own record's branch, with the slash event
-        keeping the model carried forward from the last assistant record."""
+        different REVIEW_TRACE_SKILLS members both produce 'skill' events.
+        Each event is attributed to its own record's branch. The slash
+        event's model is carried forward from the last assistant record."""
         records = [
             _asst("claude-opus-4-7", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
