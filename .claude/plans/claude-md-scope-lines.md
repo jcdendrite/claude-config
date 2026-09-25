@@ -1,10 +1,10 @@
-# Fix two dangling scope pointers in the global CLAUDE.md (GH-1085 follow-up G2)
+# Fix two dangling scope pointers in the global CLAUDE.md (GH-1085)
 
 ## Context
 
 Goal: make the two scope pointers in `claude/.claude/CLAUDE.md` that the Agent Core move left dangling resolve correctly, without growing a file that is already over its byte ceiling.
 
-The move folded the old top-level comments section into `### Durable text` under `## Prose and Output Format`. Since then, "the section below" at :100 points at a subsection, and "This section governs" at :121 can be read as all of Prose. The G1 PR (merged) left both for this follow-up. The opening line (:3), "Merge stays human-only" (:96) and "the rules above" (:141, tracked in GH-1091) stay untouched.
+The move put the comments section under `### Durable text` inside `## Prose and Output Format`. "the section below" at :100 now points at a subsection, and "This section governs" at :121 can be read as all of Prose. The record-followups PR (#1096, merged) left both for this follow-up. The opening line (:3), "Merge stays human-only" (:96) and "the rules above" (:141, tracked in GH-1091) stay untouched.
 
 ## Approach
 
@@ -17,7 +17,7 @@ Two edits are the minimum, because the move broke two separate references. The `
 
 Alternatives set aside:
 - **Bare "Durable text" at both sites (net −5).** Rejected for the generic-noun collision above.
-- **"in Durable text, below" or "in Durable text below" at :100.** Costs +1 or +2 bytes, so net-zero would need a compensating trim elsewhere. It also keeps a positional cue, and a positional reference is what went stale here.
+- **"in Durable text, below" or "in Durable text below" at :100.** Costs +1 or +2 bytes, so net-zero would need a compensating trim elsewhere. It also keeps a positional cue, and a positional reference is what broke here.
 - **"This subsection governs" at :121 (+3 bytes).** Still a relative reference, so the next heading-level change would break it again.
 - **"These rules govern" at :121 (−1 byte).** Reuses :100's subject phrase for the opposite scope 21 lines away.
 - **Delete :121's scope clause and keep only the `pr-description` routing.** Drops the "only" restriction, which CLAUDE.md's "Never drop or flatten a fact … to shorten a sentence" rule forbids.
@@ -26,7 +26,7 @@ Alternatives set aside:
 
 ### Assumption ledger
 
-**Root problem:** #1090 folded the old top-level comments section into `### Durable text` under `## Prose and Output Format`. That left two pointers whose target is unclear:
+**Root problem:** #1090 placed the comments section under `### Durable text` inside `## Prose and Output Format`. That left two pointers whose target is unclear:
 - :100 "the section below" now points at a subsection.
 - :121 "This section" can be read as all of Prose, which contradicts :100.
 
@@ -52,7 +52,7 @@ Every mechanism is a text edit, and none is heavier than the task needs.
 | 1 | :100 ends "…carry the further constraints in the section below." Its target, `### Durable text` (:113), is a subsection of `## Prose and Output Format` (:98). | `[verified: claude/.claude/CLAUDE.md:98-113]` |
 | 2 | :121 sits under `#### When to write it and what to include` (:119) inside `### Durable text`. Read as the whole Prose section, "This section governs comments and durable docs only" contradicts :100's "These rules govern every text surface you author — … PR bodies, commit messages…". | `[verified: CLAUDE.md:100,113,119-121]` |
 | 3 | The record lists both phrases as open follow-ups at :128-129, below :126 (Merge stays human-only) and :127 (GH-1091). | `[verified: record :124-129]` |
-| 4 | Under Axis 3's decision test, G1's merged plan classified this follow-up list as editable current state ("lists follow-ups that are still open"). | `[verified: .claude/plans/record-followups.md:20-24; CLAUDE.md:75-82]` |
+| 4 | Under Axis 3's decision test, the merged record-followups plan classified this follow-up list as editable current state ("lists follow-ups that are still open"). | `[verified: .claude/plans/record-followups.md:20-24; CLAUDE.md:75-82]` |
 | 5 | Decision files are already edited in place under the Supersession convention, so the directory does not freeze current-state lines. | `[verified: .claude/rules/design-decisions.md, Supersession bullet]` |
 | 6 | Every other file that names this section writes "§Durable text": README.md:244, plan-it/SKILL.md:71, code-review/SKILL.md:71,130, code-writer.md:71,117, comment-discipline-reviewer.md:10,41, and CHANGELOG.md:14 ("References to the old name now read `§Durable text`"). | `[verified: repo grep]` |
 | 7 | CLAUDE.md's own internal pointers use bare heading names (:95 "Safety's marker bullet", :178 "Agent Briefing, above") and never `§` for its own sections. Deviating here is justified because "Durable text" is also a generic noun phrase in both citing sentences ("durable in-repo docs", "durable docs"), and "Safety" and "Agent Briefing" are not. | `[verified: CLAUDE.md grep for §/above/below]` for the convention; `[unverified: judgment on how a reader parses the bare form]` |
