@@ -3734,8 +3734,8 @@ class TestReviewTrace:
 
     def test_slash_invocation_plugin_qualified_spelling_matches_review_trace_skills(self):
         """A plugin-qualified slash spelling (skill-management:skill-review)
-        matches REVIEW_TRACE_SKILLS membership via _round_skill_name, mirroring
-        the Skill-tool_use plugin-qualified test above but for the slash shape."""
+        matches REVIEW_TRACE_SKILLS membership via _round_skill_name. Mirrors
+        the Skill-tool_use plugin-qualified test above, for the slash shape."""
         records = [
             _user_msg("<command-name>/skill-management:skill-review</command-name>",
                        branch="feat", ts="2026-05-19T10:00:00.000Z"),
@@ -3748,8 +3748,8 @@ class TestReviewTrace:
 
     def test_slash_skill_filter_matches_qualified_spelling(self):
         """--skill's bare-name filter matches a raw qualified slash spelling
-        (claude:plan-it), mirroring test_skill_filter_matches_qualified_spelling
-        but for the slash shape."""
+        (claude:plan-it). Mirrors test_skill_filter_matches_qualified_spelling,
+        for the slash shape."""
         records = [
             _user_msg("<command-name>/claude:plan-it</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
@@ -3793,7 +3793,7 @@ class TestReviewTrace:
 
     def test_slash_invocation_of_non_review_trace_skill_produces_no_event(self):
         """A /slash-command tag for a skill outside REVIEW_TRACE_SKILLS (e.g.
-        /handoff) produces no skill event — the user-record slash-detection
+        /handoff) produces no skill event. The user-record slash-detection
         branch must not over-match every slash invocation."""
         records = [
             _user_msg("<command-name>/handoff</command-name>", branch="feat",
@@ -3806,9 +3806,9 @@ class TestReviewTrace:
 
     def test_slash_invocation_detected_with_list_form_user_content(self):
         """A /slash-invoked review skill is still detected when message.content
-        is a list of blocks rather than a bare string, mirroring
+        is a list of blocks rather than a bare string. Mirrors
         test_slash_detection_with_list_form_user_content's coverage of the
-        same _content_text fallback but for the review-trace path."""
+        same _content_text fallback, for the review-trace path."""
         records = [
             _user_msg(
                 [{"type": "text", "text": "<command-name>/code-review</command-name>"}],
@@ -3848,9 +3848,9 @@ class TestReviewTrace:
 
     def test_multiple_slash_tags_in_one_user_record_produce_two_events(self):
         """Two `<command-name>` tags for two different REVIEW_TRACE_SKILLS
-        members in a single user record both produce 'skill' events, mirroring
-        cmd_skill_invocation's own test_multiple_slash_tags_in_one_user_record
-        but for the review-trace path."""
+        members in a single user record both produce 'skill' events. Mirrors
+        cmd_skill_invocation's own test_multiple_slash_tags_in_one_user_record,
+        for the review-trace path."""
         records = [
             _user_msg(
                 "<command-name>/plan-it</command-name>\n<command-name>/code-review</command-name>",
@@ -3866,7 +3866,7 @@ class TestReviewTrace:
     def test_whitespace_only_command_name_tag_produces_no_event(self):
         """A `<command-name>` tag whose captured name is whitespace-only
         normalizes to a string that isn't a REVIEW_TRACE_SKILLS member, so it
-        produces no event — pins the current safe-by-construction behavior."""
+        produces no event. Pins the current safe-by-construction behavior."""
         records = [
             _user_msg("<command-name>/ </command-name>", branch="main",
                        ts="2026-05-19T10:00:00.000Z"),
