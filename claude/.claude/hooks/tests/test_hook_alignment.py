@@ -542,9 +542,7 @@ def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
     matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
     assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"ask-review-permissions.sh: no PreToolUse matcher spanning "
-        f"Edit|Write|MultiEdit in settings.json (found {matchers!r}) -- "
-        f"the hook would stop asking on at least one of those tools, "
-        f"including MultiEdit, which only the hook is known to cover"
+        f"Edit|Write|MultiEdit in settings.json (found {matchers!r})"
     )
 
 
@@ -676,7 +674,8 @@ def test_permissions_allow_stays_wildcard_free_in_tree_settings(path: Path) -> N
     A wildcard widens an allow rule so that it accepts injected flags,
     chained commands and shell expansion. Only `permissions.allow` is
     checked: `permissions.deny` legitimately carries wildcards such as
-    `Bash(sudo *)`.
+    `Bash(sudo *)`, and `permissions.ask` rules carry globs too, as the
+    shipped settings-file `permissions.ask` entry does.
     """
     allow = json.loads(path.read_text()).get("permissions", {}).get("allow", [])
     non_string_entries = [entry for entry in allow if not isinstance(entry, str)]

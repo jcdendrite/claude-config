@@ -231,8 +231,8 @@ Code 2.1.223, via a throwaway hook gating an ordinary file (isolating the
 result from `.claude/settings.json`'s own native edit confirmation, which
 fires independently of hooks) plus a no-hook control confirming the prompt
 is attributable to the hook rather than baseline Edit-confirmation
-behavior. That test did not cover `auto` mode, which was tested later
-(below). The `bypassPermissions` result is notable on its
+behavior. That test did not cover `auto` mode; see the auto-mode
+observations below. The `bypassPermissions` result is notable on its
 own: that mode is documented to skip permission checks more broadly than
 `acceptEdits`, yet a hook's `ask` still surfaced there. None of this closes
 the self-widening gap above — even a reliably-rendering `ask` is a soft
@@ -247,14 +247,15 @@ Observed on 2026-09-24 and 2026-09-25, Claude Code 2.1.282, `auto` mode (status 
 - A `permissions.ask` rule `Edit(//**/.claude/probe-settings*.json)` prompted on Edit in-project and on Write out-of-project, with the user's regular hooks and the throwaway hook also active. A rule written `Edit(/tmp/...)` in project settings did not match.
 - With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on Edit of an out-of-project `.claude/settings.json`, on Write creating an out-of-project `settings.local.json`, and on Write creating an in-project `settings.local.json`. An in-project Edit of a settings file with the shipped pattern alone was not run.
 - The Edit tool refused to write through a symbolic link and named the target path. In a stow layout the target sits under a `.claude/` segment and so plausibly matches the pattern (inference; Write through a symlink is untested).
+- No run removed the rule on a `.claude/` path, which Claude Code prompts on natively (permission-modes "Protected paths"). The auto-mode prompts above therefore do not isolate the rule's effect, and its auto-mode behavior rests on the Documented list.
 
 Documented in Anthropic's permissions and permission-modes pages (re-read 2026-09-25):
 
 - Explicit ask rules prompt in every mode that can prompt, including `bypassPermissions`; `dontAsk` denies anything that would prompt.
 - Auto mode still shows prompts forced by an ask rule or by a hook. The permission-modes page (code.claude.com/docs/en/permission-modes) says "because auto mode still shows you those prompts" and "Explicit ask rules still force a prompt".
+- A matching ask rule still prompts even when a hook returned `allow` or `ask`.
 - `//path` is an absolute filesystem path.
 - `/path` anchors at the settings source, which is the project root in project settings and the user config directory in user settings.
-- `dontAsk` denies anything that would prompt.
 
 Untested: `bypassPermissions` for the rule, MultiEdit, case variants, Bash-mediated writes, Write through a symlink, headless `-p` runs, older Claude Code versions, and the shipped hook's reason text in any configuration.
 
