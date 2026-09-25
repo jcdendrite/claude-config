@@ -28,7 +28,7 @@ The rest of the file stays as it is. The test checks exact-name matching against
 
 The literal `/nonexistent/` states the last constraint itself, so no comment is needed.
 
-**Root:** The Root bullets and rows 4 and 9 describe the tree before this change. The baseline is the merge-base with `origin/main` at plan time, equivalently the parent of the commit that lands the fix. Verification steps 1 and 2 own the post-change state.
+**Root:** The Root bullets and rows 4 and 9 describe the tree before this change. The baseline is `df02ac6a`, this branch's merge-base with `origin/main`. Verification steps 1 and 2 own the post-change state.
 
 At that baseline, two synthetic fixtures outside the gate's `claude/.claude/hooks/tests/**` exclusion hold literals that match the redaction gate's home-rooted-path detector:
 - Four path strings in `test_scope_matches_by_literal_name_not_glob`. A conflicted sync-merge whose staged delta carries them is denied at `git commit`, even though the content is already public.
