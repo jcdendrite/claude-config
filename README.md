@@ -364,7 +364,7 @@ printf 'pr_cost_disclosure = "dollars"\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude
 
 The key resolves to exactly one config dir (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its value (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another — see [`docs/config-file.md`](docs/config-file.md) for the file format and resolution precedence.
 
-The disclosed fields are not neutral — session count, turn count, per-model-ID dollars, per-review-skill round counts, per-agent-type dispatch counts, and the branch name in the `Scope:` caption are an engagement-scale, duration, model-mix, and review-cadence signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this key's state alongside every other opt-in.
+The disclosed fields are not a safe-by-default aggregate — see the "The disclosed fields are not neutral" paragraph in [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this key's state alongside every other opt-in.
 
 ### Prose tightening pass
 

@@ -648,7 +648,21 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 
 **The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use; the branch name in the `Scope:` caption is a disclosed field too. The same PR body's `cost-counts` subsections (below) add per-review-skill round counts and per-agent-type spawn counts, both bare integers with no dollar figure attached. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
 
-The `--branches` filter is echoed in `--summary`'s `Scope:` caption in one of four shapes: `branch X`, `branches a, b` (sorted), `all branches` (`--branches` absent or empty), or `no branches` (`--branches` held only empty segments such as `","`). The echo is verbatim and unescaped. The wrapper `pr-cost-section.sh` passes the current local branch name (`git rev-parse --abbrev-ref HEAD`), usually the PR's own head ref but possibly different from the pushed head ref (for example after `git push origin local:remote`). Git's ref grammar excludes whitespace and control characters, so the value stays on the one `Scope:` line, but markdown and HTML metacharacters, commas, bidi/zero-width characters, and long names remain legal. A hand-typed `--branches` value is neither bounded nor covered by the publication pre-clearance, so review hand-run output before pasting it into a public artifact. See the sample output below.
+`--summary`'s `Scope:` caption echoes the `--branches` filter in one of four shapes:
+
+- `branch X`: one branch.
+- `branches a, b`: several branches, sorted.
+- `all branches`: `--branches` is absent or empty.
+- `no branches`: `--branches` held only empty segments such as `","`.
+
+The echo carries these hazards:
+
+- The echo is unescaped. A comma in the name splits it into separate entries.
+- `pr-cost-section.sh` takes the name from the local git HEAD (`git rev-parse --abbrev-ref HEAD`).
+- That name is usually the PR's own head ref but can differ from the pushed head ref, for example after `git push origin local:remote`.
+- Git's ref-name rules (`git check-ref-format`) bar ASCII whitespace and ASCII control characters, so the name contains no newline and the echo stays on the single `Scope:` line of the body's source text.
+- Everything else git allows renders as-is. Examples, not an exhaustive list: HTML tags, `@user` and `@org/team` mentions, bare `www.` and email autolinks, non-ASCII invisible or line-separator characters, and long names.
+- A hand-typed `--branches` value is not covered by the publication pre-clearance, so review hand-run output before pasting it into a public artifact.
 
 **Sample output (`--summary`, synthetic, illustrative counts only).**
 ```

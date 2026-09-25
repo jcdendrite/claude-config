@@ -2063,9 +2063,7 @@ class TestCostBranchFilter:
         output -- --summary drops the diagnostic entirely, and this pins
         that removal as a standing regression guard rather than a one-time
         manual observation, since pr-cost-section.sh embeds this output
-        verbatim into a public PR. Also confirms the scan-coverage table's
-        first column stays at the full, unfiltered file count while the
-        --branches filter narrows its other two columns."""
+        verbatim into a public PR."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2091,6 +2089,31 @@ class TestCostBranchFilter:
         assert "feature-b" not in out
         assert "branch-1" not in out
         assert "branch-2" not in out
+
+    def test_summary_branches_filter_leaves_scanned_files_column_unfiltered(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches narrows the priced sessions and turns columns but leaves the scanned-files column at the full file count."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
+        _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
         assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
         assert coverage_cols["Sessions with priced turns"] == "1"
@@ -2115,7 +2138,8 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        # _priced's default timestamp (2026-05-19) is well outside a 5-day window ending 2026-08-02.
+        # --since counts back from wall-clock now (scope._parse_since_nd_arg), not the injected `today`.
+        # _priced's fixed default timestamp (2026-05-19) predates any 5-day window ending at wall-clock now.
         _mod._cost_report(
             _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
         )
@@ -2126,6 +2150,31 @@ class TestCostBranchFilter:
         assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "2"
         assert coverage_cols["Sessions with priced turns"] == "0"
         assert coverage_cols["Priced turns"] == "0"
+
+    def test_summary_since_window_appears_in_scope_caption(self, tmp_path, monkeypatch, capsys):
+        """--since Nd names the window in the Scope caption as 'last Nd'; without it the caption reads 'all time'."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
+        )
+        since_out = capsys.readouterr().out
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        unbounded_out = capsys.readouterr().out
+        assert "This account only, last 5d." in since_out
+        assert "This account only, all time." in unbounded_out
 
     def test_non_summary_redact_default_shows_sequential_branch_labels(self, fake_projects, capsys):
         """Non-summary, redact=True (the default, no --no-redact): excluded

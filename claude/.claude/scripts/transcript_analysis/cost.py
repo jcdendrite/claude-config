@@ -307,7 +307,7 @@ def _accumulate_per_account_turn(
 
 
 def _summary_scope_branch_clause(branch_filter: set[str] | None) -> str:
-    """Render --summary's Scope caption's repo/branch-restriction clause.
+    """Render --summary's Scope caption's branch-restriction clause.
 
     branch_filter is scope._branch_filter's parsed --branches set. It is None
     when --branches was absent or an empty string, and an empty set when it
@@ -331,10 +331,10 @@ def _print_scan_coverage_table(
 
     No markdown parameter: the full report already discloses these facts
     per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
-    plain-text branch here would be dead code. _scan_root_transcripts feeds
-    only the first two columns (files scanned, unreadable) and applies neither
-    --branches nor --since, so the header suffix holds regardless of those
-    flags; the last two columns are filtered by both --branches and --since.
+    plain-text branch here would be dead code.
+    _scan_root_transcripts feeds only the first two columns (files scanned, unreadable).
+    It applies neither --branches nor --since, so the header suffix holds regardless of those flags.
+    The last two columns are filtered by both --branches and --since.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
     unreadable_delimiter = "---|" if transcripts_unreadable else ""
@@ -977,6 +977,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
         #   table's last row directly adjacent to the next section's heading.
         print(_LIST_PRICE_CAVEAT_ALERT)
+        # The caption print below fails on non-UTF-8 ref-name bytes only when stdout uses strict error handling.
+        # Under a C/POSIX locale or PYTHONUTF8=1 the raw byte is emitted instead.
         branch_clause = _summary_scope_branch_clause(branch_filter)
         print(f"\nScope: this repository only, {branch_clause}. This account only, {title_since}.\n")
         _print_scan_coverage_table(
