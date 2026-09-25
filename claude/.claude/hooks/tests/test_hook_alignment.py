@@ -535,9 +535,8 @@ def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
     matcher spanning Edit, Write and MultiEdit -- the hook is `informational`,
     so the gate-only registration check does not cover it. The hook and the
     `permissions.ask` entry (pinned by
-    test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings)
-    are independent layers, and the hook is the only layer known to cover
-    MultiEdit.
+    `test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings`)
+    are independent layers. Only the hook is known to cover MultiEdit.
     """
     matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
     assert _matchers_spanning_edit_write_multiedit(matchers), (
@@ -653,8 +652,12 @@ def test_attribution_commit_and_pr_stay_unset_in_both_settings(path: Path) -> No
 
 
 def test_tree_settings_paths_include_the_known_settings_files() -> None:
-    """Keeps the wildcard test from passing vacuously when a known settings
-    file drops out of discovery."""
+    """Keeps the wildcard test from passing vacuously when one of the two
+    `_ATTRIBUTION_SETTINGS_PATHS` files drops out of `_tree_settings_paths()`
+    discovery. It does not catch a settings file appearing somewhere
+    `_tree_settings_paths()` doesn't glob into -- see that function's own
+    docstring for the discovery limits.
+    """
     missing_paths = [path for path in _ATTRIBUTION_SETTINGS_PATHS if path not in _TREE_SETTINGS_PATHS]
     assert not missing_paths, (
         f"known settings file(s) {[str(path.relative_to(_REPO_ROOT)) for path in missing_paths]} "
@@ -678,6 +681,13 @@ def test_permissions_allow_stays_wildcard_free_in_tree_settings(path: Path) -> N
     - `permissions.deny` legitimately carries wildcards, e.g. `Bash(sudo *)`.
     - `permissions.ask` rules carry globs too, as the shipped settings-file
       entry does.
+
+    Checks the literal `*` only. `*` is the only glob metacharacter this
+    repo's own docs name (`claude/.claude/rules/settings-json-conventions.md`,
+    `claude-skills/skills/review-permissions/SKILL.md`). Whether Claude
+    Code's own permission-rule grammar gives `[...]` or `?` glob meaning is
+    unverified here, so widening this check to them would encode an
+    unverified assumption rather than close a confirmed gap.
     """
     allow = json.loads(path.read_text()).get("permissions", {}).get("allow", [])
     non_string_entries = [entry for entry in allow if not isinstance(entry, str)]
