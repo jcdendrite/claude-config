@@ -2,7 +2,7 @@
 
 *2026-09-25.*
 
-**What changed.** [main-bucket-prompt-cache-ttl-unset.md](main-bucket-prompt-cache-ttl-unset.md)'s Revisit clause fired. A 30-day `cache-rebuild --ttl-verdict` run on the corrected accounting returns `decline` for `main`, with every consistent root favoring the one-hour tier it already runs (verdicts as defined in `docs/transcript-analysis.md`'s "TTL-verdict per-root analysis" section).
+**What changed.** [main-bucket-prompt-cache-ttl-unset.md](main-bucket-prompt-cache-ttl-unset.md)'s Revisit clause fired. A 30-day `cache-rebuild --ttl-verdict` run on the corrected accounting returns `decline` for `main`. Every consistent root already favors the one-hour tier it already runs (verdicts as defined in `docs/transcript-analysis.md`'s "TTL-verdict per-root analysis" section).
 
 **Action.** None. `promptCacheTtl` stays unset, because the verdict rule ships a committed value only on `adopt`. The tier `main` favors is already the vendor's default for a subscription within plan usage. `subagentPromptCacheTtl` also stays unset; that bucket still returns `decline`, favoring the five-minute tier.
 
