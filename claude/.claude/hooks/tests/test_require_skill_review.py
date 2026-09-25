@@ -3738,13 +3738,41 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
         assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
 
+    def test_deny_reason_names_the_denied_path_inside_parentheses(
+        self, isolated_home, tmp_path
+    ):
+        """The deny reason names every denied path inside one parenthesized
+        list, joined by `, ` -- not merely a bare mention anywhere in the
+        message. The set-difference matching semantics that decide which
+        paths land in that list (exact line, not substring) are pinned
+        directly against `_lib_conflict_marker_deny_paths` in test_lib.py's
+        TestConflictMarkerDenyPaths."""
+        conflicted_path = "skills/x/SKILL.md"
+        repo, _ = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path,
+            merge_target="oid",
+            gated_paths={"conflicted": conflicted_path},
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-parens-format-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert f"({conflicted_path})" in reason
+
     def test_unresolved_path_is_named_when_a_clean_sibling_path_ends_with_it(
         self, isolated_home, tmp_path
     ):
-        """The deny set is the candidate listing minus the marker-free listing
-        by exact line. A clean `plugins/p/skills/x/SKILL.md` ends with the
-        conflicted `skills/x/SKILL.md`, so a substring match would treat the
-        conflicted path as marker-free and release the commit."""
+        """Two real, git-tracked gated paths where the clean one ends with
+        the conflicted one's full text, submitted through the real
+        `git diff -G` / `git grep -L` calls in require-skill-review.sh.
+        The pure set-difference semantics are unit-pinned separately in
+        test_lib.py's TestConflictMarkerDenyPaths; this test only confirms
+        the real git output reaches `_lib_conflict_marker_deny_paths`
+        unchanged."""
         conflicted_path = "skills/x/SKILL.md"
         clean_sibling_path = "plugins/p/skills/x/SKILL.md"
         repo, _ = _build_merge_conflicting_in_two_gated_skills(
@@ -3754,7 +3782,6 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         )
         (repo / clean_sibling_path).write_text(_skill_body("clean-sibling", "resolved line"))
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-        write_skill_review_marker(isolated_home, repo)
 
         reason = run_hook_reason(
             SKILL_REVIEW_HOOK,

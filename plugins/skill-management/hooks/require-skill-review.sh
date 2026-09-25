@@ -194,12 +194,7 @@ if [ -n "$BASE" ]; then
     CONFLICT_MARKER_SCAN_STATUS=$?
     [ "$CONFLICT_MARKER_SCAN_STATUS" -eq 1 ] && CONFLICT_MARKER_SCAN_STATUS=0
     if [ "$CONFLICT_MARKER_SCAN_STATUS" -eq 0 ]; then
-      while IFS= read -r candidate_path; do
-        case $'\n'"$MARKER_FREE_PATHS"$'\n' in
-          *$'\n'"$candidate_path"$'\n'*) ;;
-          *) CONFLICT_MARKER_PATHS+="${CONFLICT_MARKER_PATHS:+$'\n'}$candidate_path" ;;
-        esac
-      done <<< "$CONFLICT_MARKER_CANDIDATES"
+      CONFLICT_MARKER_PATHS=$(_lib_conflict_marker_deny_paths "$CONFLICT_MARKER_CANDIDATES" "$MARKER_FREE_PATHS")
     fi
   fi
   if [ "$CONFLICT_MARKER_SCAN_STATUS" -ne 0 ]; then

@@ -174,7 +174,7 @@ A direct write to `refs/remotes/origin/<default>` itself remains the accepted fo
 
 A per-path comparison of each staged blob against a parent's blob could replace the synthesized base tree.
 
-A resolution that discards upstream's gated content stages a blob equal to HEAD's. `test_resolution_discarding_upstream_gated_content_denies` pins two such cases: keep-ours, and `git rm` of an upstream-added file.
+A resolution that discards upstream's gated content defeats a per-path parent-blob comparison by one of two mechanisms, both pinned by `test_resolution_discarding_upstream_gated_content_denies`. Restoring the file to HEAD's blob (`git checkout HEAD -- <path>`) stages a blob equal to HEAD's. `git rm` of an upstream-added file removes the path entirely, leaving no staged entry to compare. That file never existed at HEAD either, so there is no HEAD blob to compare it against.
 
 A gated file that only the branch changed also stages a blob equal to HEAD's.
 

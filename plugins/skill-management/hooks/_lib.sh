@@ -6,8 +6,9 @@
 # _lib_marker_value_present, _lib_chains_marker_write_before_commit,
 # _lib_capped, _lib_default_branch_from_origin_head,
 # _lib_default_branch_or_guess, _lib_git_inprogress_state,
-# _lib_gate_diff_base, _lib_staged_diff_hash, and
-# _lib_skill_review_diff_base. No worktree-enforcement helpers.
+# _lib_gate_diff_base, _lib_staged_diff_hash,
+# _lib_skill_review_diff_base, and _lib_conflict_marker_deny_paths. No
+# worktree-enforcement helpers.
 #
 # _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
 # same functions in the stowed claude/.claude/hooks/_lib.sh. marker.sh (the
@@ -617,4 +618,31 @@ _lib_chains_marker_write_before_commit() {
   # code-review-gated commit.
   printf '%s' "$command" | grep -qE \
     "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
+}
+
+# _lib_conflict_marker_deny_paths CANDIDATES MARKER_FREE
+# Set difference of two newline-delimited path listings: every line in
+# CANDIDATES that is not also a line in MARKER_FREE, matched by exact line,
+# never substring -- a CANDIDATES entry that is merely a suffix or prefix of
+# a MARKER_FREE entry (e.g. a clean `plugins/p/skills/x/SKILL.md` next to a
+# conflicted `skills/x/SKILL.md`) still counts as a deny path. Pure string
+# logic, no git or filesystem access -- require-skill-review.sh's conflict-marker
+# scan is the sole caller, pairing this with its own `git diff -G` /
+# `git grep -L` calls that produce the two listings.
+# Empty CANDIDATES prints nothing (no false deny from an empty diff). Empty
+# MARKER_FREE returns CANDIDATES unchanged (nothing was cleared as clean).
+# Prints the newline-delimited result with no trailing newline, or nothing
+# when every candidate is marker-free. Always exits 0.
+_lib_conflict_marker_deny_paths() {
+  local candidates="$1" marker_free="$2"
+  local deny_paths=""
+  local candidate_path
+  [ -n "$candidates" ] || return 0
+  while IFS= read -r candidate_path; do
+    case $'\n'"$marker_free"$'\n' in
+      *$'\n'"$candidate_path"$'\n'*) ;;
+      *) deny_paths+="${deny_paths:+$'\n'}$candidate_path" ;;
+    esac
+  done <<< "$candidates"
+  printf '%s' "$deny_paths"
 }
