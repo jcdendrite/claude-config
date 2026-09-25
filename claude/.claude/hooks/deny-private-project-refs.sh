@@ -127,8 +127,9 @@
 #   copy cannot tell it from a possessive issue reference.
 # - Under a non-C collation locale, a digit-led name whose first non-digit
 #   collates between `r` and `t` also passes the Slack-channel shape.
-# - A possessive issue reference followed by an escaped `\n` in a quoted
-#   message still denies, because the quote-strip turns `\n` into `n`.
+# - A possessive issue reference still denies when the quote-strip joins a
+#   name character onto its `s`, such as an escape like `\n` or a hyphen
+#   or underscore continuation.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------

@@ -2697,6 +2697,7 @@ class TestDenyPrivateProjectRefs:
             "#42s-",
             "#42sa",
             "#42sz",
+            "#42ss",
         ],
         ids=[
             "underscore-led",
@@ -2714,6 +2715,7 @@ class TestDenyPrivateProjectRefs:
             "digits-s-hyphen",
             "digits-s-a",
             "digits-s-z",
+            "digits-s-s",
         ],
     )
     def test_structural_slack_channel_tail_alphabet_denied(self, claude_config_repo, channel):
