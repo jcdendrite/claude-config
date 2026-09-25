@@ -2967,8 +2967,10 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
 
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
-# - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue
-#   #421) doesn't false-positive.
+# - Excludes a tail that is all digits, or digits followed by one `s` and
+#   then a non-name character or end of line, so a plain GitHub issue
+#   reference (e.g. issue #421) still passes once quote-stripping deletes a
+#   possessive's apostrophe.
 # - The `#` must be reachable from a valid start position, across a run
 #   that excludes parens, braces, and whitespace.
 #   - Valid start positions: line start, whitespace, a close-paren, a
@@ -3028,7 +3030,7 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   the outer run does, so a `{` there blocks reachability just like it
 #   does in the outer run. Same content-blindness root cause as the
 #   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#([a-z_-]|[0-9]+(s[a-z0-9_-]|[a-rt-z_-]))'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
