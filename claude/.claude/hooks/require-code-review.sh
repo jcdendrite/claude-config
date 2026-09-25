@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /code-review before git commit, verified via marker file.
 #
 # WARNING: Do NOT remove the internal git commit check below.

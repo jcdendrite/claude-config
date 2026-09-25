@@ -88,6 +88,22 @@ _TOOLS_NEEDED_WITHOUT_DIRENV = (
 )
 
 
+def require_direnv() -> None:
+    """Guard for a test that needs a real direnv binary, not a shim: skip
+    locally when direnv isn't installed, but hard-fail in this repo's own
+    CI.
+
+    Checks GITHUB_ACTIONS rather than the generic CI var because it's this
+    workflow's own install step being asserted. The hard-fail guarantee
+    depends on .github/workflows/tests.yml's "Install stow and direnv"
+    step, which installs direnv before tests run.
+    """
+    if not shutil.which("direnv"):
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("direnv missing in CI — .github/workflows/tests.yml must install it")
+        pytest.skip("direnv not installed")
+
+
 def _curated_path_without_direnv(tmp_path: Path) -> str:
     curated_dir = tmp_path / f"curated_bin_{uuid.uuid4().hex}"
     curated_dir.mkdir()

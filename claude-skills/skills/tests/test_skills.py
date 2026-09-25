@@ -45,6 +45,10 @@ from typing import NamedTuple
 
 import pytest
 
+# pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
+# path, where the auxiliary-filename constant shared with select-tests.py lives.
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
+
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
 from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
@@ -1194,6 +1198,265 @@ class TestPrDescriptionExternalStateCheck:
         assert "whether CI is *passing* is not" in self._body()
 
 
+def _bullet_lead_in(line: str) -> str | None:
+    """The bold lead-in of a column-0 `- **...**` bullet line, minus one terminal period.
+
+    Returns None for any line that does not open a bold-led bullet.
+    """
+    match = re.match(r"- \*\*(.+?)\*\*", line)
+    return match.group(1).removesuffix(".") if match else None
+
+
+def _bullet_text(section_text: str, lead_in: str) -> str:
+    """Whitespace-collapsed text of the bullet whose bold lead-in is `lead_in`, up to the next
+    blank line, column-0 `- ` bullet, or markdown heading.
+
+    An indented nested bullet is continuation text.
+    """
+    lines = section_text.splitlines()
+    start = next((i for i, line in enumerate(lines) if _bullet_lead_in(line) == lead_in), None)
+    assert start is not None, f"no bullet opens with bold lead-in {lead_in!r}"
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if not lines[i].strip() or lines[i].startswith("- ") or re.match(r"#{1,6} ", lines[i])
+        ),
+        len(lines),
+    )
+    return " ".join(" ".join(lines[start:end]).split())
+
+
+class TestBulletHelpers:
+    """Fixture tests for the `_bullet_lead_in` and `_bullet_text` helpers."""
+
+    def test_bullet_lead_in_strips_one_terminal_period_and_accepts_none(self):
+        """Allow fixture: the bold span is returned with a single terminal
+        period removed, or unchanged when it has none."""
+        assert _bullet_lead_in("- **Name.** body") == "Name"
+        assert _bullet_lead_in("- **Name** body") == "Name"
+
+    def test_bullet_lead_in_removes_only_one_terminal_period(self):
+        """Allow fixture: a span ending in two periods keeps one."""
+        assert _bullet_lead_in("- **Name..** body") == "Name."
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "  - **Name.** body",
+            "- Name. body",
+            "- text **Name.** body",
+        ],
+        ids=["indented-bullet", "non-bold-bullet", "bold-not-at-bullet-opening"],
+    )
+    def test_bullet_lead_in_returns_none_for_a_line_that_does_not_open_a_bold_bullet(self, line):
+        """Deny fixture: only a column-0 bullet whose bold span opens it
+        yields a lead-in."""
+        assert _bullet_lead_in(line) is None
+
+    def test_bullet_lead_in_stops_at_the_first_bold_span(self):
+        """Allow fixture: the bold span is non-greedy, so a second bold span
+        later in the line is not swallowed into the lead-in."""
+        assert _bullet_lead_in("- **A.** **B** rest") == "A"
+
+    def test_bullet_text_excludes_the_following_bullet(self):
+        """Deny fixture: text present only in the next bullet must not appear
+        in the first bullet's result."""
+        section_text = "- **First.** Alpha text.\n- **Second.** Beta text.\n"
+        assert "Alpha text." in _bullet_text(section_text, "First")
+        assert "Beta text." not in _bullet_text(section_text, "First")
+
+    def test_bullet_text_stops_at_a_blank_line_and_at_a_heading(self):
+        """Deny fixture: prose after a blank line, or after a markdown heading
+        with no blank line before it, is not part of the bullet."""
+        after_blank = "- **First.** Alpha text.\n\nStray paragraph.\n"
+        assert _bullet_text(after_blank, "First") == "- **First.** Alpha text."
+        after_heading = "- **First.** Alpha text.\n## Next section\nHeading body.\n"
+        assert _bullet_text(after_heading, "First") == "- **First.** Alpha text."
+
+    def test_bullet_text_treats_a_hash_that_is_not_a_heading_as_continuation(self):
+        """Allow fixture: a column-0 `#` not followed by a space is wrapped
+        prose, so it stays in the bullet."""
+        section_text = "- **First.** Alpha text\n#123 continues here.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text #123 continues here."
+
+    def test_bullet_text_includes_an_indented_nested_bullet(self):
+        """Allow fixture: an indented nested bullet is continuation text."""
+        section_text = "- **First.** Alpha text.\n  - Nested detail.\n- **Second.** Beta text.\n"
+        assert _bullet_text(section_text, "First") == "- **First.** Alpha text. - Nested detail."
+
+    def test_bullet_text_is_independent_of_hard_wrap_position(self):
+        """Allow fixture: a hard-wrapped bullet equals its unwrapped form."""
+        wrapped = "- **First.** Alpha\n  text that\nwraps.\n"
+        unwrapped = "- **First.** Alpha text that wraps.\n"
+        assert _bullet_text(wrapped, "First") == _bullet_text(unwrapped, "First")
+
+    def test_bullet_text_raises_when_the_lead_in_is_missing(self):
+        """Deny fixture: a renamed lead-in fails loudly instead of returning an
+        empty string that every negative assertion would pass against."""
+        with pytest.raises(AssertionError, match="no bullet opens with bold lead-in"):
+            _bullet_text("- **Other.** Body.\n", "First")
+
+
+class TestPrDescriptionBranchHistoryCheck:
+    """Pin the rules that keep review-round and reviewer-attribution narration
+    out of a PR body, a shape the per-commit-narrative check does not catch.
+
+    No eval covers pr-description, so these are presence tripwires, not proof
+    that an agent follows the rules.
+    """
+
+    _AUTHORING_LEAD_IN = "Current state, not branch history"
+
+    def _authoring_section(self):
+        return _raw_heading_section_text(_skill_file("pr-description"), "## What the body must carry")
+
+    def _authoring_bullet(self):
+        return _bullet_text(self._authoring_section(), self._AUTHORING_LEAD_IN)
+
+    def _check_bullet(self):
+        section = _raw_heading_section_text(_skill_file("pr-description"), "## Checks")
+        return _bullet_text(section, "Branch-history narration")
+
+    def _test_plan_bullet(self):
+        return _bullet_text(self._authoring_section(), "A `## Test plan` of results, not a checklist")
+
+    def test_authoring_bullet_excludes_review_history_and_attribution(self):
+        """Dropping this sentence lets review rounds, superseded designs, and
+        reviewer attribution into the body."""
+        assert "Review rounds, superseded designs, and who found what stay out" in self._authoring_bullet()
+
+    def test_authoring_bullet_keeps_still_true_findings_as_present_tense_facts(self):
+        """Dropping this sentence lets the history rule strip a finding,
+        limitation, or accepted risk that is still true at HEAD."""
+        assert (
+            "A finding, limitation, or accepted risk that is still true at HEAD stays as a present-tense fact"
+            in self._authoring_bullet()
+        )
+
+    def test_authoring_bullet_rejects_branch_only_mechanism_as_context(self):
+        """Dropping this sentence lets a mechanism visible only in the branch's
+        own history pass as reviewer context."""
+        assert "A mechanism that exists only in the branch's own history is not context" in self._authoring_bullet()
+
+    def test_authoring_bullet_routes_rejected_designs_to_alternatives_not_context(self):
+        """Dropping either half lets a rejected approach a reviewer would
+        propose land in Context, or leaves it with no home."""
+        bullet = self._authoring_bullet()
+        assert "belongs in `## Alternatives considered`" in bullet
+        assert "not in Context" in bullet
+
+    def test_authoring_bullet_exempts_machine_managed_blocks(self):
+        """Dropping this sentence applies the history rule to the deferred
+        review findings block, which the coherence pass reinserts verbatim."""
+        assert "The machine-managed blocks under Checks below are exempt" in self._authoring_bullet()
+
+    def test_check_names_both_narration_tells(self):
+        """One tell per narration category (round-based and reviewer-based), so
+        a category dropped entirely fails here."""
+        bullet = self._check_bullet()
+        assert "earlier rounds" in bullet
+        assert "reviewer or agent name" in bullet
+
+    def test_check_defers_to_authoring_bullet_by_name(self):
+        """The Check bullet's bold pointer name must equal the authoring bullet's
+        lead-in, so a rename or repoint of the pointer fails here."""
+        pointer_names = re.findall(r"per \*\*(.+?)\*\* above", self._check_bullet())
+        assert len(pointer_names) == 1, (
+            f"expected one `per **<name>** above` pointer in the Check bullet, extracted {pointer_names!r}"
+        )
+        assert pointer_names == [self._AUTHORING_LEAD_IN]
+
+    def test_test_plan_bullet_scopes_review_result_to_the_final_pass(self):
+        """The Test plan legitimately reports review outcomes; its authoring
+        bullet distinguishes the final result from round-by-round history."""
+        assert (
+            "state what the final review pass returned, not how many rounds ran or what earlier ones found"
+            in self._test_plan_bullet()
+        )
+
+
+def _bullet_pointer_names(template_text: str) -> list[str]:
+    """Bold names a template points at with `follow its **<name>**`."""
+    return re.findall(r"follow its \*\*(.+?)\*\*", template_text)
+
+
+def _missing_bullet_lead_ins(names: Iterable[str], section_text: str) -> list[str]:
+    """Names in `names` that no `- **<name>.**` bullet in `section_text` opens.
+
+    Each bullet's bold lead-in span, minus one terminal period, must equal the
+    name exactly, so a truncated name does not match.
+    """
+    lead_in_names = {name for line in section_text.splitlines() if (name := _bullet_lead_in(line)) is not None}
+    return [name for name in names if name not in lead_in_names]
+
+
+class TestPrDescriptionDefaultTemplateWiring:
+    """Wiring tripwire: SKILL.md points at DEFAULT_TEMPLATE.md through the
+    harness-substituted skill-directory variable, and the file it points at
+    exists with the five section headings in their fixed order. The
+    citation-resolution, runtime-read URL-hygiene, and per-name auxiliary-file
+    tests also read the file, but none checks the pointer or the heading
+    order, so a reordered template would otherwise ship silently."""
+
+    _EXPECTED_HEADINGS = [
+        "Summary",
+        "Screenshots",
+        "Context for the reviewer",
+        "Alternatives considered",
+        "Test plan",
+    ]
+
+    def test_skill_md_points_at_default_template(self):
+        assert "${CLAUDE_SKILL_DIR}/DEFAULT_TEMPLATE.md" in _skill_file("pr-description").read_text()
+
+    def test_default_template_file_exists(self):
+        assert (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").is_file()
+
+    def test_default_template_has_the_five_headings_in_order(self):
+        template = (_skill_file("pr-description").parent / "DEFAULT_TEMPLATE.md").read_text()
+        prose = _blank_code_regions(_blank_frontmatter(template))
+        headings = re.findall(r"^## (.+)$", prose, flags=re.MULTILINE)
+        assert headings == self._EXPECTED_HEADINGS
+
+    def test_template_bullet_pointers_resolve_to_skill_md_bullets(self):
+        """The template's Summary and Test plan sections are only pointers to
+        bold-named SKILL.md bullets. The `§ "Heading"` half of each pointer is
+        checked by the citation test; this pins the bold-bullet half, so
+        renaming either bullet in SKILL.md fails here."""
+        skill_md_path = _skill_file("pr-description")
+        template = (skill_md_path.parent / "DEFAULT_TEMPLATE.md").read_text()
+        pointed_at_names = _bullet_pointer_names(template)
+        assert len(pointed_at_names) == 2, (
+            f"expected the Summary and Test plan pointers, extracted {pointed_at_names!r}; "
+            "update this test's extractor if a pointer was reworded"
+        )
+        section_text = _raw_heading_section_text(skill_md_path, "## What the body must carry")
+        assert _missing_bullet_lead_ins(pointed_at_names, section_text) == []
+
+    def test_bullet_lead_in_check_flags_a_renamed_bullet(self):
+        """Deny fixture: a bullet renamed in SKILL.md must be reported missing."""
+        section_text = "- **What and why.** Body.\n- **Verification results.** Body.\n"
+        assert _missing_bullet_lead_ins(["What and why"], section_text) == []
+        assert _missing_bullet_lead_ins(["What and why", "A test plan"], section_text) == ["A test plan"]
+        renamed_section = "- **Why and what.** Body.\n"
+        assert _missing_bullet_lead_ins(["What and why"], renamed_section) == ["What and why"]
+        # A truncated name that is only a prefix of the bold span does not match.
+        assert _missing_bullet_lead_ins(["What"], section_text) == ["What"]
+        # A bold phrase that is not a bullet lead-in does not satisfy the check.
+        assert _missing_bullet_lead_ins(["What and why"], "Prose mentioning **What and why** inline.\n") == [
+            "What and why"
+        ]
+
+    def test_bullet_pointer_extractor_drops_a_reworded_pointer(self):
+        """Deny fixture: a pointer reworded out of the `follow its **X**` form
+        yields fewer names than the two the wiring test requires."""
+        both_pointers = "follow its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
+        assert _bullet_pointer_names(both_pointers) == ["What and why", "A test plan"]
+        one_reworded = "use its **What and why** bullet.\n...\nfollow its **A test plan** bullet.\n"
+        assert _bullet_pointer_names(one_reworded) == ["A test plan"]
+
+
 class TestPrDescriptionCostSectionWiring:
     """Wiring tripwire, not a behavioral test: the `## Cost (list-price
     estimate)` section's actual runtime behavior -- sentinel absent or mode
@@ -1316,7 +1579,7 @@ class TestRespondPrPromiseRedemption:
 
 
 class TestReadyForReviewBodyFileGuard:
-    """Pin that step 6 rejects a whitespace-only body file, not merely an empty one.
+    """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 
     The guard protects an unrecoverable state: once a PR exists carrying an
     empty body, step 5 takes its sync path, which checks a body against branch
@@ -1329,7 +1592,7 @@ class TestReadyForReviewBodyFileGuard:
     """
 
     def test_body_file_check_strips_whitespace_before_testing_content(self):
-        """step 6's guard must strip whitespace rather than rely on a byte-size test."""
+        """step 8's guard must strip whitespace rather than rely on a byte-size test."""
         assert "tr -d '[:space:]'" in _skill_file("ready-for-review").read_text()
 
 
@@ -1934,17 +2197,17 @@ class TestValidateContextForkRequiresExplicitBackground:
         f = self._make_skill(tmp_path, "a", ["context: fork", "background: false"])
         assert not self._background_violations(validate(f))
 
-    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path):
+    @pytest.mark.parametrize("spelling", ["yes", "on", "True", "TRUE"])
+    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path, spelling):
         """PyYAML's safe_load coerces yes/on/True (any case) to real
         booleans, so Check 3's isinstance(background, bool) check accepts
         them today — pinning this so a future change to the accepted-input
         semantics doesn't silently narrow (or the message doesn't silently
         drift from behavior) without a test noticing."""
-        for spelling in ("yes", "on", "True", "TRUE"):
-            f = self._make_skill(tmp_path, f"a_{spelling}", ["context: fork", f"background: {spelling}"])
-            assert not self._background_violations(validate(f)), (
-                f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
-            )
+        f = self._make_skill(tmp_path, "a", ["context: fork", f"background: {spelling}"])
+        assert not self._background_violations(validate(f)), (
+            f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
+        )
 
     def test_context_not_fork_skips_the_check_regardless_of_background(self, tmp_path):
         f = self._make_skill(tmp_path, "a", ["context: something-else"])
@@ -1965,12 +2228,14 @@ class TestValidateContextForkRequiresExplicitBackground:
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
-# The three DISPOSITION_RULE anchor regions in the corpus. Asserted as an
+# The DISPOSITION_RULE anchor regions in the corpus. Asserted as an
 # exact set, not just "each found anchor is non-trivial" — a corpus scan
 # alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
+    ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
     ("code-review", "code-review-new-primitive-route"),
+    ("code-review", "code-review-round-cap-consult-verdict"),
     ("plan-review", "plan-review-fix-or-ask"),
 }
 
@@ -2793,10 +3058,8 @@ def test_skill_bodies_carry_no_citation_urls() -> None:
 
     violations: list[str] = []
     for path in skill_files:
-        prose = _blank_code_regions(_blank_frontmatter(path.read_text()))
-        for lineno, line in enumerate(prose.split("\n"), start=1):
-            if _URL_RE.search(line):
-                violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
+        for lineno in _prose_url_line_numbers(path.read_text()):
+            violations.append(f"  {path.relative_to(repo_root)}:{lineno}")
 
     assert not violations, (
         "SKILL.md bodies must not carry citation URLs — a body is re-read on "
@@ -2885,6 +3148,58 @@ def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
     assert "Body prose." in _blank_frontmatter(document)
 
 
+# REFERENCES.md is the edit-time reference and is never loaded at runtime, so it
+# is the one auxiliary name allowed to carry citation URLs.
+# The glob covers claude-skills/skills/ only. Extend it if a runtime auxiliary
+# file ever lands under plugins/ or .claude/skills/.
+_RUNTIME_READ_AUXILIARY_NAMES = tuple(name for name in SKILL_AUXILIARY_MD_NAMES if name != "REFERENCES.md")
+_RUNTIME_READ_AUXILIARY_FILES = sorted(
+    path for name in _RUNTIME_READ_AUXILIARY_NAMES for path in SKILLS_DIR.glob(f"*/{name}")
+)
+
+
+def _prose_url_line_numbers(markdown_text: str) -> list[int]:
+    """1-based line numbers holding a URL outside frontmatter and code regions."""
+    prose = _blank_code_regions(_blank_frontmatter(markdown_text))
+    return [lineno for lineno, line in enumerate(prose.split("\n"), start=1) if _URL_RE.search(line)]
+
+
+@pytest.mark.parametrize("auxiliary_name", _RUNTIME_READ_AUXILIARY_NAMES)
+def test_every_runtime_read_auxiliary_name_matches_a_skill_file(auxiliary_name: str) -> None:
+    """A registered name with no file on disk would make the URL scan below
+    pass vacuously for that name."""
+    assert any(path.name == auxiliary_name for path in _RUNTIME_READ_AUXILIARY_FILES), (
+        f"no skill directory holds a {auxiliary_name}; drop it from SKILL_AUXILIARY_MD_NAMES or add the file."
+    )
+
+
+@pytest.mark.parametrize(
+    "auxiliary_path",
+    _RUNTIME_READ_AUXILIARY_FILES,
+    ids=lambda path: f"{path.parent.name}/{path.name}",
+)
+def test_runtime_read_auxiliary_files_carry_no_citation_urls(auxiliary_path: Path) -> None:
+    """A runtime-read auxiliary file is re-read on every run that reaches it, by
+    a reader that cannot follow a link, so it obeys the same URL rule as a
+    SKILL.md body. Citation URLs belong in the skill's REFERENCES.md."""
+    assert _prose_url_line_numbers(auxiliary_path.read_text()) == [], (
+        f"{auxiliary_path.relative_to(REPO_ROOT)} carries a URL outside a code region; "
+        "move it to the skill's REFERENCES.md."
+    )
+
+
+def test_prose_url_detector_flags_a_leaked_citation_and_spares_code() -> None:
+    """Deny fixture: the runtime-auxiliary URL check must fire on prose URLs."""
+    document = (
+        "# Heading\n"  # 1
+        "Cited at https://leaked.test in prose.\n"  # 2
+        "Payload `https://in-span.test` only.\n"  # 3
+        "```\nhttps://in-fence.test\n```\n"  # 4-6
+        "[docs](https://leaked-link.test)\n"  # 7
+    )
+    assert _prose_url_line_numbers(document) == [2, 7]
+
+
 # --- Cross-reference integrity: `target` § "Heading" citations resolve ---
 #
 # A citation like `subagent-delegation/SKILL.md` § "Heavy command output" lets
@@ -2910,9 +3225,9 @@ _BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
 
 # Known limit, deliberately not closed: this extractor can't tell a live
 # citation from an illustrative example of the citation grammar, so an
-# example inside a scanned SKILL.md/REFERENCES.md will false-fail. Currently
-# safe only because the grammar's own explanation lives outside the scanned
-# corpus (`.claude/rules/skill-and-agent-self-review.md`).
+# example inside a scanned SKILL.md or SKILL_AUXILIARY_MD_NAMES sibling will
+# false-fail. Currently safe only because the grammar's own explanation lives
+# outside the scanned corpus (`.claude/rules/skill-and-agent-self-review.md`).
 
 
 class _Citation(NamedTuple):
@@ -3035,14 +3350,9 @@ def _resolve_citation_target(
 
 
 def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
-    """A SKILL.md plus its REFERENCES.md/ROUTING.md siblings, if present —
-    the two co-located auxiliary files `.claude/rules/skill-and-agent-self-review.md`
-    already names."""
+    """A SKILL.md plus its co-located auxiliary siblings (SKILL_AUXILIARY_MD_NAMES), if present."""
     sources = [skill_md_path]
-    # This set must stay in sync with select-tests.py's
-    # _is_skill_auxiliary_md_change — a shared constant would be warranted
-    # if a third auxiliary filename type is ever added.
-    for sibling_name in ("REFERENCES.md", "ROUTING.md"):
+    for sibling_name in SKILL_AUXILIARY_MD_NAMES:
         sibling = skill_md_path.parent / sibling_name
         if sibling.exists():
             sources.append(sibling)
@@ -3086,9 +3396,9 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     a real file and an exact heading in it.
 
     Scanned corpus: every SKILL.md (`_all_skill_md_files`) plus every
-    REFERENCES.md/ROUTING.md sibling in those same skill directories —
-    widened past SKILL.md alone because a stale citation this test guards
-    against lives in review-permissions/REFERENCES.md.
+    auxiliary sibling (SKILL_AUXILIARY_MD_NAMES) in those same skill
+    directories — widened past SKILL.md alone because a stale citation this
+    test guards against lives in review-permissions/REFERENCES.md.
 
     Reports every violation at once rather than failing on the first, so a
     contributor fixes the whole set in one pass — same convention as
@@ -3144,7 +3454,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     warrant-check section resolves to a real heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus
-    (SKILL.md plus its REFERENCES.md/ROUTING.md siblings only), so
+    (SKILL.md plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
@@ -3174,7 +3484,7 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
     heading there.
 
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
-    plus its REFERENCES.md/ROUTING.md siblings only), so
+    plus its SKILL_AUXILIARY_MD_NAMES siblings only), so
     test_skill_citations_resolve_to_real_headings never sees these citations
     — targeted narrowly here instead of widening that corpus.
     """
@@ -3184,6 +3494,105 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
         "Publishing a tooling measurement",
         repo_root=REPO_ROOT,
     )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "CLAUDE.md",
+        "plugins/claude-hook-review/skills/claude-hook-review/SKILL.md",
+    ],
+)
+def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str) -> None:
+    """CLAUDE.md's '## Hook threat model' section and claude-hook-review's
+    SKILL.md tier-header paragraph both cite `docs/hooks.md` § "Threat-model
+    tiers" — resolves to a real heading there.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / relative_path,
+        "docs/hooks.md",
+        "Threat-model tiers",
+        repo_root=REPO_ROOT,
+    )
+
+
+# A single-backtick span made of letters, hyphens, and underscores only — no
+# whitespace, colon, or other punctuation inside — the shape a bare tier
+# token takes, so a near-miss spelling (`untrusted_input`, `Irreversible`)
+# is extracted too. Excludes a multi-word span like
+# `` `# tier-threat-model: <tiers>` `` or `` `hook-class: gate` ``, each of
+# which contains a space or a colon and so can't satisfy this pattern for
+# its full backtick-delimited content.
+_TIER_TOKEN_SHAPED_BACKTICK_SPAN_RE = re.compile(r"`([A-Za-z][A-Za-z_-]*)`")
+
+_TIER_DEFINITION_BULLET_RE = re.compile(r"^- `([a-z][a-z-]*)` — ", re.MULTILINE)
+
+
+def _tier_token_shaped_backtick_spans(paragraph: str) -> set[str]:
+    """Every distinct letters/hyphens/underscores-only single-backtick span in `paragraph`."""
+    return set(_TIER_TOKEN_SHAPED_BACKTICK_SPAN_RE.findall(paragraph))
+
+
+def _hooks_md_tier_vocabulary() -> set[str]:
+    """The tier names defined by docs/hooks.md's '## Threat-model tiers'
+    definition bullets — the authoritative vocabulary."""
+    doc_text = (REPO_ROOT / "docs" / "hooks.md").read_text()
+    section = re.search(
+        r"^## Threat-model tiers\s*\n(.*?)(?=^### |^## |\Z)",
+        doc_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert section, "docs/hooks.md has no '## Threat-model tiers' section"
+    return set(_TIER_DEFINITION_BULLET_RE.findall(section.group(1)))
+
+
+def _claude_hook_review_tier_paragraph() -> str:
+    """The tier-header paragraph in claude-hook-review's SKILL.md (through
+    the next blank line), isolated from the rest of the file so the
+    backtick-span scan below doesn't also sweep unrelated code spans
+    elsewhere in the document (hook names, `_lib.sh`, `hook-class` values,
+    etc.)."""
+    skill_md_text = _skill_file("claude-hook-review").read_text()
+    match = re.search(
+        r"^In a repo that adopts tier headers.*?(?=\n\s*\n|\Z)",
+        skill_md_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, "claude-hook-review/SKILL.md's tier-header paragraph not found"
+    return match.group(0)
+
+
+def test_claude_hook_review_tier_paragraph_backtick_tokens_equal_hooks_md_tiers() -> None:
+    """The tier-token-shaped backtick spans in claude-hook-review SKILL.md's
+    tier-header paragraph equal the tier set docs/hooks.md defines, so a
+    misspelled, stale, or dropped tier there fails.
+    """
+    vocabulary = _hooks_md_tier_vocabulary()
+    assert vocabulary, "docs/hooks.md's tier definition bullets were not found"
+    spans = _tier_token_shaped_backtick_spans(_claude_hook_review_tier_paragraph())
+    assert spans == vocabulary, (
+        f"claude-hook-review/SKILL.md's tier-header paragraph backtick spans "
+        f"{sorted(spans)} differ from docs/hooks.md's tiers {sorted(vocabulary)}"
+    )
+
+
+def test_tier_token_shaped_backtick_spans_ignores_multiword_and_finds_near_misses() -> None:
+    """Meta-test for _tier_token_shaped_backtick_spans: a hyphenated
+    non-tier span, an underscore spelling, and a capitalized spelling are
+    all extracted (so equality against the vocabulary rejects them), while
+    a multi-word span (`` `# tier-threat-model: <tiers>` ``) stays
+    unextracted.
+    """
+    decoy_paragraph = (
+        "A decoy naming `hook-class`, `untrusted_input`, and `Irreversible`, "
+        "plus the real header shape `# tier-threat-model: <tiers>`, which "
+        "must not be extracted as a bare span."
+    )
+    assert _tier_token_shaped_backtick_spans(decoy_paragraph) == {
+        "hook-class",
+        "untrusted_input",
+        "Irreversible",
+    }
 
 
 def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
@@ -3201,6 +3610,25 @@ def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
         REPO_ROOT / "docs" / "transcript-analysis.md",
         "docs/private-project-redaction.md",
         "A wider corpus goes to the owner, never into a public artifact",
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
+    """docs/cost-levers-considered.md's sleep-poll follow-up entry cites
+    `docs/private-project-redaction.md` § "The owner can authorize one
+    figure, case by case" for its publication authorization — resolves to
+    a real heading there.
+
+    This is the one citation in that entry carrying evidentiary weight for
+    a security-relevant control (publication authorization). Per this
+    repo's citation-grammar rule, a future heading rename or restructure
+    would otherwise silently orphan it with no reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "cost-levers-considered.md",
+        "docs/private-project-redaction.md",
+        "The owner can authorize one figure, case by case",
         repo_root=REPO_ROOT,
     )
 
@@ -3462,18 +3890,6 @@ def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
             id="unresolvable-target-fails",
         ),
         pytest.param(
-            {
-                "example-skill/SKILL.md": "## Real Heading\n",
-                "example-skill/ROUTING.md": (
-                    "## Routing\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'
-                ),
-            },
-            # Proves _citation_sources_for_skill_md actually walks into
-            # ROUTING.md — would be 0 if that sibling were never scanned.
-            1,
-            id="routing-md-sibling-is-scanned",
-        ),
-        pytest.param(
             {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Real Heading"\n'},
             0,
             id="bare-citation-with-no-adjacent-target-resolves-same-file",
@@ -3530,6 +3946,22 @@ def test_citation_report_cases(
     _write_skill_files(tmp_path, skill_files)
     violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
     assert len(violations) == expected_violation_count, violations
+
+
+@pytest.mark.parametrize("sibling_name", SKILL_AUXILIARY_MD_NAMES)
+def test_citation_report_scans_every_auxiliary_sibling(tmp_path: Path, sibling_name: str) -> None:
+    """Every name in SKILL_AUXILIARY_MD_NAMES must actually be walked: a name
+    listed in the tuple but skipped by _citation_sources_for_skill_md would
+    report 0 violations here, whichever name it is."""
+    _write_skill_files(
+        tmp_path,
+        {
+            "example-skill/SKILL.md": "## Real Heading\n",
+            f"example-skill/{sibling_name}": "## Sibling\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n',
+        },
+    )
+    violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
+    assert len(violations) == 1, violations
 
 
 def test_citation_report_target_resolving_to_a_directory_fails(tmp_path: Path) -> None:
@@ -3684,13 +4116,15 @@ def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
 _SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
 _SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
 
-# The three anchor regions the staged-diff scope-boundary redesign introduced.
+# The anchor regions the staged-diff scope-boundary redesign introduced,
+# plus the comment/prose row's deferral clause nested inside the first one.
 # Asserted as an exact set, not just "each found anchor is non-trivial" — a
 # corpus scan alone passes vacuously if an entire anchor pair is deleted.
 _EXPECTED_SCOPE_ANCHORS = {
     ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
     ("code-review", "SCOPE_EXEMPT_ROW"),
     ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
 }
 
@@ -3833,6 +4267,11 @@ def test_scope_rule_anchors_present() -> None:
             "SCOPE_RULE:code-review-causal-reach",
             "SCOPE_RULE:code-review-staged-diff-only",
         ),
+        (
+            "code-review",
+            "SCOPE_RULE:code-review-comment-row-deferred",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
     ],
 )
 def test_nested_anchor_fully_contained_within_outer_rule(
@@ -3870,11 +4309,25 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
         "A defect outside the boundary that the change causes, activates, or "
         "newly reaches stays in scope for that spawn's flagging duty."
     ),
+    ("code-review", "SCOPE_RULE:code-review-comment-row-deferred"): (
+        "whenever this boundary applies, that row does not spawn, whatever "
+        "prose the boundary carries. Its exhaustive pass runs "
+        'in the cumulative unnarrowed review at `ready-for-review/SKILL.md` '
+        '§ "3. Code review (halt on findings)" rather than once per '
+        "commit-gate round. Still enumerate the row in "
+        "this step and report it on the `Spawn decisions:` line as "
+        "`skipped: <row> — deferred to ready-for-review's cumulative pass`, "
+        "per the Output format section's own convention. Every context "
+        "where this boundary does not apply spawns the row as it spawns "
+        "any other."
+    ),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
         "This pass reviews the cumulative diff with no responsibility-boundary "
         "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
-        "Per-commit findings from earlier in this branch's fix loop feed in as "
-        "context, not a substitute for this pass. The cache marker is written "
+        "Decisions from earlier in this branch's fix loop — per-commit rounds "
+        "and prior cumulative passes alike — feed in as context per "
+        '`code-review/SKILL.md` § "Ripple effect triage", never as a '
+        "substitute for this pass. The cache marker is written "
         "only from a clean pass of this step's own cumulative `/code-review`, "
         "never from a fix commit's staged-diff pass."
     ),
@@ -4053,6 +4506,28 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     return [row.split("|")[1].strip() for row in _change_type_table_rows(skill_md_path)]
 
 
+def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
+    """Full row-line text of the Change-type row SCOPE_EXEMPT_ROW's shorthand
+    resolves to.
+
+    Shared row-lookup for `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
+    and `test_comment_discipline_row_points_to_its_deferral`. Both need the
+    row's full text, not just the left-column shorthand
+    `_change_type_table_left_columns` returns, to check for a literal
+    string reference.
+    """
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    for line in _change_type_table_rows(skill_md_path):
+        # line.split("|")[1] truncates at an embedded pipe in the left cell,
+        # same caveat as _change_type_table_left_columns's identical parse.
+        if line.split("|")[1].strip() == exempt_shorthand:
+            return line
+    raise AssertionError(
+        f"{skill_md_path}: no Change-type row's left column matches "
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
+    )
+
+
 class TestChangeTypeTableLeftColumns:
     """Direct coverage for _change_type_table_left_columns's `line.split("|")`
     parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
@@ -4070,6 +4545,30 @@ class TestChangeTypeTableLeftColumns:
             "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
         )
         assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
+
+
+class TestScopeExemptChangeTypeRowText:
+    """Direct coverage for _scope_exempt_change_type_row_text's no-match raise
+    branch, mirroring TestChangeTypeTableLeftColumns's edge-case-only
+    literal-fixture pattern.
+    """
+
+    def test_no_matching_row_raises(self, tmp_path: Path) -> None:
+        """SCOPE_EXEMPT_ROW's shorthand ("Some other row") matches no
+        Change-type row's left column ("A different row entirely") —
+        AssertionError names both the path and the shorthand.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "<!-- SCOPE_EXEMPT_ROW start -->Some other row<!-- SCOPE_EXEMPT_ROW end -->\n"
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| A different row entirely | `some-reviewer` |\n"
+        )
+        with pytest.raises(AssertionError) as excinfo:
+            _scope_exempt_change_type_row_text(path)
+        assert str(path) in str(excinfo.value)
+        assert "Some other row" in str(excinfo.value)
 
 
 def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
@@ -4125,11 +4624,10 @@ def _section_between(
 
     end_idx is exclusive, at the next line starting with '## ' (or len(lines)
     if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, since none of the four
-    headings this module bounds is currently last in its file). The start
-    heading is asserted found, not inferred — a renamed or deleted heading
-    would otherwise extract as empty and compare equal to another empty
-    extraction.
+    extractor, EOF is not itself a failure here, so a section that is last in
+    its file is bounded correctly). The start heading is asserted found, not
+    inferred — a renamed or deleted heading would otherwise extract as empty
+    and compare equal to another empty extraction.
     """
     start_idx = next(
         (i for i, line in enumerate(lines) if line.rstrip("\n") == start_heading),
@@ -4244,19 +4742,7 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
-    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
-
-    row_text = None
-    for line in _change_type_table_rows(skill_md_path):
-        # line.split("|")[1] truncates at an embedded pipe in the left cell,
-        # same caveat as _change_type_table_left_columns's identical parse.
-        if line.split("|")[1].strip() == exempt_shorthand:
-            row_text = line
-            break
-    assert row_text is not None, (
-        f"{skill_md_path}: no Change-type row's left column matches "
-        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
-    )
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
 
     note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
     next_heading = "**Invalid skip rationales.**"
@@ -4296,6 +4782,19 @@ def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> Non
     assert "--staged)" in pr_diff_script_source, (
         "pr-diff-against-base.sh: expected the --staged case-arm label, not just "
         "the flag name in the usage line or header comment"
+    )
+
+
+def test_comment_discipline_row_points_to_its_deferral() -> None:
+    """The comment/prose Change-type row must carry its own pointer to Step
+    0.6's deferral clause — a rule stated only in Step 0.6 is invisible to a
+    reader who consults the table without also reading Step 0.6 itself.
+    """
+    skill_md_path = _skill_file("code-review")
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
+    assert "Step 0.6 defers this row out of staged-diff commit-gate rounds." in row_text, (
+        f"{skill_md_path}: the comment/prose row no longer points to its own "
+        "deferral out of staged-diff commit-gate rounds"
     )
 
 
@@ -4491,73 +4990,557 @@ class TestPlanItStep7FallbackToJudgment:
 
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
-# The condition→action clause from ready-for-review/SKILL.md's step-1
-# context-budget bullet, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
-# pinning the bold label alone would still pass if a future edit added a
-# real halt condition nearby while leaving the label untouched.
-_PINNED_CONTEXT_BUDGET_CLAUSE = (
-    "**Context budget (warn only, never halts).** Run "
-    "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
-    '`"status":"ok"` with `over_threshold` or `already_fired` true, warn '
-    "the user with `estimate` and `threshold`. Also name `nudge_disabled` "
-    "inline when it is true — the measurement still holds, but no "
-    'nudge will arrive on its own. See `handoff/SKILL.md` § "Before '
-    'writing: is a handoff warranted?" for the remaining fields. This '
-    "bullet substitutes its own warn-and-continue action for that "
-    "section's write decision. Continue silently in every other case — "
-    '`"status":"ok"` under threshold, or any other status including '
-    "`cannot-resolve`/`schema-drift`. This gate's "
-    "outcome never depends on the tool's own success. Do not quote the "
-    "raw `session_id` into prose that may reach the PR body."
-)
+# The condition→action bullets from ready-for-review/SKILL.md's step-1
+# context-budget cluster, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
+# the cluster is one fact per sibling bullet rather than one run-on bullet,
+# so each is pinned and right-bounded independently — pinning the bold
+# label alone would still pass if a future edit added a real halt
+# condition nearby while leaving the label untouched.
+_PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
+    "defers_via_handoff": (
+        "**Context budget (defers, not a warning).** Run "
+        "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
+        '`"status":"ok"` with `over_threshold` or `already_fired` true, report '
+        "`estimate` and `threshold`, then invoke `/handoff` instead of "
+        "running steps 2–9 in this session. Also name `nudge_disabled` "
+        "when true — the measurement still holds even though no nudge "
+        "fires on its own."
+    ),
+    "deferring_is_cheap": (
+        "Deferring here is cheap: steps 3 and 4 each dispatch a full "
+        "reviewer pass and step 5 runs `pr-description`'s own checks, so "
+        "what remains costs what the diff costs, not what the step "
+        "counter says. Steps 2–9 take their inputs from the repository — "
+        "the diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh "
+        "session rebuilds almost nothing this one holds."
+    ),
+    "marker_deactivation_ordering": (
+        "Deactivate only once `/handoff`'s own \"Verify the handoff file "
+        "with Bash\" step confirms the write succeeded, via "
+        "`~/.claude/scripts/marker.sh deactivate ready-for-review`. "
+        "Deactivating earlier risks a session with no active marker, no "
+        "completion marker, and no handoff file if it fails "
+        "mid-`/handoff`; a fresh session then restarts this gate from "
+        "step 0. If `/handoff` itself declines to write (e.g. its own "
+        "warrant check reports `cannot-resolve`, or states another "
+        "reason it won't write), that is itself a halt — report and "
+        "stop, do not deactivate the `ready-for-review` marker."
+    ),
+    "engineer_override": (
+        "The one exception is an engineer decision, not the agent's "
+        "judgment: an explicit, unambiguous instruction to finish in this "
+        'session overrides the deferral, but a vague "let\'s wrap up soon" '
+        "does not."
+    ),
+    "continue_silently_fallback": (
+        'Continue silently in every other case — `"status":"ok"` under '
+        "threshold, or any other status including "
+        "`cannot-resolve`/`schema-drift`. This gate's outcome never "
+        "depends on the tool's own success."
+    ),
+    "session_id_redaction": (
+        "Do not quote the raw `session_id` into prose that may reach the PR body."
+    ),
+    "handoff_cross_reference": (
+        'See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" '
+        "for the remaining fields."
+    ),
+}
 
 
-class TestReadyForReviewContextBudgetNeverHalts:
-    """Pin that ready-for-review's step-1 context-budget bullet warns and
-    continues rather than halting. Step 1's own header reads "(halt on
-    fail)", which invites a future edit to silently flip this bullet into a
-    gate on `over_threshold`; that stays warn-only by design.
+class TestReadyForReviewContextBudgetDefers:
+    """Pin that ready-for-review's step-1 context-budget bullet defers the
+    whole gate to a fresh session via `/handoff` on `over_threshold` or
+    `already_fired`, keyed on the same `--check` fields `plan-it` Step 7
+    already uses.
     """
 
-    def test_step1_context_budget_bullet_states_warn_only_never_halts(self) -> None:
+    @pytest.mark.parametrize("branch", sorted(_PINNED_CONTEXT_BUDGET_CLAUSES))
+    def test_step1_context_budget_bullet_matches_live_text(self, branch: str) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING
         )
-        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSE.split())
+        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSES[branch].split())
         _assert_pinned_clause_right_bounded(
             pinned_text,
             raw_section,
-            context="ready-for-review/SKILL.md: step-1 context-budget bullet no longer matches its pinned clause.",
+            context=f"ready-for-review/SKILL.md: step-1 context-budget {branch!r} bullet no longer matches its pinned clause.",
+        )
+
+    def test_context_budget_clauses_appear_in_pinned_order(self) -> None:
+        """Each clause is pinned independently via right-bounded search,
+        which does not pin their relative ordering within the step-1
+        section -- this test catches a reorder the per-clause test alone
+        would miss. Indices must be strictly increasing in
+        _PINNED_CONTEXT_BUDGET_CLAUSES's own dict-insertion order."""
+        raw_section = _heading_section_text(_skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING)
+        indices = []
+        for branch, clause in _PINNED_CONTEXT_BUDGET_CLAUSES.items():
+            pattern = r"\s+".join(re.escape(word) for word in clause.split())
+            match = re.search(pattern, raw_section)
+            assert match is not None, (
+                f"ready-for-review/SKILL.md: step-1 context-budget {branch!r} clause not found in "
+                f"the step-1 section at all.\n  pinned:  {clause!r}\n  section: {raw_section!r}"
+            )
+            indices.append(match.start())
+        assert all(earlier < later for earlier, later in zip(indices, indices[1:], strict=False)), (
+            "ready-for-review/SKILL.md: step-1 context-budget clauses no longer appear in "
+            f"_PINNED_CONTEXT_BUDGET_CLAUSES's own order (found at indices {indices})."
         )
 
 
 _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 
-# The Overview's cross-reference binding the halt-step list to the
-# Completion section's restatement bullet, from ready-for-review/SKILL.md.
-_PINNED_HALT_RESTATEMENT_CLAUSE = (
-    "A halt on step 2, 3, 4, or 7 re-runs the context-budget check from "
-    "step 1 and restates it in the halt report, per the Completion "
-    "section's restatement bullet below."
+# The Overview's cross-reference binding a halt on step 2, 3, or 4 to a
+# context-budget re-check that runs only after that round's fix commit has
+# landed, from ready-for-review/SKILL.md. Step 6 is deliberately excluded
+# (pushing commits is cheap enough to finish before any deferral
+# consideration).
+_PINNED_HALT_DEFERS_CLAUSE = (
+    "A halt on step 2, 3, or 4 triggers the fix loop above first; only "
+    "once that round's fix commit has landed does a context-budget re-check "
+    "run, and only then does an over-threshold/already-fired result "
+    "route to step 1's deferral. A halt on step 6 stays outside this "
+    "routing — pushing the commits is cheap enough to finish before any "
+    "deferral consideration."
 )
 
 
-class TestReadyForReviewHaltRestatesContextBudget:
-    """Pin ready-for-review's Overview sentence binding a halt on step 2,
-    3, 4, or 7 to re-running and restating the step-1 context-budget check,
-    so narrowing the halt-step list or dropping the restatement
-    cross-reference fails this test instead of drifting silently.
+class TestReadyForReviewHaltRoutesToContextBudgetDeferral:
+    """Pin ready-for-review's Overview sentence routing a halt on step 2,
+    3, or 4 to a post-commit context-budget re-check that defers to step 1
+    when it reports `over_threshold` or `already_fired`, so narrowing the
+    halt-step list, dropping the deferral routing, or reordering it ahead
+    of the fix commit fails this test instead of drifting silently.
     """
 
-    def test_overview_names_halt_steps_and_restatement_cross_reference(self) -> None:
+    def test_overview_names_halt_steps_and_deferral_routing(self) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
         )
-        pinned_text = " ".join(_PINNED_HALT_RESTATEMENT_CLAUSE.split())
+        pinned_text = " ".join(_PINNED_HALT_DEFERS_CLAUSE.split())
         _assert_pinned_clause_right_bounded(
             pinned_text,
             raw_section,
-            context="ready-for-review/SKILL.md: Overview's halt-restatement sentence no longer matches.",
+            context="ready-for-review/SKILL.md: Overview's halt-deferral sentence no longer matches.",
+        )
+        # The halt clause says "the fix loop above", so the fix-loop paragraph
+        # must precede it.
+        # _assert_pinned_clause_right_bounded returns no match position, so the
+        # start offsets are rebuilt here with the same whitespace-tolerant pattern.
+        fix_loop_pattern = r"\s+".join(re.escape(word) for word in _PINNED_FIX_LOOP_CLAUSE.split())
+        halt_pattern = r"\s+".join(re.escape(word) for word in pinned_text.split())
+        fix_loop_match = re.search(fix_loop_pattern, raw_section)
+        halt_match = re.search(halt_pattern, raw_section)
+        assert fix_loop_match is not None and halt_match is not None, (
+            "ready-for-review/SKILL.md: Overview's fix-loop or halt-deferral clause not found "
+            "for the ordering check; if the fix-loop clause drifted, see "
+            "TestReadyForReviewFixLoopRule."
+        )
+        assert fix_loop_match.start() < halt_match.start(), (
+            "ready-for-review/SKILL.md: Overview's fix-loop paragraph must precede the "
+            "halt-deferral paragraph that refers to it as 'the fix loop above'."
+        )
+
+
+# The Overview's fix-loop rule: every fix produced by step 2, 3, or 4
+# re-enters at step 2, and step 4 never re-runs on its own output.
+_PINNED_FIX_LOOP_CLAUSE = (
+    "After a fix produced by step 2, 3, or 4, return to step 2 and continue "
+    "in order. Step 3 then re-reviews the fixed cumulative diff in full, "
+    "because its cache marker misses on the changed bytes. Step 4 does not "
+    "re-run on its own output."
+)
+
+
+class TestReadyForReviewFixLoopRule:
+    """Pin the Overview's fix-loop rule, so a future edit that lets the fix
+    commit's own staged-diff review stand in for a cumulative re-run fails
+    this test instead of drifting silently.
+    """
+
+    def test_overview_fix_loop_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        pinned_text = " ".join(_PINNED_FIX_LOOP_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: Overview's fix-loop clause no longer matches.",
+        )
+
+
+# Step 3's loop cap: each clause binds a condition to its outcome.
+_PINNED_STEP3_CAP_CLAUSE = (
+    "**Cap.** Before dispatching a dirty pass's fix, list this branch's "
+    "records newer than its newest clean one, in suffix-timestamp order, "
+    "counting any record you cannot parse, or that has no rows, as dirty. If one of them already "
+    "carries a cap row, stop and ask the human, blocking. Otherwise, if they "
+    "number two or more, first dispatch `plan-architect` with "
+    "`MODE=consult`, carrying the records' paths and the plan path if one "
+    "exists, to judge whether the loop is converging (*proceed*) or its "
+    "foundation is wrong (*stop*). Add its answer to this pass's record as a "
+    "table row whose finding cell reads `cap` and whose Outcome is the "
+    "verdict, or `no verdict` when the dispatch fails, returns nothing, or "
+    "returns text that reads as neither verdict. A *stop*, any `no verdict` "
+    "row, or an orchestrator disagreement with the return, is a blocking "
+    "stop-and-ask to the human."
+)
+
+# Step 3's clean/dirty definition for a disposition record: the Cap counts
+# records newer than the newest clean one, and the closing sentence keeps the
+# record from granting a review skip while disclosing that it can relax the Cap.
+_PINNED_STEP3_CLEAN_DIRTY_CLAUSE = (
+    "The pass is clean when every row is resolved as `code-review/SKILL.md` "
+    '§ "Step — Record review completion" counts it (a `none` row counts as '
+    "resolved), and dirty otherwise. No record grants a review skip and the "
+    "`cumulative-review` marker stays the sole authorization, but the Cap "
+    "counts records, so a record's clean or dirty status can relax the Cap; "
+    "later reviews otherwise read it only as context."
+)
+
+# Step 3's loop-back sentence: a fix commit takes the standard staged-diff
+# gate, then the Overview's fix-loop rule returns the loop to a full pass of
+# step 3 over the fixed bytes, bounded by the Cap.
+_PINNED_STEP3_LOOP_BACK_CLAUSE = (
+    "Its fix commit goes through the standard staged-diff `/code-review` + "
+    "marker gate, and the Overview's fix-loop rule then brings the loop back "
+    "through step 2 to a full pass of this step over the fixed bytes, within "
+    "the cap below."
+)
+
+# Step 3 must re-review a fix's own output in full. This phrase is the tail of
+# the sentence that forbids that re-review, so its presence in step 3 is the
+# regression.
+_STEP3_SKIP_REREVIEW_PHRASE = "on its own output (loop risk)"
+
+
+class TestReadyForReviewStep3LoopCapPins:
+    """Pin step 3's Cap paragraph, its clean/dirty definition, and its
+    loop-back sentence, so dropping the unparseable-record-counts-as-dirty
+    rule, the cap consult, the statement that a record grants no review skip,
+    or the fix-loop return to a full pass fails a test instead of drifting
+    silently. One test also asserts step 3 carries no sentence forbidding a
+    re-review of a fix's own output.
+    """
+
+    @pytest.mark.parametrize(
+        ("pinned_clause", "site"),
+        [
+            pytest.param(_PINNED_STEP3_CAP_CLAUSE, "step 3's Cap paragraph", id="cap"),
+            pytest.param(
+                _PINNED_STEP3_CLEAN_DIRTY_CLAUSE,
+                "step 3's clean/dirty definition",
+                id="clean-dirty-definition",
+            ),
+            pytest.param(
+                _PINNED_STEP3_LOOP_BACK_CLAUSE,
+                "step 3's fix loop-back sentence",
+                id="loop-back",
+            ),
+        ],
+    )
+    def test_step3_clause_matches_live_text(self, pinned_clause: str, site: str) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        pinned_text = " ".join(pinned_clause.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=f"ready-for-review/SKILL.md: {site} no longer matches.",
+        )
+
+    def test_step3_does_not_forbid_rereview_of_a_fixs_own_output(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP3_HEADING
+        )
+        assert _STEP3_SKIP_REREVIEW_PHRASE not in " ".join(raw_section.split()), (
+            "ready-for-review/SKILL.md: step 3 forbids re-reviewing a fix's own "
+            f"output ({_STEP3_SKIP_REREVIEW_PHRASE!r}); the fix loop requires "
+            "that re-review."
+        )
+
+
+_READY_FOR_REVIEW_CI_WATCH_HEADING = "## CI watch (out-of-band)"
+
+# CI watch's "Land the fix" item routes a CI fix through the Overview's
+# fix-loop rule instead of restating a separate push-then-loop mechanic, so
+# a CI fix gets the same full cumulative re-review as a local-failure fix.
+_PINNED_CI_LAND_THE_FIX_CLAUSE = (
+    "**Land the fix.** Step 9 removed this session's active marker and "
+    "`require-ready-for-review.sh` denies a push without one, so re-run "
+    "step 0's `marker.sh activate` command, then treat the fix as a "
+    "step-2 failure's fix under the Overview's fix-loop rule, which "
+    "carries it through step 9."
+)
+
+
+class TestReadyForReviewCiWatchLandsFixUnderFixLoopRule:
+    """Pin the CI watch's "Land the fix" item, which routes the fix through
+    the Overview's fix-loop rule. That rule gives a CI fix the same fresh
+    cumulative review as a local-failure fix.
+    """
+
+    def test_land_the_fix_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_CI_WATCH_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CI_LAND_THE_FIX_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: CI watch's 'Land the fix' clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_RECORD_COMPLETION_HEADING = "## Step — Record review completion"
+
+# The clean-definition sentence: a DEFERred finding or a contradiction
+# consult's *keep current text* verdict both count as resolved, so neither
+# blocks the review-completion marker written by `marker.sh write code-review`.
+_PINNED_CLEAN_DEFINITION_CLAUSE = (
+    "A finding DEFERred under the closed list, or settled *keep current "
+    "text* by a contradiction consult, counts as resolved. If the review "
+    "is **clean** (no blockers, no unresolved critical findings, and you "
+    "reviewed the currently staged changes), record it by running this "
+    "command exactly once:"
+)
+
+
+class TestCodeReviewCleanDefinitionIncludesContradictionKeep:
+    """Pin code-review/SKILL.md's clean-definition sentence, so a future edit
+    can't silently drop the contradiction-consult *keep* branch and make a
+    settled-keep finding block the review-completion marker.
+    """
+
+    def test_clean_definition_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RECORD_COMPLETION_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CLEAN_DEFINITION_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: clean-definition clause no longer matches.",
+        )
+
+
+_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradiction-route"
+
+# The whole contradiction-route region: the consult route, the site definition,
+# the settled-site and two-rewrites human stop, the three verdicts, the
+# enforcement-invariant carve-out on *keep current text*, and the
+# no-explicit-verdict blocking stop. It is pinned whole so removing or
+# weakening any sentence fails a test. The whole region is compared by exact
+# equality, so any added, removed, or reworded text inside the anchors fails.
+_PINNED_CONTRADICTION_ROUTE_CLAUSE = (
+    "**A finding whose fix would undo a fix an earlier round applied is also "
+    "a design question, in every round, staged commit-gate rounds included.** "
+    "Write `plan-architect — consult` for it on the `Fix route:` line. "
+    "Dispatch, verbatim relay, and the disagreement stop-and-ask follow the "
+    "heavier-mechanism rule directly above, and the consult also carries the "
+    "earlier finding and its fix. A site is the file plus the contiguous "
+    "block — paragraph, list item, table row, or function — that an earlier "
+    "round's fix edited, or, when the earlier round's outcome was *keep "
+    "current text* with nothing edited, the block the settled finding's own "
+    "cited location named. A finding's location is matched against that site "
+    "via the ledger's optional `--source \"<file:line>\"` field or the fix "
+    "commit's own diff hunk, read generously enough to include an adjacent "
+    "or wrapped continuation of the same clause and any duplicate expression "
+    "of the same defect elsewhere in the block — a finding is not a "
+    "different site merely because its cited location sits just outside the "
+    "literal edited or cited range. A finding against a site an earlier "
+    "verdict already settled, or that two earlier rounds' fixes already "
+    "rewrote, goes straight to the human as a blocking stop-and-ask, with no "
+    "consult. The consult's judgment standard is that the current text wins "
+    "unless the finding names a defect, under a stated rule, that the "
+    "current text actually has. One consult carries every such finding in "
+    "the round and returns exactly one of the three verdicts per finding. "
+    "*Keep current text* resolves it with nothing dispatched, logged as "
+    "`--disposition ADDRESS` with the verdict in `--rationale`, and is never "
+    "available to a finding the enforcement-invariant rule below covers. "
+    "This branch has no diff-hunk fallback, so `--source \"<file:line>\"` "
+    "naming the site is required in that ledger call — the only anchor a "
+    "session resumed after compaction can match a repeat finding against. "
+    "*Apply this round's fix* is an ordinary ADDRESS row on the "
+    "`code-writer` route. *Cannot choose* is a blocking stop-and-ask to the "
+    "human. A finding with no explicit per-finding verdict from the consult "
+    "(failed dispatch, empty, hedged, or partial coverage) is likewise a "
+    "blocking stop-and-ask, never *keep current text*."
+)
+
+
+class TestCodeReviewContradictionRouteRegionPin:
+    """Pin code-review/SKILL.md's contradiction-route region whole, so dropping
+    the enforcement-invariant carve-out on *keep current text*, the
+    settled-site / two-rewrites human stop, or the no-explicit-verdict
+    blocking stop-and-ask fails a test instead of drifting silently.
+    """
+
+    def test_contradiction_route_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_CONTRADICTION_ROUTE_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+
+_CODE_REVIEW_DEFER_INVARIANT_ANCHOR = "DISPOSITION_RULE:code-review-defer-invariant"
+
+# The whole defer-invariant region: the enforcement-invariant class definition,
+# its never-DEFER-eligible ruling, and the ADDRESS-or-blocking-stop disposition.
+# The contradiction-route region's *keep current text* carve-out takes its scope
+# from this class, so it is pinned whole by exact equality, like that region.
+_PINNED_DEFER_INVARIANT_CLAUSE = (
+    '- **"Enforcement invariant weakened, but disclosed"** — a finding that '
+    "the diff opens a path around an enforcement invariant (a gate, hook, "
+    "permission check, required-approval, or marker guarantee some mechanism "
+    "currently makes unbypassable) is never DEFER-eligible, regardless of "
+    "which criterion above seems to match. Disposition is ADDRESS (fix the "
+    "hole) or a blocking stop-and-ask to the human — never persisted to the "
+    "`## Deferred review findings` block. Approval of a diff or PR does not "
+    "function as informed consent for an invariant-break buried in the body."
+)
+
+
+class TestCodeReviewDeferInvariantRegionPin:
+    """Pin code-review/SKILL.md's defer-invariant region whole, so inverting
+    the never-DEFER-eligible ruling, narrowing the enforcement-invariant class,
+    or dropping the blocking stop-and-ask disposition fails a test instead of
+    drifting silently.
+    """
+
+    def test_defer_invariant_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_DEFER_INVARIANT_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_DEFER_INVARIANT_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_DEFER_INVARIANT_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+
+_CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
+
+# The re-review carry-forward paragraph: the disposition records reach each
+# spawn prompt, a record never narrows a review or suppresses a finding the
+# current text supports, and a missing or partial earlier fix is a new finding
+# for any reviewer. It is pinned whole because the right-bound check needs a
+# structural boundary at the pinned text's end.
+_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
+    "On a re-review, prior decisions are this session's context plus every "
+    "disposition record `ready-for-review/SKILL.md` § \"3. Code review (halt "
+    "on findings)\" wrote for this branch; put those record paths and these "
+    "three rules in each spawn prompt (a reviewer sees only its prompt). The "
+    "spawn finishes its own review before opening the records — a record "
+    "never narrows what it reviews or suppresses a finding the current text "
+    "supports, and it names in its findings any record it cannot parse, or "
+    "whose claim the current text contradicts. For each earlier ADDRESS row "
+    "the same agent raised whose Outcome names a fix, it confirms the fix "
+    "landed as the finding required; a missing or partial fix is a new "
+    "finding for any reviewer that sees it, whichever agent raised the row. "
+    "It re-flags a site an earlier fix or verdict rewrote only under a "
+    "different rule than the one behind the rewrite, or for a fact the "
+    "rewrite dropped, and when its fix would move a site back toward its "
+    "earlier wording it names the finding it contradicts."
+)
+
+
+class TestCodeReviewRippleCarryForwardPin:
+    """Pin code-review/SKILL.md's re-review carry-forward paragraph, so
+    inverting the record-never-suppresses trust rule, dropping the hand-off
+    of record paths to every spawn prompt, or dropping the any-reviewer
+    partial-fix rule fails a test instead of drifting silently.
+    """
+
+    def test_carry_forward_paragraph_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_RIPPLE_HEADING
+        )
+        pinned_text = " ".join(_PINNED_RIPPLE_CARRY_FORWARD_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="code-review/SKILL.md: Ripple effect triage's carry-forward paragraph no longer matches.",
+        )
+
+
+_READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
+
+# Step 7's "Do NOT write the completion marker if" bullets, from
+# ready-for-review/SKILL.md: the halt-on-fail step list, the closed list of
+# outcomes that count as complete without full execution (whose last sentence
+# is the missing-body-file case), and the dispatched-subagent rule.
+_PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE = (
+    "Any halt-on-fail step (1, 2, 3, 4, 6) left a finding unresolved this "
+    "session (a DEFERred or *keep current text* finding counts as resolved)."
+)
+_PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
+    "Any of steps 1–6 did not run, or ended in an outcome its own text does "
+    "not define as complete. Only these outcomes count as complete without "
+    "full execution: step 2's scope-exception skip, step 2's skip of "
+    "undefined commands, step 3's reported cache hit, step 4's empty-list "
+    "no-op, and step 5's already-in-sync report (see Completion)."
+)
+_PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE = (
+    "With no PR open, step 5 is also incomplete unless it reported a "
+    "`BODY_FILE:` path whose file exists and is non-empty; that file check "
+    "applies only to a reported path when no PR is open."
+)
+_PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE = (
+    "A dispatched subagent never writes this marker; it reports to its caller."
+)
+
+
+class TestReadyForReviewCompletionMarkerHaltStepList:
+    """Pin step 7's "Do NOT write the completion marker if" bullets against
+    the live SKILL.md text: the halt-on-fail step numbers, the closed list of
+    outcomes that count as complete, the no-body-file case, and the
+    dispatched-subagent rule.
+    """
+
+    @pytest.mark.parametrize(
+        "pinned_clause",
+        [
+            _PINNED_COMPLETION_MARKER_HALT_STEP_LIST_CLAUSE,
+            # The closed-list bullet ends with the no-body-file sentence, so the
+            # whole bullet is pinned as one string.
+            _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE
+            + " "
+            + _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE,
+            _PINNED_COMPLETION_MARKER_SUBAGENT_CLAUSE,
+        ],
+        ids=[
+            "halt_step_list",
+            "closed_complete_outcomes",
+            "no_body_file",
+            "subagent_never_writes",
+        ],
+    )
+    def test_completion_marker_do_not_write_bullet_matches_live_text(
+        self, pinned_clause: str
+    ) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP7_HEADING
+        )
+        pinned_text = " ".join(pinned_clause.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: a step 7 do-not-write bullet does not match its pinned clause.",
         )
 
 

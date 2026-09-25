@@ -38,6 +38,17 @@ concentrated in idle gaps under 5 minutes across the corpus, where the
 pricier 1-hour breakpoint adds cost with no avoided-rebuild benefit — do not
 set either variable.
 
+**2026-09-20 follow-up:** the settings-key lever unavailable in the
+2026-08-15 entry (`promptCacheTtl`) is now set to `"5m"`, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The 2026-08-15 verdict on the two global force-switch environment
+variables (`ENABLE_PROMPT_CACHING_1H`, `FORCE_PROMPT_CACHING_5M`) is a
+separate, unrelated mechanism and stands unchanged.
+
+**2026-09-21 follow-up:** the `"5m"` value above is superseded —
+`promptCacheTtl` is unset again, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
+
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
 | Lever | Verdict | Measured reason |
@@ -289,6 +300,19 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 |---|---|---|
 | Cache TTL as a uniform, non-account-scoped property | Corrected, not a lever this repo can pull | Direct reads of `cache_creation.ephemeral_1h_input_tokens` across 22,290 turns on one account's main thread show zero one-hour-TTL tokens, while every other account on the byte-identical stowed harness shows non-zero. The earlier "Cache-TTL selection (5-minute vs. 1-hour) as a configurable lever" row's "nothing in `settings.json`, hooks, or env vars exposes this field" premise still holds — this corrects only its "no lever exists" framing: a real, lever-shaped difference exists between accounts, but it tracks plan tier or usage-overage state, which is a vendor account question to resolve outside this repo, not a config gap inside it. |
 
+**2026-09-20 follow-up:** the "nothing in `settings.json`, hooks, or env
+vars exposes this field" half of the row above is superseded — `promptCacheTtl`
+now exposes the main-conversation bucket's TTL directly in `settings.json`, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The row's account-level-tier-difference finding (plan tier or usage-overage
+state driving the observed 1h/5m split) stands unchanged.
+
+**2026-09-21 follow-up:** the value cited above is superseded — `promptCacheTtl`
+is unset again, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
+The exposure/mechanism finding itself — that `promptCacheTtl` exposes the
+main-conversation bucket's TTL directly in `settings.json` — is unaffected.
+
 ## From `token-cost-reduction.md` — "Token cost reduction: bound context growth"
 
 | Lever | Verdict | Measured reason |
@@ -346,6 +370,12 @@ Six unrelated upstream commits merged to `main` while `claude-md-audience-restru
 | Byte-size ratchet added to `check-claude-md-length.sh` (25,600 bytes, extrapolated from Anthropic's `MEMORY.md` "25KB" load-window figure — `claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md` § "Cross-vendor size table"), applying to every stow consumer's CLAUDE.md/AGENTS.md alongside the existing 200-line cap | Adopted | Closes the exact gap the regrowth exposed: the file was already over the new byte figure (30,969 > 25,600) while still under the 200-line cap, so line count alone was not catching cumulative growth. Implemented as an opt-in third parameter on the shared `_lib_staged_length_gate` helper rather than a widen of its two-arg contract, so `check-skill-length.sh`'s call site and behavior are unchanged. |
 | `SessionStart` + `additionalContext` per-subagent injection of the orchestrator-only CLAUDE.md block, to spare the 28.6%-of-dollars subagent slice the block's context cost | Declined, not deferred | - Converts a vendor-guaranteed load into a locally-scripted one that fails silently.<br>- Moves rules onto an unmeasured-adherence surface to improve adherence.<br>- Saving lands in the smaller cost slice (main thread carries 71.4% of dollar cost, §22 in `design-decisions.md`, and would keep the block).<br>- Its premise (`SessionStart` not firing for subagents) was not settled during the plan's own investigation.<br><br>Full reasoning and the lighter alternatives considered instead: [`design-decisions/declined-sessionstart-additionalcontext-injection.md`](design-decisions/declined-sessionstart-additionalcontext-injection.md). |
 | Further in-place compression of `claude/.claude/CLAUDE.md` | Near-exhausted | Two consecutive passes at this lever both landed short of their targets:<br>- Pass 1: +1,118 chars against a projected cut (row above).<br>- This pass: a 546-byte cut (31,515 → 30,969) against a stated 3,811-byte regrowth delta (`claude-md-audience-restructure.md:31`).<br><br>The durable deliverable from this pass is the byte-size ratchet, not the trim. |
+
+**Third pass: `relocate-global-claude-md.md` (2026-09-17).** This pass relocated instead of compressing. A passage left the global file only if another surface already delivers its behavior when the rule applies, in every stow consumer session. The file measured 183 lines / 32,019 bytes at this branch's merge-base (`git show 83174e5a:claude/.claude/CLAUDE.md | wc -lc`) and landed at 183 lines / 31,598 bytes, 5,998 bytes over the ratchet.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Relocate always-loaded content whose firing event another surface already covers | Adopted | 421 bytes cut, all from the Safety section's marker bullet:<br>- Two sentences restated marker mechanics that `docs/hooks.md` documents.<br>- One sentence restated the guidance `enforce-marker-script-shape.sh` appends to every subagent marker-write denial.<br><br>Five candidates did not meet this pass's relocation bar and stay for now:<br>- No-op-dispatch bullet: `deny-no-op-dispatch.sh` reaches only short prompts matching a closed idiom list, and [`design-decisions/no-op-dispatch-hook-gate.md`](design-decisions/no-op-dispatch-hook-gate.md) keeps the bullet as the primary surface.<br>- `isolation: "worktree"` bullet: no other surface carries it, and `branch-management` cites it as canonical.<br>- Anchor-hold bullet: its preventive action fires while the session composes a dispatch, before `branch-management`'s copy can load.<br>- "Name every new package" bullet: `docs/security-hardening.md`'s manifest-edit disclosure section records it as the only layer covering a bare restore.<br>- The rest of the marker bullet: `test_skills.py` pins it, and no hook stops a main-session marker forge.<br><br>Content outside this pass's scope, such as Model & Effort Routing and the delegation-decision bullets, stays open for later passes using other levers. |
 
 ## From `disable-artifact-workflow-default.md` — "Disable Artifact/Workflow by default, with per-session opt-back-in" (2026-08-25)
 
@@ -408,6 +438,18 @@ existing per-event timestamps. The row's broader claim — that a general
 subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
 stays open. See the `reviewer-instance-continuation.md` section below for
 the corrected pricing this unlocks.
+
+**2026-09-20 follow-up:** `promptCacheTtl` is now a second repo-tracked
+cache-duration control, distinct from the `experimental.cacheTtl` this row
+evaluates — a top-level `settings.json` key for the main-conversation
+bucket, not subagent frontmatter. It's set to `"5m"` for that bucket, per
+[`design-decisions/main-bucket-prompt-cache-ttl-5m.md`](design-decisions/main-bucket-prompt-cache-ttl-5m.md).
+The row's `experimental.cacheTtl`/subagent-bucket half and its
+`experimental.`-namespace objection stand unchanged.
+
+**2026-09-21 follow-up:** the `"5m"` value above is superseded —
+`promptCacheTtl` is unset again for the main-conversation bucket, per
+[`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
 
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
@@ -531,6 +573,8 @@ The sleep-poll measurement's real consumer is narrower than a `cacheTtl` cost le
 Follow-up (1)'s "cutting the stall" is therefore narrowed by this correction, not eliminated: the sub-5-minute-check-in-cadence candidate this entry's own measurement separately surfaced remains open, tracked in GH-926.
 
 As with §49's own precedent, the sub-pattern's exact share from the earlier, much larger hand-sampled corpus is withheld here. That corpus mixes private-project and public transcripts, so publishing a figure from it is barred by `docs/private-project-redaction.md` § "Publishing a tooling measurement". The `--this-repo`-scoped ratio above is not subject to that withholding — it is content derived only from this repo's own history. That withholding costs nothing going forward, as `:489` already establishes for this section's prior deliverable: `cache-rebuild --this-repo`'s `Own-Bash wait shape` block (`docs/transcript-analysis.md`) now reports the sleep-poll-versus-other split as a permanent, rerunnable measurement, so a reader who wants the sub-split for their own corpus is one command away from it, not a new plan. Follow-up (2) above, per-agent-type attribution, is untouched by this entry.
+
+**2026-09-13 follow-up, the machine-wide figure `.claude/plans/background-wait-phase2-measurement.md` set out to measure, published under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case".** A machine-wide, all-accounts run (`cache-rebuild --threshold 0 --since 30d`, no `--this-repo`) found that of 309 Bash tool calls that preceded a subagent-origin wait of five minutes or longer, 166 carried a literal `sleep` in command position (≈53.7%), 143 did not, and 0 gap-closing calls recorded no command at all. A quoted or heredoc-embedded `sleep` counts as a match, over-counting the figure for text that only mentions `sleep` without waiting on it. `sleep $VAR` (no literal leading digit) does not match, under-counting it by missing a real sleep-poll wait. This figure is not directly comparable to the `--this-repo`, threshold-100,000 figure above — the differing `--threshold` is deliberate, and keeps the two from composing into an exact remainder for either scope, rather than a gap to reconcile. The owner authorized this exact figure, command, and destination in a live, in-session answer on the `background-wait-phase2-measurement` branch, confirmed 2026-09-15T08:43:00Z.
 
 ## From `handoff-threshold-cost-audit.md` — "Did raising the handoff hard-block floor to 470,000 tokens (PR #769, inherited unchanged by PR #782) cut cost?" (2026-09-06)
 

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: review-only agents (the eight staff-*/ciso-reviewer personas, the
 # non-specialist reviewers skill-fidelity-reviewer and
 # comment-discipline-reviewer, plus the harness built-ins Explore/Plan — see
@@ -251,7 +252,7 @@ case "$TOOL_NAME" in
     case "$FILE_PATH" in
       # Traversal guard FIRST, mirroring require-worktree-for-file-writes.sh:
       # a case glob matches the literal string and does not resolve `..`, so
-      # `/tmp/../home/user/repo/src/x` or `agent-reviews/../src/x` would
+      # `/tmp/../home/<username>/repo/src/x` or `agent-reviews/../src/x` would
       # satisfy the `/tmp/*` or `agent-reviews/*` prefix below while actually
       # resolving to a tracked repo file. Reject any path with a `..` segment
       # (leading `../`, embedded `/../`, or trailing `/..`) before the
@@ -309,8 +310,8 @@ case "$TOOL_NAME" in
         # collapsing them into one exit code would report "not actually
         # ignored" for a $CWD that was never checked at all. Sentinel exit 3
         # marks a cd failure distinctly; git/timeout never produce 3 here
-        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: 124
-        # on expiry, or the wrapped command's own code).
+        # (git-check-ignore(1): 0/1/128; _lib_capped's wrapped timeout: its
+        # own cap-kill statuses, or the wrapped command's own code).
         (
           unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
           cd "$CWD" 2>/dev/null || exit 3

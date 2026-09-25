@@ -6,11 +6,18 @@ primary-source citations.
 
 Usage: select-tests.py [pytest args...]
 """
+import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
+
+from _config import ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError, config_enabled
+from _config_dir import config_dir
+from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
 # Hang-detection backstop, not a measured worst case.
 # Sized between post-crash-sessions.py's 5.0s and 25.0s timeouts.
@@ -93,6 +100,9 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
 # this file's second target.
 HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
+
+# Import dependency of test_skills.py; see _skill_auxiliary_files.py's docstring.
+SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
 PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
@@ -183,8 +193,9 @@ GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 
 # test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
 # builds its corpus via REPO_ROOT.rglob("*.md") reading file content, the
-# same dependency GLOBAL_CLAUDE_MD cites above. Unlike that file, no test
-# reads this one by path, so only HOOKS_TESTS_DIR is implicated.
+# same dependency GLOBAL_CLAUDE_MD cites above. test_hook_alignment.py
+# (HOOKS_TESTS_DIR) and SKILLS_TESTS_DIR's test_skills.py also read this one
+# by path, but only HOOKS_TESTS_DIR is selected.
 ROOT_CLAUDE_MD = "CLAUDE.md"
 
 # test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this directory
@@ -265,12 +276,10 @@ def _is_skill_md_change(path: str) -> bool:
 
 
 # test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR) scans every
-# REFERENCES.md and ROUTING.md sibling of a SKILL.md, not just SKILL.md itself.
-# This set must stay in sync with _citation_sources_for_skill_md's sibling
-# names in test_skills.py — a shared constant would be warranted if a third
-# auxiliary filename type is ever added.
+# auxiliary sibling of a SKILL.md, not just SKILL.md itself. The filenames
+# live in _skill_auxiliary_files.py, shared with that test.
 def _is_skill_auxiliary_md_change(path: str) -> bool:
-    return _is_under(path, SKILLS_DIR) and Path(path).name in {"REFERENCES.md", "ROUTING.md"}
+    return _is_under(path, SKILLS_DIR) and Path(path).name in SKILL_AUXILIARY_MD_NAMES
 
 
 def _is_hooks_or_skills_change(path: str) -> bool:
@@ -394,6 +403,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # scripts and reads SKILL.md files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
+# SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
+# module, and that import is invisible to path-constant scanning.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
 # _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
@@ -466,6 +477,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
+    (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
     (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
@@ -608,6 +620,19 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
 
 # --- pytest invocation ----------------------------------------------------
 
+XDIST_WORKER_ENV_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+# Below two workers, xdist's own per-worker spawn/IPC overhead outweighs
+# any parallelism gained.
+# A one-line change here if field data contradicts it.
+_MIN_LOAD_AWARE_WORKERS = 2
+
+# Discriminates pytest_subprocess_env's three outcomes, so callers don't have
+# to infer which one occurred by re-inspecting the returned env dict.
+WORKER_SIZING_ALREADY_SET = "already-set"
+WORKER_SIZING_COMPUTED = "computed"
+WORKER_SIZING_UNAVAILABLE = "unavailable"
+
 
 def _expand_target(target: str, *, repo_root: Path) -> list[str]:
     """A plain directory/file target passes through unchanged.
@@ -693,10 +718,112 @@ def _resolve_pytest_executable() -> str:
     return str(sibling) if sibling.exists() else "pytest"
 
 
-def run_pytest(pytest_argv: list[str], *, cwd: Path, run=subprocess.run) -> int:
+def _cpu_budget() -> int:
+    # Mirrors pytest-xdist's own `-n auto` count on the non-psutil path, so
+    # an idle machine still gets exactly `-n auto`'s own worker count.
+    try:
+        from os import sched_getaffinity
+    except ImportError:
+        n = os.cpu_count()
+    else:
+        n = len(sched_getaffinity(0))
+    return n if n else 1
+
+
+def compute_worker_count(*, cpu_budget: int, load_one_minute: float) -> int:
+    return max(
+        min(_MIN_LOAD_AWARE_WORKERS, cpu_budget),
+        min(cpu_budget, round(cpu_budget - load_one_minute)),
+    )
+
+
+class WorkerSizingResult(NamedTuple):
+    env: dict[str, str]
+    outcome: str
+    worker_count: int | None = None
+    load_average: float | None = None
+
+
+def pytest_subprocess_env(base_env: dict[str, str], *, getloadavg) -> WorkerSizingResult:
+    """Injects XDIST_WORKER_ENV_VAR into base_env, sized from the current
+    1-minute load average, and reports which outcome occurred.
+
+    Leaves base_env's XDIST_WORKER_ENV_VAR untouched, reporting the
+    matching outcome, when:
+    - the caller already set it to a non-empty value (WORKER_SIZING_ALREADY_SET)
+    - the load average can't be read (WORKER_SIZING_UNAVAILABLE)
+
+    getloadavg has no default, since Python binds a default once at
+    def-time -- a default of os.getloadavg would capture the pre-monkeypatch
+    function and defeat tests that patch os.getloadavg after import.
+    """
+    if base_env.get(XDIST_WORKER_ENV_VAR):
+        return WorkerSizingResult(dict(base_env), WORKER_SIZING_ALREADY_SET)
+    try:
+        load_one_minute = getloadavg()[0]
+    except OSError:
+        return WorkerSizingResult(dict(base_env), WORKER_SIZING_UNAVAILABLE)
+    workers = compute_worker_count(cpu_budget=_cpu_budget(), load_one_minute=load_one_minute)
+    env = {**base_env, XDIST_WORKER_ENV_VAR: str(workers)}
+    return WorkerSizingResult(env, WORKER_SIZING_COMPUTED, worker_count=workers, load_average=load_one_minute)
+
+
+def run_pytest(
+    pytest_argv: list[str], *, cwd: Path, run=subprocess.run, env: dict[str, str] | None = None,
+) -> int:
     executable = _resolve_pytest_executable()
-    result = run([executable, *pytest_argv], cwd=cwd, check=False)
+    result = run([executable, *pytest_argv], cwd=cwd, check=False, env=env)
     return result.returncode
+
+
+# --- Fallback-reason instrumentation -------------------------------------
+
+SELECTION_LOG_FILENAME = ".test-selection-log.jsonl"
+
+# Bounds one JSON line to well under one write() syscall's atomic-write size
+# limit. An unbounded triggering_paths list could otherwise make two
+# concurrent appends interleave instead of landing as separate atomic writes.
+_TRIGGERING_PATHS_LOG_CAP = 20
+
+
+def record_selection(
+    selection: SelectionResult,
+    resolved_targets: list[str],
+    size_result: WorkerSizingResult | None = None,
+) -> None:
+    """Appends one JSON line describing this invocation's selection outcome
+    to <config-dir>/.test-selection-log.jsonl, gated by the off-by-default
+    test_selection_tracking config key.
+
+    worker_count and load_average are added to the record only when
+    size_result's outcome is WORKER_SIZING_COMPUTED.
+
+    Best-effort: swallows a log-append OSError, a config_dir() resolution
+    ValueError, or a config-keys.psv truncation error from config_enabled()
+    with one stderr warning, since a full disk, an unresolvable config dir,
+    or a torn schema row must not turn into a failed test run.
+    """
+    try:
+        if not config_enabled("test_selection_tracking"):
+            return
+        triggering_paths = list(selection.triggering_paths)
+        record = {
+            "logged_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason": selection.reason,
+            "is_full_suite": selection.is_full_suite,
+            "triggering_paths": triggering_paths[:_TRIGGERING_PATHS_LOG_CAP],
+            "target_count": len(resolved_targets),
+        }
+        if len(triggering_paths) > _TRIGGERING_PATHS_LOG_CAP:
+            record["triggering_paths_truncated"] = True
+        if size_result is not None and size_result.outcome == WORKER_SIZING_COMPUTED:
+            record["worker_count"] = size_result.worker_count
+            record["load_average"] = size_result.load_average
+        log_path = config_dir() / SELECTION_LOG_FILENAME
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except (OSError, ValueError, ConfigSchemaEmptyError, ConfigSchemaRowTruncatedError) as exc:
+        print(f"select-tests: could not record test selection to the log ({exc})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -713,6 +840,14 @@ def main(argv: list[str] | None = None) -> int:
 
     resolved_targets = resolve_target_paths(selection.target_paths, repo_root=repo_root)
 
+    # No sizing decision is made for the nothing-to-run early return below:
+    # pytest never runs, so a getloadavg() syscall would be wasted.
+    will_run_pytest = selection.is_full_suite or bool(selection.target_paths)
+    size_result = (
+        pytest_subprocess_env(dict(os.environ), getloadavg=os.getloadavg) if will_run_pytest else None
+    )
+    record_selection(selection, resolved_targets, size_result)
+
     if selection.is_full_suite:
         if selection.triggering_paths:
             paths = ", ".join(selection.triggering_paths)
@@ -725,11 +860,32 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
 
+    # size_result is never None past this point: either branch above that
+    # returns early corresponds exactly to will_run_pytest being False.
+    if size_result.outcome == WORKER_SIZING_ALREADY_SET:
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR} already set to "
+            f"{size_result.env[XDIST_WORKER_ENV_VAR]}; leaving it alone",
+            file=sys.stderr,
+        )
+    elif size_result.outcome == WORKER_SIZING_COMPUTED:
+        print(
+            f"select-tests: {XDIST_WORKER_ENV_VAR}={size_result.worker_count} "
+            f"(1-minute load average {size_result.load_average})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"select-tests: could not read the 1-minute load average; "
+            f"leaving {XDIST_WORKER_ENV_VAR} unset",
+            file=sys.stderr,
+        )
+
     # build_pytest_argv resolves resolved_targets again internally; safe
     # because resolve_target_paths is idempotent on its own output, pinned
     # by test_idempotent_on_its_own_output.
     pytest_argv = build_pytest_argv(resolved_targets, passthrough_args, repo_root=repo_root)
-    return run_pytest(pytest_argv, cwd=repo_root)
+    return run_pytest(pytest_argv, cwd=repo_root, env=size_result.env)
 
 
 if __name__ == "__main__":

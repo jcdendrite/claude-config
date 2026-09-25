@@ -15,7 +15,8 @@
 #     round-state cap (_lib.sh's _lib_reviewer_round_state_cap), and
 #     skipped once a latch already exists for this branch -- further
 #     tracking has zero marginal value once the gate has gone permanently
-#     silent. The cap is 2 by default, 1 under the round-2 pilot sentinel.
+#     silent. The cap is 2 by default, 1 when the round_consult_round2_pilot
+#     config key is enabled.
 #   - A `plan-architect` dispatch whose prompt's first line is not
 #     `MODE=plan-sections` writes a content-free, presence-only latch to
 #     <config-dir>/.architect-consult-latch.d/<key>: the fail-safe direction

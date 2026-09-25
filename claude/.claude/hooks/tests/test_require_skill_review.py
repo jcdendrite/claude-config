@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 
 import pytest
 from helpers import (
@@ -63,6 +64,20 @@ def _stage_repo_root_skill_change(git_repo):
     skill_file = git_repo / "skills" / "skill-review" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
     skill_file.write_text("## test repo-root skill\n")
+    subprocess.run(
+        ["git", "add", str(skill_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
+def _stage_project_layer_skill_change(git_repo):
+    """Stage a SKILL.md change under this repo's own project-layer skills
+    (.claude/skills/**/SKILL.md), distinct from the stowed and
+    plugin-scoped pathspecs."""
+    skill_file = git_repo / ".claude" / "skills" / "test-project-layer" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True, exist_ok=True)
+    skill_file.write_text("## test project-layer skill\n")
     subprocess.run(
         ["git", "add", str(skill_file.relative_to(git_repo))],
         cwd=git_repo,
@@ -393,8 +408,8 @@ class TestRequireSkillReview:
         self, isolated_home, git_repo
     ):
         """The same recipe-vs-hook agreement as the test above, for the third
-        of the three SKILL.md-content pathspecs the write side scopes its
-        hash to (stowed, plugin, repo-root).
+        of the four SKILL.md-content pathspecs the write side scopes its
+        hash to (stowed, plugin, repo-root, project-layer).
 
         Staging a repo-root-located SKILL.md (skills/**/SKILL.md) is what
         makes this pathspec load-bearing for the assertion — a drift here
@@ -426,11 +441,54 @@ class TestRequireSkillReview:
             "the hook — write and read side disagree on the repo-root pathspec"
         )
 
+    def test_skill_marker_write_command_covers_a_project_layer_skill_diff(
+        self, isolated_home, git_repo
+    ):
+        """The same recipe-vs-hook agreement as the test above, for the
+        fourth of the four SKILL.md-content pathspecs the write side scopes
+        its hash to.
+
+        The write side also hashes `.claude/skills/**/SKILL.md`, this repo's
+        own project-layer skills. Dropping that pathspec from both sides
+        would not surface here: `require-skill-review.sh`'s earlier
+        `SKILL_DIFF` early-exit also misses `.claude/skills/**/SKILL.md`
+        pre-fix, so it returns `allow` before ever reaching the
+        `CURRENT_HASH` comparison this test targets. Staging a project-layer
+        SKILL.md is what makes the fourth pathspec load-bearing for the
+        assertion. The deny-path test
+        (`test_project_layer_skill_no_marker_denies_commit`) is what actually
+        pins the `SKILL_DIFF` early-exit against this pathspec."""
+        sid = "test-session-skill-cmd-project-layer"
+        _seed_session(isolated_home, sid)
+
+        _stage_project_layer_skill_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        # Sanity check: catches "the recipe never wrote anything" (a
+        # crash-shaped failure) by name, but not a pathspec that silently
+        # never fires — see the deny-path sibling test for that.
+        assert skill_review_marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        ), (
+            "a marker written for a project-layer SKILL.md must satisfy the "
+            "hook — write and read side disagree on the project-layer pathspec"
+        )
+
     def test_skill_marker_write_command_covers_a_routing_md_diff(
         self, isolated_home, git_repo
     ):
         """The same recipe-vs-hook agreement as the tests above, for the
-        fourth of the four pathspecs the write side scopes its hash to.
+        fifth of the five pathspecs the write side scopes its hash to.
 
         Staging a ROUTING.md-only diff is what makes this pathspec
         load-bearing for the assertion — a drift here would leave both sides
@@ -497,6 +555,7 @@ class TestRequireSkillReview:
                 "claude-skills/skills/**/SKILL.md",
                 "plugins/*/skills/**/SKILL.md",
                 "skills/**/SKILL.md",
+                ".claude/skills/**/SKILL.md",
                 "claude-skills/skills/plan-review/ROUTING.md",
             ],
             capture_output=True,
@@ -654,6 +713,18 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    def test_project_layer_skill_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Project-layer SKILL.md (.claude/skills/**/SKILL.md) is gated like stowed skills."""
+        _stage_project_layer_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_plugin_skill_correct_hash_marker_allows(self, isolated_home, git_repo):
         """Plugin-path SKILL.md allows when the marker covers the plugin diff hash."""
         _stage_plugin_skill_change(git_repo)
@@ -718,6 +789,25 @@ class TestRequireSkillReview:
         staged — the combined hash differs from the repo-root-only hash, so the gate must deny."""
         _stage_repo_root_skill_change(git_repo)
         # Write marker that covers only the repo-root SKILL.md diff.
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an additional stowed SKILL.md; combined hash now differs from stored marker.
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_project_layer_and_stowed_skill_stale_project_layer_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a project-layer-only diff is stale when a stowed SKILL.md is
+        later staged — the combined hash differs from the project-layer-only hash, so the gate must deny."""
+        _stage_project_layer_skill_change(git_repo)
+        # Write marker that covers only the project-layer SKILL.md diff.
         write_skill_review_marker(isolated_home, git_repo)
         # Stage an additional stowed SKILL.md; combined hash now differs from stored marker.
         _stage_skill_change(git_repo)
@@ -865,6 +955,112 @@ class TestRequireSkillReview:
             "fake venv python was not invoked; the script did not select "
             "${CLAUDE_PLUGIN_DATA}/venv/bin/python as expected"
         )
+
+    @pytest.mark.timing
+    def test_structural_validator_timeout_denies_with_timeout_message(
+        self, isolated_home, git_repo, tmp_path, monkeypatch
+    ):
+        """A validator that hangs past the 10s cap must deny with a
+        timeout-specific message, not the generic wrapped-stderr message --
+        timeout(1) SIGTERMs the hung process before it can flush stderr, so
+        the generic message would otherwise render an empty/misleading
+        reason."""
+        import shutil
+        import time
+
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available in PATH")
+
+        plugin_data = tmp_path / "plugin-data-with-hanging-venv"
+        venv_bin = plugin_data / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        # Sleeps well past the 10s cap so the assertion below proves the cap
+        # actually fired rather than the process finishing on its own.
+        fake_python.write_text("#!/bin/bash\nsleep 60\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        _stage_skill_change(git_repo)
+
+        start = time.monotonic()
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        elapsed = time.monotonic() - start
+
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "validator killed (exit " in reason, reason
+        assert elapsed < 30, f"validator call took {elapsed:.1f}s — the 10s cap did not fire"
+
+    @pytest.mark.parametrize("validator_status", [137, 143])
+    def test_structural_validator_signal_death_status_denies_with_killed_message(
+        self, isolated_home, git_repo, tmp_path, monkeypatch, validator_status
+    ):
+        """137 (SIGKILL after the -k grace) and 143 (BusyBox SIGTERM) must deny
+        with the killed-validator message, not fall through the case arm and
+        allow the commit. The fake interpreter exits with the status
+        immediately, so no cap or timing is engaged."""
+        plugin_data = tmp_path / "plugin-data-with-exiting-venv"
+        venv_bin = plugin_data / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        fake_python.write_text(f"#!/bin/bash\nexit {validator_status}\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        _stage_skill_change(git_repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert f"validator killed (exit {validator_status})" in reason, reason
+
+    def test_structural_validator_denies_real_violation_when_timeout_binaries_absent(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Without timeout(1) or gtimeout(1) on PATH, _lib_capped_for's
+        uncapped fallback still runs the validator, which must still catch
+        and deny a real structural violation -- not crash with "command not
+        found" (the pre-fix regression on a bare `timeout 10s` call) and not
+        silently skip validation."""
+        import shutil
+
+        bin_dir = tmp_path / "bin-without-timeout"
+        bin_dir.mkdir()
+        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
+            cmd_path = shutil.which(cmd)
+            if not cmd_path:
+                pytest.skip(f"{cmd} not found in PATH")
+            (bin_dir / cmd).symlink_to(cmd_path)
+
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        # Broken YAML (unclosed flow sequence fails yaml.safe_load) — a real
+        # structural violation, not a hang.
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+            extra_env={"PATH": str(bin_dir)},
+        )
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "structural validator" in reason
+        assert "timed out" not in reason
+        assert "claude-skills/skills/skill-review/SKILL.md" in reason
 
     def test_chained_marker_write_then_commit_allowed_without_existing_marker(
         self, isolated_home, git_repo
@@ -1222,6 +1418,196 @@ class TestRequireSkillReview:
             f"plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
+    # Mirrors test_lib.py's four test_lib_capped_for_* functions, split the
+    # same way: each case gets its own skip guard, since pytest.skip()
+    # aborts the whole function and would otherwise let a PATH missing
+    # timeout(1) also skip the neither-present uncapped-fallback case below.
+
+    @pytest.mark.timing
+    def test_plugin_lib_sh_capped_for_enforces_cap_when_timeout_present_matches_stowed_lib_sh(self, tmp_path):
+        """timeout(1) present: both _lib_capped_for copies cap a hung command at exit 124."""
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        timeout_path = shutil.which("timeout")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        # dirname must be on PATH too: the stowed _lib.sh sources _config.sh via
+        # `$(dirname "${BASH_SOURCE[0]}")`, so a PATH stripped down to just
+        # timeout/bash/sleep fails that source step before _lib_capped_for is
+        # even defined, surfacing as a spurious "command not found" (127) here
+        # rather than the fallback behavior this case actually targets.
+        timeout_bin_dir = tmp_path / "bin-with-timeout"
+        timeout_bin_dir.mkdir()
+        (timeout_bin_dir / "timeout").symlink_to(timeout_path)
+        (timeout_bin_dir / "bash").symlink_to(bash_path)
+        (timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (timeout_bin_dir / "dirname").symlink_to(dirname_path)
+        env = {"PATH": str(timeout_bin_dir), "HOME": str(timeout_bin_dir)}
+
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.returncode == stowed_result.returncode == 124, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
+            "the stowed claude/.claude/hooks/_lib.sh copy when timeout(1) is present — "
+            f"plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
+        )
+
+    @pytest.mark.timing
+    def test_plugin_lib_sh_capped_for_enforces_cap_via_gtimeout_when_timeout_absent_matches_stowed_lib_sh(
+        self, tmp_path
+    ):
+        """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): both copies still cap at exit 124."""
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        timeout_path = shutil.which("timeout")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available to alias as gtimeout — BSD/macOS without coreutils")
+
+        # Alias the real timeout binary under the gtimeout name and omit timeout
+        # from PATH entirely, simulating a Homebrew-coreutils-only machine.
+        gtimeout_bin_dir = tmp_path / "bin-with-gtimeout"
+        gtimeout_bin_dir.mkdir()
+        (gtimeout_bin_dir / "gtimeout").symlink_to(timeout_path)
+        (gtimeout_bin_dir / "bash").symlink_to(bash_path)
+        (gtimeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (gtimeout_bin_dir / "dirname").symlink_to(dirname_path)
+        env = {"PATH": str(gtimeout_bin_dir), "HOME": str(gtimeout_bin_dir)}
+
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "1", "sleep", "5"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.returncode == stowed_result.returncode == 124, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
+            "the stowed claude/.claude/hooks/_lib.sh copy when only gtimeout(1) is "
+            f"present — plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
+        )
+
+    def test_plugin_lib_sh_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present_matches_stowed_lib_sh(
+        self, tmp_path
+    ):
+        """Neither timeout(1) nor gtimeout(1) on PATH: both copies run the command uncapped, not "command not found".
+
+        This is the actual subject of the plugin's _lib_capped_for hardening:
+        stock macOS without Homebrew coreutils has neither binary, and must
+        not skip alongside the timeout(1)-requiring cases above.
+        """
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+
+        no_timeout_bin_dir = tmp_path / "bin-without-timeout"
+        no_timeout_bin_dir.mkdir()
+        (no_timeout_bin_dir / "bash").symlink_to(bash_path)
+        (no_timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (no_timeout_bin_dir / "dirname").symlink_to(dirname_path)
+        env = {"PATH": str(no_timeout_bin_dir), "HOME": str(no_timeout_bin_dir)}
+
+        # seconds (0.2) is well under the sleep duration (0.6) -- a real cap would
+        # kill this early, so both copies exiting 0 proves both ran uncapped.
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB), "_", "0.2", "sleep", "0.6"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB), "_", "0.2", "sleep", "0.6"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        assert plugin_result.returncode == stowed_result.returncode == 0, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
+            "the stowed claude/.claude/hooks/_lib.sh copy when neither timeout(1) nor "
+            f"gtimeout(1) is present — plugin: {plugin_result.returncode!r}, "
+            f"stowed: {stowed_result.returncode!r}"
+        )
+
+    def test_plugin_lib_sh_capped_for_aborts_on_unset_seconds_argument_matches_stowed_lib_sh(self):
+        """Unset SECONDS hard-aborts both copies via ${1:?msg} rather than falling through to run the command uncapped."""
+        guard_harness = '. "{lib}"; _lib_capped_for "$UNSET_VAR" echo should-not-run; echo SHOULD_NOT_REACH'
+        plugin_result = subprocess.run(
+            ["bash", "-c", guard_harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", guard_harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.returncode != 0 and stowed_result.returncode != 0, (
+            "plugins/skill-management/hooks/_lib.sh's _lib_capped_for disagrees with "
+            "the stowed claude/.claude/hooks/_lib.sh copy on an unset seconds argument — "
+            f"plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
+        )
+        assert "SHOULD_NOT_REACH" not in plugin_result.stdout
+        assert "should-not-run" not in plugin_result.stdout
+        assert "_lib_capped_for requires a seconds argument" in plugin_result.stderr, repr(plugin_result.stderr)
+
+    @pytest.mark.timing
+    @pytest.mark.parametrize("lib_path", [_PLUGIN_LIB, _STOWED_LIB], ids=["plugin", "stowed"])
+    def test_capped_for_sigterm_immune_child_is_killed_by_the_grace_and_reports_137(self, tmp_path, lib_path):
+        """A SIGTERM-immune child (see `_write_conditional_sleep_shim` in
+        conftest.py) must return status 137 within cap+grace from each copy of
+        `_lib_capped_for`, not hang to the fixture's own much longer sleep."""
+        import shutil
+
+        harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
+        bash_path = shutil.which("bash")
+        sleep_path = shutil.which("sleep")
+        timeout_path = shutil.which("timeout")
+        dirname_path = shutil.which("dirname")
+        if not bash_path or not sleep_path or not dirname_path:
+            pytest.skip("bash, sleep, or dirname not found in PATH")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        timeout_bin_dir = tmp_path / "bin-with-timeout"
+        timeout_bin_dir.mkdir()
+        (timeout_bin_dir / "timeout").symlink_to(timeout_path)
+        (timeout_bin_dir / "bash").symlink_to(bash_path)
+        (timeout_bin_dir / "sleep").symlink_to(sleep_path)
+        (timeout_bin_dir / "dirname").symlink_to(dirname_path)
+        env = {"PATH": str(timeout_bin_dir), "HOME": str(timeout_bin_dir)}
+
+        args = ["_", "1", "bash", "-c", 'trap "" TERM; exec sleep 30']
+
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", harness.format(lib=lib_path), *args],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 137, repr(result)
+        # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
+        # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
+        assert elapsed < 15, f"{lib_path} took {elapsed:.1f}s — the -k grace did not fire"
+
     @pytest.mark.parametrize(
         "command",
         [
@@ -1255,7 +1641,13 @@ class TestRequireSkillReview:
 class TestRequireSkillReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the skill-review marker directory the same
     way for marker.sh (write) and this hook (read) -- see marker.sh and the
-    cross-account bypass this closes (ledger row 7)."""
+    cross-account bypass this closes (ledger row 7).
+
+    Also the regression guard for a sessions_dir/config_dir mismatch bug in
+    helpers.py's write_skill_review_marker (fixed earlier this branch): if
+    that bug recurs, marker.sh write fails and these tests surface it as an
+    unlabeled subprocess.CalledProcessError from write_skill_review_marker's
+    `check=True` rather than a named assertion failure here."""
 
     def test_marker_under_matching_config_dir_allows(self, isolated_home, git_repo, tmp_path):
         """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
@@ -1313,6 +1705,30 @@ class TestRequireSkillReviewHonorsConfigDir:
             == "deny"
         )
 
+    def test_write_skill_review_marker_seeds_session_under_config_dir_not_home(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Direct unit check for the sessions_dir/config_dir invariant this
+        class's docstring names: write_skill_review_marker(config_dir=...)
+        must seed its session-seed file under <config_dir>/sessions/<pid>,
+        not under home/.claude/sessions/<pid>. A regression here is exactly
+        the bug the docstring above says surfaces as an unlabeled
+        subprocess.CalledProcessError rather than a named assertion."""
+        profile = tmp_path / "profile"
+        _stage_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, config_dir=profile)
+        pid = os.getpid()
+        assert (profile / "sessions" / str(pid)).exists(), (
+            "write_skill_review_marker(config_dir=...) must seed the session-seed "
+            f"file under config_dir's sessions/ dir ({profile / 'sessions' / str(pid)}); "
+            "sessions_dir must track config_dir, not home, when config_dir is passed"
+        )
+        assert not (isolated_home / ".claude" / "sessions" / str(pid)).exists(), (
+            "write_skill_review_marker(config_dir=...) must not also seed the "
+            "session-seed file under home/.claude/sessions/ -- that would be "
+            "the sessions_dir/config_dir mismatch this class's docstring warns about"
+        )
+
 
 def _run_hook_with_stderr(hook, tool_input: dict, cwd) -> subprocess.CompletedProcess:
     """Run a hook and return the full CompletedProcess so callers can inspect both stdout and stderr."""
@@ -1335,6 +1751,26 @@ def _stage_oversized_corpus(git_repo, num_skills: int = 6, chars_each: int = 150
         skill_file.write_text(
             f"---\ndescription: {description!r}\n---\n# body\n"
         )
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+
+def _stage_oversized_project_layer_corpus(
+    git_repo, num_skills: int = 6, chars_each: int = 1500
+) -> None:
+    """Stage multiple project-layer SKILL.md files (.claude/skills/**/SKILL.md)
+    whose combined description chars exceed the 8000-char budget, with no
+    stowed or plugin-scoped skill staged alongside them. `chars_each` stays
+    under the 1536-char per-skill structural-validator cap so only the
+    corpus-budget check (not the structural validator) fires."""
+    for i in range(num_skills):
+        skill_file = git_repo / ".claude" / "skills" / f"corpus-skill-{i}" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        description = "x" * chars_each
+        skill_file.write_text(f"---\ndescription: {description!r}\n---\n# body\n")
         subprocess.run(
             ["git", "add", str(skill_file.relative_to(git_repo))],
             cwd=git_repo,
@@ -1368,6 +1804,26 @@ class TestCorpusBudgetWarning:
             "deny" not in result.stdout
         ), f"unexpected deny: {result.stdout}"
         # Warning must appear on stderr.
+        assert "corpus budget warning" in result.stderr, (
+            f"expected corpus budget warning on stderr; got: {result.stderr!r}"
+        )
+
+    def test_project_layer_skills_alone_count_toward_corpus_budget(
+        self, isolated_home, git_repo
+    ):
+        """Project-layer SKILL.md files (.claude/skills/**/SKILL.md) are
+        included in the corpus-budget pathspec, not just stowed and
+        plugin-scoped skills."""
+        _stage_oversized_project_layer_corpus(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert result.returncode == 0 and not result.stdout.strip(), (
+            f"unexpected deny: {result.stdout}"
+        )
         assert "corpus budget warning" in result.stderr, (
             f"expected corpus budget warning on stderr; got: {result.stderr!r}"
         )
@@ -1428,3 +1884,32 @@ class TestCorpusBudgetWarning:
         )
         # Must not deny even though corpus would exceed budget.
         assert not result.stdout.strip() or "deny" not in result.stdout
+
+    def test_corpus_scan_allows_commit_when_timeout_binaries_absent(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Without timeout(1) or gtimeout(1) on PATH, _lib_capped_for's
+        uncapped fallback still runs the corpus scan to completion rather than
+        failing with "command not found" (exit 127) -- the commit must still
+        be allowed, mirroring the structural validator's sibling test above."""
+        import shutil
+
+        bin_dir = tmp_path / "bin-without-timeout"
+        bin_dir.mkdir()
+        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
+            cmd_path = shutil.which(cmd)
+            if not cmd_path:
+                pytest.skip(f"{cmd} not found in PATH")
+            (bin_dir / cmd).symlink_to(cmd_path)
+
+        _stage_oversized_corpus(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env={"PATH": str(bin_dir)},
+            )
+            == "allow"
+        )

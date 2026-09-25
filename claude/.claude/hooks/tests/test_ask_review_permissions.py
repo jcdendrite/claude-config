@@ -13,6 +13,7 @@ from helpers import (
     HOOKS_DIR,
     bash_input,
     edit_input,
+    multiedit_input,
     run_hook,
     run_hook_reason,
     write_input,
@@ -28,8 +29,9 @@ class TestAskReviewPermissions:
             edit_input("/some/project/.claude/settings.json"),
             edit_input("/some/project/.claude/settings.local.json"),
             write_input("/some/project/.claude/settings.json"),
+            multiedit_input("/some/project/.claude/settings.json"),
         ],
-        ids=["edit-settings", "edit-settings-local", "write-settings"],
+        ids=["edit-settings", "edit-settings-local", "write-settings", "multiedit-settings"],
     )
     def test_settings_edits_ask(self, tool_input):
         assert run_hook(REVIEW_PERMS_HOOK, tool_input) == "ask"
@@ -40,23 +42,32 @@ class TestAskReviewPermissions:
             "/some/project/package.json",
             "/some/project/.claude/CLAUDE.md",
             "/some/project/.claude/skills/foo.md",
+            "/some/project/.claude/mysettings.json",
+            "/some/project/.claude/settings/x.json",
         ],
     )
-    def test_non_settings_paths_allowed(self, path):
-        assert run_hook(REVIEW_PERMS_HOOK, edit_input(path)) == "allow"
+    @pytest.mark.parametrize(
+        "build_input",
+        [edit_input, write_input, multiedit_input],
+        ids=["edit", "write", "multiedit"],
+    )
+    def test_non_settings_paths_allowed(self, build_input, path):
+        assert run_hook(REVIEW_PERMS_HOOK, build_input(path)) == "allow"
 
     def test_bash_tool_allowed(self):
         assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"
 
-    def test_ask_reason_names_deny_and_default_mode(self):
-        """Pins the ask-reason wording — it must name both permissions.deny
-        and permissions.defaultMode, not just permissions.allow."""
+    def test_ask_reason_names_allow_deny_default_mode_and_review_skill(self):
+        """Pins the ask-reason wording — it must name permissions.allow,
+        permissions.deny, permissions.defaultMode and /review-permissions."""
         reason = run_hook_reason(
             REVIEW_PERMS_HOOK, edit_input("/some/project/.claude/settings.json")
         )
         assert reason is not None
         assert "permissions.deny" in reason
         assert "permissions.defaultMode" in reason
+        assert "permissions.allow" in reason
+        assert "/review-permissions" in reason
 
     def test_unreadable_lib_sh_fails_open_with_stderr_diagnostic(self, tmp_path):
         """dirname($0) resolves to HOOKS_DIR only when the hook runs from

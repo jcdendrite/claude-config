@@ -21,7 +21,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 
 **"I found nothing" is one of those statistics.** A zero-match run is the case most likely to be a scoping failure rather than a real result, so quote its header too before reporting the absence — never report an empty result without stating the corpus it was empty across.
 
-`cost --summary` prints no resolved-scope header — it is always scoped to the active account only, and states so on its own `Scope: this account only (...)` line instead; quote that line rather than asking about other accounts.
+`cost --summary` prints no resolved-scope header; it states its scope on its own `Scope:` line instead, in the form `Scope: this repository only, <branches>. This account only, <window>.` It is always scoped to this repository, the given branch filter (or all branches), and the active account only, so quote that line rather than asking about other repos, branches, or accounts.
 
 ## Which subcommand to use
 
@@ -32,7 +32,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Did the user express frustration more with one model? | `struggle --branches <branch>` |
 | How much logged time was active vs idle gaps? | `duration --branches <branch>` |
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
-| Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
+| Map branches to PRs; count per-author review comments | `pr-link --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
 | Which denial/friction shapes recur across sessions — a corpus-wide census, not per-session? | `review-trace --deny-summary` |
 | Which skills did a branch invoke, by source (auto-trigger / routing / `/slash`)? | `skill-invocation --branches <branch>` |
@@ -127,7 +127,7 @@ python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET
 
 # Link branches to PRs and count one author's review comments
 python3 ~/.claude/scripts/transcript-analysis.py pr-link \
-  --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
+  --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only

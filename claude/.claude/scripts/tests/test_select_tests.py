@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import os
 import subprocess
 import sys
+import threading
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -501,8 +505,8 @@ class TestSelectPytestTargets:
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
         """test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR)
-        scans every REFERENCES.md/ROUTING.md sibling of a SKILL.md, not just
-        SKILL.md itself -- a REFERENCES.md-only diff must domain-select
+        scans every auxiliary sibling of a SKILL.md (SKILL_AUXILIARY_MD_NAMES),
+        not just SKILL.md itself -- a REFERENCES.md-only diff must domain-select
         rather than fall open to the full suite."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/REFERENCES.md"])
         assert result.is_full_suite is False
@@ -510,7 +514,7 @@ class TestSelectPytestTargets:
 
     def test_skill_routing_md_change_selects_skills_tests(self):
         """Same _is_skill_auxiliary_md_change rule as the REFERENCES.md case
-        above, for the other auxiliary filename it matches -- but this exact
+        above, for a filename in SKILL_AUXILIARY_MD_NAMES -- but this exact
         ROUTING.md is also PLAN_REVIEW_ROUTING_MD (GH-847): see
         test_plan_review_routing_md_change_also_selects_hooks_tests for that
         cross-domain exception's own coverage."""
@@ -518,9 +522,26 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
+    def test_skill_default_template_md_change_selects_skills_tests(self):
+        """Same _is_skill_auxiliary_md_change rule as the REFERENCES.md and
+        ROUTING.md cases above, for the third filename in
+        SKILL_AUXILIARY_MD_NAMES -- a DEFAULT_TEMPLATE.md-only diff must
+        domain-select rather than fall open to the full suite."""
+        result = _mod.select_pytest_targets(["claude-skills/skills/pr-description/DEFAULT_TEMPLATE.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_skill_auxiliary_files_module_change_also_selects_skills_tests(self):
+        """The row is hand-declared; without it SCRIPTS_DIR's domain rule
+        claims the path alone and skips the test_skills.py importer."""
+        result = _mod.select_pytest_targets([_mod.SKILL_AUXILIARY_FILES_MODULE])
+        assert result.is_full_suite is False
+        assert _mod.SKILLS_TESTS_DIR in result.target_paths
+
     def test_non_skill_auxiliary_file_under_skills_is_unmatched_and_falls_open(self):
-        """A skill-directory file that is neither SKILL.md, REFERENCES.md,
-        nor ROUTING.md matches no skills domain rule and falls open."""
+        """A skill-directory file that is not SKILL.md or one of the
+        SKILL_AUXILIARY_MD_NAMES (REFERENCES.md, ROUTING.md,
+        DEFAULT_TEMPLATE.md) matches no skills domain rule and falls open."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/scratch.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
@@ -909,9 +930,10 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_root_claude_md_change_selects_hooks_tests(self):
-        """No test reads the repo-root CLAUDE.md by path -- unlike
-        GLOBAL_CLAUDE_MD, it has no SKILLS_TESTS_DIR reader. It's still
-        picked up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
+        """test_skills.py (SKILLS_TESTS_DIR) reads the repo-root CLAUDE.md by
+        path, but only HOOKS_TESTS_DIR is selected -- the accepted
+        under-selection ROOT_CLAUDE_MD's comment records. It's also picked
+        up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
         (HOOKS_TESTS_DIR) repo-wide rglob("*.md") content scan."""
         result = _mod.select_pytest_targets([_mod.ROOT_CLAUDE_MD])
         assert result.is_full_suite is False
@@ -1254,10 +1276,11 @@ class TestRunPytest:
         class _FakeCompletedProcess:
             returncode = 7
 
-        def fake_run(cmd, *, cwd, check):
+        def fake_run(cmd, *, cwd, check, env):
             recorded["cmd"] = cmd
             recorded["cwd"] = cwd
             recorded["check"] = check
+            recorded["env"] = env
             return _FakeCompletedProcess()
 
         monkeypatch.setattr(sys, "executable", str(tmp_path / "python3"))
@@ -1267,6 +1290,23 @@ class TestRunPytest:
         assert recorded["cmd"] == ["pytest", "claude/.claude/hooks/tests"]
         assert recorded["cwd"] == tmp_path
         assert recorded["check"] is False
+        assert recorded["env"] is None
+
+    def test_forwards_the_env_kwarg_to_run(self, tmp_path, monkeypatch):
+        """The env dict pytest_subprocess_env builds must reach the actual
+        pytest subprocess, not just get computed and discarded."""
+        recorded = {}
+
+        def fake_run(cmd, *, cwd, check, env):
+            recorded["env"] = env
+            return _FakeCompletedProcess()
+
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python3"))
+        fake_env = {"PATH": "/usr/bin", _mod.XDIST_WORKER_ENV_VAR: "4"}
+
+        _mod.run_pytest([], cwd=tmp_path, run=fake_run, env=fake_env)
+
+        assert recorded["env"] == fake_env
 
     def test_resolves_pytest_from_the_sys_executable_sibling_when_present(self, tmp_path, monkeypatch):
         venv_bin = tmp_path / "venv_bin"
@@ -1282,7 +1322,7 @@ class TestRunPytest:
         class _FakeCompletedProcess:
             returncode = 0
 
-        def fake_run(cmd, *, cwd, check):
+        def fake_run(cmd, *, cwd, check, env):
             recorded["cmd"] = cmd
             return _FakeCompletedProcess()
 
@@ -1291,11 +1331,149 @@ class TestRunPytest:
         assert recorded["cmd"][0] == str(fake_pytest)
 
 
+class TestCpuBudget:
+    def test_psutil_is_not_importable(self):
+        """Checks psutil importability directly, matching xdist's own `try:
+        import psutil` check (xdist/plugin.py:26-53) rather than
+        requirements-dev.txt's manifest text, as a tripwire against a
+        transitive psutil dependency silently diverging `_cpu_budget()` from
+        `-n auto`'s actual behavior."""
+        assert importlib.util.find_spec("psutil") is None, (
+            "psutil is importable in this environment -- _cpu_budget() mirrors "
+            "xdist's non-psutil `-n auto` provider chain (sched_getaffinity / "
+            "cpu_count), so its computed budget now diverges from what "
+            "`-n auto` would actually pick"
+        )
+
+    def test_returns_a_positive_int(self):
+        assert _mod._cpu_budget() >= 1
+
+    def test_falls_back_to_cpu_count_when_sched_getaffinity_is_unavailable(self, monkeypatch):
+        """Forces the ImportError branch (e.g. macOS, where sched_getaffinity
+        doesn't exist) by deleting os.sched_getaffinity itself."""
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 4)
+
+        assert _mod._cpu_budget() == 4
+
+    def test_zero_affinity_result_floors_at_one(self, monkeypatch):
+        """Forces the `n if n else 1` guard by returning an empty affinity set."""
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(), raising=False)
+
+        assert _mod._cpu_budget() == 1
+
+    def test_cpu_count_none_floors_at_one(self, monkeypatch):
+        """Forces the ImportError branch's own `n if n else 1` guard.
+        os.cpu_count() returns None when the CPU count is undeterminable,
+        per its own docs."""
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: None)
+
+        assert _mod._cpu_budget() == 1
+
+
+class TestComputeWorkerCount:
+    @pytest.mark.parametrize(
+        ("cpu_budget", "load_one_minute", "expected"),
+        [
+            pytest.param(16, 0.4, 16, id="idle-machine-returns-cpu-budget-unchanged"),
+            pytest.param(1, 0.0, 1, id="cpu-budget-one-returns-one-not-the-floor"),
+            pytest.param(2, 0.0, 2, id="floor-and-cap-arms-coincide-at-cpu-budget-two"),
+            pytest.param(8, 3.0, 5, id="mid-range-load-lands-strictly-between-floor-and-cap"),
+            pytest.param(8, 6.5, 2, id="moderate-contention-lands-at-the-floor"),
+            pytest.param(8, 6.9, 2, id="proportional-term-alone-would-land-under-two"),
+            pytest.param(8, 20.0, 2, id="extreme-overload-floors-at-two"),
+        ],
+    )
+    def test_formula_table(self, cpu_budget, load_one_minute, expected):
+        assert _mod.compute_worker_count(
+            cpu_budget=cpu_budget, load_one_minute=load_one_minute,
+        ) == expected
+
+    def test_never_exceeds_cpu_budget(self):
+        """Never more workers than -n auto would have picked is an invariant,
+        not an emergent property of the table above -- checked directly
+        across a spread of budgets and loads."""
+        for cpu_budget in range(1, 17):
+            for load_one_minute in (-5.0, 0.0, cpu_budget / 2, cpu_budget * 2):
+                workers = _mod.compute_worker_count(
+                    cpu_budget=cpu_budget, load_one_minute=load_one_minute,
+                )
+                assert workers <= cpu_budget
+
+    def test_round_half_to_even_boundary_is_pinned(self):
+        """Pins round()'s tie-breaking rule at a .5 boundary so a later
+        change to _MIN_LOAD_AWARE_WORKERS or the formula shape can't
+        silently invert it."""
+        assert round(2.5) == 2
+        assert _mod.compute_worker_count(cpu_budget=8, load_one_minute=5.5) == 2
+
+
+class TestPytestSubprocessEnv:
+    def test_computes_worker_count_from_load_average_when_unset(self, monkeypatch):
+        """_cpu_budget is stubbed so the expected value is a hand-derived
+        literal, independent of the real machine's CPU count.
+        TestComputeWorkerCount already covers the formula; this test covers
+        only the wiring -- base_env preserved, the right key set from the
+        right call."""
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        base_env = {"PATH": "/usr/bin"}
+
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (2.0, 1.0, 0.5))
+
+        # cpu_budget=8, load=2.0 -> round(8-2.0)=6, min(8,6)=6, floor min(2,8)=2, max(2,6)=6
+        assert result.outcome == _mod.WORKER_SIZING_COMPUTED
+        assert result.env[_mod.XDIST_WORKER_ENV_VAR] == "6"
+        assert result.env["PATH"] == "/usr/bin"
+        assert result.worker_count == 6
+        assert result.load_average == 2.0
+
+    def test_preset_non_empty_value_passes_through_untouched(self):
+        base_env = {_mod.XDIST_WORKER_ENV_VAR: "3", "PATH": "/usr/bin"}
+
+        def fail_getloadavg():
+            raise AssertionError("getloadavg must not be called when the var is already set")
+
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=fail_getloadavg)
+
+        assert result.outcome == _mod.WORKER_SIZING_ALREADY_SET
+        assert result.env == base_env
+        assert result.env is not base_env
+        assert result.worker_count is None
+        assert result.load_average is None
+
+    def test_empty_string_value_does_not_count_as_set(self):
+        """xdist treats an empty-string PYTEST_XDIST_AUTO_NUM_WORKERS as
+        unset, so an empty-string base_env value must still compute a fresh
+        one."""
+        base_env = {_mod.XDIST_WORKER_ENV_VAR: "", "PATH": "/usr/bin"}
+
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=lambda: (1.0, 0.0, 0.0))
+
+        assert result.outcome == _mod.WORKER_SIZING_COMPUTED
+        assert result.env[_mod.XDIST_WORKER_ENV_VAR] != ""
+
+    def test_oserror_from_getloadavg_leaves_the_var_unset(self):
+        base_env = {"PATH": "/usr/bin"}
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        result = _mod.pytest_subprocess_env(base_env, getloadavg=raising_getloadavg)
+
+        assert result.outcome == _mod.WORKER_SIZING_UNAVAILABLE
+        assert _mod.XDIST_WORKER_ENV_VAR not in result.env
+        assert result.env == base_env
+        assert result.worker_count is None
+        assert result.load_average is None
+
+
 # Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
 # in CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
 # real on-disk path leaves that predicate silently dead -- it matches
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
+    _mod.SKILL_AUXILIARY_FILES_MODULE,
     _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST,
     _mod.README_MD,
     _mod.INSTALL_SH,
@@ -1700,7 +1878,7 @@ class TestMainComposition:
 
         recorded = {}
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             recorded["cwd"] = cwd
             return 0
@@ -1727,7 +1905,7 @@ class TestMainComposition:
             recorded["repo_root_passed_to_compute"] = repo_root
             return ["claude/.claude/scripts/mark-terminal.py"]
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             recorded["cwd"] = cwd
             return 0
@@ -1746,24 +1924,44 @@ class TestMainComposition:
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
 
-    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch):
-        """A domain-selected-but-empty target set (e.g. a .claude/plans/
-        change) must short-circuit before run_pytest, not fall through to
-        a bare `pytest` invocation that recursively collects the whole repo."""
+    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch, tmp_path):
+        """Asserts three things: (1) a domain-selected-but-empty target set
+        (e.g. a .claude/plans/ change) short-circuits before `run_pytest`
+        rather than falling through to a bare `pytest` invocation that
+        recursively collects the whole repo; (2) the selection still gets
+        logged exactly once on this early-return path, not just on the
+        run_pytest-reaching paths TestRecordSelectionReasonCoverage already
+        covers; (3) `main()` passes `size_result=None` to `record_selection`
+        on this early-return path without calling `getloadavg` --
+        `os.getloadavg` is stubbed to raise if called, so a regression that
+        wastefully computes real sizing here fails directly rather than via
+        the absence assertion below."""
         fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        def fake_getloadavg():
+            raise AssertionError("getloadavg must not be called for an empty target selection")
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(
             _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
         )
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+        monkeypatch.setattr(os, "getloadavg", fake_getloadavg)
 
         exit_code = _mod.main([])
 
         assert exit_code == 0
+        log_lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(log_lines) == 1
+        record = json.loads(log_lines[0])
+        assert record["reason"] == "domain-selected"
+        assert "worker_count" not in record
+        assert "load_average" not in record
 
     def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
         self, monkeypatch,
@@ -1774,7 +1972,7 @@ class TestMainComposition:
         non-empty."""
         fake_repo_root = Path("/fake/repo/root")
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             raise AssertionError("run_pytest must not be called for an empty target selection")
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
@@ -1799,7 +1997,7 @@ class TestMainComposition:
             _mod, "compute_changed_paths", lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
         )
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             return 0
 
@@ -1823,7 +2021,7 @@ class TestMainComposition:
         monkeypatch.setattr(
             _mod, "compute_changed_paths", lambda repo_root: [".gitignore", "LICENSE"],
         )
-        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
 
         _mod.main([])
 
@@ -1835,7 +2033,7 @@ class TestMainComposition:
 
         monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: ["pyproject.toml"])
-        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
 
         _mod.main([])
 
@@ -1882,7 +2080,7 @@ class TestMainComposition:
         target that must really expand."""
         recorded = {}
 
-        def fake_run_pytest(pytest_argv, *, cwd):
+        def fake_run_pytest(pytest_argv, *, cwd, env):
             recorded["pytest_argv"] = pytest_argv
             return 0
 
@@ -1897,3 +2095,528 @@ class TestMainComposition:
         assert _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH not in recorded["pytest_argv"]
         stderr = capsys.readouterr().err
         assert f"select-tests: running {', '.join(recorded['pytest_argv'])}" in stderr
+
+
+class TestMainWorkerSizingStderr:
+    """main()'s three worker-sizing stderr branches (already-set / computed /
+    unreadable), each pinned against the other two so a copy-paste bug that
+    prints one branch's message from another branch's code path fails a test
+    rather than passing silently. os.getloadavg is monkeypatched directly
+    since main() looks it up fresh at call time and passes it to
+    pytest_subprocess_env explicitly, so the monkeypatch reaches the real
+    code path."""
+
+    def _stub_common(self, monkeypatch):
+        fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+    def test_computed_worker_count_names_the_count_and_load_average(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        # cpu_budget=8, load=2.0 -> round(8-2.0)=6, min(8,6)=6, floor min(2,8)=2, max(2,6)=6
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)" in stderr
+        assert "already set to" not in stderr
+        assert "could not read" not in stderr
+
+    def test_full_suite_selection_still_prints_computed_worker_sizing_stderr(self, monkeypatch, capsys):
+        """Every other test in this class takes the domain-selected branch
+        via _stub_common; this pins that the full-suite branch (is_full_suite
+        True, will_run_pytest True via that disjunct rather than target_paths
+        truthiness) still runs worker sizing and prints both stderr lines in
+        the order main() emits them, not just one or the other."""
+        fake_repo_root = Path("/fake/repo/root")
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+
+        def fake_compute_changed_paths(repo_root):
+            raise _mod.GitDiffUnavailable("stub failure")
+
+        monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
+
+        _mod.main([])
+
+        stderr = capsys.readouterr().err
+        full_suite_line = "select-tests: running the full suite (git-unavailable)"
+        sizing_line = "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)"
+        assert full_suite_line in stderr
+        assert sizing_line in stderr
+        assert stderr.index(full_suite_line) < stderr.index(sizing_line)
+
+    def test_already_set_value_defers_and_names_it(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "3")
+
+        def fail_getloadavg():
+            raise AssertionError("getloadavg must not be called when the var is already set")
+
+        monkeypatch.setattr(os, "getloadavg", fail_getloadavg)
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS already set to 3; leaving it alone" in stderr
+        assert "1-minute load average" not in stderr
+        assert "could not read" not in stderr
+
+    def test_load_average_unavailable_degrades_and_says_so(self, monkeypatch, capsys):
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert (
+            "select-tests: could not read the 1-minute load average; "
+            "leaving PYTEST_XDIST_AUTO_NUM_WORKERS unset"
+        ) in stderr
+        assert "already set to" not in stderr
+        assert "PYTEST_XDIST_AUTO_NUM_WORKERS=" not in stderr
+
+    def test_empty_string_preset_with_unreadable_load_average_degrades_and_says_so(
+        self, monkeypatch, capsys,
+    ):
+        """Regression guard: an empty-string preset is falsy, so it must
+        route to the unavailable-load-average message. An implementation
+        that infers the outcome from env-dict membership instead of an
+        explicit discriminator would see the still-present (empty) key on
+        the OSError path and print a malformed
+        'PYTEST_XDIST_AUTO_NUM_WORKERS=' line instead."""
+        self._stub_common(monkeypatch)
+        monkeypatch.setenv(_mod.XDIST_WORKER_ENV_VAR, "")
+
+        def raising_getloadavg():
+            raise OSError("no load average on this platform")
+
+        monkeypatch.setattr(os, "getloadavg", raising_getloadavg)
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert (
+            "select-tests: could not read the 1-minute load average; "
+            "leaving PYTEST_XDIST_AUTO_NUM_WORKERS unset"
+        ) in stderr
+        assert "PYTEST_XDIST_AUTO_NUM_WORKERS=" not in stderr
+
+    def test_computed_env_reaches_run_pytest_unchanged(self, monkeypatch, capsys):
+        """Pins that main() forwards the sizing decision's own env dict into
+        run_pytest's env kwarg, not a copy-paste of the unmodified
+        os.environ -- the stderr message alone can't catch that regression
+        since it's built from the same computed dict it's checking here."""
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
+        recorded = {}
+
+        def fake_run_pytest(pytest_argv, *, cwd, env):
+            recorded["env"] = env
+            return 0
+
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        _mod.main(["-k", "foo"])
+
+        assert recorded["env"][_mod.XDIST_WORKER_ENV_VAR] == "6"
+        assert recorded["env"] != dict(os.environ)
+
+    def test_computed_worker_sizing_reaches_the_persisted_log_matching_stderr(
+        self, monkeypatch, capsys, tmp_path,
+    ):
+        """Pins that main()'s single size_result reaches both the stderr line
+        and record_selection's log line with the same values, rather than two
+        independently-computed values that could silently diverge. Neither
+        TestRecordSelection's hand-built WorkerSizingResult nor this class's
+        other stderr-only tests exercise that end-to-end wiring."""
+        self._stub_common(monkeypatch)
+        monkeypatch.delenv(_mod.XDIST_WORKER_ENV_VAR, raising=False)
+        monkeypatch.setattr(_mod, "_cpu_budget", lambda: 8)
+        monkeypatch.setattr(os, "getloadavg", lambda: (2.0, 1.0, 0.5))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+        _mod.main(["-k", "foo"])
+
+        stderr = capsys.readouterr().err
+        assert "select-tests: PYTEST_XDIST_AUTO_NUM_WORKERS=6 (1-minute load average 2.0)" in stderr
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["worker_count"] == 6
+        assert record["load_average"] == 2.0
+
+
+class TestRecordSelection:
+    """Tests `record_selection`'s own gating, field shape, and best-effort
+    failure handling. Each case calls it directly with a hand-built
+    `SelectionResult` rather than through `main()`, so it isolates one
+    behavior at a time. Every test here points CLAUDE_CONFIG_DIR at
+    tmp_path rather than touching the real config dir."""
+
+    def test_nothing_written_when_key_resolves_false(self, monkeypatch, tmp_path):
+        """Default resolution (no claude-config.toml at all) is the
+        schema's off-by-default value -- no file must be created."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])
+
+        assert not (tmp_path / _mod.SELECTION_LOG_FILENAME).exists()
+
+    def test_appends_one_line_with_all_five_documented_fields_when_enabled(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(
+            _mod.FULL_SUITE_TARGETS, True, "unmatched-path", ("some/path.py",),
+        )
+
+        _mod.record_selection(selection, list(_mod.FULL_SUITE_TARGETS))
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["reason"] == "unmatched-path"
+        assert record["is_full_suite"] is True
+        assert record["triggering_paths"] == ["some/path.py"]
+        assert record["target_count"] == len(_mod.FULL_SUITE_TARGETS)
+        # Parses as real ISO 8601, not merely non-empty -- matches
+        # .permission-prompt-log.jsonl's own logged_at field name and format.
+        datetime.fromisoformat(record["logged_at"].replace("Z", "+00:00"))
+
+    @pytest.mark.parametrize(
+        ("size_result", "expect_present"),
+        [
+            pytest.param(None, False, id="nothing-to-run"),
+            pytest.param(
+                _mod.WorkerSizingResult({"PATH": "/usr/bin"}, _mod.WORKER_SIZING_ALREADY_SET),
+                False, id="already-set",
+            ),
+            pytest.param(
+                _mod.WorkerSizingResult({"PATH": "/usr/bin"}, _mod.WORKER_SIZING_UNAVAILABLE),
+                False, id="unavailable",
+            ),
+            pytest.param(
+                _mod.WorkerSizingResult(
+                    {"PATH": "/usr/bin"}, _mod.WORKER_SIZING_COMPUTED, worker_count=4, load_average=1.5,
+                ),
+                True, id="computed",
+            ),
+        ],
+    )
+    def test_worker_sizing_fields_present_only_when_outcome_is_computed(
+        self, monkeypatch, tmp_path, size_result, expect_present,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [], size_result)
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert ("worker_count" in record) is expect_present
+        assert ("load_average" in record) is expect_present
+        if expect_present:
+            assert record["worker_count"] == 4
+            assert record["load_average"] == 1.5
+
+    def test_triggering_paths_truncated_flag_set_when_list_exceeds_cap(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        paths = tuple(f"unmatched-{i}.txt" for i in range(25))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "unmatched-path", paths)
+
+        _mod.record_selection(selection, [])
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["triggering_paths"] == list(paths[:20])
+        assert record["triggering_paths_truncated"] is True
+
+    def test_triggering_paths_truncated_flag_absent_when_list_is_at_cap(
+        self, monkeypatch, tmp_path,
+    ):
+        """Exactly 20 entries is the boundary, not the overflow case --
+        the flag must not appear at all."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        paths = tuple(f"unmatched-{i}.txt" for i in range(20))
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "unmatched-path", paths)
+
+        _mod.record_selection(selection, [])
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["triggering_paths"] == list(paths)
+        assert "triggering_paths_truncated" not in record
+
+    def test_oserror_on_append_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """config_dir is monkeypatched only on select-tests.py's own
+        reference. config_enabled is a separate binding of the same
+        underlying function, so it still resolves normally against the
+        real tmp_path -- isolating the OSError to the log-append step
+        rather than the config-enabled read."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        not_a_directory = tmp_path / "not-a-directory"
+        not_a_directory.write_text("")
+        monkeypatch.setattr(_mod, "config_dir", lambda: not_a_directory)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    def test_valueerror_on_config_dir_call_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """config_enabled's own internal config_dir() call succeeds normally
+        here, since tracking is enabled via the real tmp_path. Its
+        ValueError short-circuit therefore never fires. Only select-tests.py's
+        own second config_dir() call is monkeypatched to raise, exercising the
+        except clause's ValueError arm rather than the already-covered
+        OSError arm above."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+        def _raise_value_error() -> Path:
+            raise ValueError("stub config-dir resolution failure")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    def test_config_dir_fully_unresolvable_returns_silently_with_no_log_and_no_stderr(
+        self, monkeypatch, capsys,
+    ):
+        """Unlike the ValueError test above, `config_dir()` is left
+        unmonkeypatched: with `CLAUDE_CONFIG_DIR` and `HOME` both unset, its
+        real resolution fails and `config_enabled()` returns `None` instead
+        of raising. `record_selection`'s `if not config_enabled(...):
+        return` gate therefore fires silently, with nothing caught and
+        nothing printed. A regression that skipped the gate would still
+        reach `record_selection`'s own second `config_dir()` call for
+        `log_path`, which raises the same unresolvable-environment error
+        and is caught and printed. The empty-stderr assertion below is
+        therefore sufficient proof the log-append step was never reached,
+        with no need for a `Path.open` spy."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("HOME", raising=False)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize(
+        "schema_error",
+        [_mod.ConfigSchemaEmptyError, _mod.ConfigSchemaRowTruncatedError],
+    )
+    def test_config_schema_error_from_config_enabled_is_swallowed_with_one_stderr_warning(
+        self, monkeypatch, tmp_path, capsys, schema_error,
+    ):
+        """config_enabled() runs unconditionally, before the tracking gate
+        itself is known. A torn config-keys.psv -- mid-write truncation or
+        an interrupted stow-relink/git pull -- must not turn every
+        select-tests.py invocation into an uncaught crash, including runs
+        where test_selection_tracking was never turned on."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+        def _raise_schema_error(key: str) -> bool:
+            raise schema_error(key)
+
+        monkeypatch.setattr(_mod, "config_enabled", _raise_schema_error)
+        selection = _mod.SelectionResult(_mod.FULL_SUITE_TARGETS, True, "empty-diff")
+
+        _mod.record_selection(selection, [])  # must not raise
+
+        stderr_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+        assert len(stderr_lines) == 1
+        assert "select-tests: could not record test selection" in stderr_lines[0]
+
+    @pytest.mark.parametrize(
+        ("target_paths", "is_full_suite", "reason", "triggering_paths"),
+        [
+            pytest.param(_mod.FULL_SUITE_TARGETS, True, "empty-diff", (), id="empty-diff"),
+            pytest.param(
+                _mod.FULL_SUITE_TARGETS, True, "global-trigger", ("pyproject.toml",), id="global-trigger",
+            ),
+            pytest.param(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", (".gitignore",), id="unmatched-path",
+            ),
+            pytest.param(
+                (_mod.SCRIPTS_TESTS_DIR,), False, "domain-selected", (), id="domain-selected",
+            ),
+        ],
+    )
+    def test_reason_field_copies_selectionresult_reason_verbatim(
+        self, monkeypatch, tmp_path, target_paths, is_full_suite, reason, triggering_paths,
+    ):
+        """TestSelectPytestTargets already covers which changed-path shapes
+        produce which reason. This test instead pins that record_selection
+        copies each reason through verbatim, at record_selection's own unit
+        layer rather than through main()."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        selection = _mod.SelectionResult(target_paths, is_full_suite, reason, triggering_paths)
+
+        _mod.record_selection(selection, list(target_paths))
+
+        record = json.loads((tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()[0])
+        assert record["reason"] == reason
+        assert record["is_full_suite"] is is_full_suite
+
+    def test_concurrent_calls_append_valid_non_interleaved_json_lines(self, monkeypatch, tmp_path):
+        """N threads calling record_selection against one shared log file
+        must each land as a distinct, fully-parseable JSON line -- the
+        property _TRIGGERING_PATHS_LOG_CAP's own comment cites.
+
+        Relies on the local filesystem's O_APPEND same-write atomicity,
+        which network and overlay filesystem mounts don't all guarantee."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        n = 20
+
+        def _record(i: int) -> None:
+            selection = _mod.SelectionResult(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", (f"concurrent-{i}.py",),
+            )
+            _mod.record_selection(selection, [])
+
+        threads = [threading.Thread(target=_record, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == n
+        seen_paths = set()
+        for line in lines:
+            record = json.loads(line)  # raises if a raced write corrupted the line
+            (path,) = record["triggering_paths"]
+            seen_paths.add(path)
+        assert seen_paths == {f"concurrent-{i}.py" for i in range(n)}
+
+    def test_concurrent_calls_at_near_cap_payload_size_append_non_interleaved_json_lines(
+        self, monkeypatch, tmp_path,
+    ):
+        """Second concurrency data point using near-cap-size payloads, not an
+        atomicity stress test. This implementation issues one write()
+        syscall per record regardless of payload size, so no realistic size
+        crosses an atomicity boundary."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+        n = 20
+
+        def _paths_for_thread(i: int) -> tuple[str, ...]:
+            return tuple(
+                f"claude/.claude/scripts/tests/fixtures/near-cap-payload-thread-{i:02d}-path-{j:02d}.py"
+                for j in range(_mod._TRIGGERING_PATHS_LOG_CAP)
+            )
+
+        def _record(i: int) -> None:
+            selection = _mod.SelectionResult(
+                _mod.FULL_SUITE_TARGETS, True, "unmatched-path", _paths_for_thread(i),
+            )
+            _mod.record_selection(selection, [])
+
+        threads = [threading.Thread(target=_record, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(lines) == n
+        seen_paths = set()
+        for line in lines:
+            record = json.loads(line)  # raises if a raced write corrupted the line
+            assert "triggering_paths_truncated" not in record
+            seen_paths.update(record["triggering_paths"])
+        expected_paths = {path for i in range(n) for path in _paths_for_thread(i)}
+        assert seen_paths == expected_paths
+
+    def test_called_before_run_pytest(self, monkeypatch):
+        """An interrupted or failing pytest run must still have its
+        selection recorded -- pinned via call-order tracking on a fake
+        record_selection and a fake run_pytest, independent of the config
+        gate itself."""
+        fake_repo_root = Path("/fake/repo/root")
+        call_order = []
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths",
+            lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
+        )
+        monkeypatch.setattr(
+            _mod, "record_selection",
+            lambda selection, resolved_targets, size_result: call_order.append("record_selection"),
+        )
+
+        def fake_run_pytest(pytest_argv, *, cwd, env):
+            call_order.append("run_pytest")
+            return 0
+
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        _mod.main([])
+
+        assert call_order == ["record_selection", "run_pytest"]
+
+
+class TestRecordSelectionReasonCoverage:
+    """git-unavailable is the one reason main()'s except GitDiffUnavailable
+    branch constructs directly, not select_pytest_targets itself. It is the
+    outcome easiest to leave untested by accident. The other four reasons --
+    empty-diff, global-trigger, unmatched-path, domain-selected -- are
+    unit-tested directly against record_selection in TestRecordSelection,
+    since select_pytest_targets already covers which changed-path shapes
+    produce them (see TestSelectPytestTargets)."""
+
+    def _enable_tracking(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-config.toml").write_text("test_selection_tracking = true\n")
+
+    def test_git_unavailable_reason_is_recorded(self, monkeypatch, tmp_path):
+        self._enable_tracking(monkeypatch, tmp_path)
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_compute_changed_paths(repo_root):
+            raise _mod.GitDiffUnavailable("stub failure")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd, env: 0)
+
+        _mod.main([])
+
+        log_lines = (tmp_path / _mod.SELECTION_LOG_FILENAME).read_text().splitlines()
+        assert len(log_lines) == 1
+        assert json.loads(log_lines[0])["reason"] == "git-unavailable"

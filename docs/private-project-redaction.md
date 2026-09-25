@@ -133,8 +133,12 @@ is a review-round/subagent-spawn count from `cost-counts --this-repo
 regardless of any flag. Neither call can be pointed at a wider corpus,
 so there is nothing for a reviewer to approve per PR — the review
 question is answered once, here, rather than re-litigated on every
-merge. A diff that widens either call's scope, or weakens a refusal a
-publication instrument depends on, is a P1 finding.
+merge. The dollar block's `Scope:` caption echoes the branch name the
+wrapper passes; the `--branches` echo note in `docs/transcript-analysis.md`
+lists what that echo can carry. The pre-clearance
+covers the wrapper path only, and a change to what the block prints
+reopens this bar. A diff that widens either call's scope, or weakens a
+refusal a publication instrument depends on, is a P1 finding.
 
 Within that scope nothing further is withheld. A total, a rate, a
 median, a share, a pool size, a per-day series, a before/after split

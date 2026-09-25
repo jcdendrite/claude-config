@@ -561,7 +561,7 @@ def stop_input(
     return payload
 
 
-def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:
+def exitplanmode_input(plan_file_path: str = "/nonexistent/.claude/plans/test-plan.md") -> dict:
     """Build an ExitPlanMode event payload matching the real harness shape.
 
     The ExitPlanMode tool_input has `plan` and `planFilePath` fields — no
@@ -1170,14 +1170,16 @@ def write_plan_review_marker(
     marker meant to validate mid-merge/rebase/cherry-pick/revert.
 
     Note the tradeoff, and do not mistake this for the technique
-    `write_marker`/`write_skill_review_marker` use: those recompute the hash
-    independently in Python from a real `git diff`, so they can catch drift
-    in the shell-side recipe. This one calls the very function under test, so
-    a test that seeds a marker here and asserts the hook allows is checking
-    that the function agrees with itself across two invocations -- not that
-    its output is correct. Independent correctness is covered by the
-    relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
-    route through this helper."""
+    `write_marker` uses: its callers recompute the hash independently in
+    Python from a real `git diff` (see `staged_diff_hash`), so they can catch
+    drift in the shell-side recipe. This one calls the very function under
+    test, so a test that seeds a marker here and asserts the hook allows is
+    checking that the function agrees with itself across two invocations --
+    not that its output is correct. Independent correctness is covered by
+    the relational unit tests in `hooks/tests/test_marker_lib.py`, which do
+    not route through this helper. `write_skill_review_marker` takes the
+    same tradeoff, for the pathspec-list-drift reason its own docstring
+    states."""
     marker = plan_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     lib_sh = HOOKS_DIR / "_lib.sh"
@@ -1213,25 +1215,39 @@ def write_skill_review_marker(
     session_id: str = DEFAULT_TEST_SESSION_ID,
     config_dir: Path | None = None,
 ) -> None:
-    diff = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--cached",
-            "--",
-            "claude-skills/skills/**/SKILL.md",
-            "plugins/*/skills/**/SKILL.md",
-            "skills/**/SKILL.md",
-            "claude-skills/skills/plan-review/ROUTING.md",
-        ],
+    """Write a skill-review completion marker by shelling out to the real
+    `marker.sh write skill-review` recipe, rather than hand-maintaining a
+    second copy of the SKILL.md pathspec list here — marker.sh's own
+    SKILL_REVIEW_PATHSPECS is the single source of truth.
+
+    marker.sh resolves its session id from the caller's own process
+    ancestry, so this seeds a $HOME/.claude/sessions/<pid> entry for the
+    current test process first. Duplicates hooks/tests/conftest.py's
+    _seed_session rather than importing it — that conftest is a pytest
+    fixture file, not importable from this unpackaged test-support module.
+    """
+    pid = os.getpid()
+    config_dir_resolved = config_dir if config_dir is not None else home / ".claude"
+    sessions_dir = config_dir_resolved / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
         capture_output=True,
+        text=True,
         check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(pid)).write_text(f"{session_id}\n{start_time}\n")
+
+    extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)} if config_dir is not None else None
+    subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "skill-review"],
         cwd=repo,
-    ).stdout
-    diff_hash = hashlib.sha256(diff).hexdigest()
-    marker = skill_review_marker_path(home, repo, session_id, config_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(diff_hash + "\n")
+        env=_build_subprocess_env(home, extra_env),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def plan_review_active_marker_path(home: Path, session_id: str) -> Path:
@@ -1578,23 +1594,36 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
         "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
         "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
         "# so every other $1 runs at the caller's own duration.\n"
+        "# A leading `-k <n>` pair (_lib_capped_for's SIGKILL grace) is stripped before that check runs, so it isn't\n"
+        "# misread as the duration itself. A 1-9-leading integer grace is scaled by the same divisor before being\n"
+        "# re-attached below; any other grace is forwarded unscaled.\n"
+        "grace=()\n"
+        'if [ "$1" = "-k" ]; then\n'
+        '  grace=(-k "$2")\n'
+        "  shift 2\n"
+        "fi\n"
         'if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then\n'
         '  requested="$1"\n'
         f"  scaled_ms=$(( requested * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
         "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
+        '  if [ "${#grace[@]}" -gt 0 ] && [[ "${grace[1]}" =~ ^[1-9][0-9]*$ ]]; then\n'
+        f"    scaled_grace_ms=$(( grace[1] * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "    printf -v scaled_grace '%d.%03d' \"$(( scaled_grace_ms / 1000 ))\" \"$(( scaled_grace_ms % 1000 ))\"\n"
+        '    grace=(-k "$scaled_grace")\n'
+        "  fi\n"
         "  shift\n"
         "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
         "  # $1 is the wrapped command; the shift above already consumed the duration.\n"
         f"  printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(started_log))}\n"
-        f'  {shlex.quote(str(real_timeout))} "$scaled" "$@"\n'
+        f'  {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$scaled" "$@"\n'
         "  status=$?\n"
-        "  # Assumes exit 124 only comes from timeout's own kill; a race with\n"
-        "  # an external kill (OOM, outer test-runner) is a test-infra\n"
-        "  # concern only, not production-reachable.\n"
-        f"  [[ $status -eq 124 ]] || printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
+        "  # The statuses in _lib_capped_for's header (_lib.sh) count as the cap firing;\n"
+        "  # a child's own 137/143 signal-death is indistinguishable, so an external kill counts the same way.\n"
+        "  [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]] || \\\n"
+        f"    printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
         '  exit "$status"\n'
         "fi\n"
-        f'exec {shlex.quote(str(real_timeout))} "$@"\n'
+        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n'
     )
     shim_path.chmod(0o755)
     return True
@@ -1662,8 +1691,10 @@ def assert_cap_engaged(
 ):
     """Assert a timeout(1) cap killed the wrapped block's capped call(s),
     read from the scaled `timeout` shim's started/completed logs rather
-    than a wall-clock floor. 124 is timeout(1)'s documented exit status for
-    "the command was killed by the cap" -- the discriminator this observes.
+    than a wall-clock floor. The shim logs a call as fired when it returns
+    124, 137 or 143, the statuses _lib_capped_for's header in _lib.sh lists
+    for a cap kill. 137 and 143 also occur as a child's own signal-death
+    status, so a fired call is evidence of a cap kill, not proof.
 
     Snapshots both logs on entry so a second hook run inside the same
     bin_dir isn't double-counted. Raises when the shim recorded nothing at

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: when a PR being opened/edited against claude-config introduces a
 # new top-level entry under `claude/.claude/`, OR changes `install.sh`
 # (GH-465), require the PR body (or a referenced body-source file, or a
@@ -45,6 +46,8 @@
 #   "..."`, `--title "..."`), any `--body-file`/`--template` file
 #   contents, and — if `--fill`/`-f`/`--fill-first`/`--fill-verbose` is
 #   used — the commit messages on the branch since `main`.
+# - A body source `_lib_is_pseudo_file_path` matches is skipped, not read, so
+#   a marker behind one does not satisfy the gate.
 #
 # Known gaps (documented, not closed):
 # - `gh pr create --body "$(cat file)"` or backtick command substitution
@@ -182,13 +185,6 @@ extract_body_source_paths() {
     | sed -E "s/^['\"](.*)['\"]$/\\1/"
 }
 
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Build scan target: command (covers inline --body / --title), body-
 # source file contents, and — if --fill is in play — commit messages on
 # the branch since main.
@@ -198,7 +194,7 @@ BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
-    is_pseudo_file_path "$body_source_path" && continue
+    _lib_is_pseudo_file_path "$body_source_path" && continue
     [ ! -r "$body_source_path" ] && continue
     SCAN_TARGET+=$'\n'"$(cat "$body_source_path" 2>/dev/null || true)"
   done <<< "$BODY_SOURCES"
