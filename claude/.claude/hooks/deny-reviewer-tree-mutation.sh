@@ -252,7 +252,7 @@ case "$TOOL_NAME" in
     case "$FILE_PATH" in
       # Traversal guard FIRST, mirroring require-worktree-for-file-writes.sh:
       # a case glob matches the literal string and does not resolve `..`, so
-      # `/tmp/../home/user/repo/src/x` or `agent-reviews/../src/x` would
+      # `/tmp/../home/<username>/repo/src/x` or `agent-reviews/../src/x` would
       # satisfy the `/tmp/*` or `agent-reviews/*` prefix below while actually
       # resolving to a tracked repo file. Reject any path with a `..` segment
       # (leading `../`, embedded `/../`, or trailing `/..`) before the
