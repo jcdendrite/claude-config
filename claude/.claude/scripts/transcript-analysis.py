@@ -1551,6 +1551,11 @@ def _review_trace_session_events(
     """Detect cmd_review_trace's five per-session event kinds (skill, denial,
     friction, reviewer-spawn, architect-consult) from one session's records.
 
+    Signal 1 (skill invocations) detects both invocation shapes: a `Skill`
+    tool_use block on an assistant record, and a `/slash`-command
+    <command-name> tag on a user record. This mirrors _round_open_skill's
+    (review_rounds.py) own two-shape detection for review-round-cost.
+
     Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather
     than two copies kept in sync by hand. The third return value, a count of
@@ -1716,6 +1721,30 @@ def _review_trace_session_events(
                             "model": evt_model,
                             "thread": thread,
                         })
+        elif rec_type == "user":
+            # --- Signal 1 continued: skill invocations, /slash shape ---
+            # A /slash-invoked skill injects its body directly with no Skill
+            # tool_use block, so it never reaches the assistant branch above.
+            # Mirrors cmd_skill_invocation's own user-record branch
+            # (transcript-analysis.py:2412-2416).
+            content_raw = (rec.get("message") or {}).get("content", "")
+            content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
+            for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
+                raw_skill_name = m.group(1)
+                matched_skill_name = _round_skill_name(raw_skill_name)
+                if matched_skill_name not in REVIEW_TRACE_SKILLS:
+                    continue
+                if skill_filter and matched_skill_name != skill_filter:
+                    continue
+                events.append({
+                    "kind": "skill",
+                    "skill": _normalize_skill_name(raw_skill_name),
+                    "ts": rec_ts_str,
+                    "line_no": line_no,
+                    "branch": evt_branch,
+                    "model": evt_model,
+                    "thread": thread,
+                })
 
         # --- Signal 2a: hook denials, legacy shape (attachment record) ---
         if rec_type == "attachment":
