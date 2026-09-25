@@ -561,7 +561,7 @@ def stop_input(
     return payload
 
 
-def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:
+def exitplanmode_input(plan_file_path: str = "/nonexistent/.claude/plans/test-plan.md") -> dict:
     """Build an ExitPlanMode event payload matching the real harness shape.
 
     The ExitPlanMode tool_input has `plan` and `planFilePath` fields — no

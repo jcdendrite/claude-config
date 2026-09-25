@@ -66,6 +66,11 @@ claude/.claude/credential-value-patterns.md
 # accidental copy inside the stowed tree from being committed.
 claude/.claude/transcript-config-dirs
 
+# Same belt-and-suspenders for the user-local output-preferences file described
+# in README.md's Output preferences section. It is never committed; this entry
+# prevents a copy inside the stowed tree from landing in git history.
+claude/.claude/output-preferences.md
+
 # Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
 # (touch), never via the stow package. These entries stop an accidental in-tree
 # copy from being committed and shipped to every stow user. See

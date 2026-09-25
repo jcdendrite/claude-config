@@ -1,4 +1,5 @@
 """Tests for transcript_analysis/cost.py (cmd_cost, cmd_cost_trend)."""
+import argparse
 import importlib.util
 import os
 import re
@@ -1801,7 +1802,7 @@ class TestCostMarkdownTablePrinters:
         out = capsys.readouterr().out
         assert "Of those, unreadable" not in out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
 
@@ -1809,7 +1810,7 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
-        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
@@ -1818,13 +1819,13 @@ class TestCostMarkdownTablePrinters:
         _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
-        assert coverage_cols["Transcript files scanned"] == "1,500,000"
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "1,500,000"
 
     def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
         _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
-        assert coverage_cols["Transcript files scanned"] == "0"
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "0"
         assert coverage_cols["Sessions with priced turns"] == "0"
         assert coverage_cols["Priced turns"] == "0"
 
@@ -1857,6 +1858,45 @@ class TestCostMarkdownTablePrinters:
             "| claude-sonnet-5 | 3.00 | 75.0% |\n"
             "| claude-opus-5 | 1.00 | 25.0% |\n"
         )
+
+
+class TestSummaryScopeBranchClause:
+    """Direct unit coverage of _summary_scope_branch_clause, mirroring
+    TestCostMarkdownTablePrinters's precedent -- pins the singular/plural/
+    absent-filter/empty-filter wording without paying a full _cost_report
+    fixture per case. TestCostSummary below exercises the absent-filter,
+    single-branch, and multiple-branches cases end-to-end through
+    _cost_report's Scope: caption."""
+
+    def test_no_branch_filter_renders_all_branches(self):
+        assert _mod.cost._summary_scope_branch_clause(None) == "all branches"
+
+    def test_empty_branch_filter_renders_no_branches(self):
+        """--branches "," reaches this state (parsed to an empty set)."""
+        assert _mod.cost._summary_scope_branch_clause(set()) == "no branches"
+
+    def test_single_branch_renders_singular_clause(self):
+        assert _mod.cost._summary_scope_branch_clause({"GH-1088/pr-cost-scope-header"}) == \
+            "branch GH-1088/pr-cost-scope-header"
+
+    def test_multiple_branches_render_plural_sorted_clause(self):
+        branches = {"feature-d", "feature-a", "feature-c", "feature-b"}
+        assert _mod.cost._summary_scope_branch_clause(branches) == \
+            "branches feature-a, feature-b, feature-c, feature-d"
+
+
+class TestBranchFilterParsing:
+    """Pins the --branches string -> filter-set mapping docs/transcript-analysis.md documents."""
+
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("", None),
+        (",", set()),
+        ("a,,b", {"a", "b"}),
+        ("main", {"main"}),
+        (None, None),
+    ])
+    def test_branches_value_maps_to_filter_set(self, raw, expected):
+        assert _mod.scope._branch_filter(argparse.Namespace(branches=raw)) == expected
 
 
 class TestPrintBranchExclusionDiagnostic:
@@ -2027,7 +2067,6 @@ class TestCostBranchFilter:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
         _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
         _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
         _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
@@ -2041,13 +2080,101 @@ class TestCostBranchFilter:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2))
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
         out = capsys.readouterr().out
         assert "Branch-filter exclusions" not in out
         assert "feature-a" not in out
         assert "feature-b" not in out
         assert "branch-1" not in out
         assert "branch-2" not in out
+
+    def test_summary_branches_filter_leaves_scanned_files_column_unfiltered(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches narrows the priced sessions and turns columns but leaves the scanned-files column at the full file count."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
+        _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "3"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
+
+    def test_summary_since_window_excluding_every_record_keeps_full_scanned_file_count(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--since excluding every record keeps the scanned-files count full while priced sessions and turns read 0."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        # --since counts back from wall-clock now (scope._parse_since_nd_arg), not the injected `today`.
+        # _priced's fixed default timestamp (2026-05-19) predates any 5-day window ending at wall-clock now.
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(
+            out, header_contains="Transcript files scanned", row_contains="0",
+        )
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "2"
+        assert coverage_cols["Sessions with priced turns"] == "0"
+        assert coverage_cols["Priced turns"] == "0"
+
+    def test_summary_since_window_appears_in_scope_caption(self, tmp_path, monkeypatch, capsys):
+        """--since Nd names the window in the Scope caption as 'last Nd'; without it the caption reads 'all time'."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, since="5d"), date(2026, 8, 2), roots=[projects],
+        )
+        since_out = capsys.readouterr().out
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        unbounded_out = capsys.readouterr().out
+        assert "This account only, last 5d." in since_out
+        assert "This account only, all time." in unbounded_out
 
     def test_non_summary_redact_default_shows_sequential_branch_labels(self, fake_projects, capsys):
         """Non-summary, redact=True (the default, no --no-redact): excluded
@@ -2461,9 +2588,11 @@ class TestCostSummary:
     def test_summary_scope_caption_discloses_single_account_scope(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The Scope: caption alone must make single-account scope legible
-        to a reader unfamiliar with this toolkit. No separate disclosure
-        sentence follows the scan-coverage table. See
+        """The Scope: caption alone must make single-repository,
+        single-account scope legible to a reader unfamiliar with this
+        toolkit -- this fixture omits --branches, so the caption must also
+        read "all branches" rather than silently dropping the clause. No
+        separate disclosure sentence follows the scan-coverage table. See
         docs/transcript-analysis.md's --summary flag entry for the full
         narrowing contract."""
         projects = tmp_path / "projects"
@@ -2482,12 +2611,66 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
-        assert "\nScope: this account only, all time.\n" in out
+        assert "\nScope: this repository only, all branches. This account only, all time.\n" in out
         assert "different Claude account" not in out
         # Structural guard: catches any prose reintroduced between the table and the
         # next heading, regardless of its wording -- not just the phrase above.
         before_heading = out[: out.index("### Cost by token class")]
         assert before_heading.endswith("|\n\n")
+
+    def test_summary_scope_caption_names_single_branch_filter(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches main must reach the Scope: caption end to end, not just via _summary_scope_branch_clause's unit test."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="main"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        assert "\nScope: this repository only, branch main. This account only, all time.\n" in out
+
+    def test_summary_scope_caption_names_multiple_branch_filters(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Plural counterpart: two --branches values reach the caption, not
+        just via _summary_scope_branch_clause's own hand-built set."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(
+            _cost_args(summary=True, this_repo=True, branches="feature-b,feature-a"),
+            date(2026, 8, 2), roots=[projects],
+        )
+        out = capsys.readouterr().out
+        assert (
+            "\nScope: this repository only, branches feature-a, feature-b. "
+            "This account only, all time.\n" in out
+        )
 
     def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
         self, tmp_path, monkeypatch, capsys
@@ -2550,7 +2733,7 @@ class TestCostSummary:
 
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
-        assert coverage_cols["Transcript files scanned"] == "2"
+        assert coverage_cols["Transcript files scanned (before branch/date filters)"] == "2"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "1"
         assert coverage_cols["Priced turns"] == "1"
@@ -2587,7 +2770,7 @@ class TestCostSummary:
         two_roots_out = capsys.readouterr().out
 
         def _scope_span(out: str) -> str:
-            start = out.index("\nScope: this account only,")
+            start = out.index("\nScope: this repository only,")
             # Bounded by the next heading rather than the note's own wording.
             # A wording-anchored bound would miss a regression that appends
             # content between the note and that heading.

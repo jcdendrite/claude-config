@@ -6,7 +6,7 @@ argument-hint: "[branch-name | sweep] [output-path]"
 
 ## Step 0 — Scope and safety
 
-Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation". Report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`, since `--this-repo` does not imply single-account scope. `cost --summary` is scoped to the active account only, on its own `Scope:` line. `--branches` matches the branch-name string only and pools same-named branches across roots, so record which roots the branch's sessions actually live in rather than assuming one.
+Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation". Report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`, since `--this-repo` does not imply single-account scope. `cost --summary` is scoped to this repository on the active account only, on its own `Scope:` line. `--branches` matches the branch-name string only and pools same-named branches across roots, so record which roots the branch's sessions actually live in rather than assuming one.
 
 This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
 
