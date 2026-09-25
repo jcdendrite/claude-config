@@ -178,20 +178,11 @@ SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**
 ROUTING_PATHSPEC='claude-skills/skills/plan-review/ROUTING.md'
 MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
 
-# Mid-merge, `merge-tree --write-tree` puts conflict-marker blobs in the base
-# tree, so a staged gated blob equal to the base can be an unresolved conflict
-# rather than reviewed upstream content.
-# The scan is HEAD-relative, because the base-relative diff of such a path is empty.
-# Call A lists the non-deleted gated paths whose HEAD-relative diff has a marker
-# line on either side (`-G` also matches removed lines). Call B keeps only those
-# whose staged blob still has a column-0 marker line, so a marker line HEAD
-# carries can be indented or removed to clear the deny.
-# Both calls emit path lists only, so no diff or grep presentation config
-# (color, external diff) changes the verdict.
-# `-a --no-textconv` keep a `-diff`/`binary` attribute or a textconv driver
-# from hiding a marker line.
-# B runs `-L` (files without a match) so a path A and B name differently
-# stays in the deny set.
+# Conflict-marker scan. The base tree holds conflict-marker blobs, so the scan is
+# HEAD-relative: the base-relative diff of an unresolved file is empty.
+# `-a --no-textconv` and path-only output stop attributes and diff config from
+# hiding a marker line. See "Conflict-marker hard deny" in
+# docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 CONFLICT_MARKER_REGEX='^(<<<<<<<|>>>>>>>)( |$)'
 if [ -n "$BASE" ]; then
   CONFLICT_MARKER_CANDIDATES=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false diff --cached --no-color --name-only --diff-filter=d -a --no-textconv -G "$CONFLICT_MARKER_REGEX" -- "${MARKER_PATHSPECS[@]}")

@@ -8,6 +8,8 @@
 
 A HEAD-relative `git diff --cached` re-gates upstream-reviewed content mid-merge. During a merge that brings in an untouched `SKILL.md`/`ROUTING.md` from the default branch, every such file reads as unreviewed staged content, and the `git commit` that completes the merge cannot be released without a `/skill-review` pass over files already reviewed on their own PRs (GH-1076). The skill-review gate therefore diffs against the same novel-content base as the code-review gate (`_lib_gate_diff_base`) and the plan-review gate, narrowed to what GH-1076 needs.
 
+Markers live under `<config-dir>/skill-review-markers/`, where `<config-dir>` resolves to `$CLAUDE_CONFIG_DIR` when set, else the default per-user Claude Code config directory.
+
 ## Why no empty-base sentinel exists here
 
 `_lib_code_review_marker_value` binds an empty base-relative diff to `sha256("code-review-empty-base:$base")` rather than falling through to `sha256("")`. `require-code-review.sh` still consults a marker on that empty result, so without the binding a marker earned during one operation's degenerate empty-diff case would validate a different, forged base landing on the same empty result.
@@ -60,11 +62,25 @@ The residual's realistic reachability is honest concurrency in the same worktree
 
 ## The structural validator skips a path only on the diff's own deletion status
 
-The validator's path list is a separate capped listing over the SKILL.md pathspecs with `--diff-filter=d`, so staged deletions and move-outs are excluded by the diff's own status. The disarm and trigger listings stay unfiltered so a deletion still arms the gate and reaches the marker check through the base-relative hash. Every listed path is then read with a capped `git show :<path>`, and any nonzero status (unmerged entry, corrupt index, a name git still lists C-quoted, an NFD name under `core.precomposeunicode`, or a cap kill) denies. Inferring deletion from an empty name-keyed `git ls-files` lookup was rejected: git normalizes argv names differently from the diff's output, so a path with content can look absent and skip the validator.
+The validator's path list is a separate capped listing over the SKILL.md pathspecs with `--diff-filter=d`, so staged deletions and move-outs are excluded by the diff's own status. The disarm and trigger listings stay unfiltered so a deletion still arms the gate and reaches the marker check through the base-relative hash. Every listed path is then read with a capped `git show :<path>`, and any nonzero status denies. The causes include:
+
+- an unmerged entry
+- a corrupt index
+- a name git still lists C-quoted
+- an NFD name under `core.precomposeunicode`
+- a cap kill
+
+Inferring deletion from an empty name-keyed `git ls-files` lookup was rejected: git normalizes argv names differently from the diff's output, so a path with content can look absent and skip the validator.
 
 ## Known residual: the structural validator's auto-merge give-up
 
-Scoping `STAGED_SKILL_PATHS` to the base-relative set (so the structural validator runs only on genuinely novel content) gives up one case: an auto-merge that combines two independently-valid gated files into one structurally invalid tree, with the conflict-free merge itself never having been validated at all. This is bounded, not unbounded: this repository's own CI (`test_frontmatter_parses_strictly`, `corpus_budget_violations` in `claude-skills/skills/tests/test_skills.py`) validates every `SKILL.md`'s frontmatter and the corpus budget repo-wide, independent of this commit hook, so the structural shape is still caught before a branch can land here. `plugins/skill-management` installs into arbitrary consumer repositories through the marketplace, though, and those repos run none of this repo's own test suite — for them the residual is uncatchable by anything this gate does. Behavioral drift between two independently-reviewed edits to the same gated file is the same shape and the same bound. Both were never caught at all during a conflict-free merge of the same two trees to begin with (see "Known gap: the ungated clean merge" below), which dominates them.
+Scoping `STAGED_SKILL_PATHS` to the base-relative set means the structural validator runs only on genuinely novel content. That gives up one case: an auto-merge that combines two independently-valid gated files into one structurally invalid tree, with the conflict-free merge itself never having been validated at all.
+
+- **Bound:** this repository's own CI (`test_frontmatter_parses_strictly`, `corpus_budget_violations` in `claude-skills/skills/tests/test_skills.py`) validates every `SKILL.md`'s frontmatter and the corpus budget repo-wide, independent of this commit hook, so the structural shape is caught before a branch can land here.
+- **Not bounded for marketplace consumers:** `plugins/skill-management` installs into arbitrary consumer repositories, and those repositories run none of this repository's test suite. For them nothing this gate does catches the residual.
+- **Behavioral drift:** two independently-reviewed edits to the same gated file drift the same way, under the same bound.
+
+A conflict-free merge of the same two trees never reached any gate to begin with (see "Known gap: the ungated clean merge" below), which dominates both.
 
 ## Known residual: aliased index entries
 
@@ -108,7 +124,7 @@ Accepted residuals:
 - A merge in which upstream itself indents the marker lines is released, because the staged blob no longer carries a column-0 marker line.
 - A bare marker line ending in a carriage return (`<<<<<<<` then CR) does not match the scan. Git's own conflict output does not emit that shape.
 - A `conflict-marker-size` attribute on the path changes the marker width git writes, and the scan does not match that width.
-- The code-review gate consumes the same `_lib_gate_diff_base` tree through `_lib_code_review_marker_value` and carries the same hidden-conflict shape, but has no conflict-marker scan. That gate does not verify that conflicts are resolved, whether the merge is named by ref or by full OID. An unresolved conflict staged with `git add -A` after a merge named by full OID can therefore release that gate, and the marker's hash preimage is then the empty-base sentinel. `require-plan-review.sh` also consumes `_lib_gate_diff_base` and disarms on an empty base-relative active plan set, and its exposure has not been probed. This pre-dates this change and is not a regression. It is accepted here and not yet tracked; a follow-up issue is to be filed. See `merge-tree-base-recipe-for-gate-diff-base.md`.
+- The code-review gate carries the same hidden conflict and has no conflict-marker scan. See `merge-tree-base-recipe-for-gate-diff-base.md` § "Accepted residual: the code-review gate can release an unresolved conflict".
 
 ## Latency
 
@@ -125,7 +141,7 @@ The whole-hook worst case sums each capped site: ~70s base resolution, 2 x 7s co
 
 Without `timeout` or `gtimeout` on PATH, every `_lib_capped` site runs uncapped. A stalled git then holds the hook until the harness timeout below, which releases the commit rather than blocking it. The uncapped sites are the conflict-marker scan's two calls, the three staged-path listings, the per-path `git show`, the marker hash, the validator, the corpus-budget scan, and the base resolution.
 
-`plugins/skill-management/hooks/hooks.json` sets no `timeout`, so Claude Code's default of 600 seconds for command hooks applies, and a `PreToolUse` command hook that times out does not block the call ([hooks reference](https://code.claude.com/docs/en/hooks.md), Timeouts section). The sizing must therefore keep the worst case under 600s: ~146s + 7s x N stays below it for up to 64 staged `SKILL.md` files.
+`plugins/skill-management/hooks/hooks.json` sets no `timeout`, so Claude Code's default of 600 seconds for command hooks applies, and a `PreToolUse` command hook that times out does not block the call ([hooks reference](https://code.claude.com/docs/en/hooks.md), Timeouts section, fetched 2026-09-19). The sizing must therefore keep the worst case under 600s: ~146s + 7s x N stays below it for up to 64 staged `SKILL.md` files.
 
 The 64-file bound is conservative. A cap hit at a `git show` denies and exits, so a run that reaches the later sites completes every `git show` without a hit, at up to 5s each. That gives ~146s + 5s x N, which stays below 600s up to N = 90 (596s) and reaches 601s at N = 91.
 
@@ -154,6 +170,22 @@ A direct write to `refs/remotes/origin/<default>` itself remains the accepted fo
 - It returns only a branch name.
 - The gate's fully-qualified ancestry check then rejects a name whose remote-tracking ref does not exist, and falls back to the `HEAD` anchor.
 
+## Declined alternative: per-path parent-blob comparison
+
+A per-path comparison of each staged blob against a parent's blob could replace the synthesized base tree.
+
+A resolution that discards upstream's gated content stages a blob equal to HEAD's. `test_resolution_discarding_upstream_gated_content_denies` pins two such cases: keep-ours, and `git rm` of an upstream-added file.
+
+A gated file that only the branch changed also stages a blob equal to HEAD's.
+
+Telling those two shapes apart needs the merge-base blob. A comparison against a single parent does not have it. A comparison against both parents does not have it either. The synthesized `merge-tree` base does.
+
+The code-review gate has no conflict-marker scan, so a fix confined to the skill-review gate does not reach it.
+
+The plan-review gate's exposure to the hidden conflict is unassessed.
+
 ## Reopening criterion
 
-Reopen the reasoning in this file only if the ungated clean-merge gap above is ever closed. Until then, every residual recorded here is dominated by that gap and by `_lib_gate_diff_base`'s forgeable-anchor posture (`docs/design-decisions/merge-tree-base-recipe-for-gate-diff-base.md`), and tightening any of them individually would not change what a motivated Bash-capable actor can already do for free. Markers themselves live under `<config-dir>/skill-review-markers/`, where `<config-dir>` resolves to `$CLAUDE_CONFIG_DIR` when set, else the default per-user Claude Code config directory.
+Reopen the reasoning in this file if the ungated clean-merge gap above is ever closed. Until then, every residual recorded here is dominated by that gap and by `_lib_gate_diff_base`'s forgeable-anchor posture (`docs/design-decisions/merge-tree-base-recipe-for-gate-diff-base.md`), and tightening any of them individually would not change what a motivated Bash-capable actor can already do for free.
+
+A code-level defect found in the revert bracket or the conflict-marker scan also reopens the choice of base.

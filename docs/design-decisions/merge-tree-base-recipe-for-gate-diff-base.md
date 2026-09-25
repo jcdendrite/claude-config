@@ -52,6 +52,6 @@ The skill-review gate closes this with a HEAD-relative conflict-marker scan; see
 
 The code-review gate does not verify that conflicts are resolved, whether the merge is named by ref or by full OID. A merge named by full OID whose conflict is staged with `git add -A` can therefore release the code-review gate with the unresolved markers committed. In that OID case the marker's hash preimage is also the empty-base sentinel from `_lib_code_review_empty_base_sentinel`.
 
-`require-plan-review.sh` also consumes `_lib_gate_diff_base` and disarms when the base-relative active plan set is empty. Its exposure to this shape has not been probed.
+`require-plan-review.sh` also consumes `_lib_gate_diff_base` and disarms when the base-relative active plan set is empty. Its exposure to the hidden conflict is unassessed. A code-level defect found in the revert bracket or the conflict-marker scan reopens the choice of base; see "Declined alternative: per-path parent-blob comparison" in `skill-review-gate-disarms-on-empty-base-relative-diff.md`.
 
-This pre-dates the skill-review change and is not a regression. It is accepted for now. A shared HEAD-relative conflict-marker check for every `_lib_gate_diff_base` consumer whose release depends on a base-relative diff is not yet tracked and is to be filed as a follow-up issue.
+The code-review gap is accepted.

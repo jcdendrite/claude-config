@@ -1016,13 +1016,12 @@ class TestDiffFileFlagWithoutASession:
         assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
 
 
-def _marker_hash_staged_diff(repo_root: str, env: dict) -> str:
+def _lib_staged_diff_hash_of_repo(repo_root: str, env: dict) -> str:
     """Shell out to the real _lib_staged_diff_hash, sourced directly from
-    _lib.sh -- unlike marker.sh, _lib.sh has no unconditional subcommand
-    dispatch, so no extraction is needed to call one function from it in
-    isolation. Passes an empty BASE, the HEAD-relative recipe every write
-    site uses outside a trusted in-progress state, matching `write
-    code-review`'s own call in marker.sh."""
+    _lib.sh, which has no unconditional subcommand dispatch. Passes an empty
+    BASE, the HEAD-relative recipe every write site uses outside a trusted
+    in-progress state, matching `write code-review`'s own call in
+    marker.sh."""
     script = f'. "{_LIB_SH}"\n_lib_staged_diff_hash "$@"\n'
     result = subprocess.run(
         ["bash", "-c", script, "bash", repo_root, ""],
@@ -1110,12 +1109,12 @@ class TestStagedMode:
         assert "gh pr view failed; defaulting base to" not in result.stderr
         assert "no default branch resolved" not in result.stderr
 
-    def test_staged_diff_file_artifact_hashes_identically_to_marker_hash_staged_diff(self, tmp_path):
+    def test_staged_diff_file_artifact_hashes_identically_to_lib_staged_diff_hash(self, tmp_path):
         """The byte-equality property docs/scripts.md's --staged bullet
         claims: hashing the --diff-file artifact's own bytes must equal
         `_lib_staged_diff_hash`'s value for the same staged tree (the
         function every marker write site, including `write code-review`,
-        now calls), so the artifact a reviewer reads and the subject
+        calls), so the artifact a reviewer reads and the subject
         `write code-review` hashes can never silently diverge. This claim
         holds outside any in-progress state only -- an empty BASE is passed
         explicitly, matching every write site's own HEAD-relative recipe
@@ -1132,9 +1131,9 @@ class TestStagedMode:
         artifact = _staged_diff_artifact_path(env, local, self.SID)
         from_artifact = hashlib.sha256(artifact.read_bytes()).hexdigest()
 
-        from_marker = _marker_hash_staged_diff(str(local), env)
+        from_lib = _lib_staged_diff_hash_of_repo(str(local), env)
 
-        assert from_artifact == from_marker
+        assert from_artifact == from_lib
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_staged_diff_file_artifact_mode_is_0600(self, tmp_path):

@@ -1758,13 +1758,9 @@ class TestRequireSkillReview:
 
 
 class TestSharedGateDiffBaseClosureDefinitionEquality:
-    """declare -f definition-equality over the seven functions this
-    plugin's trimmed _lib.sh copies byte-identical from the stowed
-    claude/.claude/hooks/_lib.sh, standing rather than introduction-time —
-    the primary guard against the two copies drifting apart. Each lib is
-    sourced in its own bash -c subshell — sourcing both into one shell
-    would let the second definition clobber the first and turn the
-    comparison into a function against itself."""
+    """Guards the plugin _lib.sh copy against drifting from the stowed one.
+    Each lib is sourced in its own subshell so the second definition cannot
+    clobber the first."""
 
     @pytest.mark.parametrize(
         "function_name",
@@ -1843,16 +1839,14 @@ def _run_lib_fn(lib_path, function_name, *args, env=None):
 
 
 class TestSharedGateDiffBaseClosureResidual:
-    """Four residual cases the declare -f definition-equality above can't
-    reach: identical bodies prove identity for every input, but two seams
-    sit outside that proof — each lib's own `_lib_capped_for` dependency,
-    and the plugin lib actually sourcing cleanly with the functions
-    callable from it. (Reaching them from a real hook run is exercised by
-    TestSkillReviewGateMergeAwareVerdict, not pinned here.) Three further cases pin
-    `_lib_skill_review_diff_base`'s own wrapper behavior — exit-status
-    propagation and pass-through — rather than a closure residual. Each
-    case here asserts both copies' exit status and stdout against an
-    independently computed expectation, never mutual agreement alone."""
+    """Cases the declare -f definition-equality above cannot reach: identical
+    bodies prove identity for every input, but not that the plugin lib
+    sources cleanly with the functions callable from it. Other cases pin
+    `_lib_skill_review_diff_base`'s wrapper behavior (exit-status propagation
+    and pass-through). Each case asserts both copies' exit status and stdout
+    against an independently computed expectation, never mutual agreement
+    alone. TestSkillReviewGateMergeAwareVerdict covers reaching them from a
+    real hook run."""
 
     def test_via_origin_anchored_merge_matches_independent_merge_tree_oracle(
         self, tmp_path
@@ -1964,8 +1958,8 @@ class TestSharedGateDiffBaseClosureResidual:
 def _three_commit_stateless_repo(tmp_path):
     """A plain repo, no in-progress git state, with three linear commits --
     HEAD~1 is both an ancestor of HEAD and has its own parent, the OID
-    shape the double-flip residual test below needs for a REVERT_HEAD
-    stand-in."""
+    shape the revert-inside-window residual test below needs for a
+    REVERT_HEAD stand-in."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -1979,12 +1973,14 @@ def _three_commit_stateless_repo(tmp_path):
 
 
 class TestSkillReviewDiffBaseRevertBracket:
-    """Pins _lib_skill_review_diff_base's bracket shape (pre-sample, call
-    _lib_gate_diff_base unchanged, post-sample) against the trailing-only
-    single-probe design it replaces, and documents the one residual the
-    bracket does not close. Stowed lib only: the declare -f
-    definition-equality in TestSharedGateDiffBaseClosureDefinitionEquality already carries this function's behavior to the
-    plugin copy."""
+    """Pins _lib_skill_review_diff_base's bracket shape: pre-sample, call
+    _lib_gate_diff_base unchanged, post-sample. Stowed lib only:
+    TestSharedGateDiffBaseClosureDefinitionEquality carries this function's
+    behavior to the plugin copy.
+
+    "Revert inside the window" means a revert that both starts and ends
+    inside the bracket's own window. The design doc's "The bracket" section
+    states why one such shape stays open."""
 
     def test_wrong_arity_returns_could_not_determine(self):
         result = _run_lib_fn(_STOWED_LIB, "_lib_skill_review_diff_base")
@@ -2021,21 +2017,13 @@ class TestSkillReviewDiffBaseRevertBracket:
             f"expected only the wrapper's own gitdir resolution, got {log_lines!r}"
         )
 
-    def test_pre_sample_regression_guard_against_trailing_only_probe(
+    def test_pre_sample_short_circuits_before_gate_diff_base_reads_state(
         self, git_repo, tmp_path
     ):
-        """The verdict-level counterpart to the short-circuit test above,
-        and the one that goes red -- rather than merely slower -- if the
-        pre-sample is dropped for a trailing-only probe. The shim deletes
-        REVERT_HEAD the moment _lib_gate_diff_base would first read the
-        state OID's trust anchor (merge-base --is-ancestor, the first git
-        call after its own internal state probe and ref read); if the
-        pre-sample never entered _lib_gate_diff_base at all, that trigger
-        never fires and REVERT_HEAD survives untouched. With the pre-sample
-        removed, the internal probe would read revert, the subtraction tree
-        would be built from the already-read ref, the shim's deletion would
-        land, and a trailing-only probe would then read no state -- printing
-        that tree instead of excluding it, the pre-fix bug verbatim."""
+        """The pre-sample must short-circuit before _lib_gate_diff_base
+        reads state. The shim deletes REVERT_HEAD on the first
+        `merge-base --is-ancestor` call, which only _lib_gate_diff_base
+        makes, so a surviving REVERT_HEAD proves it was never entered."""
         import shutil
 
         build_conflicted_revert(git_repo)
@@ -2063,8 +2051,8 @@ class TestSkillReviewDiffBaseRevertBracket:
         assert result.returncode == 1, f"rc={result.returncode} stdout={result.stdout!r}"
         assert result.stdout == ""
         assert (gitdir / "REVERT_HEAD").exists(), (
-            "REVERT_HEAD was deleted -- the trailing-only probe's trigger fired, "
-            "meaning the pre-sample never short-circuited before "
+            "REVERT_HEAD was deleted -- the shim's merge-base trigger fired, "
+            "meaning the pre-sample did not short-circuit before "
             "_lib_gate_diff_base was entered"
         )
         log_lines = log_file.read_text().splitlines()
@@ -2072,20 +2060,15 @@ class TestSkillReviewDiffBaseRevertBracket:
             f"_lib_gate_diff_base spawned merge-tree: {log_lines!r}"
         )
 
-    def test_stateless_double_flip_is_pinned_closed_by_the_no_state_early_out(
+    def test_stateless_revert_inside_window_is_closed_by_the_no_state_early_out(
         self, tmp_path
     ):
-        """Pins the pre-sample's no-state early-out: from a
-        stateless fixture, a shim that plants a REVERT_HEAD-shaped OID on
-        the second `rev-parse --absolute-git-dir` call
-        (_lib_gate_diff_base's own, the wrapper's being the first) and
-        deletes it again on the first `merge-base --is-ancestor` call must
-        never fire its plant, because the pre-sample reads no state and
-        returns before _lib_gate_diff_base resolves its own gitdir. The
-        whole-log assertion is what makes this a pin rather than a weaker
-        "no merge-tree call" check: with the early-out removed, this exact
-        fixture reproduces the stateless double flip verbatim and the
-        wrapper would exit 0 with the subtraction tree instead."""
+        """From a stateless fixture, the pre-sample reads no state and
+        returns before _lib_gate_diff_base resolves its own gitdir, so a
+        shim planting a REVERT_HEAD-shaped OID on the second
+        `rev-parse --absolute-git-dir` call never fires. Asserted against
+        the whole argv log, since without the early-out the wrapper would
+        exit 0 with the subtraction tree."""
         import shutil
 
         repo = _three_commit_stateless_repo(tmp_path)
@@ -2130,29 +2113,16 @@ class TestSkillReviewDiffBaseRevertBracket:
             f"expected only the wrapper's own gitdir resolution, got {log_lines!r}"
         )
 
-    def test_in_state_double_flip_residual_is_disclosed_not_closed(self, tmp_path):
-        """The disclosed residual, stated in executable form -- not a
-        pin on the fix. A revert that both starts and ends inside the
-        bracket's own window, while a union state (merge, cherry-pick or
-        rebase) was already in progress at the pre-sample, still yields the
-        subtraction tree. A later tightening that closes this shows up as a
-        deliberate change to this test, not a silent break.
-
-        From the stateless fixture plus a planted MERGE_HEAD (so the
-        pre-sample reads `merge`, not `revert`, and falls through), the shim
-        deletes MERGE_HEAD and then writes a REVERT_HEAD-shaped OID on the
-        second `rev-parse --absolute-git-dir` call (_lib_gate_diff_base's
-        own internal probe) -- in that order, since revert is last in
-        _lib_git_inprogress_state's precedence and a surviving MERGE_HEAD
-        would make that probe read `merge` instead -- and deletes
-        REVERT_HEAD again on the first `merge-base --is-ancestor` call, so
-        the wrapper's own post-sample also reads no state. A conflict-free
-        revert needing no timing, and a committer able to write into the
-        gitdir able to forge a state file outright, both dominate this
-        residual -- which is why it is disclosed rather than closed. If the
-        ordering assumption this test relies on ever proves
-        unconstructible, delete this test rather than adding more shim
-        machinery to force it."""
+    def test_revert_inside_window_during_union_state_is_disclosed_not_closed(
+        self, tmp_path
+    ):
+        """Disclosed residual, not a pin: with a merge in progress at the
+        pre-sample, a revert that starts and ends inside the window still
+        yields the subtraction tree. The shim deletes MERGE_HEAD, writes a
+        REVERT_HEAD-shaped OID on the second `rev-parse --absolute-git-dir`
+        call, and deletes REVERT_HEAD on the first `merge-base
+        --is-ancestor` call. The design doc's "The bracket" section carries
+        the residual reasoning."""
         import shutil
 
         repo = _three_commit_stateless_repo(tmp_path)
@@ -2214,15 +2184,9 @@ class TestSkillReviewDiffBaseRevertBracket:
     def test_post_sample_independently_excludes_a_revert_that_persists(
         self, tmp_path
     ):
-        """Regression guard for the post-sample's own check, distinct from
-        the pre-sample and from the in-state double flip's re-deletion:
-        REVERT_HEAD appears via the shim on _lib_gate_diff_base's internal
-        probe and is never removed, so it is still present when the
-        wrapper's own post-sample runs afterward. Proves the post-sample
-        independently excludes a revert that appeared after the pre-sample
-        and persists through it -- deleting the post-sample block entirely
-        would leak the subtraction tree here even though every other
-        wrapper-bracket test still passes."""
+        """The post-sample independently excludes a revert that appears
+        after the pre-sample and persists: the shim plants REVERT_HEAD on
+        _lib_gate_diff_base's internal probe and never removes it."""
         import shutil
 
         repo = _three_commit_stateless_repo(tmp_path)
@@ -2553,12 +2517,9 @@ def _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path):
     SKILL.md) in the same commit, so the push side can't be expressed
     through that shared helper either way.
 
-    The worktree's own local branch is named "wt-branch" because "main" is
-    already checked out in `clone`. Every push below still targets origin's
-    "main" ref (`wt-branch:main`), not a same-named "wt-branch" ref on
-    origin, because _lib_default_branch_or_guess resolves "main" as the
-    default branch (bare_remote_with_default_branch's own origin/HEAD) and
-    the anchor check needs content reachable from origin/main specifically."""
+    The "wt-branch" naming and the `wt-branch:main` pushes follow
+    _build_conflicted_merge_via_origin_with_resolved_skill_conflict_in_linked_worktree
+    (test_marker_script.py), which states why."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     worktree = tmp_path / "linked-worktree-upstream-skill-edit"
     subprocess.run(
@@ -2666,10 +2627,8 @@ class TestSkillReviewGateMergeAwareVerdict:
         local branch never touched, the conflict is engineered in an
         unrelated file, and the commit that completes the resolved merge
         allows with no marker on disk. Three preconditions checked through
-        primitives so this cannot pass vacuously. Parametrized over a plain
-        clone and a linked worktree, since this repo enforces worktree
-        discipline (CLAUDE.md's worktree-enforcement section) and
-        contributors hit GH-1076 from inside one, not the main checkout."""
+        primitives so this cannot pass vacuously. Runs in a plain clone and
+        a linked worktree."""
         repo = (
             build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
             if fixture_kind == "plain_clone"
@@ -2957,11 +2916,12 @@ class TestSkillReviewGateMarkerAgreement:
 def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_resolution(
     tmp_path,
 ):
-    """Direction 1's armed fixture: gated file Y arrives malformed from
-    upstream, untouched by the resolution (its base-relative diff must
-    stay empty, so it cannot be malformed by editing it after the merge --
-    the malformed content has to originate in the upstream commit itself);
-    gated file X is well-formed and novel to the resolution."""
+    """Armed fixture for the malformed-upstream-file case: gated file Y
+    arrives malformed from upstream, untouched by the resolution. Its
+    base-relative diff must stay empty, so it cannot be malformed by editing
+    it after the merge -- the malformed content has to originate in the
+    upstream commit itself. Gated file X is well-formed and novel to the
+    resolution."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     y_rel = "claude-skills/skills/malformed-untouched-skill/SKILL.md"
     y_path = clone / y_rel
@@ -3010,16 +2970,18 @@ def _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_r
 
 class TestSkillReviewGateStructuralValidatorScoping:
     """The structural validator's input is scoped to the base-relative
-    path list, both directions, non-vacuously."""
+    path list: a malformed upstream file is excluded from it, and a
+    malformed resolution edit is named in the deny."""
 
     def test_malformed_untouched_upstream_file_does_not_deny(self, isolated_home, tmp_path):
-        """Direction 1: gated file Y arrives malformed from upstream and
-        untouched by the resolution; gated file X is well-formed and novel
-        to the resolution. With an oracle-seeded marker covering X's own
-        base-relative content, the commit allows -- Y's malformed content
-        never reaches the validator since it isn't in the base-relative
-        path list, and it also can't reach the marker hash (which is also
-        base-relative), so X's own marker is what has to authorize this."""
+        """Malformed upstream file excluded: gated file Y arrives malformed
+        from upstream and untouched by the resolution, and gated file X is
+        well-formed and novel to the resolution. With an oracle-seeded marker
+        covering X's own base-relative content, the commit allows. Y's
+        malformed content never reaches the validator, since it isn't in the
+        base-relative path list. It also can't reach the marker hash, which
+        is base-relative too, so X's own marker is what has to authorize
+        this."""
         repo = _build_merge_with_malformed_untouched_upstream_skill_and_novel_well_formed_resolution(
             tmp_path
         )
@@ -3059,10 +3021,10 @@ class TestSkillReviewGateStructuralValidatorScoping:
     def test_malformed_resolution_edit_denies_naming_only_that_file(
         self, isolated_home, tmp_path
     ):
-        """Direction 2: the resolution also malforms a *different* gated
-        file X; the deny names X's repo-relative path and does not name Y
-        -- Y's absence is what distinguishes base-relative from
-        HEAD-relative validator input."""
+        """Malformed resolution edit named: the resolution also malforms a
+        *different* gated file X; the deny names X's repo-relative path and
+        does not name Y -- Y's absence is what distinguishes base-relative
+        from HEAD-relative validator input."""
         repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
         x_dir = repo / "claude-skills" / "skills" / "malformed-resolution-skill"
         x_dir.mkdir(parents=True)
@@ -3775,6 +3737,55 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         )
         assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
         assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
+
+    def test_unresolved_path_is_named_when_a_clean_sibling_path_ends_with_it(
+        self, isolated_home, tmp_path
+    ):
+        """The deny set is the candidate listing minus the marker-free listing
+        by exact line. A clean `plugins/p/skills/x/SKILL.md` ends with the
+        conflicted `skills/x/SKILL.md`, so a substring match would treat the
+        conflicted path as marker-free and release the commit."""
+        conflicted_path = "skills/x/SKILL.md"
+        clean_sibling_path = "plugins/p/skills/x/SKILL.md"
+        repo, _ = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path,
+            merge_target="oid",
+            gated_paths={"conflicted": conflicted_path, "clean-sibling": clean_sibling_path},
+        )
+        (repo / clean_sibling_path).write_text(_skill_body("clean-sibling", "resolved line"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-suffix-sibling-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert f"({conflicted_path})" in reason
+        assert clean_sibling_path not in reason
+
+    def test_markers_staged_but_worktree_hand_resolved_still_deny(self, isolated_home, tmp_path):
+        """The scan reads the index, not the worktree: markers staged with
+        `git add -A`, then resolved in the worktree without restaging, still
+        deny. A worktree read would see clean files and release the commit."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        for name, skill_rel in skill_paths.items():
+            (repo / skill_rel).write_text(_skill_body(name, "resolved line"))
+        _assert_trusted_anchor(repo)
+        for skill_rel in skill_paths.values():
+            assert "<<<<<<<" not in (repo / skill_rel).read_text()
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-worktree-resolved-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-a"] in reason and skill_paths["skill-b"] in reason
 
     def test_failed_scan_denies_with_the_scan_reason(self, isolated_home, tmp_path):
         """The scan's own git call failing must deny rather than skip the
@@ -5163,8 +5174,15 @@ class TestSkillReviewGateDenyAndTraceText:
         assert "gated against HEAD" not in reason
         assert "novel-content base" not in reason
 
-    def test_disarm_under_non_empty_base_traces_to_stderr(self, isolated_home, tmp_path):
-        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+    @pytest.mark.parametrize("fixture_kind", ["plain_clone", "linked_worktree"])
+    def test_disarm_under_non_empty_base_traces_to_stderr(
+        self, isolated_home, tmp_path, fixture_kind
+    ):
+        repo = (
+            build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+            if fixture_kind == "plain_clone"
+            else _build_upstream_skill_edit_merge_in_linked_worktree(tmp_path)
+        )
         result = _run_hook_with_stderr(
             SKILL_REVIEW_HOOK,
             bash_input("git commit -m merge", session_id="disarm-trace-session"),
@@ -5181,6 +5199,43 @@ class TestSkillReviewGateDenyAndTraceText:
         )
         assert result.returncode == 0 and result.stdout == ""
         assert result.stderr == ""
+
+    def test_noop_external_diff_outside_any_merge_still_reaches_the_marker_gate(
+        self, isolated_home, git_repo
+    ):
+        """No in-progress state, so no base and no conflict-marker scan. A
+        no-op `diff.external` makes a full `git diff --cached` print nothing
+        while `--name-only` still lists the file, so a whole-diff emptiness
+        exit ahead of the marker check would release a well-formed staged
+        SKILL.md that has no marker."""
+        skill_rel = "claude-skills/skills/external-diff-skill/SKILL.md"
+        skill_file = git_repo / skill_rel
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text(_WELL_FORMED_SKILL_MD)
+        subprocess.run(["git", "add", skill_rel], cwd=git_repo, check=True)
+        silent_external_diff = shutil.which("true") or "/usr/bin/true"
+        subprocess.run(
+            ["git", "config", "diff.external", silent_external_diff], cwd=git_repo, check=True
+        )
+        full_diff = subprocess.run(
+            ["git", "diff", "--cached"], cwd=git_repo, capture_output=True, text=True, check=True
+        )
+        listed_paths = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert full_diff.stdout == ""
+        assert skill_rel in listed_paths.stdout.splitlines()
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m plain", session_id="noop-external-diff-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
 
 
 class TestSkillReviewPathspecParity:
@@ -5247,10 +5302,22 @@ _DOCUMENTED_HOOK_WORST_CASE_SECONDS = (
 )
 
 
+# Claude Code's default timeout for command hooks (hooks reference, Timeouts
+# section), which applies when hooks.json sets none. The design-decision
+# doc's "Latency" section states this value and the 64-file bound.
+_DEFAULT_COMMAND_HOOK_TIMEOUT_SECONDS = 600
+_DOCUMENTED_MAX_STAGED_SKILL_FILES = 64
+_SECONDS_PER_STAGED_SKILL_FILE = 7  # capped `git show`: 5s cap + 2s kill grace
+
+
 def test_hooks_json_pretooluse_timeout_covers_the_documented_worst_case():
-    """A timed-out PreToolUse command hook does not block the call, so a
-    `timeout` in hooks.json below the documented worst case would turn a slow
-    but correct deny into an allow. Absent means the harness default of 600s."""
+    """Config-drift tripwire, not a behavioral test: it reads hooks.json and
+    the documented sizing, never running the hook. A timed-out PreToolUse
+    command hook does not block the call, so a slow but correct deny would
+    become an allow. hooks.json sets no `timeout`, so the 600s default
+    applies, and the documented worst case at the documented file bound must
+    stay under it. Adding a `timeout` fails this test until the design
+    doc's "Latency" section and this test are updated together."""
     hooks_config = json.loads((_PLUGINS_DIR / "skill-management" / "hooks" / "hooks.json").read_text())
     gate_entries = [
         hook
@@ -5259,5 +5326,12 @@ def test_hooks_json_pretooluse_timeout_covers_the_documented_worst_case():
         if "require-skill-review.sh" in hook["command"]
     ]
     assert len(gate_entries) == 1
-    configured_timeout = gate_entries[0].get("timeout")
-    assert configured_timeout is None or configured_timeout >= _DOCUMENTED_HOOK_WORST_CASE_SECONDS
+    assert "timeout" not in gate_entries[0], (
+        "hooks.json now sets a timeout on require-skill-review.sh; the design doc's "
+        "Latency section states none is set and the 600s default applies"
+    )
+    worst_case_at_file_bound = (
+        _DOCUMENTED_HOOK_WORST_CASE_SECONDS
+        + _DOCUMENTED_MAX_STAGED_SKILL_FILES * _SECONDS_PER_STAGED_SKILL_FILE
+    )
+    assert worst_case_at_file_bound < _DEFAULT_COMMAND_HOOK_TIMEOUT_SECONDS

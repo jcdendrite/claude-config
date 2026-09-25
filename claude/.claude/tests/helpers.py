@@ -780,8 +780,8 @@ def staged_diff_hash_at_base(repo: Path, base: str, *pathspecs: str) -> str:
     output is correct (see write_plan_review_marker's docstring below for
     the same caution applied to a different marker kind). An empty `base`
     omits the base argument entirely rather than passing it to git as an
-    empty string, so one call expresses both recipes. An empty `base` yields
-    the HEAD-relative preimage, scoped to PATHSPEC when given."""
+    empty string, so an empty `base` yields the HEAD-relative preimage
+    (scoped to PATHSPEC when given) and one call expresses both recipes."""
     args = ["git", "diff", "--cached"]
     if base:
         args.append(base)

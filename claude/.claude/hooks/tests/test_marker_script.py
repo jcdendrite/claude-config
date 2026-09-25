@@ -835,18 +835,11 @@ class TestMarkerScriptEmptyStagedGuard:
     def test_git_external_diff_noop_misclassifies_staged_skill_content_as_empty(
         self, isolated_home, git_repo, tmp_path
     ):
-        """Migrated from the deleted TestHashStagedDiff's
-        test_git_external_diff_noop_misclassifies_staged_content_as_empty_rc:
-        a GIT_EXTERNAL_DIFF tool that exits 0 without writing to stdout makes
-        `git diff --cached` (no `--quiet`) itself hash empty bytes for a
-        genuinely staged SKILL.md change, so `write skill-review` exits 0
-        and writes no marker -- the same "nothing to review" path an
-        actually-empty diff takes. This is a known, accepted residual (see
-        docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md's
-        citation of the code-review sibling residual), not a bug this test
-        pins as correct; if this assertion ever flips to a written marker,
-        the accepted-residual writeup needs revisiting, not just this
-        test."""
+        """A no-op GIT_EXTERNAL_DIFF makes `git diff --cached` hash empty
+        bytes for a genuinely staged SKILL.md change, so `write skill-review`
+        exits 0 and writes no marker. This is an accepted residual (see
+        the `_lib_staged_diff_hash` header comment in hooks/_lib.sh); if this
+        assertion flips to a written marker, revisit that comment."""
         self._make_skill_md(git_repo)
         skill_md = git_repo / "claude-skills" / "skills" / "test-skill" / "SKILL.md"
         skill_md.write_text("# test skill\nmodified\n")
@@ -1650,9 +1643,7 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
         non-empty base-relative diff), unlike the disarm-path fixture above
         -- with an empty base-relative diff the hook allows regardless of
         any marker, which would make this round-trip proof vacuous.
-        Parametrized over a plain clone and a linked worktree, since this
-        repo enforces worktree discipline (CLAUDE.md's worktree-enforcement
-        section) and contributors hit GH-1076 from inside one."""
+        Runs in a plain clone and a linked worktree."""
         repo = (
             _build_conflicted_merge_via_origin_with_resolved_skill_conflict(tmp_path)
             if fixture_kind == "plain_clone"
@@ -1703,7 +1694,7 @@ class TestMarkerScriptMergeAwareSkillReviewBase:
         assert result.returncode == 0, result.stderr
         assert "skill-review: live" in result.stdout
 
-    def test_status_reports_historical_mid_merge_for_old_head_relative_marker(
+    def test_status_reports_historical_mid_merge_for_head_relative_marker(
         self, isolated_home, tmp_path
     ):
         """A marker holding the plain HEAD-relative preimage must not read
