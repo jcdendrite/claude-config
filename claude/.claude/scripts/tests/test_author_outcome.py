@@ -94,6 +94,22 @@ class TestIsCleanMarkerWrite:
         assert ao._is_clean_marker_write(command) is True
 
 
+class TestRoundHasMarkerWrite:
+    def test_sidechain_marker_write_alone_is_not_found(self):
+        """isSidechain assistant records are a subagent's own transcript
+        entries replayed into the main session file -- a marker.sh write
+        there must not count as this round's own clean-review signal."""
+        records = [_asst("claude-sonnet-5", sidechain=True, content=[_marker_write_use("side-1")])]
+        assert ao._round_has_marker_write(records, 0, len(records)) is False
+
+    def test_main_thread_marker_write_is_still_found_alongside_a_sidechain_one(self):
+        records = [
+            _asst("claude-sonnet-5", sidechain=True, content=[_marker_write_use("side-1")]),
+            _asst("claude-sonnet-5", content=[_marker_write_use("main-1")]),
+        ]
+        assert ao._round_has_marker_write(records, 0, len(records)) is True
+
+
 class TestConfigDirRootForSession:
     def test_derives_the_owning_root_for_two_distinct_config_dir_roots(self, tmp_path):
         """TestMultiRootLedgerLookup (below) pins the same invariant through
@@ -278,6 +294,15 @@ class TestRoundNumberMismatch:
         rows = [_ledger_row(round=1, disposition="ADDRESS")]
         assert ao._round_number_mismatch(rows, round_open_count=0) is True
 
+    def test_bool_round_only_ledger_is_not_a_mismatch(self):
+        """round=True/False are JSON booleans, not round numbers -- Python's
+        bool being an int subclass would otherwise let them slip into
+        rounds_with_key as round 1/0. Excluded the same way a legacy
+        round=None row is, so this must not flag a bool-only ledger as a
+        mismatch."""
+        rows = [_ledger_row(round=True, disposition="ADDRESS"), _ledger_row(round=False, disposition="DEFER")]
+        assert ao._round_number_mismatch(rows, round_open_count=2) is False
+
 
 class TestLedgerPossiblySwept:
     _OLD_RECORD_TS = "2026-08-01T10:00:00.000Z"
@@ -389,7 +414,7 @@ class TestLedgerPossiblySwept:
         """max(timestamps) == now - _LEDGER_SWEEP_FLOOR_DAYS * 86400 sits on
         the strict `<` inequality's excluded side, one second short of
         swept -- the fixed floor _ledger_possibly_swept actually compares
-        against, not the dynamically-resolved _ledger_sweep_window_seconds."""
+        against."""
         jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
         now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400
@@ -636,6 +661,46 @@ class TestClassifyRound:
         classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
         assert classification == ao._OUTCOME_UNATTRIBUTED
         assert matching == []
+
+    def test_bool_round_value_never_matches_round_ordinal_via_equality(self):
+        """round=True == 1 in Python (bool is an int subclass), so without
+        the isinstance(..., bool) guard this row would wrongly match
+        round_ordinal=1 via plain equality. Distinct from
+        test_legacy_row_without_round_key_never_matches_any_round above:
+        that case relies on None != int, already false without any guard,
+        while this one relies on the explicit bool exclusion."""
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        rows = [_ledger_row(round=True, disposition="ADDRESS")]
+        classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_UNATTRIBUTED
+        assert matching == []
+
+
+class TestAgentDispatchToolUseIds:
+    def test_sidechain_dispatch_is_excluded_but_main_thread_dispatch_is_found(self):
+        """isSidechain assistant records are a subagent's own transcript
+        entries replayed into the main session file -- a dispatch tool_use
+        there is not this session's own dispatch and must not appear in
+        the result."""
+        data_quality = ao.Counter()
+        records = [
+            _asst("claude-sonnet-5", sidechain=True, content=[_agent_use("side-1", "code-writer")]),
+            _asst("claude-sonnet-5", content=[_agent_use("main-1", "code-writer")]),
+        ]
+        result = ao._agent_dispatch_tool_use_ids(records, "code-writer", data_quality)
+        assert result == [("main-1", 1)]
+
+
+class TestBuildToolResultIndexMap:
+    def test_sidechain_tool_result_is_excluded_but_main_thread_one_is_found(self):
+        """isSidechain user records are a subagent's own transcript entries
+        replayed into the main session file -- a tool_result there belongs
+        to the subagent's own dispatch bookkeeping, not this session's own
+        completion-index map."""
+        sidechain_result = _user_msg([_tool_result("side-1", "done")])
+        sidechain_result["isSidechain"] = True
+        records = [sidechain_result, _user_msg([_tool_result("main-1", "done")])]
+        assert ao._build_tool_result_index_map(records) == {"main-1": 1}
 
 
 class TestReviewLedgerSubprocessIntegration:

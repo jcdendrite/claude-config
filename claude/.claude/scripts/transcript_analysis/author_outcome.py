@@ -107,6 +107,8 @@ def _round_has_marker_write(records: list[dict], open_idx: int, span_end: int) -
     code-review` shape -- the fallback signal used only when the round has
     no ledger row at all (see _classify_round)."""
     for rec in records[open_idx:span_end]:
+        if rec.get("isSidechain"):
+            continue
         if rec.get("type") != "assistant":
             continue
         for block in (rec.get("message") or {}).get("content") or []:
@@ -202,23 +204,6 @@ def _cleanup_period_days(config_dir_root: Path) -> int:
     return max(value, _LEDGER_SWEEP_FLOOR_DAYS)
 
 
-def _ledger_sweep_window_seconds(jsonl: Path) -> int:
-    """review-ledger.sh's own sweep window, in seconds, for the config-dir
-    root this transcript's session lives under -- see _cleanup_period_days.
-
-    Resolved per-session (via _config_dir_root_for_session) rather than
-    from this process's own $CLAUDE_CONFIG_DIR: a corpus scan can span
-    declared_transcript_roots' several config-dir roots at once, each with
-    its own settings.json and potentially different cleanupPeriodDays.
-
-    Has no production caller -- _ledger_possibly_swept compares against
-    the fixed _LEDGER_SWEEP_FLOOR_DAYS instead. Retained for cross-language
-    parity testing against clear-stale's dynamic-resolution semantics in
-    _lib.sh's own _ledger_sweep_window_days.
-    """
-    return _cleanup_period_days(_config_dir_root_for_session(jsonl)) * 86400
-
-
 def _ledger_path_for_session(jsonl: Path) -> Path | None:
     """The one review-narrative-ledger file for this transcript's own
     session id, found by session-id glob. Correct only under the
@@ -309,7 +294,10 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     always returns False for that case rather than flagging every
     pre-migration or ledger-less session as a mismatch.
     """
-    rounds_with_key = [row["round"] for row in ledger_rows if isinstance(row.get("round"), int)]
+    rounds_with_key = [
+        row["round"] for row in ledger_rows
+        if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
+    ]
     if not rounds_with_key:
         return False
     # groupby collapses each maximal run of a repeated value into one
@@ -398,7 +386,10 @@ def _classify_round(
     same path a round the kill switch suppressed every append for also
     takes.
     """
-    matching = [row for row in ledger_rows if row.get("round") == round_ordinal]
+    matching = [
+        row for row in ledger_rows
+        if not isinstance(row.get("round"), bool) and row.get("round") == round_ordinal
+    ]
     if any(row.get("disposition") == _DISPOSITION_ADDRESS for row in matching):
         return _OUTCOME_FAILURE, matching
     if matching:
@@ -421,6 +412,8 @@ def _agent_dispatch_tool_use_ids(
     `agent_type` on the main thread, in record order."""
     dispatches: list[tuple[str, int]] = []
     for idx, rec in enumerate(records):
+        if rec.get("isSidechain"):
+            continue
         if rec.get("type") != "assistant":
             continue
         for block in (rec.get("message") or {}).get("content") or []:
@@ -453,6 +446,8 @@ def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
     """
     index_map: dict[str, int] = {}
     for idx, rec in enumerate(records):
+        if rec.get("isSidechain"):
+            continue
         if rec.get("type") != "user":
             continue
         content = (rec.get("message") or {}).get("content")

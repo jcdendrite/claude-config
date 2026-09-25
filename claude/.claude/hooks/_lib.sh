@@ -3497,6 +3497,15 @@ _lib_append_line_locked() {
 # fields would never match byte-for-byte. This is why the check below
 # projects through DEDUP_KEY_JQ_FILTER instead of taking
 # _lib_append_line_locked's whole-line match.
+# The dedup check below re-reads and re-parses the whole FILE on every call
+# (O(file size) per append). FILE is one review session's own ledger, so
+# this stays cheap: it's bounded by how many findings a single review round
+# appends, not by directory size or file age.
+# review-ledger.sh's per-append call to _sweep_stale_ledger_files (with the
+# fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
+# footprint by evicting whole stale files. It never touches this file while
+# the session that owns it is still live, so it puts no cap on FILE's own
+# growth.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
   # Requires a brace-delimited, comma-separated identifier list -- rejects

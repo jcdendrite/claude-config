@@ -17,6 +17,9 @@ _LEDGER_RATIONALE_MAX_CHARS=300
 _LEDGER_SOURCE_MAX_CHARS=200
 # 4 digits (max round 9999) is generous for a session-scoped invocation counter.
 _LEDGER_ROUND_MAX_DIGITS=4
+# Ledger row schema version -- unread today, lets a future migration
+# distinguish row shapes without re-deriving them from optional-key presence.
+_LEDGER_SCHEMA_VERSION=2
 
 usage() {
   cat >&2 <<'EOF'
@@ -296,16 +299,16 @@ case "$SUBCOMMAND" in
     EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # jq -nc avoids hand-escaping free text -- this repo's convention for
-    # untrusted/free-form strings. -c keeps each record on one line, so the
-    # O_APPEND write below is atomic.
+    # untrusted/free-form strings. -c keeps each record on one line, and the
+    # worst-case escaped-JSON line for this field set stays comfortably
+    # under the 4096-byte POSIX PIPE_BUF floor, so the O_APPEND write below
+    # is atomic.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
-    # schema_version is unread today; it lets a future migration distinguish
-    # row shapes without re-deriving them from optional-key presence.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
-      --argjson round "$ROUND" --argjson schema_version 2 --arg event_time "$EVENT_TIME" \
+      --argjson round "$ROUND" --argjson schema_version "$_LEDGER_SCHEMA_VERSION" --arg event_time "$EVENT_TIME" \
       '{schema_version: $schema_version, round: $round, finding: $finding, disposition: $disposition,
         rationale: $rationale, source: $source, authoring_agent: $authoring_agent,
         authoring_effort: $authoring_effort, event_time: $event_time}')
