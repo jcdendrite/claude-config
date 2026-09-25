@@ -571,10 +571,15 @@ class TestSelectPytestTargets:
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
     def test_manifest_one_level_too_shallow_is_not_a_manifest_change(self):
-        """No .claude-plugin/ segment -- _is_plugin_manifest_change's len(parts)
-        == 4 check must reject this three-part shape, not just accept
-        len(parts) > 3 like the sibling plugin-generic predicates do."""
+        """No .claude-plugin/ segment: a three-part path.
+        _is_plugin_manifest_change requires exactly 4 parts, unlike sibling
+        predicates that accept len(parts) > 3."""
         assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/plugin.json")
+
+    def test_manifest_wrong_middle_directory_is_not_a_manifest_change(self):
+        """Right depth and filename, wrong directory -- isolates the
+        parts[2] == ".claude-plugin" check from the predicate's other clauses."""
+        assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/hooks/plugin.json")
 
     def test_manifest_one_level_too_deep_is_not_a_manifest_change(self):
         """A file nested under .claude-plugin/ rather than directly in it --

@@ -307,11 +307,11 @@ def _is_plugin_agents_change(path: str) -> bool:
     return _is_plugin_subpath(path, "agents")
 
 
-# test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json by
-# path, not by import -- same undeclared-dependency shape as
-# TRANSCRIPT_ANALYSIS_TEST_GLOB. Deliberately narrower than
-# _is_plugin_subpath: only the manifest file itself, not every file under
-# .claude-plugin/, matches what that glob reads.
+# test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
+# by path, not by import — an undeclared dependency, same shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB.
+# Deliberately narrower than _is_plugin_subpath: only the manifest file
+# itself, not every file under .claude-plugin/, matches what that glob reads.
 def _is_plugin_manifest_change(path: str) -> bool:
     parts = Path(path).parts
     return len(parts) == 4 and parts[0] == PLUGINS_DIR and parts[2] == ".claude-plugin" and parts[3] == "plugin.json"
