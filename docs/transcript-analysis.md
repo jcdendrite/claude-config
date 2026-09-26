@@ -1022,6 +1022,8 @@ Neither excluded shape ever reaches the consistent-5m-root count, the consistent
 - **roots disagree** (consistent roots favor opposite directions)
 - **no verdict** (the bucket has zero consistent roots)
 
+A consistent root that favors the tier it already runs never clears, since its margin measures the savings from switching away from that tier. A bucket whose consistent roots all run the same tier and all favor staying on it therefore returns `decline`: no root has a switch to make, rather than a switch whose evidence fell short.
+
 **Two-slice cross-check.** For any root with both `W5m > 0` and `W1h > 0` — whether it cleared the dominance threshold or was excluded as a near-tie — the table is followed by a `tier-split account-N: 5m-slice favors T, 1h-slice favors T (agree|disagree)` line naming each tier's own accumulators' favoured direction, using the same net-sign rule the consistent-root reduction itself uses. This line is informative only: it never feeds `root_inputs`, never reaches the bucket's verdict, and never changes the consistent-5m-root, consistent-1h-root, or excluded-root count. Counting a root-slice instead of a root would change the unanimity unit the verdict rests on.
 
 A discrepancy between the gap-derived `idle 5m-1h` classification and the vendor's own `cache_miss_reason` signal, for every call so classified, prints as a disclosed count — it never overrides the gap-derived classification either accumulator uses.
