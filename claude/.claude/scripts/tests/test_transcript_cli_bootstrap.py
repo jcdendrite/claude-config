@@ -262,7 +262,7 @@ def _seed_pr_cost_export_account(config_dir: Path) -> None:
 def test_transcript_analysis_pr_cost_export_subprocess_writes_synthetic_two_account_rows(tmp_path):
     """Confirms a pr-cost-export subprocess run against synthetic roots is
     distinguishable from a real export via the provenance line's
-    corpus_override=1, and that redaction survives the subprocess boundary.
+    corpus_override=1. Also confirms redaction survives the subprocess boundary.
     Seeds two synthetic accounts via CLAUDE_CONFIG_DIR (the active profile)
     and TRANSCRIPT_CONFIG_DIRS_FILE (one declared root), matching the recipe
     docs/transcript-analysis.md documents for smoke-testing any
