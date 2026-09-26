@@ -14,7 +14,7 @@ import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from transcript_analysis import corpus, denials, render, reviewer_yield, review_rounds, scope
+from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
