@@ -31,16 +31,16 @@ jobs:
     # deliberate timeout-blocking tests one at a time (e.g.
     # claude/.claude/hooks/tests/test_hook_alignment.py's "elapsed < 12" and
     # claude/.claude/hooks/tests/test_deny_pii_in_commits.py's four
-    # "elapsed < 9.5" git-timeout tests). A single-invocation run (pre-split)
-    # measured ~4m7s (PR #611's CI run,
-    # https://github.com/jcdendrite/claude-config/actions/runs/31421062875/job/93561720972);
-    # the two-pass split trades that one number for parallel-pass wall time
-    # plus a mostly-serial timing pass, not yet re-measured end to end here.
+    # "elapsed < 9.5" git-timeout tests). Run 34872895683 (headSha 9d7f5a32)
+    # measured the two-pass split's actual cost. The parallel pass took 7m01s
+    # and the serial timing pass took 5m44s, a 12m45s total. That total
+    # exceeded the then-current 15-minute cap and got killed mid-shellcheck.
     # Add to that the shellcheck step (~10s) and apt-get update + install
     # stow and direnv (~10-20s on a typical runner, more on a stale
-    # package-index cache). 20 minutes gives headroom above the two-pass
-    # total so continued organic test-suite growth doesn't require another
-    # bump on every PR that happens to add the next test.
+    # package-index cache). 20 minutes leaves roughly 7 minutes of margin
+    # above that measured 12m45s total so continued organic test-suite
+    # growth doesn't require another bump on every PR that happens to add
+    # the next test.
     timeout-minutes: 20
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.

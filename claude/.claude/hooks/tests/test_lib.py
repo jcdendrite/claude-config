@@ -2465,6 +2465,127 @@ def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path)
     assert result.returncode == 0
 
 
+# --- _lib_head_tree_hash -----------------------------------------------
+#
+# Sibling of _lib_verification_cache_sentinel_present above: also read
+# directly at this layer, since marker.sh's write/check verification arms
+# only exercise it as one step inside a larger recipe.
+
+
+def _head_tree_hash_result(
+    repo_root: Path, cap_mode: str = "capped"
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+         "bash", cap_mode, str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_head_tree_hash_capped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """The capped path's stdout is exactly `git rev-parse HEAD^{tree}` --
+    write and check's shared recipe depends on this matching bit-for-bit."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_uncapped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """Same recipe as the capped case, run through the uncapped branch --
+    both cap_mode arguments must compute the identical hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "uncapped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_absent_on_commit_less_repo(tmp_path: Path) -> None:
+    """No HEAD to resolve. `git rev-parse HEAD^{tree}` exits 128 but still
+    echoes the literal string "HEAD^{tree}", so the two-outcome contract
+    must check git's own exit status rather than stdout emptiness."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_head_tree_hash_invalid_cap_mode_exits_2_with_message(tmp_path: Path) -> None:
+    """An unrecognized cap_mode argument is a caller bug, not a git failure --
+    it exits 2 (distinct from the 1 a resolvable-but-absent HEAD returns) and
+    names the bad value in its stderr message."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    result = _head_tree_hash_result(repo, "sideways")
+
+    assert result.returncode == 2
+    assert (
+        "_lib_head_tree_hash: invalid cap_mode sideways (want capped or uncapped)"
+        in result.stderr
+    )
+
+
+@pytest.mark.timing
+def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path) -> None:
+    """A stalled `git rev-parse HEAD^{tree}` must not hang the caller past
+    the 5s _lib_capped cap, and a killed call must fall through to the same
+    absent outcome a commit-less repo gets, never a false hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
+    stub_git = stub_dir / "git"
+    stub_git.write_text(
+        '#!/bin/bash\n'
+        'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
+        f'  sleep {scaled_shim_sleep(10)}\n'
+        'fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    stub_git.chmod(0o755)
+
+    with assert_cap_engaged(stub_dir, production_cap=5):
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+             "bash", "capped", str(repo)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
 #     _lib_fragment_has_token --------------------------------------------
 #

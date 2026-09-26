@@ -945,9 +945,10 @@ case "$SUBCOMMAND" in
         # not-opted-in repo short-circuits before the uncommitted-status and
         # tree-hash calls below.
         _lib_verification_cache_sentinel_present "$REPO_ROOT" || { printf 'no-match\n'; exit 1; }
-        # Every no-match exit below is byte-identical to this one; test_marker_script.py's
-        # TestMarkerScriptVerification class depends on its _opted_in_origin autouse
-        # fixture to reach any of them for the right reason.
+        # Every no-match exit below is byte-identical to this one.
+        # test_marker_script.py's TestMarkerScriptVerification class depends
+        # on its _opted_in_origin autouse fixture to reach any of them for
+        # the right reason.
         # Same hash recipe as the `write verification` arm. Read-only: no
         # SESSION_ID needed since this never writes.
         # A hash that can't be computed must read as no-match, not match --
@@ -958,7 +959,8 @@ case "$SUBCOMMAND" in
         # Unlike `write`, a dirty tree is not an error here -- `check` is
         # read-only, so it just reads as a cache miss.
         # Capped like every other check-path git call in this file, unlike
-        # write's own uncapped guard -- this one runs on every invocation.
+        # write's own uncapped guard. This call runs on every `check`
+        # invocation, so a stall here should degrade, capped-tooling permitting.
         UNCOMMITTED_STATUS=$(_lib_capped git -C "$REPO_ROOT" status --porcelain 2>/dev/null)
         STATUS_EXIT=$?
         [ "$STATUS_EXIT" -eq 0 ] && [ -z "$UNCOMMITTED_STATUS" ] || { printf 'no-match\n'; exit 1; }

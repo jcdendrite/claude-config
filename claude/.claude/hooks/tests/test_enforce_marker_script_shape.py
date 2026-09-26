@@ -354,6 +354,10 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh write code-review extra"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_write_verification_extra_arg_denied(self):
+        cmd = "~/.claude/scripts/marker.sh write verification extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_status_extra_arg_denied(self):
         """status takes no skill argument -- a trailing arg must be denied,
         mirroring the extra-arg guard every other no-argument subcommand
@@ -389,8 +393,9 @@ class TestEnforceMarkerScriptShape:
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_check_mismatched_skill_denied(self):
-        """check only supports code-review -- a different skill must be
-        denied, mirroring test_mismatched_subcommand_skill_pair_denied above."""
+        """check only supports code-review and verification -- a different
+        skill must be denied, mirroring
+        test_mismatched_subcommand_skill_pair_denied above."""
         cmd = "~/.claude/scripts/marker.sh check plan-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
@@ -402,6 +407,11 @@ class TestEnforceMarkerScriptShape:
     def test_check_code_review_extra_arg_denied(self):
         """check code-review with a trailing arg must be denied."""
         cmd = "~/.claude/scripts/marker.sh check code-review extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_check_verification_extra_arg_denied(self):
+        """check verification with a trailing arg must be denied."""
+        cmd = "~/.claude/scripts/marker.sh check verification extra"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_handoff_extra_arg_denied(self):

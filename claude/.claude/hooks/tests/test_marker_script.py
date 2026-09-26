@@ -3803,10 +3803,10 @@ class TestMarkerScriptStatusDiffBaseInvocationCount:
 
 
 class TestMarkerScriptVerification:
-    """`verification` is a tree-keyed completion marker: `write` and `check`
-    both hash `git rev-parse HEAD^{tree}` -- the content-address of the tree
-    ready-for-review step 2 actually executes -- via the shared
-    _lib_head_tree_hash helper.
+    """`verification` is a tree-keyed completion marker. `write` and `check`
+    both hash `git rev-parse HEAD^{tree}`, the content-address of the tree
+    `ready-for-review` step 2 actually executes, via the shared
+    `_lib_head_tree_hash` helper.
     It is recomputed at write time rather than through cumulative-review's
     recorded-subject indirection.
     `check` applies VERIFICATION_CHECK_MAX_AGE_SECONDS the same way `check
@@ -4259,6 +4259,54 @@ class TestMarkerScriptVerification:
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
 
+    def test_not_opted_in_repo_never_calls_status_or_tree_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The `check verification` arm's own comment claims the sentinel
+        check runs first so a not-opted-in repo short-circuits before the
+        uncommitted-status and tree-hash calls below -- proves that ordering
+        directly, mirroring
+        test_only_one_git_diff_invocation_on_the_check_path's invocation-log
+        technique. A not-opted-in repo's `check verification` must never
+        invoke `git status --porcelain` or `git rev-parse HEAD^{tree}` at
+        all, only the sentinel-check `cat-file -e` call."""
+        _arm_default_branch_ref(git_repo)  # origin/main -> HEAD, no sentinel
+        _commit_the_fixtures_staged_change(git_repo)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-invocation-args"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'echo "$@" >> {invocation_log}\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _run(
+            ["check", "verification"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert not any(re.match(r"^-C \S+ status --porcelain$", line) for line in invocations), (
+            f"expected no `status --porcelain` git invocation when not opted in, got: {invocations}"
+        )
+        assert not any(
+            re.match(r"^-C \S+ rev-parse HEAD\^\{tree\}$", line) for line in invocations
+        ), (
+            f"expected no `rev-parse HEAD^{{tree}}` git invocation when not opted in, "
+            f"got: {invocations}"
+        )
+        assert any("cat-file -e" in line for line in invocations), (
+            f"expected the sentinel-check cat-file -e invocation to occur, got: {invocations}"
+        )
+
     @pytest.mark.timing
     def test_sentinel_presence_check_times_out_to_no_match(
         self, isolated_home, git_repo, tmp_path
@@ -4274,31 +4322,27 @@ class TestMarkerScriptVerification:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "cat-file" ] && [ "$4" = "-e" ] && [ "$#" -eq 5 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "verification"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "verification"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
 
     def test_status_live_when_hash_matches_current_tree(self, isolated_home, git_repo):
         sid = self.SID
@@ -4310,9 +4354,11 @@ class TestMarkerScriptVerification:
         assert "verification: live" in result.stdout
 
     def test_status_unaffected_by_an_untracked_file(self, isolated_home, git_repo):
-        """Mirrors test_check_match_unaffected_by_an_untracked_file for
-        `status`: an untracked file's presence must not flip verification's
-        reported state away from what the tree hash actually matches."""
+        """The asymmetric counterpart to
+        test_check_no_match_when_uncommitted_change_present_despite_matching_tree_hash.
+        That test proves an untracked file flips `check` to no-match. This
+        test proves the same untracked file does not affect `status`, since
+        `status` has no uncommitted-changes guard."""
         _seed_session(isolated_home, self.SID)
         _write_verification_marker(
             isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
@@ -4483,31 +4529,27 @@ class TestMarkerScriptVerification:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "verification"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "verification"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_check_status_call_times_out_to_no_match(
@@ -4523,31 +4565,27 @@ class TestMarkerScriptVerification:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-C" ] && [ "$3" = "status" ] && [ "$4" = "--porcelain" ] && [ "$#" -eq 4 ]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
         )
         stub.chmod(0o755)
 
-        start = time.monotonic()
-        result = _run(
-            ["check", "verification"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = _run(
+                ["check", "verification"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
 
     def test_check_writes_no_marker(self, isolated_home, git_repo):
         marker_dir = isolated_home / ".claude" / "verification-markers"
@@ -4832,7 +4870,7 @@ class TestMarkerScriptCheck:
     def test_freshness_bound_is_a_strict_less_than_not_at_or_under(
         self, isolated_home, git_repo
     ):
-        """`_code_review_marker_fresh_age` uses `age -lt max_age_seconds` --
+        """`_marker_fresh_age` uses `age -lt max_age_seconds` --
         a marker at or past the bound must read as stale (no-match), while
         comfortably under it must still read as fresh (match). Uses an
         overridden bound with a slack margin wide enough to absorb the
@@ -4891,7 +4929,7 @@ class TestMarkerScriptCheck:
         """Two markers can share the same repo-hash prefix and the same
         hash matching the current staged diff -- one from an earlier
         session past the freshness bound, one from a later session still
-        within it. _code_review_marker_fresh_age's candidate loop must keep
+        within it. _marker_fresh_age's candidate loop must keep
         scanning past the stale match rather than stopping at the first
         candidate it encounters. The stale session id sorts before the
         fresh one so a premature-return bug would surface here as a false
@@ -4959,7 +4997,7 @@ class TestMarkerScriptCheck:
     def test_date_failure_reads_as_no_match_not_maximally_fresh(
         self, isolated_home, git_repo, tmp_path
     ):
-        """If `date +%s` fails, `_code_review_marker_fresh_age` must return
+        """If `date +%s` fails, `_marker_fresh_age` must return
         1 (no fresh marker) rather than let an empty $now turn the age
         arithmetic into a large negative number that trivially passes the
         freshness bound -- a fail-open here would silently skip a real
@@ -5070,14 +5108,14 @@ class TestMarkerScriptCheck:
 
     @pytest.mark.timing
     def test_grep_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
-        """`_code_review_marker_fresh_age`'s own `grep -qFx` call is capped
+        """`_marker_fresh_age`'s own `grep -qFx` call is capped
         via `_lib_capped_for(5)` -- a stalled `grep` must not hang `check`
         indefinitely, and a killed call must fall through to no-match, never
         a false match on an unverified marker value. `_lib_marker_value_present`
         makes an earlier, identically-shaped `grep -qFx` call on the same
         marker file (the cheap common-case hash check `check` runs first), so
         the stub only stalls from the second `-qFx` invocation onward --
-        isolating `_code_review_marker_fresh_age`'s own call."""
+        isolating `_marker_fresh_age`'s own call."""
         if not shutil.which("timeout") and not shutil.which("gtimeout"):
             pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         real_grep = shutil.which("grep")
