@@ -308,6 +308,87 @@ class TestSessionMarkerDashboardLedgerSummary:
             "an empty ledger, with no active markers either, must produce no output"
         )
 
+    def test_ledger_with_only_clean_rows_adds_no_summary(self, isolated_home, git_repo):
+        """A non-empty ledger holding only CLEAN dispositions (no ADDRESS/
+        DEFER rows) must not be treated as content to summarize — the common
+        all-clean-review case must match the absent/empty-ledger no-output
+        behavior, not surface a "0 findings" line."""
+        sid = "sess-ledger-clean-only"
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "n/a", "disposition": "CLEAN", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        assert result.stdout == "", (
+            "a CLEAN-only ledger, with no active markers either, must produce no output"
+        )
+
+    def test_ledger_with_clean_rows_interleaved_excludes_them_from_count(
+        self, isolated_home, git_repo
+    ):
+        """CLEAN rows interleaved with ADDRESS/DEFER rows in the same ledger
+        must be excluded from both the count and the total, not just when
+        CLEAN is the only disposition present."""
+        sid = "sess-ledger-clean-interleaved"
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "n/a", "disposition": "CLEAN", "rationale": "r", "source": "n/a"},
+            {"finding": "f1", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+            {"finding": "n/a", "disposition": "CLEAN", "rationale": "r", "source": "n/a"},
+            {"finding": "f2", "disposition": "DEFER", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert ctx == (
+            "2 findings recorded this session: 1 addressed, 1 deferred"
+            " — see review-narrative-ledger for detail"
+        ), "exact match guards against a digit-collision false total (e.g. '42 findings...')"
+
+    def test_active_marker_with_clean_only_ledger_shows_marker_but_no_summary(
+        self, isolated_home, git_repo
+    ):
+        """An active bypass marker alongside a CLEAN-only ledger exercises
+        the elif-MARKER_BLOCK-only branch: the marker still reports, but the
+        CLEAN-only ledger must not surface a findings summary."""
+        sid = "sess-marker-with-clean-ledger"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).touch()
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "n/a", "disposition": "CLEAN", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "plan-review-active" in ctx
+        assert "findings recorded" not in ctx
+
+    def test_ledger_with_unrecognized_disposition_adds_no_summary(self, isolated_home, git_repo):
+        """A disposition value outside the ADDRESS|DEFER|CLEAN enum must be
+        silently excluded from the count, the same as a CLEAN-only ledger,
+        rather than leaking a spurious "0 findings" line."""
+        sid = "sess-ledger-unrecognized-disposition"
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            sid,
+            {"finding": "n/a", "disposition": "WEIRD", "rationale": "r", "source": "n/a"},
+        )
+        result = _run_dashboard({"session_id": sid, "cwd": str(git_repo)}, isolated_home, cwd=git_repo)
+        assert result.returncode == 0
+        assert result.stdout == "", (
+            "an unrecognized disposition, with no active markers either, must produce no output"
+        )
+
     def test_ledger_absent_leaves_existing_marker_behavior_unchanged(self, isolated_home, git_repo):
         """Regression guard: with no ledger file at all, output is
         identical to the pre-ledger marker-only dashboard."""

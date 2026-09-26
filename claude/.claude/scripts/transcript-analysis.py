@@ -38,6 +38,7 @@ from _config_dir import config_dir
 # scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
 # scope.PROJECTS_DIR.
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
+from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _index_subagent_dispatches,
@@ -3066,6 +3067,9 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     roots = [config_dir() / "projects"]
 
     session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    # Fully materialized (unlike every other cmd_* here, which streams one session at a
+    # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
+    # session history, small enough to hold in memory at once.
     sessions = list(session_iter)
 
     round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
@@ -10232,33 +10236,6 @@ _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 
 
-# Shell operators that chain multiple invocations into one Bash command --
-# splitting on these keeps a mutating git call from hiding in a later segment
-# of e.g. "cd worktree && git commit -m wip".
-_TURN_SHAPE_SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
-
-
-def _split_command_tokens_on_shell_operators(tokens: list[str]) -> list[list[str]]:
-    """Split a shlex-tokenized command into segments at &&, ||, ;, and | operators.
-
-    A quoted operator (e.g. a commit message containing "&&") survives as
-    part of its enclosing token from shlex.split and is never treated as a
-    separator here, since it can't equal one of these bare operator tokens.
-    """
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in _TURN_SHAPE_SHELL_OPERATOR_TOKENS:
-            if current:
-                segments.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
 # A single env-var-assignment token, e.g. "FOO=bar" -- the per-token form of
 # _DENIAL_COMMAND_ENV_PREFIX_RE's leading-assignment character classes, applied
 # per shell-operator segment (not just once at the start of the whole
@@ -10292,13 +10269,9 @@ def _bash_command_is_mutating_git(command: str) -> bool:
     """Return True iff any &&/;/|/||-chained segment of `command` invokes a
     mutating git subcommand (see _command_segment_is_mutating_git).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
     return any(
         _command_segment_is_mutating_git(segment)
-        for segment in _split_command_tokens_on_shell_operators(tokens)
+        for segment in corpus.split_command_segments(command)
     )
 
 
@@ -12234,25 +12207,13 @@ _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
 _HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
 
 
-def _handoff_signal_shlex_segments(command: str) -> list[list[str]]:
-    """Tokenize a Bash command and split it on shell operators, reusing
-    _split_command_tokens_on_shell_operators so a chained invocation (`cd x
-    && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`) is still
-    detected in its own segment."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    return _split_command_tokens_on_shell_operators(tokens)
-
-
 def _handoff_signal_bash_check_call(block: dict) -> bool:
     """True iff `block` is a Bash tool_use invoking
     nudge-handoff-near-context-cap.sh --check, in any &&/;/|-chained segment."""
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return False
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if segment and os.path.basename(segment[0]) == _HANDOFF_SIGNAL_HOOK_BASENAME and "--check" in segment[1:]:
             return True
     return False
@@ -12266,7 +12227,7 @@ def _handoff_signal_marker_transition(block: dict) -> str | None:
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return None
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if len(segment) < 3 or os.path.basename(segment[0]) != "marker.sh":
             continue
         if segment[1] in ("activate", "deactivate") and segment[2] == "ready-for-review":
@@ -13639,6 +13600,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print only rounds for one skill name (default: all three); never narrows detection.",
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
+
+    p_author_outcome = sub.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
+            " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
+            " round/dispatch structure and each session's own review-narrative-ledger file for"
+            " disposition. Corpus-wide, no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)
 
     p_cost_counts = sub.add_parser(
         "cost-counts",
