@@ -19,14 +19,23 @@ RESPOND_PR_OWNERSHIP_MARKER='**[Claude Code]**'
 # A slug must be exactly owner/repo so it cannot add path components to the
 # `repos/<slug>/pulls/comments/<id>` gh api URL.
 # A segment made only of dots is not rejected.
-respond_pr_valid_repo_slug() {
+respond_pr_valid_repo_slug() (
+  LC_ALL=C  # see respond_pr_valid_comment_id below for why
   [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
-}
+)
 
-respond_pr_valid_comment_id() {
+# LC_ALL=C forces ASCII-only bracket matching; a UTF-8 locale otherwise
+# widens [0-9] to accept non-ASCII digit lookalikes (e.g. Arabic-Indic).
+# Subshell body, not `local LC_ALL=C` — see _lib_passes_path_char_allowlist
+# in claude/.claude/hooks/_lib.sh for why `local`'s restore isn't relied on.
+respond_pr_valid_comment_id() (
+  LC_ALL=C
   [[ "$1" =~ ^[0-9]+$ ]]
-}
+)
 
+# [[:space:]] shares the same locale-widening as the two predicates above
+# (UTF-8 also admits NBSP/ideographic space here) but is left unpinned.
+# See test_ascii_whitespace_only_body_is_blank_under_c_locale for why.
 respond_pr_body_is_blank() {
   [[ -z "${1//[[:space:]]/}" ]]
 }
