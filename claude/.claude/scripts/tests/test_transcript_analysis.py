@@ -29340,12 +29340,13 @@ class TestPrCostExportRefusals:
         self, tmp_path, fake_projects, monkeypatch, capsys, column, malformed_value,
     ):
         """Covers the `machine`/`pr_number`/`merged_at` branches. For
-        `pr_number` and `merged_at`, the wrapped stdlib call (`int(...)`,
-        `datetime.fromisoformat(...)`) raises a `ValueError` that does embed
-        the raw value before `_parse_pr_cost_ledger_row_cells` discards it.
-        `machine` instead fails a direct regex match with no upstream
-        exception at all. Either way, `pr-cost-export`'s stderr line still
-        doesn't leak a peer account's raw cell for any of the three."""
+        `pr_number` and `merged_at`, the wrapped stdlib call raises a
+        `ValueError` that embeds the raw value.
+        `_parse_pr_cost_ledger_row_cells` discards that value before it
+        reaches stderr. `machine` instead fails a direct regex match with
+        no upstream exception at all. Either way, `pr-cost-export`'s stderr
+        line still doesn't leak a peer account's raw cell for any of the
+        three."""
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
