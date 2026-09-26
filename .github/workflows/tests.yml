@@ -23,24 +23,13 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
-    # pytest now runs as two passes (see the "Run tests" steps below): a
+    # pytest runs as two passes (see the "Run tests" steps below): a
     # parallel pass under -n auto covering everything not marked `timing`,
     # and a serial (-n0) pass covering only the wall-clock-sensitive `timing`
-    # tests, which would flake under sibling-worker load. Each pass pays its
-    # own full collection; the timing pass also carries the suite's
-    # deliberate timeout-blocking tests one at a time (e.g.
-    # claude/.claude/hooks/tests/test_hook_alignment.py's "elapsed < 12" and
-    # claude/.claude/hooks/tests/test_deny_pii_in_commits.py's four
-    # "elapsed < 9.5" git-timeout tests). Run 34872895683 (headSha 9d7f5a32)
-    # measured the two-pass split's actual cost. The parallel pass took 7m01s
-    # and the serial timing pass took 5m44s, a 12m45s total. That total
-    # exceeded the then-current 15-minute cap and got killed mid-shellcheck.
-    # Add to that the shellcheck step (~10s) and apt-get update + install
-    # stow and direnv (~10-20s on a typical runner, more on a stale
-    # package-index cache). 20 minutes leaves roughly 7 minutes of margin
-    # above that measured 12m45s total so continued organic test-suite
-    # growth doesn't require another bump on every PR that happens to add
-    # the next test.
+    # tests, which would flake under sibling-worker load. Run 34872895683
+    # hit the 15-minute cap mid-shellcheck. Its two pytest passes alone
+    # took 12m45s. 20 minutes leaves room for organic test-suite growth
+    # without forcing another bump on every PR.
     timeout-minutes: 20
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
