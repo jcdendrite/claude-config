@@ -29736,15 +29736,12 @@ class TestMachineIdentity:
         by both subcommands rather than each minting its own."""
         (tmp_path / ".cost-ledger-enabled").touch()
         (tmp_path / ".pr-cost-enabled").touch()
-        # _cost_ledger_report's own sentinel check goes through
-        # _config.config_enabled with no override, which reads config_dir()
-        # via _config.py's own independent binding -- distinct from
-        # fake_projects' mod.config_dir patch above, which only the
-        # machine-identity/ledger-path resolution reads. (pr-cost's own gate
-        # check passes its own config_dir_override derived from `roots`,
-        # independent of mod.config_dir; it happens to agree here only
-        # because fake_projects' tmp_path/"projects" root's parent is this
-        # same tmp_path.)
+        # _cost_ledger_report's own sentinel check reads config_dir()
+        # directly via _config.py's own binding, not through fake_projects'
+        # mod.config_dir patch above. pr-cost's own gate check instead
+        # derives its config_dir_override from `roots`, independent of
+        # mod.config_dir. The two only agree here because fake_projects'
+        # tmp_path/"projects" root's parent is this same tmp_path.
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z", branch="feature-a"),
