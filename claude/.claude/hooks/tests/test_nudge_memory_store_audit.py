@@ -891,6 +891,30 @@ class TestNudgeMemoryStoreAudit:
         fields = _parse_log_line(_log_path(tmp_path).read_text())
         assert fields["total"] == str(DEFAULT_PER_PROJECT_BYTES)
 
+    def test_fifo_inside_memory_dir_is_excluded_and_scan_completes_promptly(self, tmp_path):
+        """A FIFO planted inside memory/ is excluded from both the byte total
+        and the project-store count by find's -type f test -- and since that
+        test is a stat(2), not an open(2), the scan completes promptly even
+        with no reader on the other end."""
+        project = f"{SYNTHETIC_PROJECT_PREFIX}-fifo"
+        memory_dir = _memory_dir(tmp_path, project)
+        (memory_dir / "MEMORY.md").write_bytes(b"x" * DEFAULT_PER_PROJECT_BYTES)
+        os.mkfifo(memory_dir / "topic.fifo")
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            [str(NUDGE_HOOK)],
+            input=json.dumps(_base_payload()),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=15,
+        )
+        assert result.returncode == 0
+        fields = _parse_log_line(_log_path(tmp_path).read_text())
+        assert (fields["total"], fields["projects"]) == (str(DEFAULT_PER_PROJECT_BYTES), "1")
+
     # -- Newline-bearing paths ------------------------------------------------
 
     def test_newline_in_directory_name_cannot_forge_wc_rows(self, tmp_path):

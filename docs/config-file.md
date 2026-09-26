@@ -152,7 +152,7 @@ It runs two phases, always in this order:
    - Writes the legacy-derived value only the first time the key has no
      existing state-file row — a hand-edit or an earlier import is never
      overwritten by a later run.
-   - For the twelve non-enforcement-critical keys, this happens fully
+   - For the eleven non-enforcement-critical keys, this happens fully
      non-interactively.
    - For the five enforcement-critical keys, import is direction-aware
      rather than TTY-gated: it compares the legacy-derived value against
