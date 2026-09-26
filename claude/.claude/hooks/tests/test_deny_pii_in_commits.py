@@ -38,6 +38,21 @@ CARD_BAD_LUHN = "4111111111111112"
 GHP_TOKEN = "ghp_abcdefghijklmnopqrstuvwx1234"
 
 
+def _thousands_grouped(digits):
+    """Inserts a quote before every third digit counted from the right, and inside each hyphen-separated group for an SSN."""
+    if "-" in digits:
+        return "-".join(_thousands_grouped(group) for group in digits.split("-"))
+    reversed_digits = digits[::-1]
+    reversed_chunks = [reversed_digits[i : i + 3] for i in range(0, len(reversed_digits), 3)]
+    return "'".join(reversed_chunks)[::-1]
+
+
+CARD_VALID_THOUSANDS = _thousands_grouped(CARD_VALID)  # GH-1108: thousands-grouped form of CARD_VALID
+CARD_13_THOUSANDS = _thousands_grouped("4222222222222")  # thousands-grouped form of the :669 13-digit literal
+CARD_19_THOUSANDS = _thousands_grouped("1111111111111111113")  # thousands-grouped form of the :676 19-digit literal
+SSN_LAST_GROUP_THOUSANDS = _thousands_grouped(SSN)  # thousands-grouped form of SSN, last group only (row 13)
+
+
 def _stage(repo, name, content):
     """Write `content` to `repo/name` and stage it."""
     (repo / name).write_text(content)
@@ -706,6 +721,347 @@ class TestDenyPiiInCommits:
             bash_input(f'git commit -m \'card x"{CARD_VALID}" on file\''),
             cwd=git_repo,
         ) == "deny"
+
+    # ------------------------------------------------------------------ #
+    # Apostrophe-grouped thousands numerals (GH-1108) -- an ordinary       #
+    # Swiss/Liechtenstein-style or C++-literal-style grouped numeral must  #
+    # be allowed, unless stripping quotes would join its digits to        #
+    # another digit                                                       #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "append_site",
+        ["staged-diff", "head-diff", "quoted-message", "file-source"],
+        ids=["staged-diff", "head-diff", "quoted-message", "file-source"],
+    )
+    def test_apostrophe_thousands_card_allowed_at_every_append_site(
+        self, isolated_home, git_repo, pii_patterns, append_site
+    ):
+        """GH-1108: an apostrophe-grouped thousands numeral (a routine
+        C++-style digit-separated integer literal) is not a credit-card
+        number, so it must be allowed at every append site that feeds the
+        SSN/credit-card scan -- the staged diff, a HEAD-relative diff (`git
+        commit -a`), a double-quoted -m message, and a -F message-source
+        file."""
+        pii_patterns("# no user patterns\n")
+        line = f"literal = {CARD_VALID_THOUSANDS};\n"
+        if append_site == "staged-diff":
+            _stage(git_repo, "f.txt", line)
+            command = "git commit -m wip"
+        elif append_site == "head-diff":
+            _modify_unstaged(git_repo, "file.txt", f"first\nsecond\n{line}")
+            command = "git commit -a -m wip"
+        elif append_site == "quoted-message":
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            command = f'git commit -m "literal is {CARD_VALID_THOUSANDS}"'
+        else:
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            msg_file = git_repo / "msg.txt"
+            msg_file.write_text(f"commit summary\n\nliteral {CARD_VALID_THOUSANDS}\n")
+            command = f"git commit -F {msg_file}"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "row",
+        ["card-13", "card-19", "both-on-one-line", "file-content-exact"],
+        ids=["card-13", "card-19", "both-on-one-line", "file-content-exact"],
+    )
+    def test_apostrophe_thousands_card_length_and_line_boundaries_allowed(
+        self, isolated_home, git_repo, pii_patterns, row
+    ):
+        """GH-1108: the mask must cover both ends of the credit-card length
+        window (CARD_13_THOUSANDS and CARD_19_THOUSANDS), two distinct
+        thousands numerals on one line separated by a single space (pins
+        that the mask's two global passes catch a numeral whose leading
+        bound character the previous match on the same line consumed --
+        one pass alone would leave the second numeral unmasked), and a
+        numeral that is the entire content of a -F file with nothing
+        before or after it (the mask's `^`/`$` line-edge boundary
+        alternative, which no other row in this file reaches -- every
+        other append site's content is prefixed by something, be it git's
+        diff marker, `git commit`, or an existing -F fixture's own leading
+        text)."""
+        pii_patterns("# no user patterns\n")
+        if row == "card-13":
+            _stage(git_repo, "f.txt", f"card {CARD_13_THOUSANDS}\n")
+            command = "git commit -m wip"
+        elif row == "card-19":
+            _stage(git_repo, "f.txt", f"card {CARD_19_THOUSANDS}\n")
+            command = "git commit -m wip"
+        elif row == "both-on-one-line":
+            _stage(git_repo, "f.txt", f"{CARD_13_THOUSANDS} {CARD_19_THOUSANDS}\n")
+            command = "git commit -m wip"
+        else:
+            msg_file = git_repo / "msg.txt"
+            msg_file.write_text(CARD_VALID_THOUSANDS)
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            command = f"git commit -F {msg_file}"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "append_site",
+        ["staged-diff", "head-diff"],
+        ids=["staged-diff", "head-diff"],
+    )
+    def test_apostrophe_thousands_ssn_last_group_allowed(
+        self, isolated_home, git_repo, pii_patterns, append_site
+    ):
+        """GH-1108: an SSN whose last group is spelled as an
+        apostrophe-grouped thousands numeral (`N'NNN` -- the only thousands
+        spelling that strips to the SSN shape, since the first two groups
+        are below 1000, row 13 of the plan) is not a real SSN and must be
+        allowed at the staged-diff and HEAD-diff append sites, mirroring
+        the card case's append-site coverage."""
+        pii_patterns("# no user patterns\n")
+        line = f"ref {SSN_LAST_GROUP_THOUSANDS}\n"
+        if append_site == "staged-diff":
+            _stage(git_repo, "f.txt", line)
+            command = "git commit -m wip"
+        else:
+            _modify_unstaged(git_repo, "file.txt", f"first\nsecond\n{line}")
+            command = "git commit -a -m wip"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            "apostrophe-every-four-digits",
+            "four-digit-leading-group",
+            "four-digit-trailing-group",
+            "quote-split-first-digit",
+            "backslash-split-first-digit",
+            "dollar-quote-split-first-digit",
+            "quote-split-last-digit",
+            "double-quote-splice-in-message",
+            "raw-half-match-alongside-thousands-copy",
+            "ssn-non-thousands-join",
+        ],
+        ids=[
+            "apostrophe-every-four-digits",
+            "four-digit-leading-group",
+            "four-digit-trailing-group",
+            "quote-split-first-digit",
+            "backslash-split-first-digit",
+            "dollar-quote-split-first-digit",
+            "quote-split-last-digit",
+            "double-quote-splice-in-message",
+            "raw-half-match-alongside-thousands-copy",
+            "ssn-non-thousands-join",
+        ],
+    )
+    def test_shapes_that_are_not_apostrophe_thousands_numerals_still_denied(
+        self, isolated_home, git_repo, pii_patterns, row
+    ):
+        """GH-1108: none of these shapes is a bare apostrophe-grouped
+        thousands numeral, so the mask must leave every one of them
+        untouched and the pre-existing deny behavior must be unchanged --
+        these rows pass identically before and after the fix.
+          - apostrophe-every-four-digits: not a thousands grouping at all.
+          - four-digit-leading-group / four-digit-trailing-group: the
+            explicit non-digit/non-joining bound the mask requires on each
+            side (row 15 of the plan) is a digit, not a valid boundary.
+          - quote-split-first-digit / backslash-split-first-digit /
+            dollar-quote-split-first-digit / quote-split-last-digit: a
+            joining character (`"`, `\\`, or `$'`) sits directly between a
+            lone digit and the grouped numeral, so the boundary the mask
+            needs is itself a joining character, not a true bound (rows 11
+            and 24).
+          - double-quote-splice-in-message: an ordinary double-quote
+            splice with no apostrophe anywhere to mask (row 16) -- the
+            existing quote-splice deny is untouched by this change.
+          - raw-half-match-alongside-thousands-copy: a contiguous,
+            unmasked copy of the card elsewhere in the same file still
+            matches on the raw half regardless of a masked copy nearby.
+          - ssn-non-thousands-join: `NN'N-NN-NNNN` strips back to an
+            ordinary `NNN-NN-NNNN` SSN shape; it was never a thousands
+            numeral for the mask to recognize (row 13)."""
+        pii_patterns("# no user patterns\n")
+        command = "git commit -m wip"
+        if row == "apostrophe-every-four-digits":
+            grouped_by_four = "'".join(CARD_VALID[i : i + 4] for i in range(0, len(CARD_VALID), 4))
+            _stage(git_repo, "f.txt", f"num {grouped_by_four}\n")
+        elif row == "four-digit-leading-group":
+            value = CARD_VALID[:4] + "'" + _thousands_grouped(CARD_VALID[4:])
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "four-digit-trailing-group":
+            value = _thousands_grouped(CARD_VALID[:12]) + "'" + CARD_VALID[12:]
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "quote-split-first-digit":
+            value = CARD_VALID[0] + '"' + _thousands_grouped(CARD_VALID[1:])
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "backslash-split-first-digit":
+            # A dropped backslash in mask_thousands_numerals's own bracket-
+            # expression escaping would surface here (and in
+            # dollar-quote-split-first-digit below) as this value wrongly
+            # allowed instead of denied.
+            value = CARD_VALID[0] + "\\" + _thousands_grouped(CARD_VALID[1:])
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "dollar-quote-split-first-digit":
+            value = CARD_VALID[0] + "$'" + _thousands_grouped(CARD_VALID[1:])
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "quote-split-last-digit":
+            value = _thousands_grouped(CARD_VALID[:15]) + '"' + CARD_VALID[15]
+            _stage(git_repo, "f.txt", f"num {value}\n")
+        elif row == "double-quote-splice-in-message":
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            first_half, second_half = CARD_VALID[:8], CARD_VALID[8:]
+            command = f'git commit -m "{first_half}""{second_half}"'
+        elif row == "raw-half-match-alongside-thousands-copy":
+            _stage(git_repo, "f.txt", f"{CARD_VALID} {CARD_VALID_THOUSANDS}\n")
+        else:
+            value = SSN[:2] + "'" + SSN[2:]
+            _stage(git_repo, "f.txt", f"ref {value}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "companion",
+        ["none", "staged-file", "second-message"],
+        ids=["no-companion", "companion-staged-file", "companion-second-message"],
+    )
+    def test_apostrophe_idiom_splice_card_denied_regardless_of_companion(
+        self, isolated_home, git_repo, pii_patterns, companion
+    ):
+        """GH-1108: a card value written with the bash `'\\''` idiom inside
+        a single-quoted -m has no bare apostrophe left in the raw command
+        text (the idiom replaces each `'` with a four-character escape
+        sequence), so the mask cannot recognize it as a thousands numeral
+        -- it still joins into a contiguous Luhn-valid run once
+        _lib_strip_shell_quotes simulates the shell's own quote removal,
+        and must still deny. A genuine, maskable copy of the same value
+        present elsewhere in the commit -- staged in a file, or in a
+        second double-quoted -m on the same command line -- must not vouch
+        for the spliced copy: masking is judged per occurrence (row 23 of
+        the plan)."""
+        pii_patterns("# no user patterns\n")
+        idiom_value = CARD_VALID_THOUSANDS.replace("'", "'\\''")
+        command = f"git commit -m 'card {idiom_value}'"
+        if companion == "none":
+            _stage(git_repo, "f.txt", "x\nclean\n")
+        elif companion == "staged-file":
+            _stage(git_repo, "companion.txt", f"companion {CARD_VALID_THOUSANDS}\n")
+        else:
+            _stage(git_repo, "f.txt", "x\nclean\n")
+            command += f' -m "companion {CARD_VALID_THOUSANDS}"'
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    def test_apostrophe_idiom_splice_ssn_denied_with_genuine_copy_staged(
+        self, isolated_home, git_repo, pii_patterns
+    ):
+        """GH-1108: SSN counterpart of the card case above -- a genuine
+        SSN_LAST_GROUP_THOUSANDS staged in a file does not vouch for its
+        own `'\\''`-idiom-spliced copy in the commit message. A splice
+        spelled any other way than the idiom still denies at each
+        occurrence, whatever copies of the value exist elsewhere in the
+        commit (row 23)."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"ref {SSN_LAST_GROUP_THOUSANDS}\n")
+        idiom_value = SSN_LAST_GROUP_THOUSANDS.replace("'", "'\\''")
+        command = f"git commit -m 'ref {idiom_value}'"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "row",
+        ["card", "ssn"],
+        ids=["card", "ssn"],
+    )
+    def test_masked_numeral_allows_but_distinct_spliced_value_still_denied(
+        self, isolated_home, git_repo, pii_patterns, row
+    ):
+        """GH-1108: masking a thousands numeral to allow it must not blind
+        the credit-card/SSN scan to a distinct, genuinely quote-spliced
+        value elsewhere in the same commit -- pinning that the new
+        raw+masked+stripped union still carries a stripped half the splice
+        needs to join on. The SSN row is the card row's counterpart."""
+        pii_patterns("# no user patterns\n")
+        if row == "card":
+            _stage(git_repo, "f.txt", f"card {CARD_13_THOUSANDS}\n")
+            first_half, second_half = CARD_VALID[:8], CARD_VALID[8:]
+            command = f'git commit -m "card {first_half}""{second_half}"'
+        else:
+            _stage(git_repo, "f.txt", f"ref {SSN_LAST_GROUP_THOUSANDS}\n")
+            second_ssn = "987-65-4321"
+            first_half, second_half = second_ssn[:7], second_ssn[7:]
+            command = f'git commit -m "ref {first_half}""{second_half}"'
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(command),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_mask_sed_shim_curly_brace_failure_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """GH-1108: fail-closed pin for the mask's own sed call --
+        mask_thousands_numerals's expression is the only sed invocation in
+        this hook containing the interval quantifier `{1,3}` (_lib.sh has
+        no such token), so a shim that fails only on an argument
+        containing that token isolates the mask's own SSN_CC_MASKED_EXIT
+        check from every other sed call site in the hook, and otherwise
+        execs the real sed."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+
+        shim_dir = tmp_path / "sed-fails-on-mask-expression-only"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            for arg in "$@"; do
+              case "$arg" in
+                *'{{1,3}}'*) exit 1 ;;
+              esac
+            done
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=git_repo,
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None and "could not mask thousands numerals" in reason, reason
+
+    def test_ssn_cc_strip_sed_shim_failure_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """GH-1108: fail-closed pin for the SSN/credit-card union's own
+        strip call, isolated from the mask's own sed call above -- the
+        shim exits 1 only when its stdin already carries the masked shape
+        (`<marker> <marker>`, the numeral replaced by a space), which only
+        the strip-of-already-masked-text call ever sees; the mask's own
+        call sees the pre-mask `<marker>N'NNN<marker>` and passes through
+        untouched, and every other _lib_strip_shell_quotes call site in
+        the hook sees neither shape in its own stdin."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+        pii_patterns("# no user patterns\n")
+        marker = "GH1108STRIPMARKER"
+        _stage(git_repo, "f.txt", f"{marker}1'234{marker}\n")
+
+        shim_dir = tmp_path / "sed-fails-on-masked-marker-pair"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" = "-e" ]; then
+              input=$(cat)
+              case "$input" in
+                *"{marker} {marker}"*) exit 1 ;;
+              esac
+              printf '%s' "$input" | "{real_sed}" "$@"
+            else
+              exec "{real_sed}" "$@"
+            fi
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=git_repo,
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None and "could not quote-strip the SSN/credit-card scan target" in reason, reason
 
     # ------------------------------------------------------------------ #
     # Added lines only — removing PII must never be blocked               #

@@ -105,6 +105,17 @@
 #    are allowed by this hook and by deny-invisible-commit-content.sh.
 #  - Credit-card detection matches contiguous 13-19 digit runs only;
 #    space- or dash-separated card numbers are not caught.
+#  - An SSN or credit-card value written as an apostrophe-grouped thousands
+#    numeral (`N'NNN'NNN`, or an SSN whose last group is `N'NNN`) is allowed
+#    when stripping quotes would not join its digits to any other digit:
+#    - This covers a C++ digit-separated integer literal.
+#    - It also covers a quote splice at the same positions in unquoted
+#      command text.
+#    - Each occurrence is judged alone, so another copy of the value
+#      elsewhere in the commit does not change its verdict.
+#  - mask_thousands_numerals's sed -E expression is exercised only against
+#    GNU sed (this repo's CI and most dev machines). BSD/macOS sed's
+#    behavior on this expression is not independently checked.
 #  - `git -C <path> commit` aimed at a *different* repository is still
 #    detected as a commit, but the staged-diff scan runs against the
 #    session's current repository, not the `-C` target. `-C` into a
@@ -116,8 +127,10 @@
 #    `a/msg.txt`.
 #  - Every _lib_strip_shell_quotes/_lib_split_fragments call site in this
 #    hook checks its exit status and fails closed: the command's own
-#    fragment split, each fragment's git_fragment_unquoted strip, and the
-#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer.
+#    fragment split, each fragment's git_fragment_unquoted strip, the
+#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer, and
+#    the SSN/credit-card union's mask_thousands_numerals call and its own
+#    strip.
 #  - The scanned repo, index, and work tree, and both probes' repo, come from
 #    the hook's own cwd and environment, not the commit's effective ones.
 #  - When the hook's cwd is not itself a work tree, a `git -C <repo>`,
@@ -470,7 +483,7 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
   done <<< "$COMMIT_MSG_SOURCES"
 fi
 
-# Raw+stripped union that every scan below reads instead of raw
+# Raw+stripped union that the credential-value and user-pattern scans read instead of raw
 # $SCAN_TARGET alone. A quote-adjacent digit run (e.g. `x"4111111111111111"`)
 # loses the `\b` word boundary the SSN/credit-card regexes below need once
 # quotes are stripped, so only the raw copy still matches it -- same fix
@@ -504,6 +517,14 @@ luhn_valid() {
   (( sum % 10 == 0 ))
 }
 
+# Prints $1 with each apostrophe-grouped thousands numeral replaced by a space, unless stripping quotes would join its digits to another digit.
+# The substitution runs twice because one global pass skips a numeral whose leading bound character the previous match consumed.
+# This expression must stay backreference-free: sed's runtime here is linear in input only without one, and a superlinear runtime reopens the fail-open timeout gap at :154-160.
+mask_thousands_numerals() {
+  local expr=$'s/(^|[^0-9\'"\\$])([\'"\\$]*)[0-9]{1,3}(\'[0-9]{3})+([\'"\\$]*)([^0-9\'"\\$]|$)/\\1\\2 \\4\\5/g'
+  printf '%s' "$1" | sed -E -e "$expr" -e "$expr"
+}
+
 # --- Scan -----------------------------------------------------------------
 # Each match test reads SCAN_TARGET_BOTH via a here-string, not
 # `printf | grep`. `grep -q` exits on the first match; in a pipeline that
@@ -519,11 +540,27 @@ if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET_BOTH"; then
 fi
 
 if [ "$PII_ARMED" -eq 1 ]; then
-  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET_BOTH"; then
+  # SSN/credit-card raw+stripped union, masked before the strip so a thousands separator cannot join digit groups.
+  # The credential-value and user-pattern scans keep reading the unmasked SCAN_TARGET_BOTH.
+  SSN_CC_MASKED=$(mask_thousands_numerals "$SCAN_TARGET")
+  SSN_CC_MASKED_EXIT=$?
+  if [ "$SSN_CC_MASKED_EXIT" -ne 0 ]; then
+    emit_deny "Commit — could not mask thousands numerals in the SSN/credit-card scan target (exit ${SSN_CC_MASKED_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+    exit 0
+  fi
+  SSN_CC_UNQUOTED=$(_lib_strip_shell_quotes "$SSN_CC_MASKED")
+  SSN_CC_UNQUOTED_EXIT=$?
+  if [ "$SSN_CC_UNQUOTED_EXIT" -ne 0 ]; then
+    emit_deny "Commit — could not quote-strip the SSN/credit-card scan target (exit ${SSN_CC_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+    exit 0
+  fi
+  SSN_CC_SCAN_TARGET=$(printf '%s\n%s' "$SCAN_TARGET" "$SSN_CC_UNQUOTED")
+
+  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SSN_CC_SCAN_TARGET"; then
     MATCHED_LABELS+=("US Social Security number")
   fi
 
-  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET_BOTH" | sort -u)
+  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SSN_CC_SCAN_TARGET" | sort -u)
   if [ -n "$CC_CANDIDATES" ]; then
     while IFS= read -r cc_candidate; do
       [ -z "$cc_candidate" ] && continue
