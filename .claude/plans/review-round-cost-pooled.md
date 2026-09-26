@@ -26,9 +26,9 @@ Add `--pooled` to `review-round-cost` as a **dedicated render path that emits pe
 
 The load-bearing choice is that the pooled block emits **no absolute figure of any kind**; row 5 carries that argument and its citations.
 
-This revision closes the silent-exclusion bug class at every level of the traversal `--pooled` reads: scan root, project directory, and session transcript. The listing and read that already happen now record each unreadable directory or transcript in an opt-in counter, and the pooled block refuses when that counter is non-empty (rows 20-27). The pooled stderr filter also fails closed: an unrecognized diagnostic is withheld behind one fixed notice rather than printed (row 29).
+This revision closes the silent-exclusion bug class at every level of the traversal `--pooled` reads: scan root, project directory, and session transcript. The listing and read that already happen now record each unreadable directory or transcript in an opt-in counter, and the pooled block refuses when that counter is non-empty (rows 20-27). A missing path, or one that is not the kind of object its level expects, stays an empty scope rather than a gap, as it was before this revision (rows 32, 33). The pooled stderr filter also fails closed: an unrecognized diagnostic is withheld behind one fixed notice rather than printed (row 29).
 
-Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules. This revision's own set-aside alternatives sit in rows 21, 26, 29, and 30.
+Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules. This revision's own set-aside alternatives sit in rows 21, 26, 29, 30, 32, and 33.
 
 ### Cross-machine reporting (engineer-confirmed this session)
 
@@ -68,7 +68,7 @@ this session]`
 - **G3.** `review_rounds.py` must not import `cost.py` — a documented module invariant, so `cost._LIST_PRICE_CAVEAT` / `_LIST_PRICE_CAVEAT_ALERT` are unavailable here and dissolving that boundary is a separate architectural decision. `[verified: review_rounds.py:14-18 module docstring; import line at :29]`
 - **G4.** One invocation pools only the scan roots reachable from the machine it runs on (`scope.resolve_scan_roots` = `PROJECTS_DIR` + declared roots). Cross-*machine* pooling is outside any single command's reach. `[verified: scope.py:332-366]`
 - **G5.** The transcript toolkit runs on the stdlib alone — no numpy/scipy/pandas import exists anywhere under `claude/.claude/scripts/`, so the bootstrap is hand-written. `[verified: grep for numpy|scipy|pandas under claude/.claude/scripts/ returns nothing; only `random` and `statistics` appear, at transcript-analysis.py:17,22]`
-- **G6.** `Path.glob` returns no matches, rather than raising, when it walks a directory it cannot read. This is standard-library behavior the design cannot change. `[unverified]` `scope.py:625-629` records an empirical check of it, not re-run in this revision; Verification's mutation check 1 re-establishes it.
+- **G6.** `Path.glob` returns no matches, rather than raising, when a directory it walks cannot be listed, and when the path it is called on is not a directory. On CPython 3.12, `_WildcardSelector._select_from` catches every `OSError` from `scandir`, and `_Selector.select_from` returns nothing when `is_dir()` is false. This is standard-library behavior the design cannot change. `[verified: /usr/lib/python3.12/pathlib.py:163-170, 199-206, 1083-1096 — the standard library of this repo's .venv interpreter, CPython 3.12.3 per its pyvenv.cfg; CI pins python-version '3.12' at .github/workflows/tests.yml:138]` Other interpreter versions are `[unverified]`. Verification's mutation check 1 re-confirms it at runtime on the interpreter under test.
 
 **Rows.**
 
@@ -131,7 +131,7 @@ this session]`
     - Session transcript: `read_session_file` returns `[]` for an unreadable file and for a readable empty one alike, and both iterators skip `[]` identically.
 
     `[verified: review_rounds.py:563-572; scope.py:293, 325-326; corpus.py:104-106, 135]`
-21. **Mechanism — the listing that reads is the listing that records.** `anchors: row20`. `_list_dir_recording_gaps` replaces the bare `glob()` calls at `scope.py:293`, `:325`, and `:326` with `sorted(directory.iterdir())` inside `try/except`. A missing directory returns `[]` silently. Any other `OSError` returns `[]` and records one gap at the caller's level. Alternatives checked:
+21. **Mechanism — the listing that reads is the listing that records.** `anchors: row20`. `_list_dir_recording_gaps` replaces the bare `glob()` calls at `scope.py:293`, `:325`, and `:326` with `sorted(directory.iterdir())` inside `try/except`. A missing path or a non-directory returns `[]` silently (row 32). Any other `OSError` returns `[]` and records one gap at the caller's level. Alternatives checked:
     - Extend the `os.access` probe to every project directory and transcript before scanning. Rejected: a probe walk separate from the read is the layered-probe shape that let each prior fix stop one level short, and a permission change between probe and read makes the two disagree.
     - `os.walk(onerror=...)`. Rejected: it walks subagent directories `--pooled`'s iteration never reads, and the glob filter, sort, and cross-root dedup would all have to be re-applied on top of it.
 
@@ -147,13 +147,13 @@ this session]`
 25. **Mechanism — the counter is an opt-in keyword holding level tags only.** `anchors: row21`.
     - `scan_gaps: collections.Counter[str] | None = None` is added to both iterators and `_resolve_project_scope`. Only the `--pooled` path in `review_rounds.py` passes one; every other `_resolve_project_scope` caller keeps the `None` default. `[verified: grep for "_resolve_project_scope(" under claude/.claude/scripts]`
     - Keys are three module constants in `scope.py` naming the level. A key never holds a path or an account ordinal, so the counter is not itself a per-account dimension.
-    - With `scan_gaps=None`, missing and permission-denied directories are skipped silently, as today. `[unverified]` for other listing errors (e.g. `EIO`): whether the old `glob` path raised or swallowed them depends on the interpreter's `pathlib` version, and this revision does not pin that.
+    - With `scan_gaps=None`, every listing `OSError` is skipped silently, matching the old `glob` path on CPython 3.12. That path swallowed every `OSError` from `scandir` and returned nothing for a non-directory (G6). The new helper returns `[]` for every `OSError` and records only when given a counter. Other interpreter versions are `[unverified]`. `[verified: /usr/lib/python3.12/pathlib.py:163-170, 199-206]`
     - Root-level project selection moves from `root.glob(projects_glob)` to the listing plus `fnmatch.fnmatchcase(name, projects_glob)`. The two match identically for a single-segment pattern, which is the flag's documented meaning (a project-dir glob). `[verified: transcript-analysis.py:12592, 12821-12823; grep finds no "/"-bearing --projects value in any test under claude/.claude/scripts]`
 26. **Mechanism — `--pooled` refuses on any recorded gap, after the scan and before the first print.** `anchors: row20`.
     - Refusing, not disclosing, matches the precedent the root-level `os.access` clause set. A digit-free notice printed beside the block (the ciso finding's alternative) was set aside: a printed figure stays citable whether or not its reader saw a stderr line.
     - `scan_gaps` fills only as `compute_review_round_costs` consumes the lazy session iterator. The earliest refusal point is therefore `_render_pooled_block`'s existing refusal call, which already runs before that function's first print. Nothing on the `--pooled` path prints to stdout before it, since the banner and the resolved-scope header are both suppressed.
     - `_render_pooled_block` takes `scan_gaps` as a required keyword-only parameter, so a direct caller cannot skip the clause by omission — the same reasoning as its existing `roots or []`. `_pooled_scope_refusal`'s own `scan_gaps=None` defers the clause, as `roots=None` defers the root-count clause. Only `cmd_review_round_cost`'s two pre-scan calls rely on that deferral.
-    - Tradeoff: a misconfigured machine now pays a full scan before the refusal. A transcript deleted between listing and open (e.g. a concurrent cleanup) also records a gap and refuses; a rerun resolves it. Both costs fall on the fail-closed side.
+    - Tradeoff: a misconfigured machine now pays a full scan before the refusal, a cost on the fail-closed side. A transcript deleted between listing and open is skipped, not refused (row 33).
     - The message is digit-free and names no path. It asks the user to check each account's `projects/` directory for an unreadable directory or `.jsonl`, with `find <projects-dir> ! -readable` labeled as a GNU find example. A `-maxdepth 2` form would put a digit in the message and break every refusal test's digit-free assertion. `-readable` is GNU-only and README.md lists macOS as supported, hence the prose statement alongside it.
 
     `[verified: review_rounds.py:702-726, 891-958; README.md:94]`
@@ -174,6 +174,29 @@ this session]`
 
     `helpers.py` is already on `pythonpath` and already imported by `test_skills.py`. `heading_texts` doesn't skip fenced code blocks, unlike the hand-rolled scanner. A stale pointer could false-pass only if its cited text appeared as a `#` line inside a fence in the redaction doc — accepted. `[verified: pyproject.toml:18; test_skills.py:54, 3252-3279; test_transcript_review_rounds.py:1638-1669]`
 31. `_bootstrap_share_intervals` drops a resample's share when that draw's denominator is zero, so a key can get its CI from fewer than `_BOOTSTRAP_RESAMPLES` values. No test reaches a pool where only some draws hit that. The staff-sdet finding's suggested fixture (zero `agent_dollars`) wouldn't either: `spend_reviewer_only`'s denominator is `branch_dollars`, not `agent_dollars`. The new test gives two of four branches zero `branch_dollars` and zero `round_dollars`, and asserts on the resulting interval's bounds rather than the internal resample count. `[verified: review_rounds.py:603-608, 648-674]`
+32. **Mechanism — a missing path and a non-directory are both an empty scope, not a gap.** `anchors: row21`. `_list_dir_recording_gaps` catches `NotADirectoryError` alongside `FileNotFoundError`. Both return `[]` and record nothing.
+    - Without this branch, a scan root that exists as a regular file becomes a permanent root-level gap. `iterdir()` is `os.listdir` with no `except` (`pathlib.py:1052-1059`), so that root raises there. The pre-revision `root.glob(projects_glob)` returned nothing for it, because `_Selector.select_from` checks `is_dir()` before it lists (`pathlib.py:163-170`). The refusal's "restore read access" advice would then misdirect, since nothing is unreadable.
+    - The deleted `os.access` clause had the same scope: it fired only when `os.path.isdir(root)` held (`review_rounds.py:563-565`). Row 27's replacement now matches it.
+    - `resolve_scan_roots` does not filter non-directory roots (`scope.py:353-366`), so a declared account whose `projects` path is a regular file reaches this listing. That account contributes no branch. With fewer than two contributing accounts left, `_render_pooled_block` prints no share at all (`review_rounds.py:685-686, 761-768`).
+    - The review finding that raised this cited a stray regular file (e.g. `.DS_Store`) directly under a scan root. That entry never reaches a project-dir listing. `_dedup_new_project_dirs` skips every candidate whose `is_dir()` is false (`scope.py:207-209`), and both multi-root iterators pass candidates through it before listing. The new branch is a second guard there. It does real work at `_iter_glob_scoped_sessions`'s root listing, which has no `is_dir()` guard, unlike `_iter_scoped_sessions` (`scope.py:280, 318-325`).
+    - Alternatives checked:
+      - An `is_dir()` guard before `_iter_glob_scoped_sessions`'s root listing, mirroring `scope.py:280`. Rejected: it is a probe separate from the listing, the shape row 21 rejects.
+      - Keep recording the gap and reword the refusal. Rejected: no transcript is excluded, so there is nothing to refuse.
+    - `os.listdir` on a non-directory failing with `ENOTDIR`, which Python raises as `NotADirectoryError`, is `[unverified]` this session. `TestScanGapCounter` item 9 and mutation check 6 confirm it at runtime.
+
+    `[verified: /usr/lib/python3.12/pathlib.py:163-170, 1052-1059 (CPython 3.12.3); scope.py:207-209, 280, 318-325, 353-366; review_rounds.py:563-565, 685-686, 761-768]`
+33. **Mechanism — the session-transcript level applies row 32's rule through `_failed_transcript_read_is_gap`.** `anchors: row32`. A `*.jsonl` whose read returns `[]` records `_SCAN_GAP_SESSION_FILE` only while it is still a regular file, or when stat'ing it fails. A directory named `*.jsonl`, a dangling `*.jsonl` symlink, and a transcript deleted between listing and open are all skipped, as a missing directory is.
+    - This is row 32's bug shape one level down (CLAUDE.md, "Audit structural siblings"). The pre-revision `project_dir.glob("*.jsonl")` yielded every name match, directories and dangling symlinks included. A one-segment pattern's selector sets `dironly` false and never checks `is_dir()` (`pathlib.py:155-161, 199-219`). Each such entry failed its `open`, `read_session_file` returned `[]`, and the loop skipped it silently (`corpus.py:65-82, 104-106`). Recording every `[]` would turn each into a permanent refusal.
+    - `Path.is_file()` returns `False` for `ENOENT`, `ENOTDIR`, `EBADF`, and `ELOOP`, and re-raises any other `OSError` (`pathlib.py:44, 51-53, 888-900`). The helper counts a re-raised `OSError` as a gap. That covers `EACCES` inside a project directory that is readable but not searchable, where listing succeeds and every `open` fails.
+    - It runs only after a read has failed, and only when `scan_gaps` is not `None`. The happy path gains no `stat`, and non-pooled callers are untouched. It cannot make a readable transcript refuse, so it is not row 21's rejected pre-read probe.
+    - Alternatives checked:
+      - `is_file()` on every listed entry before reading. Rejected: one `stat` per transcript on the happy path, and a pre-read probe is row 21's rejected shape.
+      - Have `_parse_jsonl_records` report which `OSError` it caught. Rejected: row 24 keeps `corpus.py`'s behavior unchanged, and that function's `None` contract also serves the subagent-file read (`corpus.py:112-115`).
+    - It supersedes row 26's transient-deletion tradeoff: a transcript deleted between listing and open is skipped, not refused.
+
+    `[verified: /usr/lib/python3.12/pathlib.py:44-53, 155-161, 199-219, 888-900; corpus.py:65-82, 104-117]`
+34. Row 29's fail-closed filter removed the check that caught a recognized diagnostic slipping past its own pattern. `test_pooled_run_prints_no_root_count_diagnostic_to_stderr` caught a `scanning root` line that stopped matching only through its digit-free assertion. That worked while the `else:` branch printed the raw, digit-bearing line. After row 29 the same line becomes the digit-free withheld notice, and the test passes. Each of the two end-to-end stderr tests therefore gains one assertion that `_POOLED_STDERR_WITHHELD_NOTICE` is absent, rather than a new test being added. The declared-root test's `count == 1` already catches a full slip of its own pattern. Its new assertion catches a recognized line that also reaches the `else:` branch. `[verified: review_rounds.py:788-794, 831-840; test_transcript_review_rounds.py:2254-2294]`
+35. The withheld-diagnostics notice sends an operator to a non-pooled rerun (row 29). That rerun surfaces the diagnostic only while the non-pooled path calls `compute_review_round_costs` outside the filter (`review_rounds.py:944`). No test pinned that, as the ciso FYI noted. Decision: add the test now rather than defer it. It reuses `_pooled_two_root_fixture`, needs no chmod, and guards the only route an operator has to a withheld diagnostic. `[verified: review_rounds.py:844-850, 940-952]`
 
 ### Design detail
 
@@ -257,7 +280,7 @@ Every figure is formatted by one helper, `_fmt_share_with_ci(point, lo, hi) -> s
 
 **Structure.** `_render_pooled_block` is a new module-level function; `cmd_review_round_cost` gains an early return into it after `compute_review_round_costs`, before any per-branch printing. The existing per-branch renderer is deliberately *not* extracted into a symmetric `_render_per_branch` — that is a ~180-line refactor of well-tested code with no bearing on this feature.
 
-**Traversal gap recording (`scope.py`, rows 21-25).**
+**Traversal gap recording (`scope.py`, rows 21-25, 32, 33).**
 
 ```python
 _SCAN_GAP_ROOT = "root"
@@ -268,6 +291,8 @@ def _list_dir_recording_gaps(
     directory: Path, scan_gaps: Counter[str] | None, level: str,
 ) -> list[Path]: ...
 
+def _failed_transcript_read_is_gap(jsonl: Path) -> bool: ...
+
 def _iter_project_dir_sessions(
     project_dirs: Iterable[Path], include_subagents: bool, scan_gaps: Counter[str] | None,
 ) -> Iterator[tuple[Path, list[dict]]]: ...
@@ -277,8 +302,9 @@ def _iter_glob_scoped_sessions(roots, projects_glob, include_subagents, *, scan_
 def _resolve_project_scope(args, subcommand, include_subagents=False, roots=None, *, scan_gaps=None): ...
 ```
 
-- `_list_dir_recording_gaps`: `sorted(directory.iterdir())`. `FileNotFoundError` → `[]`, nothing recorded. Any other `OSError` → `[]`, plus `scan_gaps[level] += 1` when `scan_gaps` is not `None`. It never prints.
-- `_iter_project_dir_sessions`: for each project dir, list with `_SCAN_GAP_PROJECT_DIR` and keep entries where `fnmatch.fnmatchcase(entry.name, "*.jsonl")`. Read each with `corpus._read_session_file_partitioned`. On `[]`, record `_SCAN_GAP_SESSION_FILE` and skip. Otherwise flatten the groups in order and yield when non-empty — the existing `if records:` rule.
+- `_list_dir_recording_gaps`: `sorted(directory.iterdir())`. `FileNotFoundError` or `NotADirectoryError` → `[]`, nothing recorded. Any other `OSError` → `[]`, plus `scan_gaps[level] += 1` when `scan_gaps` is not `None`. It never prints.
+- `_failed_transcript_read_is_gap`: returns `jsonl.is_file()`. An `OSError` raised by `is_file()` → `True`.
+- `_iter_project_dir_sessions`: for each project dir, list with `_SCAN_GAP_PROJECT_DIR` and keep entries where `fnmatch.fnmatchcase(entry.name, "*.jsonl")`. Read each with `corpus._read_session_file_partitioned`. On `[]`, record `_SCAN_GAP_SESSION_FILE` when `scan_gaps` is not `None` and `_failed_transcript_read_is_gap(jsonl)` is true, then skip either way. Otherwise flatten the groups in order and yield when non-empty — the existing `if records:` rule.
 - `_iter_glob_scoped_sessions`: list the root with `_SCAN_GAP_ROOT`, filter by `fnmatch.fnmatchcase(entry.name, projects_glob)`, pass through `_dedup_new_project_dirs` as today, then the shared generator. The "scanning root" print stays unchanged; `--pooled`'s stderr filter drops it.
 - `_iter_scoped_sessions`: its existing root-level `try/except OSError` and stderr diagnostic stay. The `except` also records `_SCAN_GAP_ROOT` when `scan_gaps` is not `None`. The inner loop becomes the shared generator.
 - `_resolve_project_scope`: threads `scan_gaps` into both iterators. The single-root glob branch raises `ValueError` when `scan_gaps is not None`.
@@ -289,12 +315,14 @@ def _resolve_project_scope(args, subcommand, include_subagents=False, roots=None
 - `_render_pooled_block(args, roots, scope_label, rounds, branch_totals, *, scan_gaps: Counter[str])`, with `scan_gaps` required and passed to its refusal call.
 - `_pooled_scope_refusal`: the `os.access` clause is deleted. After the root-count clause: `if scan_gaps: return _POOLED_SCAN_GAP_REFUSAL + _POOLED_REFUSAL_DOC_POINTER`.
 - `_POOLED_SCAN_GAP_REFUSAL`, a module-level f-string like `_DECLARED_ROOT_SKIPPED_NOTICE`: "review-round-cost --pooled refuses a partial scan: a resolved scan root, or a directory or transcript under one, exists but could not be read, so part of the corpus would silently drop out of the pooled figure. Check each account's projects/ directory for a directory or .jsonl transcript you cannot read (with GNU find: `find <projects-dir> ! -readable`), then restore read access, or remove that account from {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
+  - The message's diagnosis and its "restore read access" advice hold because a gap is recorded only when an existing directory or regular file fails to read (rows 32, 33). A missing path, a stray non-directory, and a non-regular `*.jsonl` never reach it. A non-permission `OSError` on an existing path (e.g. `EIO`) still does. There, the advice and the `find` hint don't apply. Accepted: the refusal itself is still correct, and only the hint misdirects.
 - `_POOLED_STDERR_WITHHELD_NOTICE`: "review-round-cost --pooled: one or more diagnostics were withheld; rerun without --pooled to read them before citing any figure."
 - `_pooled_filtered_stderr_call`'s `else:` branch prints `_POOLED_STDERR_WITHHELD_NOTICE` once per call, deduped through the existing `printed_notices` set, instead of the raw line.
 
 Durable comments and docstrings to write (one fact per sentence):
 - `_list_dir_recording_gaps`: "Lists with iterdir, not glob: Path.glob returns no matches for an unreadable directory instead of raising."
-- Its `FileNotFoundError` branch: "A missing directory is an empty scope, not a gap."
+- Its `FileNotFoundError`/`NotADirectoryError` branch: "A missing path or a non-directory is an empty scope, not a gap."
+- `_failed_transcript_read_is_gap`'s docstring: "A transcript that failed to read is a gap only while it is still a regular file. A missing path or a non-regular file is an empty scope, as a missing directory is. A failing stat counts as a gap."
 - `_resolve_project_scope`'s docstring: "`scan_gaps`, when given, records one level tag per unreadable directory or transcript the returned iterator skips. The single-root glob branch cannot record gaps, so it raises ValueError rather than ignore the counter."
 - `_pooled_scope_refusal`'s docstring: "roots=None defers the root-count check. scan_gaps=None defers the scan-gap check. Only cmd_review_round_cost's own calls may rely on either deferral, since both precede the scan. Every other caller must pass a resolved list and a counter."
 - `_render_pooled_block`'s docstring: "scan_gaps fills only as the session iterator is consumed, so this function's refusal call is the only point the scan-gap clause can fire."
@@ -307,7 +335,7 @@ Durable comments and docstrings to write (one fact per sentence):
 One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, its consumer in `review_rounds.py`, and the end-to-end chmod tests that pin both are one body of shared context — a CLI-level scan-gap test can only be debugged against the traversal it exercises.
 
 **Modify — `claude/.claude/scripts/transcript_analysis/scope.py`**
-- Add the three level constants, `_list_dir_recording_gaps`, and `_iter_project_dir_sessions` (Design detail, Traversal gap recording).
+- Add the three level constants, `_list_dir_recording_gaps`, `_failed_transcript_read_is_gap`, and `_iter_project_dir_sessions` (Design detail, Traversal gap recording).
 - `_iter_scoped_sessions` (`:240-296`): keyword-only `scan_gaps=None`. Record `_SCAN_GAP_ROOT` in the existing `except OSError` (`:284-291`), keeping its stderr line. Replace the inner loop (`:292-296`) with the shared generator.
 - `_iter_glob_scoped_sessions` (`:299-329`): keyword-only `scan_gaps=None`. Replace `sorted(root.glob(projects_glob))` (`:325`) with the listing helper plus `fnmatch.fnmatchcase`. Replace the inner loop (`:325-329`) with the shared generator.
 - `_resolve_project_scope` (`:369-451`): keyword-only `scan_gaps=None`, threaded into both iterators. `ValueError` in the single-root glob branch (`:449-450`) when `scan_gaps is not None`. Add the docstring sentence from Design detail.
@@ -335,6 +363,11 @@ One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, it
   6. `_resolve_project_scope(..., roots=[one_root], scan_gaps=Counter())` → `ValueError`.
   7. Item 2's fixture with `scan_gaps` omitted → no exception, and the same sessions item 2 yields. Non-pooled callers are unchanged.
   8. Across items 1-3, `set(counter) <= {the three constants}`: no path, no ordinal.
+  9. `_iter_glob_scoped_sessions` over two roots, one of them a regular file rather than a directory → the counter stays empty, and the directory root's sessions are still yielded. This is the test that catches a missing `NotADirectoryError` branch (row 32). No chmod.
+  10. A regular file named `.DS_Store` directly under a readable root, matched by the default `*` → the counter stays empty, and the root's sessions are still yielded. This test only pins existing behaviour. `_dedup_new_project_dirs`'s `is_dir()` skip filters the entry before any project-dir listing, so it passes with or without row 32's branch. No chmod.
+  11. Inside a readable project dir holding one readable `.jsonl`, add a directory named `stray.jsonl` and a dangling `dangling.jsonl` symlink → the counter stays empty, and the readable transcript is still yielded. Paired with item 3, this pins row 33's classification in both directions. No chmod.
+  12. Several gap levels in one run: `_iter_glob_scoped_sessions` over two roots, with `roots[0]` chmod'd `000`. `roots[1]` holds one project dir chmod'd `000`, plus one readable project dir with two `.jsonl` files chmod'd `000` beside one readable `.jsonl`. Expect `counter == Counter({_SCAN_GAP_ROOT: 1, _SCAN_GAP_PROJECT_DIR: 1, _SCAN_GAP_SESSION_FILE: 2})` exactly, and only the readable transcript yielded. Exact equality catches a level recorded under another level's key. The count of two also distinguishes `+= 1` from `= 1`.
+  13. `roots[1]` holds a symlink to a readable project dir under `roots[0]` → the counter stays empty, and each of that project's sessions is yielded exactly once. A candidate `_dedup_new_project_dirs` drops is skipped, not recorded as a gap. No chmod.
 - Existing tests must pass unchanged, including every multi-root `--projects` glob test (fnmatch parity, row 25) and `TestIterScopedSessionsUnreadableRoot`.
 
 **Modify — `claude/.claude/scripts/tests/test_transcript_review_rounds.py`**
@@ -346,10 +379,23 @@ One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, it
   3. `test_refuses_unreadable_scan_root_via_cmd_review_round_cost` and `test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost` (`:1837-1877`): keep their assertions. Rewrite both docstrings: the refusal now comes from the traversal's root-level record after the scan, not from a pre-scan probe.
   4. Replace `test_render_pooled_block_called_directly_refuses_unreadable_scan_root` (`:1879-1891`) with a direct call passing two fabricated roots and `scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1})` → exit 2. No chmod needed.
   5. `test_missing_active_profile_projects_dir_is_not_refused_as_unreadable` (`:1893-1912`): run `cmd_review_round_cost` with `--pooled` end to end on the same fixture and assert it renders without `SystemExit`. Its current `_pooled_scope_refusal` assertion targets a clause that no longer exists.
+  6. New: `test_pooled_clean_scan_with_harmless_entries_does_not_refuse`, the explicit test that a clean scan does not trip the scan-gap clause.
+     - Run `cmd_review_round_cost` with `--pooled` on `_pooled_two_root_fixture` and keep `out`.
+     - Then add a regular file named `.DS_Store` directly under `roots[1]`. Inside `roots[1]`'s project dir, add a readable empty `.jsonl` and a directory named `stray.jsonl`.
+     - Run again.
+     - Assert that neither run raises `SystemExit`, and that the second run's `out` equals the first's byte for byte.
+     - Assert that neither run's `err` contains `_POOLED_SCAN_GAP_REFUSAL` or `_POOLED_STDERR_WITHHELD_NOTICE`.
+     - No chmod, so no `skipif`.
 - Stderr filter:
   1. Rename `test_pooled_stderr_filter_passes_through_a_genuine_diagnostic` (`:2296`) to `test_pooled_stderr_filter_withholds_an_unrecognized_diagnostic` and invert it. The injected line is absent from `err`, `_POOLED_STDERR_WITHHELD_NOTICE` appears exactly once, and "scanning root" is still dropped. Rewrite the docstring to match; this supersedes the stale-name finding.
   2. Rename `test_pooled_stderr_filter_reemits_buffered_lines_when_wrapped_call_raises` (`:2319`) to `test_pooled_stderr_filter_withholds_buffered_lines_when_wrapped_call_raises`. The `RuntimeError` still propagates, the raw line is absent, and the notice is present.
   3. New: `monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())`, then run `pricing._log_non_contiguous_merge_decision("<placeholder-request-id>", 2, merged=True)` through `review_rounds._pooled_filtered_stderr_call`. Assert the placeholder id is absent from `err` and the notice is present. This exercises a real production print reachable under `--pooled` today (row 29), not a source scan.
+  4. `test_pooled_run_prints_no_root_count_diagnostic_to_stderr` (`:2254-2268`) and `test_pooled_run_with_unreadable_declared_root_entry_prints_no_digit_to_stderr` (`:2270-2294`): add `assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in err` to each (row 34). Keep every existing assertion.
+  5. New: `test_withheld_diagnostic_reaches_stderr_on_a_non_pooled_rerun` (row 35).
+     - Capture the real `review_rounds.compute_review_round_costs`, then monkeypatch it with a wrapper that prints one placeholder diagnostic to stderr and delegates.
+     - On `_pooled_two_root_fixture`, the `--pooled` run's `err` lacks the placeholder and contains `_POOLED_STDERR_WITHHELD_NOTICE` exactly once.
+     - The non-pooled run's `err` contains the placeholder and lacks the notice.
+     - One monkeypatch reaches both paths, because each looks the function up as a module global at call time (`review_rounds.py:850, 944`).
 - `test_pooled_publication_and_refusal_pointers_cite_a_real_heading` (`:1638-1669`): replace the hand-rolled scanner with `heading_texts(...)` over the doc and `normalize_heading(...)` on the cited text. Use `REPO_ROOT` instead of `Path(__file__).resolve().parents[4]`. Keep only the docstring's statement of why the test exists; drop its justification for hand-rolling.
 - New `TestBootstrapShareIntervals` test (row 31). Build four branches: `_asymmetric_two_branch_pooled_totals()` (50% and 60% spend shares) plus two branches with zero `branch_dollars`, zero `round_dollars`, zero per-skill dollars, and nonzero `round_count`. An all-zero-denominator draw then has probability 1/16, well above the 2.5% lower tail. For `spend_inside`, assert `lo is not None` and `50.0 <= lo <= point <= hi <= 60.0`. Assert that `gap_unpriced`, whose denominator is `round_count`, still gets a non-`None` CI.
 - Docstring splits (one fact per sentence):
@@ -428,10 +474,18 @@ One `code-writer` dispatch. Do not split: the refusal policy, the output grammar
 
 - `select-tests.py` decides the scope and widens on its own when a diff warrants it. This revision edits `claude/.claude/tests/helpers.py`, the shared test-helper module (`test_skills.py:54` imports it), so expect a wider selection than earlier revisions. Neither hand-widen nor hand-narrow it.
 - The run's `-ra` summary (`pyproject.toml`'s `addopts`) lists every skipped test. Confirm none of the new chmod-based tests reports as skipped. A run as root would skip them and verify nothing about rows 21-27.
-- Mutation checks, each run once locally and reverted before commit, prove the new tests discriminate:
-  1. Put `project_dir.glob("*.jsonl")` back in `_iter_project_dir_sessions` → the nested-project-dir CLI test and `TestScanGapCounter` item 2 fail. This also re-establishes G6.
+- Run each mutation check below once locally and revert it before commit. Together they prove the new tests catch the bugs they target. Each check must fail on an assertion, or on pytest's `DID NOT RAISE`, or on an unexpected `SystemExit(2)` where stated. It must never fail on an uncaught exception from the code under test.
+  1. Put `project_dir.glob("*.jsonl")` back in `_iter_project_dir_sessions` in place of its project-dir listing.
+     - Expected: `TestScanGapCounter` items 2, 5, and 12 fail with an `AssertionError` on the counter, because the `_SCAN_GAP_PROJECT_DIR` entry is missing. Scan-gap refusal item 1 fails with `DID NOT RAISE` for `SystemExit`.
+     - That failure shape re-confirms G6 on the interpreter under test.
+     - If either test instead fails with an uncaught `PermissionError`, G6 is false on that interpreter. Stop and report it to the engineer rather than count the check as passed.
   2. Make `_bootstrap_share_intervals` append `0.0` for a `None` draw → the partial-zero-denominator test fails.
   3. Restore pass-through in `_pooled_filtered_stderr_call`'s `else:` branch → the pricing-notice test fails.
+  4. Pass `_SCAN_GAP_ROOT` instead of `_SCAN_GAP_PROJECT_DIR` to `_iter_project_dir_sessions`'s project-dir listing → `TestScanGapCounter` items 2, 5, and 12 fail with an `AssertionError` on the counter's keys. This proves the per-level assertions tell levels apart. It does not affect the refusal, which reads only the counter's truthiness.
+  5. Reverse `_pooled_scope_refusal`'s `if scan_gaps:` to `if not scan_gaps:` → scan-gap refusal items 1-4 fail with `DID NOT RAISE`. Scan-gap refusal items 5 and 6 fail with an unexpected `SystemExit(2)`, like every other test that renders a `--pooled` block.
+  6. Drop `NotADirectoryError` from `_list_dir_recording_gaps`'s silent branch → `TestScanGapCounter` item 9 fails with an `AssertionError`, because the counter holds `{_SCAN_GAP_ROOT: 1}` instead of being empty. Item 10 still passes, as row 32 predicts.
+  7. Make `_failed_transcript_read_is_gap` return `True` unconditionally → `TestScanGapCounter` item 11 fails with an `AssertionError`, and scan-gap refusal item 6 fails with an unexpected `SystemExit(2)`.
+  8. Change `_SCANNING_ROOT_DIAGNOSTIC_RE` so it no longer matches `scanning root N/M...` → `test_pooled_run_prints_no_root_count_diagnostic_to_stderr` fails on its new withheld-notice assertion, and so does scan-gap refusal item 6. Its digit-free assertion alone no longer catches this (row 34).
 
 Then, once green, run the command against the real corpus at both scopes to confirm the block renders and the refusals fire:
 
@@ -465,3 +519,5 @@ If the first invocation now exits 2 with the scan-gap refusal, the new traversal
 - **Disclosing a scan gap instead of refusing (row 26).**
 - **Unreadable subagent files for other subcommands.** `_read_session_file_partitioned` still skips an unreadable subagent file silently for `include_subagents=True` callers. `--pooled` never reads subagent files through the iterator.
 - **Editing PR #1009's DEFER row 3** (`_iter_glob_scoped_sessions` has no `OSError` guard). This revision closes exactly the function it names. Re-evaluate the row for removal after implementation, via `/pr-description`, rather than editing its text in place.
+- **A CI-level guard against the chmod-based tests skipping when the runner's effective user ID is root.** Every such test here carries `@pytest.mark.skipif(os.geteuid() == 0, ...)`, as the five existing sites already do (`test_transcript_review_rounds.py:1837, 1859, 1879`; `test_transcript_analysis.py:17476, 20658`). Verification's manual `-ra` check is this PR's mitigation. A durable guard is a candidate follow-up issue.
+- **A scan root that is readable but not searchable (`r` without `x`).** Listing it succeeds, but `_dedup_new_project_dirs`'s `is_dir()` on each entry raises `PermissionError`. `Path.is_dir()` re-raises every `OSError` outside `ENOENT`, `ENOTDIR`, `EBADF`, and `ELOOP` (`pathlib.py:44, 872-880`). The pre-revision `glob` path raised the same way. The result is a loud crash, not a silent exclusion or a false refusal, so it stays outside this revision's bug class. A project directory in the same state is covered: row 33 counts its transcripts as gaps.
