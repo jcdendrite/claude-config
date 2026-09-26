@@ -326,10 +326,10 @@ class TestAskReviewPermissions:
     def test_partial_config_dir_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks(self, tmp_path):
         """Symmetric to test_partial_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks,
         forcing the failure on the CONFIG_DIR side instead of the FILE_PATH side. The
-        file path's own ancestor carries a "/./" segment so its successfully-normalized
-        form textually diverges from its raw form, which is what makes the
-        both-succeed guard's raw-vs-raw fallback (rather than a
-        normalized-FILE-vs-raw-CONFIG_DIR mix) load-bearing for the match."""
+        file path's own ancestor carries a "/./" segment so its normalized form
+        textually diverges from its raw form. That divergence is what makes the
+        both-succeed guard's raw-vs-raw fallback — not a
+        normalized-FILE-vs-raw-CONFIG_DIR mix — load-bearing for the match."""
         config_dir_real = tmp_path / "claude-accounts" / "work"
         config_dir_real.mkdir(parents=True)
         file_path_raw = f"{config_dir_real.parent}/./work/settings.json"

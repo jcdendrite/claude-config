@@ -99,17 +99,19 @@ Unverified: load behavior on out-of-project reads beyond one trial each, whether
 
 ## Open residuals and re-review triggers
 
-The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a), (b), (f) and (i) are open. Gaps (e) and (g) are mitigated for Edit in auto mode; residual scope: see Known gaps above. Gaps (c) and (h) are fixed; see Known gaps above. All share one ownership record:
+The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a), (b), (f) and (i) are open. Gaps (e) and (g) are mitigated for Edit in auto mode; residual scope: see Known gaps above. Gaps (c) and (h) are fixed; see Known gaps above. The `_lib_realpath_m` TOCTOU race and the config-dir-root ERE-escaping test gap below, both surfaced by a `ciso-reviewer` pass on the (c)/(h) fixes, are accepted risks. All share one ownership record:
 
 - Owner: the repo owner.
 - Tracker:
   - GH-1094 covers gaps (c), (g) and (h). Its decision keeps both the `permissions.ask` entry and the hook, and fixes gaps (c) and (h) (see Known gaps above).
-  - No tracker issue exists for gaps (a), (b), (e), (f) and (i) or for the fork and identity-gate residual.
+  - No tracker issue exists for gaps (a), (b), (e), (f) and (i), for the fork and identity-gate residual, or for the `_lib_realpath_m` TOCTOU race and ERE-escaping test gap below.
   - GH-1093 separately tracks the Model & Effort Routing section's audiences.
 - Re-review triggers, each with how it is observed:
   - A fork or subagent commits, pushes or opens a PR contrary to the shipping clause: observed by the post-merge fork spot-check and by transcript review.
   - A settings edit slips through gap (d), or through gap (e) or (g) by Write, MultiEdit, or outside auto mode: not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
   - A settings edit slips through gap (i)'s path-prefilter bypass, or through a `_lib_config_dir`/`_lib_realpath_m` failure degrading gap (c) or (h): not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
+  - `ask-review-permissions.sh`'s `_lib_realpath_m` calls (added by the (c)/(h) fixes) resolve and follow symlinks at hook-fire time, before the tool's actual Edit/Write executes; a symlink swapped into place during that window can make the hook's allow diverge from what actually gets written. Accepted as a missed-advisory-nudge risk rather than a bypass of a blocking control, since editing settings.json is not otherwise access-controlled and an attacker able to win this race already holds local write access sufficient to edit settings.json directly. Not detectable from the hook, which emits no ask and leaves no log: observed only by transcript review or a report.
+  - The config-dir-root ERE-escaping (`s/[.[\*^$()+?{|]/\\&/g`) has an untested subset of escape-class characters, accepted because `CLAUDE_CONFIG_DIR`/`HOME` are session-level trusted config, not attacker-controlled input — see `ask-review-permissions.sh`'s inline comment above the `sed` call for which characters are tested and which are not, so this bullet doesn't drift out of sync with the test file. Observed only if a future config-dir value contains one of the untested characters and the match silently fails.
   - The identity-keyed hook is extended to other subagents: observed at the next change to `deny-reviewer-tree-mutation.sh`.
   - New evidence on how a hook `ask` or a `permissions.ask` rule resolves under auto mode: observed at the next change to `docs/auto-mode.md` or `docs/security-hardening.md`.
   - In-project Edit of the shipped pattern alone, this rule's primary real-world scenario, remains untested (`docs/security-hardening.md`'s Untested list): observed at the next auto-mode session that isolates it from `.claude/` protected-path handling.
