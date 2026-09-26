@@ -336,6 +336,36 @@ class TestAskReviewPermissions:
             == "ask"
         )
 
+    def test_partial_realpath_failure_with_non_concatenated_alias_stays_allowed(self, tmp_path):
+        """Pins the disclosed residual, not a bug to fix: `file_path` reaches
+        the same settings.json via a doubled-slash decoration rather than a
+        literal concatenation of the raw config-dir string, so the
+        both-or-neither guard's raw-vs-raw fallback (forced here by a
+        one-sided `_lib_realpath_m` failure) misses the anchored pattern and
+        no ask fires. See
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Open residuals and re-review triggers section, the
+        `_lib_config_dir`/`_lib_realpath_m` failure bullet."""
+        config_dir_real = tmp_path / "claude-accounts" / "work"
+        config_dir_real.mkdir(parents=True)
+        config_dir_raw = str(config_dir_real)
+        file_path_alias = f"{config_dir_raw}//settings.json"
+        # dangling: _lib_realpath_m fails on FILE_PATH only. Multiple slashes are
+        # filesystem-nonsemantic, so Path()'s own slash-collapsing here still
+        # lands the symlink at the real location config_dir_real/settings.json.
+        Path(file_path_alias).symlink_to(config_dir_real / "does-not-exist")
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(file_path_alias),
+                extra_env={
+                    "CLAUDE_CONFIG_DIR": config_dir_raw,
+                    "PATH": _forced_fallback_path_env(tmp_path),
+                },
+            )
+            == "allow"
+        )
+
     def test_dot_segment_aliased_path_asks_under_forced_realpath_fallback(self, tmp_path):
         """Regression pin: `_lib_realpath_m`'s manual fallback must drop a
         `.` component rather than reattach it, or the hook's
