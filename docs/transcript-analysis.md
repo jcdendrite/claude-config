@@ -57,6 +57,14 @@ Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` la
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
+### Testing against a synthetic corpus
+
+Setting both `TRANSCRIPT_CONFIG_DIRS_FILE` and `CLAUDE_CONFIG_DIR` fully **replaces** — never augments — the resolved root set. This applies to every subcommand named in `transcript_analysis/scope.py`'s `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR` set, and to every other subcommand's default (non-`--config-dir`) scope. `CLAUDE_CONFIG_DIR` points the active-profile root at a synthetic directory instead of the real `~/.claude`. `TRANSCRIPT_CONFIG_DIRS_FILE` points the declared-roots read at a synthetic roots file instead of the real `~/.claude/transcript-config-dirs`. Together they let a run scan only fixture data seeded under a throwaway directory (e.g. a test's own `tmp_path`), with no path back to this workstation's real corpus.
+
+Both env vars are required together, not either alone. If only `CLAUDE_CONFIG_DIR` is set while a real `~/.claude/transcript-config-dirs` file is still present and unoverridden, `declared_transcript_roots()` unions in the real declared accounts' real roots alongside the synthetic one. A "synthetic" run can therefore silently mix in real account data.
+
+This is the safe way to smoke-test any of these subcommands against synthetic data. It is not a `--config-dir` alternative for a real run, and a run made this way must never be treated as reporting on this machine's actual accounts. `pr-cost-export`'s own provenance line states this explicitly: `corpus_override=1` flags an export built from an overridden root set rather than this machine's real declared accounts. That flag is computed by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars it checks. See `docs/pr-cost.md`'s "Redacted cross-account export" section for what a `corpus_override=1` export means for publication.
+
 ---
 
 ## buckets
@@ -1042,8 +1050,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
-- `--record` — append the current ISO week's row instead of reading. Requires the `cost_ledger_recording` config key (`config-get.sh cost_ledger_recording` exits 0 — see [`docs/config-file.md`](config-file.md)) and `--machine-label`.
-- `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname.
+- `--record` — append the current ISO week's row instead of reading. Requires the `cost_ledger_recording` config key (`config-get.sh cost_ledger_recording` exits 0 — see [`docs/config-file.md`](config-file.md)).
 - `--force` — with `--record`, overwrite an existing row for the same (week, machine) pair instead of refusing.
 - `--note TEXT` — free-text note for `--record`'s row (what changed in the workflow this week). Must not contain `|` or a newline.
 
@@ -1051,7 +1058,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **`--record`'s row.** `usd`/`context_pct`/`opus_pct`/`ge200k_pct` reuse `_compute_cost_trend_data`, the per-week accumulation behind `cost-trend`'s own report. `context_pct` and `ge200k_pct` are two distinct metrics, not one under two names: `context_pct` is the context-class (cache read plus both cache-write tiers) dollar share of the week's spend, while `ge200k_pct` is the dollar share of turns whose context crossed the >=200k bucket — the same figure `cost-trend`'s own printed "Context%" column has always shown. `denials` and `reviewer_gap_pp` are windowed to the current ISO week's Monday-through-next-Monday UTC boundary via `review-trace --deny-summary`'s and `reviewer-yield`'s own accumulation, scoped to that one week rather than corpus lifetime. See `docs/cost-ledger.md`'s schema table for `reviewer_gap_pp`'s empty and `insufficient` cell values.
 
-**Error paths.** `--record` refuses (non-zero exit, writes nothing) on: an empty corpus or a current week with zero priced turns; a malformed ledger file (wrong column count, non-ISO week label, non-numeric cell, an embedded `|`, or an unresolved git merge-conflict marker); a `--machine-label` that doesn't match `^[a-z0-9]{1,8}$` or that equals this machine's hostname (the rejection never echoes the compared hostname value); an existing row for the same (week, machine) without `--force`; and a clock-skew mismatch between the corpus's most recent activity and the week the machine's clock resolves as current. The final read-check-write step (re-read the ledger, check for an existing (week, machine) row, write) holds an exclusive lock on a sibling `.lock` file, so two racing `--record` invocations can't both pass the duplicate-row check; the corpus scan that computes the row's values runs unlocked beforehand. Every write goes through a temp-file-then-atomic-replace step with a parse-back verification.
+**Error paths.** `--record` refuses (non-zero exit, writes nothing) on: an empty corpus or a current week with zero priced turns; a malformed ledger file (wrong column count, non-ISO week label, non-numeric cell, an embedded `|`, or an unresolved git merge-conflict marker); an unreadable or malformed `<config-dir>/machine-id` (see `docs/pr-cost.md`'s "Machine identity"); an existing row for the same (week, machine) without `--force`; and a clock-skew mismatch between the corpus's most recent activity and the week the machine's clock resolves as current. The final read-check-write step (re-read the ledger, check for an existing (week, machine) row, write) holds an exclusive lock on a sibling `.lock` file, so two racing `--record` invocations can't both pass the duplicate-row check; the corpus scan that computes the row's values runs unlocked beforehand. Every write goes through a temp-file-then-atomic-replace step with a parse-back verification.
 
 **When to reach for it.** Check the ledger before a workflow change ships, to confirm the baseline week is actually recorded before its transcripts age out — and after, to score the change once enough weeks have accumulated.
 
@@ -1064,9 +1071,9 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled` and `--machine-label`.
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`.
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
-- `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine.
+- `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
 - `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
 - `--asof-window-days DAYS` — close-out window a merged PR must clear before it's eligible for capture (default `3`, a provisional placeholder — see `docs/pr-cost.md`).
 - `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
@@ -1077,6 +1084,20 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
+
+---
+
+## pr-cost-export
+
+**Purpose.** Export every declared account's current `pr-cost` ledger rows — redacted, collapsed to one row per PR — to a single operator-named TSV. A pure local file transform over ledger files already on disk: makes no `gh` call and scans no transcript corpus of its own. See `docs/pr-cost.md`'s "Redacted cross-account export" section for the full grain and redaction contract; this section covers only the essentials.
+
+**Flags.**
+- `--out PATH` — required; the destination TSV. Refused if it already exists (never overwritten). There is deliberately no stdout fallback — stdout inside a Claude Code session is captured into that session's own transcript.
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable).
+
+**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `~/.claude/.pr-cost-enabled` sentinel (an account without it contributes zero rows).
+
+**When to reach for it.** Before a cross-account or cross-repo cost analysis that needs to leave the machine it was captured on, or before comparing per-PR cost figures across more than one declared account in one artifact.
 
 ---
 
