@@ -50,7 +50,8 @@ separate, unrelated mechanism and stands unchanged.
 [`design-decisions/main-bucket-prompt-cache-ttl-unset.md`](design-decisions/main-bucket-prompt-cache-ttl-unset.md).
 
 **2026-09-25 follow-up:** a corrected 30-day `cache-rebuild --ttl-verdict`
-run returns `decline` for both buckets, so neither settings key is set:
+run returns `decline` for both buckets. Neither bucket has a tier switch to
+commit, so neither settings key is set:
 
 - `main` favors the one-hour tier.
 - The everything-else bucket favors the five-minute tier.
