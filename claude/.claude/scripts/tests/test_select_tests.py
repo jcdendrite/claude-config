@@ -430,7 +430,7 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
         }
 
@@ -442,7 +442,8 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR,
+            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.SCRIPTS_TESTS_DIR,
         }
 
     def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
@@ -501,7 +502,9 @@ class TestSelectPytestTargets:
     def test_skill_md_change_selects_skills_tests_and_transcript_analysis(self):
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB}
+        assert set(result.target_paths) == {
+            _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+        }
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
         """test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR)
@@ -678,7 +681,7 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.HANDOFF_SKILL_MD])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
         }
 
@@ -1525,13 +1528,14 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.STATUSLINE_COMMAND_SH,
 )
 
-# The two CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than a
+# The three CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than a
 # domain directory. Its only consumer is the fidelity partition below --
 # _expand_target (select-tests.py) partitions on "*" in target and has no
 # use for this distinction, so it stays a test-only constant.
 _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
+    _mod.TRANSCRIPT_DENIALS_TEST_PATH,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
@@ -2112,6 +2116,7 @@ class TestMainComposition:
                 sorted([
                     _mod.HOOKS_TESTS_DIR,
                     *_mod._expand_target(_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, repo_root=_REPO_ROOT),
+                    _mod.TRANSCRIPT_DENIALS_TEST_PATH,
                     _mod.CLAUDE_TESTS_DIR,
                 ]),
                 id="file-inside-directory",
