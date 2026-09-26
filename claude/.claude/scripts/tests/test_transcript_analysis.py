@@ -3637,6 +3637,245 @@ class TestReviewTrace:
         assert events[0]["kind"] == "skill"
         assert events[0]["skill"] == "code-review"
 
+    def test_skill_invocation_plugin_qualified_spelling_matches_review_trace_skills(self):
+        """A plugin-qualified spelling (skill-management:skill-review) matches
+        REVIEW_TRACE_SKILLS membership. This exercises _round_skill_name's
+        plugin:/dir: strip branch."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "skill-management:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_invocation_worktree_qualified_spelling_matches_review_trace_skills(self):
+        """A worktree-path-qualified spelling matches REVIEW_TRACE_SKILLS
+        membership. This test doesn't isolate the leading "/"-strip branch:
+        the trailing ":"-strip alone already reduces every real
+        fixture shape to the bare name."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_filter_matches_qualified_spelling(self):
+        """--skill's bare-name filter still matches a raw qualified spelling
+        (claude:plan-it), since the filter comparison normalizes the same
+        way the REVIEW_TRACE_SKILLS membership check does."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "claude:plan-it")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_filter_excludes_non_matching_qualified_spelling(self):
+        """--skill's filter drops a skill invocation whose normalized name
+        does not equal the filter, even when another invocation in the same
+        session matches."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "claude:plan-it")]),
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:01:00.000Z",
+                  content=[_skill_use("s2", "claude:code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:plan-it"
+
+    def test_skill_event_field_keeps_display_normalization_not_bare_form(self):
+        """The emitted skill event field keeps _normalize_skill_name's lighter
+        directory-only strip, including any plugin:/dir: prefix.
+        _round_skill_name's fully-bare strip is used only for the
+        REVIEW_TRACE_SKILLS membership test, not for this field."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:skill-review"
+
+    def test_slash_invocation_appears_in_output(self):
+        """A /slash-invoked review skill (`<command-name>` tag on a user
+        record, no Skill tool_use block) produces a 'skill' event. This
+        matches review-round-cost's own detection of the same shape."""
+        records = [
+            _user_msg("<command-name>/code-review</command-name>", branch="feat",
+                       ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["skill"] == "code-review"
+
+    def test_slash_invocation_plugin_qualified_spelling_matches_review_trace_skills(self):
+        """A plugin-qualified slash spelling (skill-management:skill-review)
+        matches REVIEW_TRACE_SKILLS membership via _round_skill_name. Mirrors
+        the Skill-tool_use plugin-qualified test above, for the slash shape."""
+        records = [
+            _user_msg("<command-name>/skill-management:skill-review</command-name>",
+                       branch="feat", ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_slash_skill_filter_matches_qualified_spelling(self):
+        """--skill's bare-name filter matches a raw qualified slash spelling
+        (claude:plan-it). Mirrors test_skill_filter_matches_qualified_spelling,
+        for the slash shape."""
+        records = [
+            _user_msg("<command-name>/claude:plan-it</command-name>", branch="feat",
+                       ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_slash_skill_filter_excludes_non_matching_qualified_spelling(self):
+        """--skill's filter drops a slash-invoked skill whose normalized name
+        does not equal the filter, even when another slash invocation in the
+        same session matches."""
+        records = [
+            _user_msg("<command-name>/claude:plan-it</command-name>", branch="feat",
+                       ts="2026-05-19T10:00:00.000Z"),
+            _user_msg("<command-name>/claude:code-review</command-name>", branch="feat",
+                       ts="2026-05-19T10:01:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None, skill_filter="plan-it",
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:plan-it"
+
+    def test_slash_skill_event_field_keeps_display_normalization_not_bare_form(self):
+        """The emitted skill event field for a slash invocation keeps
+        _normalize_skill_name's lighter directory-only strip, including any
+        plugin:/dir: prefix. This mirrors the Skill-tool_use version of this
+        test, for the slash shape."""
+        records = [
+            _user_msg("<command-name>/.claude/worktrees/some-branch/claude:skill-review</command-name>",
+                       branch="feat", ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["skill"] == "claude:skill-review"
+
+    def test_slash_invocation_of_non_review_trace_skill_produces_no_event(self):
+        """A /slash-command tag for a skill outside REVIEW_TRACE_SKILLS (e.g.
+        /handoff) produces no skill event. The user-record slash-detection
+        branch must not over-match every slash invocation."""
+        records = [
+            _user_msg("<command-name>/handoff</command-name>", branch="feat",
+                       ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
+
+    def test_slash_invocation_detected_with_list_form_user_content(self):
+        """A /slash-invoked review skill is still detected when message.content
+        is a list of blocks rather than a bare string. Mirrors
+        test_slash_detection_with_list_form_user_content's coverage of the
+        same _content_text fallback, for the review-trace path."""
+        records = [
+            _user_msg(
+                [{"type": "text", "text": "<command-name>/code-review</command-name>"}],
+                branch="feat", ts="2026-05-19T10:00:00.000Z",
+            ),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+
+    def test_skill_tool_use_and_slash_invocation_both_produce_events(self):
+        """A Skill tool_use record and a `<command-name>` slash tag for two
+        different REVIEW_TRACE_SKILLS members both produce 'skill' events.
+        Each event is attributed to its own record's branch. The slash
+        event's model is carried forward from the last assistant record."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _user_msg("<command-name>/plan-review</command-name>", branch="fix",
+                       ts="2026-05-19T10:01:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        skill_event = next(e for e in events if e["skill"] == "code-review")
+        slash_event = next(e for e in events if e["skill"] == "plan-review")
+        assert skill_event["kind"] == "skill"
+        assert skill_event["branch"] == "feat"
+        assert skill_event["model"] == "opus"
+        assert slash_event["kind"] == "skill"
+        assert slash_event["branch"] == "fix"
+        assert slash_event["model"] == "opus"
+
+    def test_multiple_slash_tags_in_one_user_record_produce_two_events(self):
+        """Two `<command-name>` tags for two different REVIEW_TRACE_SKILLS
+        members in a single user record both produce 'skill' events. Mirrors
+        cmd_skill_invocation's own test_multiple_slash_tags_in_one_user_record,
+        for the review-trace path."""
+        records = [
+            _user_msg(
+                "<command-name>/plan-it</command-name>\n<command-name>/code-review</command-name>",
+                branch="main", ts="2026-05-19T10:00:00.000Z",
+            ),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 2
+        assert {e["skill"] for e in events} == {"plan-it", "code-review"}
+
+    def test_whitespace_only_command_name_tag_produces_no_event(self):
+        """A `<command-name>` tag whose captured name is whitespace-only
+        normalizes to a string that isn't a REVIEW_TRACE_SKILLS member, so it
+        produces no event. Pins the current safe-by-construction behavior."""
+        records = [
+            _user_msg("<command-name>/ </command-name>", branch="main",
+                       ts="2026-05-19T10:00:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
+
     def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
         records = [_hook_deny("require-code-review", stringified=False)]
