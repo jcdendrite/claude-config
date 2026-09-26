@@ -8740,17 +8740,15 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
       sentinel check goes through `_config.config_enabled`, which resolves
       `config_dir` via `_config.py`'s own independent binding, not `_mod`'s
       -- patching `_mod.config_dir` alone has no effect on it.
-    - The env var alone is not sufficient either: `fake_projects`
-      monkeypatches `_mod.config_dir` to a lambda returning its own
-      `tmp_path`, which wins over an env var read since it never re-reads
-      the environment. So `fake_projects` is declared as this fixture's own
-      dependency (not merely requested alongside it by convention in each
-      test's signature), which pytest's fixture graph guarantees runs first
-      regardless of a test's own parameter order, and `_mod.config_dir` is
-      patched again here to make `_mod.config_dir()` (the ledger-path
-      resolution `_cost_ledger_path()` and `_machine_identity_path()` read)
-      and `_config.config_enabled()`'s own env-var-based resolution agree
-      on the same directory.
+    - The env var alone is not sufficient either. `fake_projects`
+      monkeypatches `_mod.config_dir` to its own `tmp_path`, which wins over
+      the env var since it never re-reads the environment.
+    - Declaring `fake_projects` as this fixture's own parameter (not just
+      requested alongside it) makes pytest's fixture graph run it first,
+      regardless of a test's own parameter order.
+    - `_mod.config_dir` is patched again here so it and
+      `_config.config_enabled()`'s env-var-based resolution agree on the
+      same directory.
     """
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
