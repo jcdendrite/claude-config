@@ -1229,14 +1229,14 @@ A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` h
 Each candidate spacing is replayed against every in-scope session's own recorded turn sequence: real context/output growth is never altered, only the dollars charged after a simulated re-arm point are re-priced. That re-pricing uses a fresh-session rebuild ramp — $/1k-output-tokens bucketed by turn-index-since-a-fresh-start, re-derived from the current corpus every run (PR #605's own turn-index bands are reused for comparability, but the multipliers are never hardcoded — that PR's own table is a one-off, non-reproducible measurement). Two figures are reported per spacing:
 
 - **perfect** — the session splits at the first *hook-observable boundary* at or after a band crossing (`UserPromptSubmit`/`Stop`'s own sampling points, reconstructed from the transcript). This is a ceiling: it assumes the operator acts on the nudge the instant it's technically visible.
-- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point (`<config-dir>/.handoff-nudge.log`'s own `nudged` lines) sessions in this corpus actually kept running.
+- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point sessions in this corpus actually kept running. Joined per resolved root: each root's own `.handoff-nudge.log` (at `<that root's config dir>/.handoff-nudge.log`) is read and joined against that root's own sessions. This report is multi-root by default the same way every other subcommand is — see "Corpus scope: the declared-roots file" above.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`. Refused together with `--no-redact` once more than one root is in scope.
 - `--since Nd` — limit to sessions with a first timestamp in the last N days (e.g. `30d`). Scopes whole sessions, not individual turns within one — a re-arm simulation's turns-since-restart positioning depends on a session's own turn sequence staying intact.
 - `--branches B1,B2,...` — whole-session branch filter: a session with no matching main-thread turn is excluded entirely (default: all)
-- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on most of its content. The one exception: at single-root scope it prints the literal `.handoff-nudge.log` path (instead of an `account-N` label) in the per-root log-size line — multi-root scope is unaffected, since `--no-redact` is refused outright once more than one root is in scope. It still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
 - `--spacings N1,N2,...` — comma-separated candidate re-arm spacings in tokens past the first fire (default: `40000,80000,120000`)
 
 **Sample output.**
@@ -1262,6 +1262,25 @@ Model routing and each session's own fire threshold (the lesser of 40% of its mo
 `C_bar` is an output-token-weighted mean context depth across the scoped corpus (`cost ~= N x C_bar x rate`, `.claude/plans/token-cost-reduction.md`'s own framing): turns before a session's first simulated split use their real recorded `context_at_turn`; turns after a split use the ramp curve's own bucket mean-context, since the counterfactual model never reconstructs a full context trajectory for the "what if this had been a fresh session" branch.
 
 A `nudged` log line whose session id has no match in the resolved scope (a since-deleted transcript, or a session from an account/root outside `--projects`/`--this-repo`/`--config-dir`) is excluded from the operator-response-lag sample and the excluded count is reported, not silently dropped — a near-100% exclusion rate signals a broken join, not sparse data.
+
+Each resolved root's own `.handoff-nudge.log` is read separately:
+
+- **Bounded, per-root truncation.** The same bounded, tail-truncated read `spend-over-threshold` uses (`_NUDGE_LOG_MAX_READ`, 2 MB) applies per root — a root's log growing past the cap loses only its own oldest lines, never another root's.
+- **Single root.** The resolved-scope header is followed by that root's own log byte size, labeled `account-N` via the same ordinal scheme every other per-account figure in this repo's cost tooling uses — or the literal config-dir path under `--no-redact` (see that flag's bullet above).
+- **More than one root.** No per-root breakdown is printed — a per-root byte count is itself a per-account figure, which `docs/private-project-redaction.md`'s Account-cardinality bar prohibits. The header is instead followed by one pooled line summing every root's bytes, plus a boolean-only note on whether any root was truncated or unreadable, with no root singled out. The note never carries a count: a per-condition digit would disclose a root/account-cardinality lower bound the same way a per-root breakdown would.
+- **Truncation note.** Either way, a size over the 2 MB cap on any root prints a `[truncated -- oldest lines dropped]` note, rather than leaving a reader to compare the printed size against the unprinted constant by hand.
+
+**Nudge→handoff conversion.** A second report prints after the spacing table, under its own `## Nudge->handoff conversion` heading. Its table shares no column header with the spacing table above. It classifies the same population the operator-response-lag join above uses: every fired, in-scope session. Each session lands in one of four buckets, decided by whether a `handoff` log line exists (see `docs/handoff-nudge.md`'s "Log location" for what writes that line) and whether any `action=block` line precedes it:
+
+- **voluntary** — a `handoff` line exists, no `action=block` line precedes it
+- **forced** — a `handoff` line exists, at least one `action=block` line precedes it
+- **blocked-no-handoff** — at least one `action=block` line, no `handoff` line
+- **no-compliance-observed** — neither a block nor a handoff line. This is a legitimate outcome, not a failure: the advisory copy explicitly invites it ("If the task is nearly complete, ignore this and finish," `nudge-handoff-near-context-cap.sh:660`)
+
+- **dropped sessions** — a nudged session with no in-scope trace is excluded and counted under "dropped," mirroring the lag sample's own excluded-count convention
+- **rates** — conversion rate ((voluntary + forced) / fired) and block-reach rate ((forced + blocked-no-handoff) / fired) print alongside their raw counts, so the two are poolable across separate runs by summing counts, not averaging rates
+- **block-reach vs. the bucket split** — block-reach is unambiguous, but the bucket split beneath it is not: a blocked session with no later `handoff` line may have ended outright or used the kill-switch instead of ignoring the block (`docs/handoff-nudge.md`'s "Recovering from a hard block" section lists three routes out of a block, only one of which writes a `handoff` line). "Blocked-no-handoff" is therefore a lower bound on forced compliance, not a precise count of dismissed blocks
+- **`ignored=` median** — for each voluntary session, the report reads the `ignored=` value on the last `nudged` line preceding its `handoff` line and prints the median across sessions where that field is present. A session whose preceding line predates the field (older hook versions didn't record it) is counted separately as missing `ignored=` and never defaulted to 0, which would bias the distribution toward "complied immediately"
 
 **When to reach for it.** Pick a re-arm spacing for `nudge-handoff-near-context-cap.sh`'s Phase 3 rollout against measured dollars and `C_bar`, instead of shipping one of the three candidate values on the parent plan's own `[unverified]` assumption.
 

@@ -630,3 +630,14 @@ round counts on this one sample are not attributable to a single cause;
 genuine convergence difficulty and denial-retry churn coexist on the same
 branch. Reading further branches in the tail, rather than pooled statistics
 alone, is the next step if this is revisited.
+
+## From `handoff-nudge-deep-tail-lever.md` — "Does the deeper tail under BLOCK_AT=470,000 need a REARM_SPACING re-test, and do two named-but-unpriced levers merit a build?" (2026-09-14)
+
+Full detail, evidence, and the pre-registered gates: [`.claude/plans/handoff-nudge-deep-tail-lever.md`](../.claude/plans/handoff-nudge-deep-tail-lever.md). The `rearm-backtest` log join is now root-aware, and a nudge→handoff conversion report was built on top of it before any gate ran. One Linux run (last 14 days, 274 sessions, 526 joined lag samples) resolved every gate; the replication rule requires a second corpus only when a change is recommended, and none was, so a macOS run was unnecessary. A macOS peer session's pre-correction run (multiple roots, 118 project dirs) was discarded — its lag median was computed from the pre-fix single-root join. `REARM_SPACING` re-test, in narrative case-study form: [`case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| `REARM_SPACING` re-test | Keep 80,000; margin erosion recorded as a limitation | No candidate beat 80,000 on cost. Its dismissal-risk margin eroded well below the design target, recorded as a documented limitation rather than acted on — see the plan for gate mechanics and figures. |
+| Two-tier nudge | Declined, not deferred | No retrospective price exists — today's log carries one advisory severity, so no historical fire can be classified tier-1 vs. tier-2. The named benefit (reduced dismissal-as-noise) is a human-behavior effect no instrument here observes. A lighter copy-only design already exists in the hook (the re-arm condition already distinguishes first-fire from re-arm). Reopens only if the phrasing gate below fails, a phrasing pilot is run, and that pilot itself fails to move the conversion rate. |
+| Nudge phrasing | Decline a phrasing change | All three of the phrasing lever's pre-registered thresholds — conversion, block-reach, and re-arms-tolerated at compliance — held on the pooled figures; see the plan for the individual numbers. |
+| Nudge→handoff conversion report | Built, not deferred | `_nudge_conversion_from_log` and a new `rearm-backtest` report section compute the conversion rate the phrasing lever's gate needs, as a permanent, rerunnable instrument. |
