@@ -452,10 +452,16 @@ def _seed_read_scope_account(tmp_path: Path) -> Path:
         "type": "assistant",
         "gitBranch": "main",
         "isSidechain": False,
+        "timestamp": "2026-05-19T10:00:00.000Z",
         "message": {
             "model": "claude-sonnet-5",
             "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/a.py"}}],
-            "usage": {},
+            "usage": {
+                "input_tokens": 5000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
         },
     }
     result_record = {

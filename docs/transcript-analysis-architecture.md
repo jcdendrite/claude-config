@@ -19,8 +19,9 @@ calls `review_trace.py`'s `compute_deny_summary_data` from the shim. The CLI's o
 still wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the
 `cli.py` phase migrates both. Two still-unmigrated friction/command-shape helpers likewise call
 `denials.py`'s `hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
-`build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope`, and the still-unmigrated
-context-composition code reads `read_scope.py`'s `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
+`build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
+The still-unmigrated context-composition code separately reads `read_scope.py`'s
+`_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
 `review_trace.py` also imports `reviewer_yield.py`, for its own reviewer-spawn detection
 (`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
 skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
