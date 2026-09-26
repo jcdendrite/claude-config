@@ -208,10 +208,11 @@ def _dedup_new_project_dirs(
     prior root is caught too — not just two roots resolving to the same
     directory.
 
-    `is_dir()` raises OSError on a symlink whose target (or an ancestor of
-    it) is unreadable; `resolve()` raises RuntimeError on a symlink loop,
-    but its own non-strict path-walking swallows an unreadable-ancestor
-    OSError rather than raising it. Either exception is a scan gap
+    `is_dir()` raises OSError when a symlink's target, or one of its
+    ancestors, is unreadable. `resolve()` raises RuntimeError on a symlink
+    loop, but its own non-strict path-walking swallows an
+    unreadable-ancestor OSError instead of raising it. Either exception is a
+    scan gap
     (`scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1` when `scan_gaps` is given),
     not a silently-excluded candidate, since the entry is neither missing
     nor a genuine non-directory. `resolve()` runs before `is_dir()` here

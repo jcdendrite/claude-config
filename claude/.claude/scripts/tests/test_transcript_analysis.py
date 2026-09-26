@@ -5470,6 +5470,41 @@ class TestScanReadScopeSession:
         expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
         assert result == expected
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_index_subagent_dispatches_records_subagent_dir_level_gap(self, fake_projects):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes subagent_dir.is_dir() raise PermissionError (an
+        OSError) -- corpus._index_subagent_dispatches must record one
+        _GAP_LEVEL_SUBAGENT_DIR tag and return an empty index, not crash.
+        Mirrors test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent's
+        chmod-based direct-call pattern for the sibling function."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a", "toolu_1",
+            [_opus([_read_tool_use("r2", file_path="/b.py")])],
+        )
+        session_dir = fake_projects / "sess"
+        os.chmod(session_dir, 0o000)
+        scan_gaps = Counter()
+        try:
+            index, meta_read_errors = _mod.corpus._index_subagent_dispatches(
+                fake_projects / "sess.jsonl", scan_gaps=scan_gaps,
+            )
+        finally:
+            os.chmod(session_dir, 0o755)
+
+        assert index == {}
+        assert meta_read_errors == 0
+        assert scan_gaps == Counter({_mod.corpus._GAP_LEVEL_SUBAGENT_DIR: 1})
+
+    def test_parse_jsonl_records_returns_none_on_invalid_utf8(self, tmp_path):
+        """A UnicodeDecodeError from a non-UTF-8 byte sequence is a read
+        failure here too, not a crash -- corpus._parse_jsonl_records must
+        return None, identical to an OSError, per its own docstring."""
+        bad_jsonl = tmp_path / "bad.jsonl"
+        bad_jsonl.write_bytes(b"\xff\xfe\x00\x01")
+        assert _mod.corpus._parse_jsonl_records(bad_jsonl) is None
+
     # -- growth chain --
 
     def test_single_turn_sequence_yields_zero_growth(self):
@@ -11186,7 +11221,11 @@ class TestSingleLevelProjectsGlob:
         """Walks every subparser build_parser() registers, not just the two
         cli_args cases above, so a future subcommand that adds --projects
         without threading type=_single_level_projects_glob fails here
-        instead of silently admitting a multi-segment or '**' value."""
+        instead of silently admitting a multi-segment or '**' value.
+        user-input is exempted: it reads only scope.PROJECTS_DIR through
+        corpus.iter_sessions, whose Path.glob handles a multi-segment or
+        '**' value correctly, unlike the fnmatch-based multi-root matcher
+        the validator protects."""
         parser = _mod.build_parser()
         subparsers_action = next(
             action for action in parser._actions
@@ -11196,9 +11235,25 @@ class TestSingleLevelProjectsGlob:
             subcommand
             for subcommand, subparser in subparsers_action.choices.items()
             for action in subparser._actions
-            if action.dest == "projects" and action.type is not _mod.scope._single_level_projects_glob
+            if action.dest == "projects"
+            and subcommand != "user-input"
+            and action.type is not _mod.scope._single_level_projects_glob
         ]
         assert missing == []
+        user_input_parser = subparsers_action.choices["user-input"]
+        user_input_projects_action = next(
+            action for action in user_input_parser._actions if action.dest == "projects"
+        )
+        assert user_input_projects_action.type is None
+
+    def test_user_input_accepts_a_multi_segment_projects_value(self):
+        """user-input's own --projects stays unwired: it reads only
+        scope.PROJECTS_DIR through corpus.iter_sessions's genuine
+        Path.glob, which handles a multi-segment value correctly, unlike
+        the fnmatch-based matcher the validator protects elsewhere."""
+        parser = _mod.build_parser()
+        args = parser.parse_args(["user-input", "--projects", "foo/bar"])
+        assert args.projects == "foo/bar"
 
 
 class TestPoisonedProjectsDirGlobal:

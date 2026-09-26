@@ -772,13 +772,6 @@ def _render_pooled_block(
         print(refusal, file=sys.stderr)
         sys.exit(2)
 
-    print(_pooled_resolved_scope_header(scope_label))
-    print()
-    print(_POOLED_PUBLICATION_POINTER)
-    print()
-    print(_POOLED_CAPTION)
-    print()
-
     by_branch: dict[tuple[int | None, str], list[dict]] = defaultdict(list)
     for entry in rounds:
         by_branch[entry["branch_key"]].append(entry)
@@ -819,6 +812,12 @@ def _render_pooled_block(
     def fmt(key: str) -> str:
         return _fmt_share_with_ci(*intervals[key])
 
+    print(_pooled_resolved_scope_header(scope_label))
+    print()
+    print(_POOLED_PUBLICATION_POINTER)
+    print()
+    print(_POOLED_CAPTION)
+    print()
     print("  Share of branch spend")
     print(f"    {'inside round windows':<30}{fmt('spend_inside')}")
     print(f"    {'outside every round window':<30}{fmt('spend_outside')}")

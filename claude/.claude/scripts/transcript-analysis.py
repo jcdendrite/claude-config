@@ -6895,7 +6895,7 @@ def build_parser() -> argparse.ArgumentParser:
         "user-input",
         help="All fresh user prompts per session, classified as initial / followup / explicit-correction.",
     )
-    p_user_input.add_argument("--projects", default="*", type=_single_level_projects_glob, metavar="GLOB")
+    p_user_input.add_argument("--projects", default="*", metavar="GLOB")
     p_user_input.add_argument("--branches", metavar="B1,B2,...")
     p_user_input.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
     p_user_input.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")

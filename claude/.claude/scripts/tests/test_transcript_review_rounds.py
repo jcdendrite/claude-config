@@ -2140,6 +2140,31 @@ class TestCmdReviewRoundCostPooled:
         assert marker not in out
         assert marker not in err
 
+    def test_pooled_render_emits_nothing_when_interval_computation_fails(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Pins _render_pooled_block's ordering: every print (header,
+        publication pointer, caption, figure lines) happens only after
+        by_branch, per_branch, and the bootstrap intervals are fully
+        computed. An exception raised during that computation -- here via
+        _bootstrap_share_intervals, the last step before the first print --
+        must reach the pooled backstop with zero stdout output, not a
+        truncated pooled block."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        marker = "synthetic-marker-9b3e1a"
+
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", _raise)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
+        assert marker not in err
+
     def test_pooled_backstop_does_not_engage_on_the_non_pooled_path(self, tmp_path, monkeypatch):
         """Paired with the pooled case above: the same unanticipated
         exception under pooled=False must propagate unmodified, confirming
