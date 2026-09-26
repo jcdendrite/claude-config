@@ -183,7 +183,7 @@ MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
 # `-a --no-textconv` and path-only output stop attributes and diff config from
 # hiding a marker line. See "Conflict-marker hard deny" in
 # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
-CONFLICT_MARKER_REGEX='^(<<<<<<<|>>>>>>>)( |$)'
+CONFLICT_MARKER_REGEX='^(<<<<<<<|=======|>>>>>>>)( |$)'
 if [ -n "$BASE" ]; then
   CONFLICT_MARKER_CANDIDATES=$(_lib_capped git -C "$REPO_ROOT" -c core.quotepath=false diff --cached --no-color --name-only --diff-filter=d -a --no-textconv -G "$CONFLICT_MARKER_REGEX" -- "${MARKER_PATHSPECS[@]}")
   CONFLICT_MARKER_SCAN_STATUS=$?
@@ -202,7 +202,7 @@ if [ -n "$BASE" ]; then
     exit 0
   fi
   if [ -n "$CONFLICT_MARKER_PATHS" ]; then
-    emit_deny "Commit blocked by skill-review gate: the staged gated file(s) still contain unresolved conflict-marker lines (${CONFLICT_MARKER_PATHS//$'\n'/, }): column-0 lines starting <<<<<<< or >>>>>>> in a file whose staged change touches such a line. If a conflict is unresolved, resolve it and stage the resolution. If the lines are legitimate content, such as a documented example, indent every such line and restage; the gate then reviews the edited file."
+    emit_deny "Commit blocked by skill-review gate: the staged gated file(s) still contain unresolved conflict-marker lines (${CONFLICT_MARKER_PATHS//$'\n'/, }): column-0 lines starting <<<<<<<, =======, or >>>>>>> in a file whose staged change touches such a line. If a conflict is unresolved, resolve it and stage the resolution. If the lines are legitimate content, such as a documented example, indent every such line and restage; the gate then reviews the edited file."
     exit 0
   fi
 fi

@@ -108,7 +108,7 @@ Git labels conflict sides with the ref name it was given, while `merge-tree --wr
 
 Whenever the base is non-empty, the hook therefore scans the gated pathspecs HEAD-relative, in up to two capped git calls. Both print path lists only, so no diff or grep presentation config (`color.ui`, `diff.external`, `GIT_EXTERNAL_DIFF`, a diff driver command) can change the verdict.
 
-- Call A, `git diff --cached --name-only --diff-filter=d -G '^(<<<<<<<|>>>>>>>)( |$)'`, lists the non-deleted candidates. `-G` selects a file when a removed line matches as well as an added one, so A over-selects. `--diff-filter=d` lets a commit delete a gated file whose HEAD version carries marker lines. An empty A ends the scan.
+- Call A, `git diff --cached --name-only --diff-filter=d -G '^(<<<<<<<|=======|>>>>>>>)( |$)'`, lists the non-deleted candidates. `-G` selects a file when a removed line matches as well as an added one, so A over-selects. `--diff-filter=d` lets a commit delete a gated file whose HEAD version carries marker lines. An empty A ends the scan.
 - Call B, `git grep --cached -L -E` with the same regex over the same gated pathspecs, lists the staged blobs that carry no marker line. It runs only when A is non-empty.
 - The deny set is A minus B by exact path match. Because B lists files without a match, a path A and B name differently stays in the deny set, so a naming mismatch fails safe.
 - Both calls pass `-a --no-textconv`, so a `-diff` or `binary` attribute, or a textconv driver, on a gated path cannot hide a marker line.
@@ -119,12 +119,13 @@ The deny is hard rather than a fall-through to the marker check. The marker hash
 
 Accepted residuals:
 
-- A gated file whose staged change touches a column-0 line starting `<<<<<<< ` or `>>>>>>> `, or a bare `<<<<<<<` or `>>>>>>>` line, also hard-denies mid-merge, even when no conflict exists. The deny reason names this case and the way out: indent every such line so none starts at column 0 and restage, which puts the file back under the marker check.
+- A gated file whose staged change touches a column-0 line starting `<<<<<<< `, `=======`, or `>>>>>>> `, or a bare `<<<<<<<`, `=======`, or `>>>>>>>` line, also hard-denies mid-merge, even when no conflict exists. The deny reason names this case and the way out: indent every such line so none starts at column 0 and restage, which puts the file back under the marker check.
 - A file whose HEAD version has two column-0 marker lines still denies when the commit indents only one, until every such line is indented. The remedy converges: each indented line shrinks the set.
 - A merge in which upstream itself indents the marker lines is released, because the staged blob no longer carries a column-0 marker line.
 - A bare marker line ending in a carriage return (`<<<<<<<` then CR) does not match the scan. Git's own conflict output does not emit that shape.
 - A `conflict-marker-size` attribute on the path changes the marker width git writes, and the scan does not match that width.
 - The code-review gate carries the same hidden conflict and has no conflict-marker scan. See `merge-tree-base-recipe-for-gate-diff-base.md` § "Accepted residual: the code-review gate can release an unresolved conflict".
+- A Markdown setext-style heading (`Some Heading` followed by a bare `=======` underline) is ordinary content, but stages the same bare `=======` line the scan hard-denies on. The same indent-and-restage workaround above applies: indenting the underline so it no longer starts at column 0 puts the file back under the marker check.
 
 ## Latency
 

@@ -24,7 +24,6 @@ from helpers import (
     build_conflicted_merge_via_origin_with_upstream_skill_edit,
     build_conflicted_revert,
     build_conflicted_revert_with_clean_gated_removal,
-    build_octopus_merge_conflict,
     edit_input,
     extract_skill_command,
     push_conflicting_edit_to_origin,
@@ -3204,15 +3203,22 @@ def _build_unpushed_local_branch_merge_with_untouched_gated_skill(
 
 
 class TestSkillReviewGateAnchorRejection:
-    """Anchor rejection at verdict level: the deny counter to the allow
-    proven by test_upstream_skill_edit_mid_merge_allows_with_no_marker,
-    and the only place the closure-copy claim (that a forged or
-    untrusted anchor cannot release the gate) is tested end to end rather
-    than against the primitive directly."""
+    """Anchor rejection at verdict level, wiring-only: proves the closure-copy
+    claim (a forged or untrusted anchor cannot release the gate) reaches the
+    real hook, not just the primitive. Every anchor-rejection shape is
+    already pinned directly against `_lib_gate_diff_base` in test_lib.py's
+    TestGateDiffBaseUntrustedAnchor, TestGateDiffBaseAnchorNamespaceShadow,
+    and TestGateDiffBaseTopologyFallback, and
+    test_shared_closure_function_is_identical_across_stowed_and_plugin_lib
+    proves the plugin copy is byte-identical to the stowed copy -- so this
+    class keeps exactly one verdict-level case rather than repeating each
+    shape at real-git cost."""
 
-    def test_unpushed_local_branch_merge_denies_with_untouched_gated_skill(
-        self, isolated_home, tmp_path
-    ):
+    def test_untrusted_anchor_denies_at_hook_verdict_level(self, isolated_home, tmp_path):
+        """Wiring-only: an untrusted anchor (an unpushed local branch's
+        MERGE_HEAD tip, neither an ancestor of origin/<default> nor of HEAD)
+        denies the real hook. The anchor-rejection matrix itself lives in
+        test_lib.py, not this class."""
         repo = _build_unpushed_local_branch_merge_with_untouched_gated_skill(tmp_path)
 
         base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
@@ -3226,152 +3232,6 @@ class TestSkillReviewGateAnchorRejection:
             SKILL_REVIEW_HOOK,
             bash_input("git commit -m merge", session_id="unpushed-branch-anchor-session"),
             cwd=repo,
-        )
-        assert reason is not None and _MARKER_GATE_TOKEN in reason
-
-    def test_fabricated_remote_tracking_ref_denies_with_gated_content_staged(
-        self, isolated_home, tmp_path
-    ):
-        """A fabricated refs/remotes/origin/<name> ref pointing at an
-        unreachable commit must not anchor the gate --
-        _lib_default_branch_or_guess's candidate probe is deliberately
-        narrow (exactly main/master/develop) and never resolves to this
-        name. Mirrors
-        test_lib.py::TestGateDiffBaseUntrustedAnchor.test_reachable_only_from_fabricated_remote_tracking_ref_still_falls_back
-        at verdict level, with genuinely staged gated content in the index
-        so the deny proves the anchor rejection rather than an
-        accidentally-empty diff."""
-        bare, clone = bare_remote_with_default_branch(tmp_path)
-        subprocess.run(["git", "checkout", "-qb", "side"], cwd=clone, check=True)
-        skill_rel = "claude-skills/skills/fabricated-anchor-skill/SKILL.md"
-        skill_path = clone / skill_rel
-        skill_path.parent.mkdir(parents=True)
-        skill_path.write_text("side content\n")
-        subprocess.run(["git", "add", skill_rel], cwd=clone, check=True)
-        subprocess.run(["git", "commit", "-qm", "side commit"], cwd=clone, check=True)
-        side_oid = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=clone, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        subprocess.run(["git", "checkout", "-q", "main"], cwd=clone, check=True)
-        subprocess.run(
-            ["git", "update-ref", "refs/remotes/origin/totally-not-the-default", side_oid],
-            cwd=clone,
-            check=True,
-        )
-        (absolute_git_dir(clone) / "MERGE_HEAD").write_text(side_oid + "\n")
-        _stage_skill_change(clone)
-
-        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(clone))
-        assert base_result.returncode == 1 and base_result.stdout == "", (
-            f"precondition failed: fabricated remote-tracking ref unexpectedly "
-            f"reached a trusted anchor: rc={base_result.returncode} "
-            f"stdout={base_result.stdout!r}"
-        )
-
-        reason = run_hook_reason(
-            SKILL_REVIEW_HOOK,
-            bash_input("git commit -m merge", session_id="fabricated-anchor-session"),
-            cwd=clone,
-        )
-        assert reason is not None and _MARKER_GATE_TOKEN in reason
-
-    @pytest.mark.parametrize("shadow_kind", ["branch", "tag"])
-    @pytest.mark.parametrize("has_remote_tracking_ref", [True, False])
-    def test_local_ref_named_like_remote_tracking_ref_denies_with_gated_content_staged(
-        self, isolated_home, tmp_path, shadow_kind, has_remote_tracking_ref
-    ):
-        """A local branch or tag named `origin/main` resolves ahead of the
-        real remote-tracking ref under git's short-name rules, so an anchor
-        spelled `origin/<default>` would trust a MERGE_HEAD pointing at an
-        unreviewed commit. Mirrors
-        test_lib.py::TestGateDiffBaseAnchorNamespaceShadow at verdict level."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-        (repo / "f").write_text("seed\n")
-        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
-        subprocess.run(["git", "checkout", "-qb", "side"], cwd=repo, check=True)
-        # The side commit carries the exact skill content later staged on
-        # main, so a trusted shadow anchor would read it as already reviewed
-        # and disarm the gate.
-        _stage_skill_change(repo)
-        subprocess.run(["git", "commit", "-qm", "unreviewed skill commit"], cwd=repo, check=True)
-        unreviewed_oid = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
-        if has_remote_tracking_ref:
-            subprocess.run(
-                ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
-            )
-        subprocess.run(["git", shadow_kind, "origin/main", unreviewed_oid], cwd=repo, check=True)
-        (absolute_git_dir(repo) / "MERGE_HEAD").write_text(unreviewed_oid + "\n")
-        _stage_skill_change(repo)
-
-        shadowed_oid = subprocess.run(
-            ["git", "rev-parse", "origin/main"],
-            cwd=repo, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        assert shadowed_oid == unreviewed_oid, "precondition: the short name must resolve to the shadow"
-        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(repo))
-        assert base_result.returncode == 1 and base_result.stdout == "", (
-            f"precondition failed: shadow ref reached a trusted anchor: "
-            f"rc={base_result.returncode} stdout={base_result.stdout!r}"
-        )
-
-        reason = run_hook_reason(
-            SKILL_REVIEW_HOOK,
-            bash_input("git commit -m merge", session_id="shadow-anchor-session"),
-            cwd=repo,
-        )
-        assert reason is not None and _MARKER_GATE_TOKEN in reason
-
-    def test_non_hex_state_ref_denies_with_gated_content_staged(self, isolated_home, git_repo):
-        """A state ref file is plain, unauthenticated content anyone with
-        filesystem access could write directly. Writing the literal text
-        "HEAD" -- syntactically a valid revision, trivially its own
-        ancestor -- must not anchor the gate absent state_oid's own
-        40/64-hex shape check. Mirrors
-        test_lib.py::TestGateDiffBaseUntrustedAnchor.test_resolvable_non_hex_state_ref_falls_back
-        at verdict level."""
-        (absolute_git_dir(git_repo) / "MERGE_HEAD").write_text("HEAD\n")
-        _stage_skill_change(git_repo)
-
-        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
-        assert base_result.returncode == 1 and base_result.stdout == "", (
-            f"precondition failed: non-hex state ref unexpectedly reached a "
-            f"trusted anchor: rc={base_result.returncode} stdout={base_result.stdout!r}"
-        )
-
-        reason = run_hook_reason(
-            SKILL_REVIEW_HOOK,
-            bash_input("git commit -m merge", session_id="non-hex-anchor-session"),
-            cwd=git_repo,
-        )
-        assert reason is not None and _MARKER_GATE_TOKEN in reason
-
-    def test_octopus_merge_head_denies_with_gated_content_staged(self, isolated_home, git_repo):
-        """A genuine two-line MERGE_HEAD, the shape a real octopus-merge
-        attempt leaves, must not anchor the gate -- state_oid's shape
-        validation rejects the multi-line value outright. Mirrors
-        test_lib.py::TestGateDiffBaseTopologyFallback.test_octopus_merge_falls_back_to_empty_base
-        at verdict level."""
-        build_octopus_merge_conflict(git_repo)
-        _stage_skill_change(git_repo)
-
-        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
-        assert base_result.returncode == 1 and base_result.stdout == "", (
-            f"precondition failed: octopus MERGE_HEAD unexpectedly reached a "
-            f"trusted anchor: rc={base_result.returncode} stdout={base_result.stdout!r}"
-        )
-
-        reason = run_hook_reason(
-            SKILL_REVIEW_HOOK,
-            bash_input("git commit -m merge", session_id="octopus-anchor-session"),
-            cwd=git_repo,
         )
         assert reason is not None and _MARKER_GATE_TOKEN in reason
 
@@ -4155,6 +4015,26 @@ class TestSkillReviewGateConflictMarkerHardDeny:
         assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
         assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
 
+    def test_a_bare_separator_marker_line_in_an_edited_file_denies(self, isolated_home, tmp_path):
+        """The `=======` alternative: a resolution that strips the
+        `<<<<<<<`/`>>>>>>>` lines but leaves the bare separator line behind
+        still differs from the base, so only the scan can stop it."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "resolved line"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", "======="))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m merge", session_id="markers-bare-separator-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _CONFLICT_MARKER_TOKEN in reason
+        assert skill_paths["skill-b"] in reason and skill_paths["skill-a"] not in reason
+
     def test_an_eight_character_marker_run_is_not_a_marker_line(self, isolated_home, tmp_path):
         """The `( |$)` boundary: a `<<<<<<<<` heading is not a conflict marker."""
         repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
@@ -4169,6 +4049,26 @@ class TestSkillReviewGateConflictMarkerHardDeny:
             run_hook(
                 SKILL_REVIEW_HOOK,
                 bash_input("git commit -m merge", session_id="markers-eight-char-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_an_eight_character_separator_run_is_not_a_marker_line(self, isolated_home, tmp_path):
+        """The `( |$)` boundary applies to `=======` too: an `========`
+        setext-heading underline is not a conflict marker."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path, merge_target="oid"
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "======== heading"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", "========"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-eight-char-separator-session"),
                 cwd=repo,
             )
             == "allow"
