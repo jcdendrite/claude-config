@@ -10,10 +10,10 @@ currently denies a bare restore anyway whenever a shell redirection token
 (`2>&1`, `> out.log`, `&>/dev/null`, …) is glued to the same fragment,
 because its leftover-token classifier reads the redirection syntax as an
 unrecognized word and treats it as a package name. This was hit for real: a
-session regenerating ten repos' lockfiles after a defensive `overrides`
+session regenerating several repos' lockfiles after a defensive `overrides`
 pin (no version change, no new package) got denied on `pnpm install 2>&1 |
-tail -30` — an ordinary way to capture output — and had to defer all ten
-installs to the engineer via the `!` escape instead of running them itself.
+tail -30` — an ordinary way to capture output — and had to defer every
+install to the engineer via the `!` escape instead of running them itself.
 Fix the false positive so the gate's documented allow/deny split actually
 holds for commands using ordinary output-capture syntax.
 

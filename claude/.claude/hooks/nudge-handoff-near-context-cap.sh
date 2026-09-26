@@ -81,7 +81,7 @@ fi
 
 # Sourced ahead of the stdin read so both paths can use it; sourcing has no
 # side effects, so this costs the fire path only a small, fixed amount of work.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
@@ -383,7 +383,21 @@ run_check_mode() {
   read_latest_usage "$1" || check_refuse "usage-block-missing"
 
   local nudge_disabled=false
-  [ -f "$CONFIG_DIR/.handoff-nudge-disabled" ] && nudge_disabled=true
+  # Delegates to _config_enabled's handoff_nudge schema row
+  # (presence-disables, default true). Exit code 2 (unresolvable) can't
+  # reach here -- this function's own top-of-body guard already refused on
+  # an unresolved CONFIG_DIR. Exit code 3 (config-keys.psv missing or
+  # unreadable) CAN reach here independently of that guard, and falls
+  # through the same `case` as exit 2 below (neither matches the sole `1)`
+  # arm), leaving nudge_disabled=false -- safe, not an omission:
+  # handoff_nudge's documented fail direction (config-schema-audit.md)
+  # treats an unresolvable kill switch as absent, so the nudge stays
+  # enabled rather than silently suppressed.
+  _config_enabled handoff_nudge
+  case "$?" in
+    1) nudge_disabled=true ;;
+    3) ;; # schema unreadable: intentional no-op, see comment above
+  esac
 
   # Same all-fields-zero condition the fire path logs as schema drift, minus
   # the marker and log write.
@@ -484,9 +498,18 @@ _lib_valid_session_id_component "$SESSION_ID" || exit 0
 [ -n "$CONFIG_DIR" ] || exit 0
 
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.
-if [ -f "$CONFIG_DIR/.handoff-nudge-disabled" ]; then
-  exit 0
-fi
+# Delegates to _config_enabled's handoff_nudge schema row (presence-disables,
+# default true). Exit code 2 (unresolvable) can't reach here either, same
+# reason as run_check_mode's call site above. Exit code 3 (config-keys.psv
+# missing or unreadable) is independent of CONFIG_DIR resolution and CAN
+# reach here; it falls through the same `case` as exit 2 (neither matches
+# the sole `1)` arm), so the nudge stays enabled -- safe by handoff_nudge's
+# documented fail direction (config-schema-audit.md), not by omission.
+_config_enabled handoff_nudge
+case "$?" in
+  1) exit 0 ;;
+  3) ;; # schema unreadable: intentional no-op, see comment above
+esac
 
 # Subagent gate: only nudge in the main session, not in subagents.
 if [ -n "$AGENT_TYPE" ]; then
@@ -657,7 +680,7 @@ fi
 OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
-    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish.")
+    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish — judge that by what the remaining work costs, not by how many steps are left.")
   }
 }' 2>/dev/null) && [ -n "$OUTPUT" ] && {
   printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s\n' \

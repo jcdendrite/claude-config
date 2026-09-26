@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: reject `gh pr create` and `gh pr edit` commands whose body
 # content (inline --body "..." or body-source file) contains literal
 # backslash-backtick sequences (\`). Those sequences appear when a
@@ -38,14 +39,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -84,15 +85,6 @@ extract_body_source_paths() {
   '
 }
 
-# Pseudo-file paths whose contents the hook cannot meaningfully scan
-# at hook-fire time. Reject all of them fail-closed.
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Build the scan target: start with the full command string (which
 # contains any inline --body "..." value), then append the contents
 # of any referenced body-source files. Deliberately NOT unioned with a
@@ -106,7 +98,7 @@ BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
-    if is_pseudo_file_path "$body_source_path"; then
+    if _lib_is_pseudo_file_path "$body_source_path"; then
       emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The backtick-escape gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
       exit 0
     fi

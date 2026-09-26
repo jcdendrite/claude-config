@@ -23,9 +23,10 @@ NOOP_MAX_PROMPT_LEN = 600
 # not already exercised by a dedicated test below, as a standalone or
 # minimally-wrapped short prompt. It also covers:
 # - one mixed-case fixture pinning grep -qiE's case-insensitivity.
-# - exhaustive branch coverage for the regex's two nested groups: every
-#   `do(ing|es)? nothing` verb form and both `exists only (so|to)`
-#   prepositions.
+# - exhaustive branch coverage for the regex's three nested groups:
+#   - every `do(ing|es)? nothing` verb form
+#   - both `exists only (so|to)` prepositions
+#   - both `no (further )?action` branches
 # - one fixture pinning NOOP_STUB_TOKEN_RE's `[[:punct:]]*`
 #   trailing-punctuation quantifier (`noop.`).
 NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
@@ -39,6 +40,8 @@ NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("just wait", "phrase_just_wait"),
     ("report back immediately", "phrase_report_back_immediately"),
     ("no action", "phrase_no_action"),
+    ("no further action", "phrase_no_further_action"),
+    ("no work to do", "phrase_no_work_to_do"),
     ("doing nothing", "phrase_doing_nothing"),
     ("does nothing", "phrase_does_nothing"),
     ("exists only so", "phrase_exists_only_so"),
@@ -59,10 +62,26 @@ INCIDENT_PROMPT = (
     "commands, do not investigate anything."
 )
 
+# Verbatim from this repo's own transcript history (121 characters).
+# Contains none of: agentId, session ID, filesystem path, branch name,
+# person/project name. Unlike INCIDENT_PROMPT above, it therefore needs
+# no identifier substitution.
+CREATED_IN_ERROR_INCIDENT_PROMPT = (
+    "STOP — do not execute. This dispatch was created in error; there is "
+    "no work to do. Return immediately with no tool calls."
+)
+
+# The prompt quoted verbatim in GH-1022 and confirmed by the maintainer as
+# a real occurrence (71 characters). It is the third grounding source
+# named in deny-no-op-dispatch.sh's header comment.
+GH_1022_REPORTED_PROMPT = "This is a no-op check. Immediately return 'ack' with no further action."
+
 # A long, over-ceiling prompt that deliberately contains two idioms
 # ("do nothing", "report back immediately") inside a legitimate
 # conditional clause -- pins that the length conjunct, not the idiom list,
 # is what makes a real task specification unreachable by this gate.
+# The length conjunct is a single early exit ahead of both regex arms, so
+# this fixture pins it without a per-alternative fixture.
 ADVERSARIAL_OVER_CEILING_PROMPT = (
     "Check the feature-flag rollout status before doing anything else. If "
     "the flag is still in the 'paused' state, do nothing further this "
@@ -185,6 +204,31 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
+    def test_created_in_error_incident_prompt_denied(self, isolated_home):
+        """Regression pin: the repo-transcript-sourced occurrence that
+        NOOP_PHRASE_RE's "no work to do" alternative must catch."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=CREATED_IN_ERROR_INCIDENT_PROMPT),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_gh_1022_reported_prompt_denied(self, isolated_home):
+        """GH-1022 regression pin: asserts only the black-box `deny` outcome, not
+        which alternative currently matches, so a future alternative change can't
+        silently reopen this without failing here."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=GH_1022_REPORTED_PROMPT),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
     @pytest.mark.parametrize(
         "prompt",
         [pytest.param(p, id=tid) for p, tid in NOOP_IDIOM_COVERAGE_TABLE],
@@ -226,6 +270,67 @@ class TestDenyNoOpDispatch:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "Check whether the retry handler takes no further action after the third failed attempt.",
+                id="other-actor-no-further-action",
+            ),
+            pytest.param(
+                "Confirm the background worker correctly detects there is no work to do and exits cleanly.",
+                id="other-actor-no-work-to-do",
+            ),
+            pytest.param(
+                "Read src/a.py and report findings only. Take no further action.",
+                id="self-directed-scope-limiter",
+            ),
+        ],
+    )
+    def test_referent_ambiguous_idiom_denied(self, isolated_home, prompt):
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): `no further action` and `no work to do` can
+        describe another actor's inaction, or appear in the scope-limiting
+        tail of a prompt that states real work, rather than instruct the
+        dispatched agent to do nothing."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "There are no actionable items right now, but keep monitoring the dashboard.",
+                id="trailing-bare-no-action",
+            ),
+            pytest.param(
+                "There are no further actions required from you at this time.",
+                id="trailing-no-further-action",
+            ),
+            pytest.param(
+                "Review the piano action mechanism before the recital.",
+                id="leading-no-action",
+            ),
+            pytest.param(
+                "Confirm there is no work to document for this release.",
+                id="trailing-no-work-to-do",
+            ),
+            pytest.param(
+                "The construction crew has considerable casino work to do before opening night.",
+                id="leading-no-work-to-do",
+            ),
+            pytest.param(
+                "The task exists only sometimes.",
+                id="trailing-exists-only-so",
+            ),
+        ],
+    )
+    def test_word_substring_residual_denied(self, isolated_home, prompt):
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): no NOOP_PHRASE_RE alternative carries a word
+        boundary, so each matches inside a longer word. A future boundary
+        fix must revisit this table."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "deny"
+
     # ------------------------------------------------------------------ #
     # Allow                                                               #
     # ------------------------------------------------------------------ #
@@ -262,6 +367,75 @@ class TestDenyNoOpDispatch:
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
                 agent_input(prompt="Review the diff. Do not run any commands."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_no_and_action_non_adjacent_allowed(self, isolated_home):
+        """Guards against matching the over-broad `no.*action` instead of
+        the intended `no (further )?action`."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm no workflow under .github/ still pins the old runner action."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            pytest.param(
+                "Confirm no unpinned action remains in .github/workflows.",
+                id="other-word-between-no-and-action",
+            ),
+            pytest.param(
+                "Report your findings before taking any further action.",
+                id="further-action-without-no",
+            ),
+        ],
+    )
+    def test_no_further_action_boundary_allowed(self, isolated_home, prompt):
+        """Guards the `(further )?` group in `no (further )?action` against
+        generalizing to any one-word gap between `no` and `action`, or
+        dropping the leading `no`."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "allow"
+
+    def test_no_work_without_the_full_idiom_allowed(self, isolated_home):
+        """Guards against an implementation that truncates the "no work to
+        do" alternative to bare "no work"."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Confirm the scheduler idles cleanly when no work is queued."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_no_further_work_to_do_modified_form_allowed(self, isolated_home):
+        """Accepted residual (see docs/design-decisions/no-op-dispatch-hook-gate.md's
+        Known gaps section): unlike `no (further )?action`, `no work to do`
+        has no optional modifier, so "no further work to do" is not caught."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There is no further work to do on this ticket."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_work_to_do_without_leading_no_allowed(self, isolated_home):
+        """Guards against a dropped or optional leading "no" in `no work to
+        do`, which would deny a large, ordinary class of legitimate
+        task-assignment prompts."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="There's plenty of work to do before this ships."),
                 home=isolated_home,
             )
             == "allow"

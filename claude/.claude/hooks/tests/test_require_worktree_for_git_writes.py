@@ -695,7 +695,7 @@ class TestRequireWorktreeForGitWrites:
         with a stub directory containing only symlinks to the other tools
         this hook's code path actually invokes before ever reaching the
         python3 check (`cat` via _lib_parse_tool_input_or_deny, `dirname`
-        to locate _lib.sh/the parser, `git`, `jq`, `timeout`) — not
+        to locate the git-command parser script, `git`, `jq`, `timeout`) — not
         sha256sum/awk, which only _marker_lib_repo_hash uses and this hook
         never calls — so python3 is genuinely absent regardless of where
         the real binary lives on this machine. Mirrors test_lib.py's
@@ -728,9 +728,9 @@ class TestRequireWorktreeForGitWrites:
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
-        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate
-        _lib.sh/the parser, `git`, `python3` for the command parser, `ps`
-        and `tr` for _lib_worktree_collision_guard's session-identity
+        (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate the
+        git-command parser script, `git`, `python3` for the command parser,
+        `ps` and `tr` for _lib_worktree_collision_guard's session-identity
         ancestor walk on the worktree-allow path, `bash` for the guard's own
         noclobber lock-acquisition write), omitting both timeout(1) and
         gtimeout(1). Mirrors test_python3_absent_denies's shape; skips (does
@@ -949,13 +949,12 @@ class TestMachineMarkerUnderConfigDir:
     def test_legacy_home_claude_marker_still_enforces_once_config_dir_set(
         self, non_opted_repo, user_marker_home, tmp_path
     ):
-        """A $HOME/.claude/worktree-required marker (user_marker_home) still
-        enforces even when CLAUDE_CONFIG_DIR points at a directory holding no
-        copy of it — union, not swap, at this call site: a machine-wide
-        sentinel armed before CLAUDE_CONFIG_DIR adoption must not silently go
-        dark under a differentiated profile, matching the guard-config hooks'
-        legacy-fallback fix for the same enforcement-invariant-regression
-        shape."""
+        """A $HOME/.claude worktree-required marker still enforces even when
+        CLAUDE_CONFIG_DIR points elsewhere. This call site unions the two
+        locations rather than letting CLAUDE_CONFIG_DIR replace the legacy
+        check, pinning the same invariant test_require_worktree_for_file_writes.py's
+        TestMachineLevelMarker.test_home_legacy_marker_overrides_disagreeing_config_dir_row
+        pins for this hook's sibling consumer."""
         empty_config_dir = tmp_path / "empty-profile"
         empty_config_dir.mkdir()
         assert (
@@ -1010,6 +1009,32 @@ class TestMachineMarkerUnderConfigDir:
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
             )
             == "allow"
+        )
+
+    def test_home_legacy_marker_overrides_disagreeing_config_dir_row(
+        self, non_opted_repo, user_marker_home, tmp_path
+    ):
+        """worktree_required's config-dir-or-home union, exercised through
+        this hook rather than _config_value directly: an explicit
+        `worktree_required = false` row in the resolved CLAUDE_CONFIG_DIR's
+        own claude-config.toml must not defeat $HOME/.claude's legacy
+        marker -- mirrors test_config_lib.py's own
+        TestUnionSemantics.test_explicit_false_in_config_dir_does_not_defeat_true_under_home_legacy,
+        which pins the same invariant generically against _config_value, and
+        test_require_worktree_for_file_writes.py's own
+        TestMachineLevelMarker.test_home_legacy_marker_overrides_disagreeing_config_dir_row,
+        which pins the same invariant against this hook's sibling consumer."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("worktree_required = false\n")
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_opted_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
         )
 
 

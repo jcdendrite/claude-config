@@ -115,3 +115,105 @@ Grounds the principle that disposition discipline pushes toward
 ADDRESS-via-code-change rather than ADDRESS-via-explanation-only — a
 reviewer's "this is confusing" produces a code clarification, not a
 reviewer-thread comment dismissing the concern.
+
+## Reviewer read methodology
+
+Primary sources for the reviewer entry-read rule proposed in
+`.claude/plans/code-file-size-splits.md`'s "Reviewer read methodology:
+recommendation" section (implemented by that plan's child issue B). Not yet
+reflected in this skill's rules — read this to ground that rule when it lands.
+
+### Whole-file reads are the conditional case, not the default
+
+**Google Engineering Practices — *What to look for in a code review*, "Context"**
+<https://google.github.io/eng-practices/review/reviewer/looking-for.html>
+
+> "Usually the code review tool will only show you a few lines of code
+> around the parts that are being changed. Sometimes you have to look at
+> the whole file to be sure that the change actually makes sense."
+
+Not yet verified: the rest of this section, past the quoted sentences,
+continues to whole-system code health — check before citing further.
+
+### Understanding a small, unfamiliar change needs more context than the diff shows
+
+**Bacchelli & Bird, *Expectations, Outcomes, and Challenges of Modern
+Code Review*, ICSE 2013**
+
+> "When reviewing a small, unfamiliar change, it is often necessary to
+> read through much more code than that being reviewed."
+
+### Diff-only trades recall for precision — grounds what the rule rejects
+
+**Anthropic's code-review plugin**, bug-finding subagent instructions:
+
+> "Focus only on the diff itself without reading extra context." and "Do
+> not flag issues that you cannot validate without looking at context
+> outside of the git diff."
+
+This skill's own scope rule — "A defect outside the boundary that the
+change causes, activates, or newly reaches stays in scope" — takes the
+opposite duty, so this source grounds the rejected alternative, not the
+adopted rule.
+
+### Security review already traces beyond the diff
+
+**Anthropic's security-review skill:**
+
+> "Trace data flow from user inputs to sensitive operations" and "Use
+> the repository exploration tools to understand the codebase context".
+
+### Call-graph reach should follow a question, not a fixed hop count
+
+**Pascarella et al., *Information Needs in Contemporary Code Review*, CSCW 2018**
+
+Reviewers "may reconstruct the invocation path of a given function to
+understand the impact" — ranked below other information needs in that
+paper. No source found sets a fixed hop count.
+
+### Large-file entry unit: git's own function-context diff
+
+**`git help gitattributes`, "Defining a custom hunk-header" section**,
+and `git diff -W` / `--function-context`:
+
+> "Show whole function as context lines for each change."
+
+Without a `diff=<driver>` attribute, git's default hunk-header rule
+treats only a line starting with a letter, `_`, or `$` as a function
+header — an indented method is not one.
+
+### Not yet verified — check before citing
+
+Leads noted during research but not fetched as of this section's
+authoring (2026-09-25):
+- Liu et al., "Lost in the Middle" (long-context attention degradation).
+- Anthropic's context-engineering guidance on just-in-time context loading.
+
+### Read-tool per-call token cap
+
+Claude Code's Read tool caps a single call by tokens, not lines — a
+whole-file read beyond the cap returns a `PARTIAL view` notice instead
+of the rest of the file. One live default Read in this repo measured
+the cap once, against
+`claude/.claude/scripts/tests/test_transcript_reviewer_yield.py` (1,935
+lines): the tool returned lines 1–956, with the notice `[Truncated:
+PARTIAL view — <path>: showing lines 1-956 of 1935 total (43009 tokens,
+cap 25000). ...]`.
+
+- The cap is 25,000 tokens.
+- That file averages about 22 tokens per line, predicting roughly
+  1,100–1,125 lines per page. The observed page held 956 lines, about
+  15% fewer, for an unexplained reason (candidates: per-page overhead,
+  uneven density).
+- This is one sample — token density varies by file, so ~1,000 lines is
+  a rough predictor of where the cap falls, not a fixed boundary.
+
+Source: `code.claude.com/docs/en/tools-reference` "Read tool behavior",
+fetched by a `verify-sources` subagent 2026-09-25; re-verify by
+2026-12-25, since this is the harness's own tool behavior rather than a
+versioned spec — plus the live Read result quoted above.
+
+Cited from `docs/design-decisions/code-file-line-limit.md` as a
+feasibility coincidence, not a quality threshold: this cap is the Read
+tool's own window, not evidence that 1,000 lines is where defects
+start.

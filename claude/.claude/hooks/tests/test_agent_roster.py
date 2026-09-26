@@ -49,6 +49,30 @@ CANARY_AGENTS = sorted(
     REVIEWER_AGENTS + ["comment-discipline-reviewer.md", "skill-fidelity-reviewer.md"]
 )
 
+# Reviewers /code-review dispatches that carry no Bash and therefore cannot
+# fetch their own diff — each must instead carry an ## Input contract
+# section telling it to read the diff artifact it is handed.
+DIFF_INPUT_NO_BASH_AGENTS = (
+    "comment-discipline-reviewer.md",
+    "skill-fidelity-reviewer.md",
+)
+
+# These are the sentences every no-Bash agent must state verbatim in its
+# Input contract section; checked against each agent's section here, not
+# per-agent, so the copies can't drift. The paging-instruction sentence is
+# also pinned independently in claude-skills/skills/tests/test_skills.py's
+# test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path — update
+# both on a wording change.
+DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
+    "For a path, `Read` it; if it returns a partial view, the response "
+    "says so explicitly — page onward with `offset` until one doesn't.",
+    "Never review a partial diff.",
+    "You have no `Bash`; you cannot run `git diff`.",
+    "A range expression (e.g. `main...HEAD`) is neither a path nor diff "
+    "text; if you were handed one instead, say so and stop, do not try to "
+    "reconstruct it.",
+)
+
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.
 # When a new non-reviewer agent is added, add it here; the
@@ -193,6 +217,81 @@ class TestReviewerAgentRoster:
             f"Uncategorized agent file(s): {sorted(uncategorized)}. "
             "Add each to REVIEWER_AGENTS (if it should carry the canary) or "
             "NON_REVIEWER_AGENTS (if not) in this test file."
+        )
+
+
+class TestDiffInputContractAgents:
+    """No-Bash reviewers can't self-fetch a diff, so each must carry an Input
+    contract telling it to read the artifact it's handed instead of inferring
+    scope from content."""
+
+    @staticmethod
+    def _extract_input_contract_section(path) -> str:
+        """Extract the '## Input contract' section from an agent file.
+
+        Extracts from the '## Input contract' heading line (inclusive) up to,
+        but excluding, the next line starting with '## '. There is no
+        terminating sentinel inside this section the way there is for the
+        File-based output block, so the next top-level heading is the
+        boundary instead.
+        """
+        content = path.read_text()
+        lines = content.splitlines(keepends=True)
+        in_section = False
+        section_lines = []
+        for line in lines:
+            if line.rstrip("\n") == "## Input contract":
+                in_section = True
+            elif in_section and line.startswith("## "):
+                break
+            if in_section:
+                section_lines.append(line)
+        assert section_lines, f"{path.name}: '## Input contract' section not found."
+        return "".join(section_lines)
+
+    @pytest.mark.parametrize("name", DIFF_INPUT_NO_BASH_AGENTS)
+    def test_no_bash_agent_carries_input_contract(self, name):
+        path = AGENTS_DIR / name
+        content = path.read_text()
+        assert "## Input contract" in content, (
+            f"{name}: '## Input contract' heading missing. A reviewer with no "
+            "Bash needs this section to know how to read the diff artifact it "
+            "is handed."
+        )
+        section = " ".join(self._extract_input_contract_section(path).split())
+        for sentence in DIFF_INPUT_CONTRACT_SHARED_SENTENCES:
+            normalized = " ".join(sentence.split())
+            assert normalized in section, (
+                f"{name}: expected shared sentence {sentence!r} missing from "
+                "the Input contract section — every no-Bash agent states "
+                "this identically."
+            )
+        fm = parse_frontmatter(path)
+        tools_value = fm.get("tools") or ""
+        assert "Bash" not in tools_value, (
+            f"{name}: 'tools:' now grants Bash ({tools_value!r}), but its "
+            "Input contract tells it otherwise. Either drop the contract's "
+            "no-Bash claim or revert the tools: grant."
+        )
+
+    def test_diff_input_no_bash_agents_roster_is_complete(self):
+        """DIFF_INPUT_NO_BASH_AGENTS must equal every CANARY_AGENTS member with no Bash grant.
+
+        Derives the expected set from each canary agent's own tools:
+        frontmatter rather than trusting a second hand-maintained list, so a
+        new no-Bash canary agent that omits the roster entry fails here
+        instead of silently escaping test_no_bash_agent_carries_input_contract.
+        """
+        expected_no_bash = set()
+        for name in CANARY_AGENTS:
+            fm = parse_frontmatter(AGENTS_DIR / name)
+            tools_value = fm.get("tools") or ""
+            if "Bash" not in tools_value:
+                expected_no_bash.add(name)
+        assert expected_no_bash == set(DIFF_INPUT_NO_BASH_AGENTS), (
+            f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "
+            f"DIFF_INPUT_NO_BASH_AGENTS is {sorted(DIFF_INPUT_NO_BASH_AGENTS)}. "
+            "Add the missing agent(s) to DIFF_INPUT_NO_BASH_AGENTS in this file."
         )
 
 
@@ -717,4 +816,340 @@ class TestNoGateReleaseRosterSync:
             "from the no-Skill frontmatter assertion, so adding one removes real "
             "coverage. Confirm the new name is genuinely a harness built-in with "
             "no agents/*.md file, then update this assertion deliberately."
+        )
+
+
+def _review_only_agents() -> list[str]:
+    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
+    """docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    rates the residual Low on the invariant that every current or future agent
+    holding Write but not Bash is confined to _LIB_REVIEW_ONLY_AGENTS. Today
+    comment-discipline-reviewer and skill-fidelity-reviewer are the only such
+    agents, and both are already listed there. Without this test, a future
+    agent added with Write and no Bash, outside that roster, would silently
+    reopen the residual."""
+
+    def test_write_without_bash_agents_are_review_only_confined(self):
+        review_only = set(_review_only_agents())
+        for path in TestAgentFrontmatter._AGENT_AND_PLUGIN_FILES:
+            fm = parse_frontmatter(path)
+            declared = fm.get("tools") or ""
+            tools = (
+                {t.strip() for t in declared.split(",")}
+                if isinstance(declared, str)
+                else {str(t).strip() for t in declared}
+            )
+            if "Write" in tools and "Bash" not in tools:
+                assert path.stem in review_only, (
+                    f"{path.name} declares Write without Bash but is not in "
+                    "_LIB_REVIEW_ONLY_AGENTS (_lib.sh). A Write-without-Bash agent "
+                    "outside that roster reopens the residual "
+                    "docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md "
+                    "rates Low. Add it to _LIB_REVIEW_ONLY_AGENTS if it is genuinely "
+                    "review-only, or grant it Bash otherwise."
+                )
+
+
+# Pinned so a future edit to ciso-reviewer.md can't silently drop any of
+# these three sentences with no CI signal.
+_CISO_NARROWER_PRINCIPAL_SET_SENTENCE = (
+    'A "narrower principal set" check must actually exclude someone who could '
+    "otherwise perform the action — a second code path the same principals "
+    "still pass isn't narrower at all."
+)
+
+_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE = (
+    "A lookup path that only hashes/compares a password when the account "
+    "exists, or short-circuits sooner for a miss, discloses existence via "
+    "latency even with normalized response bodies."
+)
+
+_CISO_PROVIDER_SETTING_SCOPE_SENTENCE = (
+    "A setting can close the gap for some operations (e.g. sign-in) while "
+    "leaving another (e.g. the initial registration call) unconditionally "
+    "exposed regardless of the setting."
+)
+
+
+class TestCisoReviewerSecurityBulletsPin:
+    """ciso-reviewer.md's "narrower principal set" clause, "Account-existence
+    disclosure" bullet, and "Provider setting scope" bullet must each carry
+    their pinned sentence verbatim -- see _CISO_NARROWER_PRINCIPAL_SET_SENTENCE,
+    _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE, and
+    _CISO_PROVIDER_SETTING_SCOPE_SENTENCE."""
+
+    def test_pinned_narrower_principal_set_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_NARROWER_PRINCIPAL_SET_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned narrower-principal-set "
+            f"sentence verbatim:\n{_CISO_NARROWER_PRINCIPAL_SET_SENTENCE!r}"
+        )
+
+    def test_pinned_account_existence_disclosure_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned account-existence-disclosure "
+            f"sentence verbatim:\n{_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE!r}"
+        )
+
+    def test_pinned_provider_setting_scope_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_PROVIDER_SETTING_SCOPE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned provider-setting-scope "
+            f"sentence verbatim:\n{_CISO_PROVIDER_SETTING_SCOPE_SENTENCE!r}"
+        )
+
+
+# The next four sentences are pinned verbatim in each persona's Scratch execution section
+# and in deny-reviewer-tree-mutation.sh's SANCTIONED_ALTERNATIVE.
+SCRATCH_LINK_SENTENCE = (
+    "A write through a symlink or hard link changes the linked file, "
+    "wherever it lives, so a /tmp path can still change a file outside /tmp."
+)
+
+SCRATCH_NEW_NAME_SENTENCE = (
+    "Never overwrite or replace an existing path, even one you created; "
+    "write a new file under a new name instead."
+)
+
+SCRATCH_NO_RETRY_SENTENCE = (
+    "Do not retry any other denied action through a script, another command "
+    "form, or another tool."
+)
+
+SCRATCH_READ_TOOL_SENTENCE = "Use Read, Grep, or Glob for a read the hook misjudges."
+
+# Pinned so a future edit that simplifies the exemption list back to bare
+# `git status` across all eight personas fails CI.
+SCRATCH_READ_ONLY_INSPECTION_SENTENCE = (
+    "So is read-only inspection (`git diff`, `git log`, `git show`, "
+    "`git --no-optional-locks status`, `grep`, `wc`, `cat`), but only as the "
+    "bare command with no redirect and no output flag: `git diff "
+    "--output=<path>` and `git show <ref>:<path> > <path>` are not exempt."
+)
+
+# Each incident-critical rule of the Scratch execution section, pinned verbatim.
+# The byte-identical test only catches divergence between personas, so these
+# catch a rule deleted from every persona at once.
+_SCRATCH_RULE_SENTENCES = {
+    "variable-path-denial-is-not-a-retry": (
+        "A denial for an unresolved variable in a /tmp path is fixed by "
+        "spelling the path out literally, per the next rule, and is not a "
+        "retry of a forbidden action."
+    ),
+    "mktemp-scratch-directory": (
+        "Work in one fresh directory created with "
+        "`mktemp -d /tmp/<name>.XXXXXX`"
+    ),
+    "literal-scratch-path": (
+        "Spell its printed path out literally in every later command"
+    ),
+    "never-create-a-link": "Never create a link.",
+    "plain-cp-only": (
+        "The only sanctioned copy is plain `cp <file> <new-name>` with no options."
+    ),
+    "non-file-effects-bound": (
+        "and they bind non-file effects too: network egress, credential or "
+        "environment reads, signals to other processes, and unbounded CPU or "
+        "memory use."
+    ),
+    "read-only-exemption-bare-command": (
+        "but only as the bare command with no redirect and no output flag"
+    ),
+    "home-directory-writes": (
+        "Run no program that writes through your home directory or another "
+        "environment-derived path, whatever directory you run it from."
+    ),
+}
+
+_SCRATCH_EXECUTION_POINTER = (
+    "The tree under review is read-only: the only write you make into it is "
+    "the `findings_path` file. Before you run anything, follow "
+    "`## Scratch execution` below."
+)
+
+_CISO_NO_LIVE_ATTACK_SENTENCE = (
+    "Never carry out the attack you are testing for — no exploit, payload, "
+    "or attempt to evade a hook or gate that governs you — because a probe "
+    "that succeeds compromises the machine you run on."
+)
+
+_CISO_TRACING_RECONCILIATION_SENTENCES = (
+    "Feeding a crafted input to code under review and reading its verdict "
+    "is tracing, and follows `## Scratch execution`, only when every effect "
+    "of that code is a returned verdict: no network, no process or "
+    "environment access, no unbounded resource use, and no write to real "
+    "state such as a path derived from the config directory. Probing a "
+    "scratch copy of a hook or gate is tracing on the same condition, never "
+    "the live one. Any other code under review is never executed; record "
+    "the intended check instead."
+)
+
+# Any reviewer holding Bash carries the Scratch execution section. Derived from
+# each canary agent's own tools: frontmatter, like DIFF_INPUT_NO_BASH_AGENTS's
+# completeness test, rather than from a second hand-maintained list.
+SCRATCH_SECTION_AGENTS = [
+    name
+    for name in CANARY_AGENTS
+    if "Bash" in (parse_frontmatter(AGENTS_DIR / name).get("tools") or "")
+]
+
+# A phrasing that sanctions copying a file, repo, or tree into /tmp.
+_TMP_COPY_SANCTION_PATTERN = re.compile(
+    r"\bcopy (?:the |a |your )?(?:whole |entire )?"
+    r"(?:file|repo|repository|tree|project|checkout|worktree|directory)s? "
+    r"(?:in)?to\b",
+    re.IGNORECASE,
+)
+
+
+class TestScratchExecutionSection:
+    """Every Bash-holding reviewer persona carries a byte-identical
+    '## Scratch execution' section and an intro pointer to it."""
+
+    @staticmethod
+    def _extract_scratch_execution_section(path) -> str:
+        """Extract from the '## Scratch execution' heading line (inclusive) up
+        to, but excluding, the next line starting with '## '."""
+        lines = path.read_text().splitlines(keepends=True)
+        in_section = False
+        section_lines = []
+        for line in lines:
+            if line.rstrip("\n") == "## Scratch execution":
+                in_section = True
+            elif in_section and line.startswith("## "):
+                break
+            if in_section:
+                section_lines.append(line)
+        assert section_lines, f"{path.name}: '## Scratch execution' section not found."
+        return "".join(section_lines)
+
+    def test_every_reviewer_persona_holds_bash(self):
+        without_bash = [
+            name
+            for name in REVIEWER_AGENTS
+            if name not in SCRATCH_SECTION_AGENTS
+        ]
+        assert not without_bash, (
+            f"REVIEWER_AGENTS without a Bash grant: {without_bash}. The "
+            "Scratch execution tests assume every specialist reviewer holds "
+            "Bash; a persona that lost it belongs in DIFF_INPUT_NO_BASH_AGENTS."
+        )
+
+    def test_every_bash_holding_review_only_agent_carries_the_section(self):
+        # Built-in agents such as Plan have no file and stay outside the section.
+        missing = [
+            name
+            for name in _review_only_agents()
+            if (AGENTS_DIR / f"{name}.md").exists()
+            and "Bash" in (parse_frontmatter(AGENTS_DIR / f"{name}.md").get("tools") or "")
+            and f"{name}.md" not in SCRATCH_SECTION_AGENTS
+        ]
+        assert not missing, (
+            f"Bash-holding members of _LIB_REVIEW_ONLY_AGENTS (_lib.sh) outside "
+            f"SCRATCH_SECTION_AGENTS: {missing}. Add the '## Scratch execution' "
+            "section to each and list it in CANARY_AGENTS."
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS[1:])
+    def test_section_byte_identical_to_canonical(self, name):
+        canonical_name = SCRATCH_SECTION_AGENTS[0]
+        canonical = self._extract_scratch_execution_section(AGENTS_DIR / canonical_name)
+        assert self._extract_scratch_execution_section(AGENTS_DIR / name) == canonical, (
+            f"{name}: '## Scratch execution' section differs from "
+            f"{canonical_name}'s. Agent bodies load verbatim with no "
+            "include mechanism, so the section must be duplicated byte for "
+            f"byte. If every other persona agrees with {name}, {canonical_name} "
+            "is the outlier."
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_section_carries_pinned_sentences(self, name):
+        section = self._extract_scratch_execution_section(AGENTS_DIR / name)
+        assert SCRATCH_LINK_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the link-hazard "
+            f"sentence verbatim:\n{SCRATCH_LINK_SENTENCE!r}"
+        )
+        assert SCRATCH_NEW_NAME_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the new-name "
+            f"sentence verbatim:\n{SCRATCH_NEW_NAME_SENTENCE!r}"
+        )
+        assert SCRATCH_NO_RETRY_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the no-retry "
+            f"sentence verbatim:\n{SCRATCH_NO_RETRY_SENTENCE!r}"
+        )
+        assert SCRATCH_READ_TOOL_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the read-tool "
+            f"sentence verbatim:\n{SCRATCH_READ_TOOL_SENTENCE!r}"
+        )
+        assert SCRATCH_READ_ONLY_INSPECTION_SENTENCE in section, (
+            f"{name}: Scratch execution section is missing the read-only "
+            f"inspection sentence verbatim:\n{SCRATCH_READ_ONLY_INSPECTION_SENTENCE!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    @pytest.mark.parametrize("rule", _SCRATCH_RULE_SENTENCES)
+    def test_section_carries_incident_critical_rules(self, name, rule):
+        section = self._extract_scratch_execution_section(AGENTS_DIR / name)
+        assert _SCRATCH_RULE_SENTENCES[rule] in section, (
+            f"{name}: Scratch execution section is missing its {rule} rule "
+            f"verbatim:\n{_SCRATCH_RULE_SENTENCES[rule]!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_intro_carries_pointer(self, name):
+        # The intro is the body between the frontmatter and the first "## " heading.
+        body = (AGENTS_DIR / name).read_text().split("\n---\n", 1)[1]
+        intro = body.split("\n## ", 1)[0]
+        assert _SCRATCH_EXECUTION_POINTER in intro, (
+            f"{name}: intro is missing the pointer to '## Scratch execution' "
+            f"verbatim:\n{_SCRATCH_EXECUTION_POINTER!r}"
+        )
+
+    @pytest.mark.parametrize("name", SCRATCH_SECTION_AGENTS)
+    def test_no_copy_into_tmp_sanction_wording(self, name):
+        path = AGENTS_DIR / name
+        assert "copy the file into" not in path.read_text(), (
+            f"{name}: carries a 'copy the file into' /tmp sanction; the only "
+            "sanctioned copy is plain `cp <file> <new-name>`."
+        )
+        section = self._extract_scratch_execution_section(path)
+        match = _TMP_COPY_SANCTION_PATTERN.search(section)
+        assert match is None, (
+            f"{name}: Scratch execution section sanctions a file, repo, or "
+            f"tree copy ({match.group(0)!r}); only plain `cp <file> <new-name>` "
+            "is allowed."
+        )
+
+
+class TestCisoReviewerNoLiveAttackPin:
+    """ciso-reviewer.md must carry its pinned never-carry-out-the-attack
+    sentence and the tracing sentences that reconcile it with reviewing gates,
+    verbatim -- see _CISO_NO_LIVE_ATTACK_SENTENCE and
+    _CISO_TRACING_RECONCILIATION_SENTENCES."""
+
+    def test_pinned_no_live_attack_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_NO_LIVE_ATTACK_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned no-live-attack "
+            f"sentence verbatim:\n{_CISO_NO_LIVE_ATTACK_SENTENCE!r}"
+        )
+
+    def test_pinned_tracing_reconciliation_sentences_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_TRACING_RECONCILIATION_SENTENCES in content, (
+            "ciso-reviewer.md is missing the sentences that let it probe a "
+            "scratch copy of a gate without carrying out an attack, "
+            f"verbatim:\n{_CISO_TRACING_RECONCILIATION_SENTENCES!r}"
         )

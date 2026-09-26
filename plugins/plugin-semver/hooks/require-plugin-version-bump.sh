@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require a plugin's .claude-plugin/plugin.json `version` to be
 # strictly increased before git commit when staged changes touch any file
 # inside that plugin's directory tree.
@@ -71,7 +72,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by plugin-version-bump gate: could not source _lib.sh."
   exit 0
 fi

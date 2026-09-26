@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 from helpers import (
@@ -15,18 +16,25 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    absolute_git_dir,
+    assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
+    bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_revert,
     edit_input,
     exitplanmode_input,
     extract_skill_command,
     multiedit_input,
     plan_review_marker_path,
+    push_conflicting_edit_to_origin,
     run_hook,
     run_hook_reason,
     run_skill_command,
+    scaled_shim_sleep,
     write_input,
     write_plan_review_marker,
+    write_scaled_timeout_shim,
 )
 
 from .conftest import _seed_session
@@ -2299,32 +2307,28 @@ class TestRequirePlanReviewPlanMode:
         """_lib_capped caps the sha256sum call at 5s; a stalled read (e.g. a
         dead network mount under the plan-mode file's path) must deny within
         that budget, not hang the ExitPlanMode call indefinitely."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_sha256sum = shutil.which("sha256sum")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "sha256sum"
-        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_sha256sum} "$@"\n')
+        stub.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_sha256sum} "$@"\n')
         stub.chmod(0o755)
 
         plan_mode_file = tmp_path / "slow-plan.md"
         plan_mode_file.write_text("# plan\n")
 
         sid = "session-planmode-timeout"
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
-            cwd=plan_review_repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=str(plan_mode_file)), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "deny"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if it "
-            f"does not), took {elapsed:.1f}s"
-        )
 
     @pytest.mark.timing
     def test_planfilepath_hung_jq_denies_within_timeout(
@@ -2348,37 +2352,33 @@ class TestRequirePlanReviewPlanMode:
         on the deny path this test exercises (a third, unrelated call),
         adding a second 5s timeout cycle and roughly doubling elapsed time —
         not a defect in the fix, just a test artifact this design avoids."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not _timeout_binary_present():
+            pytest.skip("no timeout/gtimeout on PATH to fire the cap")
         real_jq = shutil.which("jq")
         if not real_jq:
             pytest.skip("jq not found in PATH")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "jq"
         stub.write_text(
             "#!/bin/bash\n"
             'case "$*" in\n'
-            '  *planFilePath*) sleep 10 ;;\n'
+            f'  *planFilePath*) sleep {scaled_shim_sleep(10)} ;;\n'
             f'  *) exec "{real_jq}" "$@" ;;\n'
             "esac\n"
         )
         stub.chmod(0o755)
 
         sid = "session-planmode-hung-jq"
-        start = time.monotonic()
-        result = run_hook(
-            REQUIRE_PLAN_REVIEW_HOOK,
-            {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
-            cwd=plan_review_repo,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=5):
+            result = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
         assert result == "deny"
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_jq timeout to fire on the second (planFilePath) "
-            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
-        )
 
 
 class TestPlanReviewSkillPlanModeFixture:
@@ -2451,4 +2451,753 @@ class TestPlanReviewSkillPlanModeFixture:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+
+LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _active_plan_files(repo, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Local copy of test_marker_lib.py's helper of the same name (DAMP
+    test code, per the neither-test-tree-imports-the-other convention):
+    shell out to the real _lib_active_plan_files against `repo`, resolving
+    _lib_gate_diff_base first so a mid-merge/rebase/cherry-pick/revert
+    fixture exercises the same base require-plan-review.sh/marker.sh would."""
+    return subprocess.run(
+        ["bash", "-c",
+         f'. "{LIB_SH}"; base=$(_lib_gate_diff_base "$1"); _lib_active_plan_files "$1" "$base"',
+         "_active_plan_files", str(repo)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def _make_git_rejecting_write_tree(bin_dir):
+    """Simulates git < 2.38: `merge-tree --write-tree` is rejected outright.
+    Every other subcommand proxies to the real git. Local copy of
+    test_lib.py's shim of the same name (DAMP test code, per CLAUDE.md's
+    named exception)."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--write-tree" ]; then\n'
+        '    echo "error: unknown option \x60--write-tree\x60" >&2\n'
+        '    exit 129\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_rejecting_merge_base_flag(bin_dir):
+    """Simulates git 2.38-2.39: --write-tree is accepted but --merge-base=
+    is rejected. Local copy of test_lib.py's shim of the same name."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    --merge-base=*)\n'
+        '      echo "error: unknown option \x60--merge-base\x60" >&2\n'
+        '      exit 129\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_blocking_merge_tree_git(bin_dir: Path) -> Path:
+    """For `merge-tree` specifically, writes a partial line to stdout then
+    blocks past the 5s cap; every other subcommand proxies to the real git.
+    Local copy of test_require_code_review.py's shim of the same name."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "merge-tree" ]; then\n'
+        '    printf "partialline"\n'
+        '    sleep 20\n'
+        '    exit 0\n'
+        '  fi\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _timeout_binary_present() -> bool:
+    return shutil.which("timeout") is not None or shutil.which("gtimeout") is not None
+
+
+class TestActivePlanFilesMergeAwareBase:
+    """_lib_active_plan_files diffs against _lib_gate_diff_base's resolved
+    base instead of the literal HEAD, so a plan file a trusted merge brought
+    in untouched is excluded from the active set."""
+
+    def test_mid_merge_omits_untouched_upstream_plan_reports_edited_one(
+        self, tmp_path
+    ):
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        plans_dir = clone / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nbase content\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed shared plan"], cwd=clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nours edit\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "ours edits shared plan"], cwd=clone, check=True)
+
+        push_clone = tmp_path / "push_clone"
+        subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+        (push_clone / ".claude" / "plans" / "shared-plan.md").write_text(
+            "# shared plan\n\norigin edit\n"
+        )
+        (push_clone / ".claude" / "plans" / "upstream-only-plan.md").write_text(
+            "# upstream-only plan\n\nnever touched by ours\n"
+        )
+        subprocess.run(
+            ["git", "add", ".claude/plans/shared-plan.md", ".claude/plans/upstream-only-plan.md"],
+            cwd=push_clone, check=True,
+        )
+        subprocess.run(["git", "commit", "-qm", "origin edits shared plan, adds a new one"], cwd=push_clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+        result = subprocess.run(
+            ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (clone / ".git" / "MERGE_HEAD").exists()
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nresolved\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+
+        active = _active_plan_files(clone)
+        assert active.returncode == 0, active.stderr
+        active_files = active.stdout.splitlines()
+        assert ".claude/plans/shared-plan.md" in active_files
+        assert ".claude/plans/upstream-only-plan.md" not in active_files
+
+    def test_fallback_write_tree_rejected_behaves_like_today(self, plan_review_home, tmp_path):
+        """`--write-tree` outright rejection (git < 2.38) must fall back to
+        diffing against literal HEAD -- exactly today's plain recipe --
+        rather than hanging or misreporting the active set. Routed through
+        the real hook (not a direct _lib_active_plan_files call) so a wiring
+        bug in require-plan-review.sh's own threading of
+        _lib_gate_diff_base's resolved base into _lib_active_plan_hash would
+        actually be caught -- matching
+        test_require_code_review.py::TestRequireCodeReviewMergeAwareBase::test_fallback_write_tree_rejected_behaves_like_today's
+        precedent."""
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        plans_dir = clone / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nbase content\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed shared plan"], cwd=clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nours edit\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "ours edits shared plan"], cwd=clone, check=True)
+
+        push_clone = tmp_path / "push_clone"
+        subprocess.run(["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+        (push_clone / ".claude" / "plans" / "shared-plan.md").write_text(
+            "# shared plan\n\norigin edit\n"
+        )
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=push_clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "origin edits shared plan"], cwd=push_clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+        result = subprocess.run(
+            ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (clone / ".git" / "MERGE_HEAD").exists()
+        (plans_dir / "shared-plan.md").write_text("# shared plan\n\nresolved\n")
+        subprocess.run(["git", "add", ".claude/plans/shared-plan.md"], cwd=clone, check=True)
+
+        sid = "test-fallback-write-tree"
+        write_plan_review_marker(plan_review_home, clone, sid, base="")
+        bin_dir = tmp_path / "bin-fallback-write-tree"
+        _make_git_rejecting_write_tree(bin_dir)
+        extra_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(clone / "src" / "unrelated.py")), "session_id": sid},
+                cwd=clone,
+                extra_env=extra_env,
+            )
+            == "allow"
+        )
+
+    def test_fallback_merge_base_flag_rejected_behaves_like_today(self, plan_review_home, tmp_path):
+        """The `--merge-base=` rejection band (git 2.38-2.39) only affects
+        the three states whose merge-tree call passes that flag -- rebase,
+        cherry-pick, revert, not merge -- so this needs its own fixture: a
+        conflicted revert of a plan file, trusted via the HEAD anchor by
+        construction, must still report the plan as active when the flag is
+        rejected and _lib_gate_diff_base falls back to a plain HEAD diff.
+        Routed through the real hook for the same wiring-coverage reason as
+        the write-tree fallback test above."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / ".claude" / "plans").mkdir(parents=True)
+        build_conflicted_revert(repo, file_name=".claude/plans/plan.md")
+
+        sid = "test-fallback-merge-base"
+        write_plan_review_marker(plan_review_home, repo, sid, base="")
+        bin_dir = tmp_path / "bin-fallback-merge-base"
+        _make_git_rejecting_merge_base_flag(bin_dir)
+        extra_env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": sid},
+                cwd=repo,
+                extra_env=extra_env,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_status_2_deny_message_names_undetermined_base(self, isolated_home, tmp_path):
+        """Mirrors test_require_code_review.py's
+        TestRequireCodeReviewMergeAwareBase::test_status_2_deny_message_names_undetermined_base
+        for require-plan-review.sh: status 2 never flips the allow/deny
+        decision -- it only changes what the deny message says. The
+        untracked plan file here already arms the gate unconditionally (see
+        _lib_active_plan_files' untracked-plans leg), so the ordinary
+        status-1 case (no merge/rebase/cherry-pick/revert in progress) and
+        the status-2 case (an in-progress merge whose base can't be
+        computed) must both deny -- the note is the only difference."""
+        no_merge_repo = tmp_path / "no-merge-repo"
+        no_merge_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=no_merge_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=no_merge_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=no_merge_repo, check=True)
+        (no_merge_repo / ".claude" / "plans").mkdir(parents=True)
+        (no_merge_repo / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n"
+        )
+        status_1_reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**write_input(str(no_merge_repo / "src" / "foo.py")), "session_id": "session-status-1"},
+            cwd=no_merge_repo,
+        )
+        assert status_1_reason is not None, "untracked plan file with no marker must deny"
+        assert "novel-content base could not be computed" not in status_1_reason
+
+        bare, clone = bare_remote_with_default_branch(tmp_path)
+        (clone / "f").write_text("ours-edit\n")
+        subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+        push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+        result = subprocess.run(
+            ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert (clone / ".git" / "MERGE_HEAD").exists()
+        (clone / "f").write_text("resolved\n")
+        subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+        (clone / ".claude" / "plans").mkdir(parents=True)
+        (clone / ".claude" / "plans" / "impl-plan.md").write_text(
+            "# Implementation plan\n\nStep 1...\n"
+        )
+
+        bin_dir = tmp_path / "bin-blocking-merge-tree"
+        _make_blocking_merge_tree_git(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        status_2_reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**write_input(str(clone / "src" / "foo.py")), "session_id": "session-status-2"},
+            cwd=clone,
+            extra_env=extra_env,
+        )
+        assert status_2_reason is not None, "untracked plan file with no marker must deny"
+        assert "novel-content base could not be computed" in status_2_reason
+        assert "fell back to the full HEAD-relative plan-file diff" in status_2_reason
+
+
+def _build_forged_anchor_invisible_plan_edit(tmp_path: Path, name: str = "repo") -> Path:
+    """The same forged-anchor + clean-merge technique
+    test_require_code_review.py's _build_forged_anchor_clean_merge
+    demonstrates against require-code-review.sh, applied to a plan file: M's
+    tree already contains the plan file's post-edit content, so after a
+    clean merge the plan file's working-tree content exactly matches the
+    forged base and _lib_active_plan_files' "modified vs base" leg excludes
+    it -- even though the plan file's content differs from real HEAD and was
+    never reviewed by anyone. `src/unrelated.py` is the Write target used to
+    probe whether the gate is disarmed for a call unrelated to the plan
+    file itself."""
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    plans_dir = repo / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "plan.md").write_text("# plan\n\nv1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+    head_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    (plans_dir / "plan.md").write_text("# plan\n\nforged-content-nobody-reviewed\n")
+    subprocess.run(["git", "add", ".claude/plans/plan.md"], cwd=repo, check=True)
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    m_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-p", head_oid, "-m", "forged"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "reset", "--hard", "-q", "HEAD"], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", m_oid], cwd=repo, check=True)
+    result = subprocess.run(
+        ["git", "merge", "--no-ff", "--no-commit", "-q", "refs/remotes/origin/main"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / ".git" / "MERGE_HEAD").exists()
+    return repo
+
+
+def _build_hand_forged_anchor_no_real_merge(tmp_path: Path, name: str = "repo") -> Path:
+    """Reproduces the forged-anchor residual with Write/Edit only: no `git
+    merge`, no `commit-tree`, no object the actor didn't already have.
+    `MERGE_HEAD` and `refs/remotes/origin/main` are hand-written to an
+    existing sibling-branch commit's OID, and the tracked plan is edited to
+    that commit's version of the same path. Complements
+    `_build_forged_anchor_invisible_plan_edit`'s `git merge --no-ff
+    --no-commit` construction; see
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    plans_dir = repo / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "plan.md").write_text("# plan\n\nv1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True)
+
+    # An ordinary sibling branch, forked from the seed commit -- an object
+    # already sitting in this repo's own store, not fabricated for the
+    # attack. Only the two refs below are forged.
+    subprocess.run(["git", "checkout", "-q", "-b", "sibling"], cwd=repo, check=True)
+    sibling_content = "# plan\n\nforged-content-nobody-reviewed\n"
+    (plans_dir / "plan.md").write_text(sibling_content)
+    subprocess.run(["git", "commit", "-qam", "sibling edits the plan"], cwd=repo, check=True)
+    sibling_oid = subprocess.run(
+        ["git", "rev-parse", "sibling"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+    # Hand-forge both refs _lib_gate_diff_base's admissibility check reads --
+    # pointed at the SAME commit, so "is $state_oid an ancestor of
+    # origin/main" holds trivially (a commit is its own ancestor) with no
+    # real merge, push, or fetch involved.
+    (repo / ".git" / "MERGE_HEAD").write_text(sibling_oid + "\n")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", sibling_oid], cwd=repo, check=True
+    )
+
+    (plans_dir / "plan.md").write_text(sibling_content)
+    _assert_trusted_state_with_empty_active_plan_set(
+        repo, "MERGE_HEAD", ".claude/plans/plan.md"
+    )
+    return repo
+
+
+class TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted:
+    """Pins the accepted residual for _lib_active_plan_files' base
+    substitution: a plan file edited to match a forged base's content
+    disappears from the active set, and the gate allows an unrelated Write."""
+
+    def test_forged_anchor_plan_edit_allows_unrelated_write(self, isolated_home, tmp_path):
+        """Allows because a Bash-capable actor can already write the plan file
+        directly with no gate watching it, so a deny here would buy no
+        security. See
+        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
+        repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_forged_anchor_plan_edit_local_plan_edit_still_denies(self, isolated_home, tmp_path):
+        """Guards against test_forged_anchor_plan_edit_allows_unrelated_write
+        above passing only because the gate is simply off for this fixture's
+        state: a plan file edited further after the forged anchor is built
+        stays active relative to the base and still demands a review."""
+        repo = _build_forged_anchor_invisible_plan_edit(tmp_path)
+        plan_path = repo / ".claude" / "plans" / "plan.md"
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_allows_unrelated_write(
+        self, isolated_home, tmp_path
+    ):
+        """A Write/Edit-only actor never needs a real `git merge` to reach
+        this residual: hand-writing MERGE_HEAD and refs/remotes/origin/main
+        to an existing sibling-branch commit is enough. Pins the Write-only,
+        existing-commit route the decision doc names as the accepted
+        residual, distinct from the Bash-capable route the sibling test
+        above pins."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_local_plan_edit_still_denies(
+        self, isolated_home, tmp_path
+    ):
+        """Guards against test_hand_forged_anchor_no_real_merge_allows_unrelated_write
+        above passing only because the gate is simply off for this fixture's
+        state: a plan file edited further after the forged anchor is built
+        stays active relative to the base and still demands a review."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        plan_path = repo / ".claude" / "plans" / "plan.md"
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+
+_FIXTURE_PLAN_REL = ".claude/plans/upstream-plan.md"
+
+
+def _git(repo, *args, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Run git in `repo` without raising, so a fixture can assert on the exact
+    return code a state-building step is expected to produce."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def _push_upstream_plan_addition(tmp_path: Path, bare: Path) -> None:
+    """Push a commit that adds `_FIXTURE_PLAN_REL` to `bare`'s default
+    branch from a throwaway clone -- the plan file a branch sync brings in
+    without the branch ever having touched it. Local to this file because
+    push_conflicting_edit_to_origin only rewrites a file whose parent
+    directory already exists in the seed commit."""
+    push_clone = tmp_path / "_push_upstream_plan_addition"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    plan_path = push_clone / _FIXTURE_PLAN_REL
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# upstream plan\n\nauthored and reviewed on main\n")
+    subprocess.run(["git", "add", _FIXTURE_PLAN_REL], cwd=push_clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "origin adds a plan"], cwd=push_clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+
+def _assert_trusted_state_with_empty_active_plan_set(
+    repo: Path, ref_file: str, plan_rel_path: str
+) -> None:
+    """Asserts a fixture's own preconditions by invoking the same primitives
+    the hook does, rather than inferring them from git's exit codes. A
+    fixture that reaches no admissible anchor leaves the base empty, and the
+    unrelated no-trusted-state disarm would then make every verdict assertion
+    below pass vacuously."""
+    assert (absolute_git_dir(repo) / ref_file).exists(), (
+        f"fixture setup never left {ref_file} in place"
+    )
+    assert (repo / plan_rel_path).exists(), (
+        f"fixture setup never left the plan file at {plan_rel_path} in the worktree"
+    )
+    base_result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_gate_diff_base "$1"', "_gate_diff_base", str(repo)],
+        capture_output=True,
+        text=True,
+    )
+    assert base_result.stdout.strip(), (
+        "fixture setup never reached an admissible anchor: _lib_gate_diff_base "
+        "returned an empty base, so the verdict assertion would pass vacuously"
+    )
+    active_result = _active_plan_files(repo)
+    assert active_result.returncode == 0, active_result.stderr
+    assert active_result.stdout.strip() == "", (
+        "fixture setup left a plan file active relative to the base: "
+        f"{active_result.stdout!r}"
+    )
+
+
+def _build_clean_merge_with_untouched_upstream_plan(tmp_path: Path) -> Path:
+    """Mid-`git merge --no-ff --no-commit origin/main` where origin added a
+    plan file the branch never touched, and the merge itself is clean."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "local.txt").write_text("ours\n")
+    subprocess.run(["git", "add", "local.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours adds local.txt"], cwd=clone, check=True)
+    _push_upstream_plan_addition(tmp_path, bare)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    merge_result = _git(clone, "merge", "--no-ff", "--no-commit", "-q", "origin/main")
+    assert merge_result.returncode == 0, merge_result.stdout + merge_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD", _FIXTURE_PLAN_REL)
+    return clone
+
+
+def _build_cherry_pick_of_untouched_upstream_plan(tmp_path: Path) -> Path:
+    """Mid-`git cherry-pick origin/main` where origin's tip adds a plan file
+    the branch never touched. `-e` with a failing editor stops the pick after
+    it stages the change, leaving CHERRY_PICK_HEAD in place the way an
+    interrupted pick does."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    (clone / "local.txt").write_text("ours\n")
+    subprocess.run(["git", "add", "local.txt"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours adds local.txt"], cwd=clone, check=True)
+    _push_upstream_plan_addition(tmp_path, bare)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    pick_result = _git(
+        clone, "cherry-pick", "-e", "origin/main", env_overrides={"GIT_EDITOR": "false"}
+    )
+    assert pick_result.returncode != 0, pick_result.stdout + pick_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "CHERRY_PICK_HEAD", _FIXTURE_PLAN_REL)
+    return clone
+
+
+def _build_conflicted_merge_with_historical_plan(tmp_path: Path) -> Path:
+    """Mid-merge that conflicts in a non-plan file only. The plan file is
+    committed and pushed before the divergence, so it is identical in HEAD
+    and in the merge-tree base -- historical, not something newly arriving
+    from upstream. It stays unconflicted while MERGE_HEAD persists. This
+    pins the general conflicted-window friction loss (the accepted residual
+    docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md
+    names), not a conflicted sync that carries a genuinely new upstream
+    plan."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    plan_path = clone / _FIXTURE_PLAN_REL
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# shared plan\n\nunchanged on both sides\n")
+    subprocess.run(["git", "add", _FIXTURE_PLAN_REL], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed plan"], cwd=clone, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / "f").write_text("ours-edit\n")
+    subprocess.run(["git", "add", "f"], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", "ours edits f"], cwd=clone, check=True)
+    push_conflicting_edit_to_origin(tmp_path, bare, "f", "origin-edit\n")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    merge_result = _git(clone, "merge", "-q", "origin/main")
+    assert merge_result.returncode != 0, merge_result.stdout + merge_result.stderr
+    _assert_trusted_state_with_empty_active_plan_set(clone, "MERGE_HEAD", _FIXTURE_PLAN_REL)
+    return clone
+
+
+class TestRequirePlanReviewEmptyActiveSetDisarms:
+    """An empty active plan set disarms the gate whether or not a trusted
+    in-progress state is detected. Asserts the hook's verdict, not just
+    _lib_active_plan_files' output: TestActivePlanFilesMergeAwareBase covers
+    the primitive and stayed green while the gate still denied here."""
+
+    def test_merge_of_upstream_plan_allows_unrelated_write(self, plan_review_home, tmp_path):
+        repo = _build_clean_merge_with_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_cherry_pick_of_upstream_plan_allows_unrelated_write(
+        self, plan_review_home, tmp_path
+    ):
+        repo = _build_cherry_pick_of_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_conflicted_merge_with_historical_plan_allows_unrelated_write(
+        self, plan_review_home, tmp_path
+    ):
+        """MERGE_HEAD persists across every Write/Edit of the conflict-
+        resolution window, so the gate stays disarmed for all of them --
+        the accepted friction residual recorded in
+        docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md."""
+        repo = _build_conflicted_merge_with_historical_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "build_fixture",
+        [
+            _build_clean_merge_with_untouched_upstream_plan,
+            _build_conflicted_merge_with_historical_plan,
+            _build_cherry_pick_of_untouched_upstream_plan,
+        ],
+        ids=["clean-merge", "conflicted-merge", "cherry-pick"],
+    )
+    def test_local_plan_edit_during_merge_still_denies(
+        self, build_fixture, plan_review_home, tmp_path
+    ):
+        """Guards against the allow tests above passing only because the gate
+        is simply off mid-merge: a plan file the branch itself edited stays
+        active relative to the base and still demands a review. The
+        cherry-pick arm closes an asymmetry the allow-only cherry-pick test
+        above can't: run_hook maps any silent non-2 exit to "allow", so
+        without this arm a hook crash mid-cherry-pick would be
+        indistinguishable from the gate correctly disarming."""
+        repo = build_fixture(tmp_path)
+        plan_path = repo / _FIXTURE_PLAN_REL
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "unrelated.py")), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_merge_of_upstream_plan_allows_exitplanmode(
+        self, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode arm of test_merge_of_upstream_plan_allows_unrelated_write
+        above. The empty active set disarms the gate for ExitPlanMode too,
+        not only Write. plan_file_path="" skips the plan-mode priority
+        branch. Unlike Write/Edit/MultiEdit, it also skips the Write-only
+        fast-path guard entirely, reaching _lib_active_plan_hash directly.
+        That is a different exit site than the Write arm's, converging on
+        the same underlying primitive."""
+        repo = _build_clean_merge_with_untouched_upstream_plan(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_hand_forged_anchor_no_real_merge_allows_exitplanmode(
+        self, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode arm of
+        test_hand_forged_anchor_no_real_merge_allows_unrelated_write
+        (TestRequirePlanReviewForgedAnchorInvisiblePlanEditIsAccepted,
+        above) -- see test_merge_of_upstream_plan_allows_exitplanmode's
+        docstring for why plan_file_path="" reaches the same primitive."""
+        repo = _build_hand_forged_anchor_no_real_merge(tmp_path)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "build_fixture,plan_rel_path",
+        [
+            (_build_clean_merge_with_untouched_upstream_plan, _FIXTURE_PLAN_REL),
+            (_build_hand_forged_anchor_no_real_merge, ".claude/plans/plan.md"),
+        ],
+        ids=["clean-merge", "forged-anchor"],
+    )
+    def test_local_plan_edit_during_merge_still_denies_exitplanmode(
+        self, build_fixture, plan_rel_path, plan_review_home, tmp_path
+    ):
+        """ExitPlanMode counterpart of test_local_plan_edit_during_merge_still_denies
+        above: guards against the two ExitPlanMode allow tests above
+        (test_merge_of_upstream_plan_allows_exitplanmode,
+        test_hand_forged_anchor_no_real_merge_allows_exitplanmode) passing only
+        because the gate is simply off for ExitPlanMode during those states. A
+        plan file the branch itself edited stays active relative to the base
+        and still demands a review, so ExitPlanMode is denied too.
+
+        Covers only clean-merge and forged-anchor, not all four/five
+        fixtures. Past `_lib_gate_diff_base`, ExitPlanMode's deny decision
+        reads only whether the active set is empty, never which state
+        produced the base -- the same state-independence the Write-side
+        parametrization above relies on to cover only three arms instead of
+        a full state x conflict matrix. One representative "ordinary" state
+        (clean-merge) plus the one fixture unique to this test file
+        (forged-anchor) is therefore sufficient; cherry-pick and
+        conflicted-merge are already covered for state-independence by that
+        Write-side parametrization."""
+        repo = build_fixture(tmp_path)
+        plan_path = repo / plan_rel_path
+        plan_path.write_text(plan_path.read_text() + "edited on this branch\n")
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "s1"},
+                cwd=repo,
+            )
+            == "deny"
         )

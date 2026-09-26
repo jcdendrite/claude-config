@@ -210,14 +210,13 @@ document a native, lighter primitive for exactly this: `permissions.deny` on
 allow rules — no hook script, no `python3` dependency, no separate additions
 file. That native rule was the right primitive to reach for first per this
 repo's own "default-suspect over-powered primitives" standard, and it avoids
-the custom hook's specific defects (a hand-rolled host parser, a `python3`
-hard dependency, an ask-under-auto-mode assumption Claude Code doesn't
-document as reliable — `acceptEdits`/`bypassPermissions` are a separately
-verified exception, see below). It does **not**, however, close the actual
+the custom hook's specific defects (a hand-rolled host parser and a `python3`
+hard dependency). It does **not**, however, close the actual
 gap that makes a custom allowlist-file hook unsafe here: nothing in this
-repo gates edits to `settings.json` beyond `ask-review-permissions.sh`,
-which is `hook-class: informational` and returns only an `ask` decision — a
-soft gate a human can approve without scrutiny, unlike a hard `deny`. An
+repo gates edits to `settings.json` beyond `ask-review-permissions.sh`
+(`hook-class: informational`) and a `permissions.ask` rule on settings-file
+paths, both of which only `ask` — a soft gate a human can approve without
+scrutiny, unlike a hard `deny`. An
 agent can edit `permissions.allow` to add a `WebFetch(domain:...)` rule for
 a host of its own choosing exactly as readily as it could have appended a
 line to the custom hook's additions file — the self-widening path is
@@ -232,12 +231,46 @@ Code 2.1.223, via a throwaway hook gating an ordinary file (isolating the
 result from `.claude/settings.json`'s own native edit confirmation, which
 fires independently of hooks) plus a no-hook control confirming the prompt
 is attributable to the hook rather than baseline Edit-confirmation
-behavior. `auto` mode's classifier layer was not tested and its `ask`
-reliability remains open. The `bypassPermissions` result is notable on its
+behavior. That test did not cover `auto` mode; see the auto-mode
+observations below. The `bypassPermissions` result is notable on its
 own: that mode is documented to skip permission checks more broadly than
 `acceptEdits`, yet a hook's `ask` still surfaced there. None of this closes
 the self-widening gap above — even a reliably-rendering `ask` is a soft
 gate, not a hard `deny`.
+
+Behavior of `ask` under `auto` mode, recorded from live sessions.
+
+Observed on 2026-09-24 and 2026-09-25, Claude Code 2.1.282, `auto` mode (status bar confirmed), interactive, one machine:
+
+- A throwaway hook returning `permissionDecision: "ask"` for one file prompted a human. That throwaway hook's reason text did not appear in the dialog. The shipped `ask-review-permissions.sh` was not tested for reason-text rendering, alone or together with the rule.
+- An ordinary file with no hook was edited silently after "Allowed by auto mode classifier".
+- A `permissions.ask` rule `Edit(//**/.claude/probe-settings*.json)` prompted on Edit in-project and on Write out-of-project, with the user's regular hooks and the throwaway hook also active. A rule written `Edit(/tmp/...)` in project settings did not match.
+- With hooks disabled (`disableAllHooks` via `--settings`, confirmed by `/hooks`), the shipped pattern `Edit(//**/.claude/settings*.json)` prompted on all three of the following. An in-project Edit of a settings file with the shipped pattern alone was not run.
+  - Edit of an out-of-project `.claude/settings.json`.
+  - Write creating an out-of-project `settings.local.json`.
+  - Write creating an in-project `settings.local.json`.
+- The Edit tool refused to write through a symbolic link and named the target path. In a stow layout the target sits under a `.claude/` segment and so plausibly matches the pattern (inference; Write through a symlink is untested).
+- No run removed the rule on a `.claude/` path, which Claude Code already treats as a protected path (permission-modes "Protected paths"). The auto-mode prompts above therefore do not isolate the rule's effect, and its auto-mode behavior rests on the Documented list.
+
+Documented in Anthropic's permissions and permission-modes pages (re-read 2026-09-25):
+
+- Explicit ask rules prompt in every mode that can prompt, including `bypassPermissions`; `dontAsk` denies anything that would prompt.
+- Auto mode still shows prompts forced by an ask rule or by a hook. The permission-modes page (code.claude.com/docs/en/permission-modes) says "because auto mode still shows you those prompts" and "Explicit ask rules still force a prompt".
+- A matching ask rule still prompts even when a hook returned `allow` or `ask`.
+- `//path` is an absolute filesystem path.
+
+Untested:
+
+- `bypassPermissions` for the rule.
+- The rule after selecting "Yes, and allow Claude to edit its own settings for this session" on a `.claude/` write prompt.
+- In-project Edit of the shipped pattern alone, hooks enabled or disabled.
+- MultiEdit.
+- Case variants.
+- Bash-mediated writes.
+- Write through a symlink.
+- Headless `-p` runs.
+- Older Claude Code versions.
+- The shipped hook's reason text in any configuration.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
@@ -410,8 +443,8 @@ chmod 600 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pii-patterns.md"
 **Pattern tiers.**
 
 - **Credential-value patterns** (always on, no config file needed): the
-  same GitHub-token-prefix / PEM-private-key-header regex
-  `redact-credential-values.sh` uses. Fires whether or not
+  shared `_LIB_CREDENTIAL_VALUE_REGEX` in `claude/.claude/hooks/_lib.sh`,
+  the same regex `redact-credential-values.sh` uses. Fires whether or not
   `<config-dir>/pii-patterns.md` exists.
 - **Built-in generic PII patterns** (once armed): US Social Security
   numbers (`NNN-NN-NNNN`) and credit-card-shaped 13–19 digit runs that pass
@@ -443,15 +476,10 @@ A non-comment line the hook cannot parse — no `:`, an empty label or value,
 or an uncompilable regex — fails the commit closed and names the line
 number. A silently-skipped pattern would be an unscanned leak vector.
 
-**Known gaps.** The editor-flow commit (`git commit` with no `-m`/`-F`)
-populates the message after the hook fires. A chained `git add … &&
-git commit` stages content after the hook fires; the commit message is
-still scanned. A `-F <path>` message-source file has the same class of gap:
-the hook reads whatever is on disk at `<path>` when it fires, so a command
-that overwrites that path with sensitive content immediately before `git
-commit -F` runs in the same chain (`generate-secret > /tmp/msg.txt &&
-git commit -F /tmp/msg.txt`) is scanned against stale, not final, content.
-Credit-card detection matches contiguous digit runs only.
+**Known gaps.** The "Known gaps" list in the header of
+`claude/.claude/hooks/deny-pii-in-commits.sh` records the routes found
+so far, and because the gate predicts the commit by parsing the Bash command
+string, the set of unscanned routes is open by construction.
 
 ## Arming the data-file read hook
 
@@ -777,7 +805,7 @@ to hold PII/PHI or live credentials:
 - `deny-invisible-commit-content.sh`'s whole-word quote closure:
   - Arm 1 strips quotes before splitting (`COMMAND_UNQUOTED`), the same
     treatment as the fragment-matcher family above.
-  - Arm 2's masker (`_mask_shell_quotes`) emits a quoted span unquoted, not
+  - Arm 2's masker (`_lib_mask_shell_quotes`) emits a quoted span unquoted, not
     blanked, only when its interior is a single word matching
     `^[A-Za-z0-9._/-]+$`, so a quoted `git`/`commit` word (`"git" commit`)
     stays visible to both arms.
@@ -789,17 +817,36 @@ to hold PII/PHI or live credentials:
     piped to an interpreter, and a mid-word quote split spanning multiple
     words (`g"it commit"`, whose masked span contains whitespace and so
     stays blanked) — the same surface every other commit gate already has.
+  - Also open, and failing open: the masker is a character-level quote scanner,
+    not a bash tokenizer, so a shape it mis-scans can drop a real second commit
+    fragment from arm 2's count. `_lib_mask_shell_quotes`'s header in `_lib.sh`
+    lists the limits once as a class; two worked cases follow.
+  - `git commit -m x && echo \" && git commit -m y && echo \"` is allowed
+    (backslash escapes are not modeled): bash runs both commits, but the masker
+    treats the `\"` pair as a span the shell never sees and blanks the second
+    commit.
+  - BSD/macOS awk splits the command at each blank line, which breaks the
+    masker's quote tracking (mechanism in the `_lib.sh` header). Neither case
+    below needs deliberate obfuscation, only a blank line, which is routine in
+    multi-paragraph command text.
+    - `true<blank line>git commit -m x && git commit -m y` is allowed, because
+      the blank line is deleted and the tokens on each side fuse, while the
+      same command with a single newline is denied.
+    - `git commit -m "para1<blank line>para2" && git commit -m "y"` is
+      allowed, because the masked text becomes `git commit -m
+      "para1para2""y"`, while the same command with a single newline is
+      denied.
+  - Only awk 20200816 was checked for the BSD/macOS-awk cases.
 - `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:
-  `_mask_shell_quotes` blanks any quoted span whose interior contains
+  `_lib_mask_shell_quotes` blanks any quoted span whose interior contains
   whitespace or a shell operator, so a real `git commit` invoked inside a
   code-executing wrapper's quoted argument (`bash -c "git commit ..."`,
   `eval "git commit ..."`) is invisible to arm 2's count — a two-commit
   chain where either commit is wrapped this way evades both arms, e.g.
   `git commit -m "fix" && bash -c "git add secret && git commit -m y"`.
-  Accepted under this repo's cooperative-agent threat model (see
-  `require-respond-pr.sh`'s own "Threat model" comment for the same
-  posture stated elsewhere): these hooks assume a cooperative agent, not
-  one deliberately constructing shell indirection to evade a gate.
+  Accepted under this repo's cooperative-agent threat model (see `docs/hooks.md` § "Threat-model tiers"): these hooks assume a
+  cooperative agent, not one deliberately constructing shell indirection
+  to evade a gate.
 - The backslash-escape removal above strips a backslash before *any*
   character universally, including inside what bash would treat as a
   single-quoted region (where bash itself preserves the backslash

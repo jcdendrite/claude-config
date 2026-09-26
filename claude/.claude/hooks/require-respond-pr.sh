@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /respond-pr when fetching or posting PR comments.
 #
 # Why: Claude habitually fetches only inline file comments
@@ -87,14 +88,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -142,8 +143,8 @@ fi
 # would be reading a command the shell never runs. A bare newline separates
 # commands, and joins with a space.
 #
-# GH-801: awk with RS = "\0" (matching _mask_shell_quotes's identical
-# technique in deny-invisible-commit-content.sh), not a per-line sed —
+# GH-801: awk with RS = "\0" (matching _lib_mask_shell_quotes's identical
+# technique in _lib.sh), not a per-line sed —
 # a per-line tool never sees an embedded newline character to substitute in
 # the first place, since the newline itself is what separates its input
 # into lines; slurping the whole command as one record is what lets a

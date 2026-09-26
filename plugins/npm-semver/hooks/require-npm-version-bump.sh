@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require a published npm package's package.json `version` to be
 # strictly increased before git commit when staged changes touch a non-test
 # source file under that package.
@@ -107,7 +108,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by npm-version-bump gate: could not source _lib.sh."
   exit 0
 fi

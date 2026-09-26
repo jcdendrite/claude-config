@@ -3,7 +3,8 @@
 plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
 test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
-and test_context_composition.py (see the extraction rationale on
+test_context_composition.py, test_transcript_denials.py, and
+test_transcript_review_trace.py (see the extraction rationale on
 _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
@@ -86,6 +87,22 @@ def _base_test_env() -> dict:
 _TOOLS_NEEDED_WITHOUT_DIRENV = (
     "git", "python3", "bash", "grep", "awk", "sed", "dirname", "mktemp", "rm",
 )
+
+
+def require_direnv() -> None:
+    """Guard for a test that needs a real direnv binary, not a shim: skip
+    locally when direnv isn't installed, but hard-fail in this repo's own
+    CI.
+
+    Checks GITHUB_ACTIONS rather than the generic CI var because it's this
+    workflow's own install step being asserted. The hard-fail guarantee
+    depends on .github/workflows/tests.yml's "Install stow and direnv"
+    step, which installs direnv before tests run.
+    """
+    if not shutil.which("direnv"):
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("direnv missing in CI — .github/workflows/tests.yml must install it")
+        pytest.skip("direnv not installed")
 
 
 def _curated_path_without_direnv(tmp_path: Path) -> str:
@@ -582,6 +599,100 @@ def _reviewer_yield_args(
         "until": until,
         "redact": redact,
     })()
+
+
+def _hook_deny(
+    hook_name: str, *, stringified: bool = False, branch: str = "main", ts: str | None = None
+) -> dict:
+    """Build an attachment/hook_blocking_error record using the real transcript shape.
+
+    Real transcripts nest the human-readable denial text in a "blockingError" key
+    inside the blockingError dict (alongside a "command" key).
+
+    When stringified=True, the outer blockingError value is a JSON-encoded string
+    of that dict rather than the dict itself (as seen in some real transcripts).
+
+    branch/ts mirror the sibling _hook_deny_current — a synthetic attachment
+    denial carries its own gitBranch/timestamp too, so tests can distinguish an
+    implementation that reads the record's own branch from one that only
+    exercises the carry-forward path.
+    """
+    human_message = f"Hook '{hook_name}' blocked the operation"
+    error_dict = {"blockingError": human_message, "command": "git commit -m x"}
+    blocking_error = json.dumps(error_dict) if stringified else error_dict
+    rec: dict = {
+        "type": "attachment",
+        "gitBranch": branch,
+        "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": hook_name,
+            "toolUseID": f"toolu_{hook_name[:8]}",
+            "blockingError": blocking_error,
+        },
+    }
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _hook_deny_current(
+    message: str,
+    *,
+    tool_id: str = "toolu_cur",
+    ts: str | None = None,
+    branch: str = "main",
+    tool_denial_kind: str | None = None,
+    is_error: bool = True,
+) -> dict:
+    """Build a current-format hook denial.
+
+    Newer Claude Code transcripts no longer emit a hook_blocking_error
+    attachment record — a denial surfaces only as a user record whose
+    tool_result block carries is_error and the denial text. tool_denial_kind
+    mirrors the real toolDenialKind field, which lives on this parent user
+    record, not on the tool_result block itself.
+    """
+    rec: dict = {
+        "type": "user",
+        "gitBranch": branch,
+        "isSidechain": False,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_id,
+             "content": message, "is_error": is_error},
+        ]},
+    }
+    if ts:
+        rec["timestamp"] = ts
+    if tool_denial_kind:
+        rec["toolDenialKind"] = tool_denial_kind
+    return rec
+
+
+def _review_trace_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    branches: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    deny_only: bool = False,
+    deny_summary: bool = False,
+    skill: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "branches": branches,
+        "since": since,
+        "until": until,
+        "deny_only": deny_only,
+        "deny_summary": deny_summary,
+        "skill": skill,
+    })()
+
+
+def _skill_use(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
 
 
 @pytest.fixture()

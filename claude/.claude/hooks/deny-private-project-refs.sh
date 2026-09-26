@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
 # create`, `gh issue comment`, `gh issue edit`, and mutating `gh api`
 # calls if their content (staged diff, commit message, PR/issue
@@ -121,6 +122,14 @@
 #   that reading it terminates. This guarantee holds only when timeout(1)
 #   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
 #   present" fallback caveat in _lib.sh, which still applies here.
+# - The Slack-channel shape accepts digits, `s`, then end of line or any
+#   non-name character (`#<n>s`, `#<n>s.`), because the quote-stripped
+#   copy cannot tell it from a possessive issue reference.
+# - Under a non-C collation locale, a digit-led name whose first non-digit
+#   collates between `r` and `t` also passes the Slack-channel shape.
+# - A possessive issue reference still denies when the quote-strip joins a
+#   name character onto its `s`, such as an escape like `\n` or a hyphen
+#   or underscore continuation.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -185,14 +194,14 @@ emit_deny() {
 
 # emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
 # still deny rather than silently allow.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh — hook cannot evaluate command detection safely."
+  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate command detection safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -377,11 +386,13 @@ fi
 #                                 tradeoff as GH/BUG rather than a fixed set)
 #   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
 #   happen to match [A-Z]{2,}-\d+:
+#   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
+#                                 as GH/BUG/GPT above rather than a fixed set.
 #   Designated placeholders:      PROJ, TICKET — reserved for examples
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
 
 # Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>
@@ -457,7 +468,7 @@ extract_gh_api_input_paths() {
 # gh reads the file at invocation time and uses the contents as the
 # field value, so a tracker token in the file ships in the request
 # body identically to inline `-f key="..."`. The pseudo-file form
-# `@-` reads stdin (rejected by is_pseudo_file_path).
+# `@-` reads stdin (rejected by _lib_is_pseudo_file_path).
 # Field key must start with letter or underscore; whitespace inside
 # the path truncates the same way as the other extractors. Same
 # xargs tokenization behavior as extract_body_source_paths prevents
@@ -476,17 +487,6 @@ extract_gh_api_field_at_paths() {
       if (val ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, "", val); print val }
     }
   '
-}
-
-# Pseudo-file paths whose contents the hook cannot meaningfully scan:
-# the path either resolves to a different file at hook time than it
-# will at gh-invocation time, or it's a process-specific fd reference
-# that points into the hook's own stdin. Reject all of them fail-closed.
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 # Detect && / || chain operators in the command and append a corrective
@@ -541,7 +541,7 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
     if [ -n "$COMMIT_MSG_SOURCES" ]; then
       while IFS= read -r commit_msg_path; do
         [ -z "$commit_msg_path" ] && continue
-        if is_pseudo_file_path "$commit_msg_path"; then
+        if _lib_is_pseudo_file_path "$commit_msg_path"; then
           emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${commit_msg_path}'). The redaction gate cannot statically verify what git will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not git's future stdin. Inline the message with -m or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
@@ -580,7 +580,7 @@ if [ "$IS_GH_PR" -eq 1 ]; then
   if [ -n "$BODY_SOURCES" ]; then
     while IFS= read -r body_source_path; do
       [ -z "$body_source_path" ] && continue
-      if is_pseudo_file_path "$body_source_path"; then
+      if _lib_is_pseudo_file_path "$body_source_path"; then
         emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -613,7 +613,7 @@ if [ "$IS_GH_ISSUE" -eq 1 ]; then
   if [ -n "$ISSUE_BODY_SOURCES" ]; then
     while IFS= read -r issue_body_source_path; do
       [ -z "$issue_body_source_path" ] && continue
-      if is_pseudo_file_path "$issue_body_source_path"; then
+      if _lib_is_pseudo_file_path "$issue_body_source_path"; then
         emit_deny "gh issue command passes a body-source flag pointing at a pseudo-file path ('${issue_body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -646,7 +646,7 @@ if [ "$IS_GH_API" -eq 1 ]; then
   if [ -n "$GH_API_INPUT_SOURCES" ]; then
     while IFS= read -r gh_api_input_path; do
       [ -z "$gh_api_input_path" ] && continue
-      if is_pseudo_file_path "$gh_api_input_path"; then
+      if _lib_is_pseudo_file_path "$gh_api_input_path"; then
         emit_deny "gh api command passes --input pointing at a pseudo-file path ('${gh_api_input_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the body with -f / -F field flags or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
@@ -672,7 +672,7 @@ if [ "$IS_GH_API" -eq 1 ]; then
   if [ -n "$GH_API_FIELD_AT_SOURCES" ]; then
     while IFS= read -r gh_api_field_at_path; do
       [ -z "$gh_api_field_at_path" ] && continue
-      if is_pseudo_file_path "$gh_api_field_at_path"; then
+      if _lib_is_pseudo_file_path "$gh_api_field_at_path"; then
         emit_deny "gh api command passes a -f / -F / --field / --raw-field value of the form key=@PATH where PATH is a pseudo-file ('${gh_api_field_at_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the value or use a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi

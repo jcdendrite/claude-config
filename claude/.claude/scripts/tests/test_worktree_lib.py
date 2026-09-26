@@ -47,6 +47,11 @@ def _run_bash(script_body: str, env: dict[str, str] | None = None) -> subprocess
     )
 
 
+# An inherited CDPATH makes a bare `cd <relative-name>` resolve elsewhere and print
+# the hit; cases exercising path canonicalization pin it empty.
+_ENV_WITHOUT_CDPATH = {**os.environ, "CDPATH": ""}
+
+
 # ---------------------------------------------------------------------------
 # PATH shims forcing collect_process_cwds's OS-detection branches
 # ---------------------------------------------------------------------------
@@ -461,3 +466,291 @@ done
 ''')
         assert result.returncode == 0, result.stderr
         assert f"reason:{expected_reason}" in result.stdout
+
+
+class TestWorktreeCanonPath:
+    """worktree_canon_path resolves an existing directory to its symlink-free
+    form and falls back to the raw input for anything it cannot cd into."""
+
+    def test_symlinked_component_resolves_to_real_path(self, tmp_path):
+        real_dir = tmp_path / "real-dir"
+        (real_dir / "nested").mkdir(parents=True)
+        symlink = tmp_path / "symlink-to-real"
+        symlink.symlink_to(real_dir)
+        result = _run_bash(
+            f'printf "%s\\n" "$(worktree_canon_path "{symlink}/nested")"', env=_ENV_WITHOUT_CDPATH
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{(real_dir / 'nested').resolve()}\n"
+
+    def test_path_containing_a_space_resolves_through_symlink(self, tmp_path):
+        real_dir = tmp_path / "real dir"
+        real_dir.mkdir()
+        symlink = tmp_path / "link to real"
+        symlink.symlink_to(real_dir)
+        result = _run_bash(
+            f'printf "%s\\n" "$(worktree_canon_path "{symlink}")"', env=_ENV_WITHOUT_CDPATH
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{real_dir.resolve()}\n"
+
+    def test_nonexistent_path_falls_back_to_raw_input_silently(self, tmp_path):
+        missing = tmp_path / "no-such-dir"
+        result = _run_bash(
+            f'printf "%s\\n" "$(worktree_canon_path "{missing}")"', env=_ENV_WITHOUT_CDPATH
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{missing}\n"
+        assert result.stderr == ""
+
+    def test_relative_path_resolves_against_cwd(self, tmp_path):
+        real_dir = tmp_path / "real-dir"
+        real_dir.mkdir()
+        result = _run_bash(
+            f'cd "{tmp_path}"\nprintf "%s\\n" "$(worktree_canon_path "./real-dir/../real-dir")"',
+            env=_ENV_WITHOUT_CDPATH,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{real_dir.resolve()}\n"
+
+    def test_non_path_string_falls_back_to_raw_input_silently(self, tmp_path):
+        result = _run_bash(
+            f"cd \"{tmp_path}\"\nprintf '%s\\n' \"$(worktree_canon_path 'feat/some-branch')\"",
+            env=_ENV_WITHOUT_CDPATH,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "feat/some-branch\n"
+        assert result.stderr == ""
+
+    def test_option_shaped_input_is_returned_raw_not_read_as_a_cd_option(self, tmp_path):
+        """`-P` names no directory, so it comes back verbatim with no stderr;
+        without `--`, cd would take it as an option and land in HOME."""
+        home_dir = tmp_path / "home-dir"
+        home_dir.mkdir()
+        env = {**_ENV_WITHOUT_CDPATH, "HOME": str(home_dir)}
+        result = _run_bash(f'cd "{tmp_path}"\nprintf "%s\\n" "$(worktree_canon_path -P)"', env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "-P\n"
+        assert result.stderr == ""
+
+    def test_lone_dash_is_returned_raw_not_read_as_oldpwd(self, tmp_path):
+        """A bare `-` is cd's OLDPWD shorthand, which would print the previous
+        directory and resolve to it; it must come back as the literal `-`."""
+        previous_dir = tmp_path / "previous-dir"
+        previous_dir.mkdir()
+        result = _run_bash(
+            f'cd "{previous_dir}"\ncd "{tmp_path}"\nprintf "%s\\n" "$(worktree_canon_path -)"',
+            env=_ENV_WITHOUT_CDPATH,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "-\n"
+
+    def test_empty_input_is_returned_empty_not_resolved_to_cwd(self, tmp_path):
+        """bash 3.2's `cd ""` succeeds in the current directory; bash 4+ (Homebrew
+        bash, the CI runner) fails it, making the guard a no-op there.
+        `_run_bash` runs whichever `bash` is first on PATH, so this test only
+        discriminates on a system where bash 3.2 is first (stock macOS)."""
+        result = _run_bash(
+            f'cd "{tmp_path}"\nprintf "[%s]\\n" "$(worktree_canon_path "")"', env=_ENV_WITHOUT_CDPATH
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "[]\n"
+
+    def test_inherited_cdpath_does_not_resolve_a_relative_name(self, tmp_path):
+        """A relative name absent from cwd but present under an inherited
+        CDPATH entry is returned raw: cd would otherwise resolve it there and
+        print the hit as an extra output line."""
+        cdpath_root = tmp_path / "cdpath-root"
+        (cdpath_root / "branch-like-name").mkdir(parents=True)
+        unrelated_cwd = tmp_path / "unrelated-cwd"
+        unrelated_cwd.mkdir()
+        env = {**os.environ, "CDPATH": str(cdpath_root)}
+        result = _run_bash(
+            f'cd "{unrelated_cwd}"\nprintf "%s\\n" "$(worktree_canon_path branch-like-name)"', env=env
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "branch-like-name\n"
+
+
+class TestWorktreeInUseCanonicalizationFallback:
+    """worktree_in_use compares a process cwd against the target's canonical
+    path when the target resolves, and against the raw target string when it
+    does not (e.g. a worktree whose directory is gone)."""
+
+    def test_unresolvable_target_matches_process_cwd_by_raw_string(self, tmp_path):
+        missing = tmp_path / "gone-worktree"
+        result = _run_bash(f'''
+PROCESS_CWD_SCAN=ok
+PROCESS_CWDS=("{missing}" "/elsewhere")
+RC=0
+worktree_in_use "{missing}" || RC=$?
+echo "exit:$RC"
+PROCESS_CWDS=("{missing}/sub")
+RC=0
+worktree_in_use "{missing}" || RC=$?
+echo "subdir-exit:$RC"
+PROCESS_CWDS=("/elsewhere")
+RC=0
+worktree_in_use "{missing}" || RC=$?
+echo "other-exit:$RC"
+''')
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["exit:0", "subdir-exit:0", "other-exit:1"]
+
+    def test_resolvable_target_matches_process_cwd_by_canonical_string(self, tmp_path):
+        real_dir = tmp_path / "real-dir"
+        real_dir.mkdir()
+        symlink = tmp_path / "symlink-to-real"
+        symlink.symlink_to(real_dir)
+        result = _run_bash(f'''
+PROCESS_CWD_SCAN=ok
+PROCESS_CWDS=("{real_dir.resolve()}")
+RC=0
+worktree_in_use "{symlink}" || RC=$?
+echo "exit:$RC"
+PROCESS_CWDS=("{symlink}")
+RC=0
+worktree_in_use "{symlink}" || RC=$?
+echo "raw-symlink-exit:$RC"
+''')
+        assert result.returncode == 0, result.stderr
+        # The raw symlink string is not what the kernel reports, so it must not match.
+        assert result.stdout.splitlines() == ["exit:0", "raw-symlink-exit:1"]
+
+
+class TestWorktreeMatchesFilter:
+    """worktree_matches_filter reads the caller-populated FILTER_ARGS array and
+    matches a worktree by exact branch name or canonicalized path."""
+
+    def test_empty_filter_args_match_everything(self, tmp_path):
+        result = _run_bash(f'''
+FILTER_ARGS=()
+RC=0
+worktree_matches_filter "feat/any" "{tmp_path}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:0" in result.stdout
+
+    def test_branch_name_match(self, tmp_path):
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=("feat/target")
+RC=0
+worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:0" in result.stdout
+
+    def test_canonical_path_match_through_symlink(self, tmp_path):
+        real_dir = tmp_path / "real-dir"
+        real_dir.mkdir()
+        symlink = tmp_path / "symlink-to-real"
+        symlink.symlink_to(real_dir)
+        result = _run_bash(f'''
+FILTER_ARGS=("{symlink}")
+RC=0
+worktree_matches_filter "feat/unrelated" "{real_dir.resolve()}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:0" in result.stdout
+
+    def test_relative_path_match_canonicalizes_against_cwd(self, tmp_path):
+        real_dir = tmp_path / "real-dir"
+        real_dir.mkdir()
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=("./real-dir")
+RC=0
+worktree_matches_filter "feat/unrelated" "{real_dir.resolve()}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:0" in result.stdout
+
+    def test_any_matching_arg_among_several_matches(self, tmp_path):
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=("feat/other" "feat/target")
+RC=0
+worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:0" in result.stdout
+
+    def test_no_arg_matching_branch_or_path_returns_one(self, tmp_path):
+        other_dir = tmp_path / "other-dir"
+        other_dir.mkdir()
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=("feat/other" "{other_dir}")
+RC=0
+worktree_matches_filter "feat/target" "{tmp_path}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert "exit:1" in result.stdout
+
+    def test_branch_name_matches_even_when_it_also_names_a_relative_directory(self, tmp_path):
+        """A filter arg equal to the branch string still matches when it also
+        names an existing directory under cwd: the branch comparison uses the
+        raw arg, never its canonicalized form."""
+        (tmp_path / "docs").mkdir()
+        unrelated_worktree = tmp_path / "unrelated-tree"
+        unrelated_worktree.mkdir()
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=("docs")
+RC=0
+worktree_matches_filter "docs" "{unrelated_worktree.resolve()}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["exit:0"]
+
+    @pytest.mark.parametrize(
+        "filter_arg",
+        ["feat", "feat/tar", "feat/*", "feat*", "*"],
+        ids=["strict-prefix", "longer-strict-prefix", "glob-slash-star", "glob-star", "bare-star"],
+    )
+    def test_branch_filter_arg_must_equal_branch_exactly(self, tmp_path, filter_arg):
+        """A strict prefix or glob of the branch name is not an exact match."""
+        result = _run_bash(f'''
+cd "{tmp_path}"
+FILTER_ARGS=('{filter_arg}')
+RC=0
+worktree_matches_filter "feat/target" "{tmp_path}/wt" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["exit:1"]
+
+    def test_ancestor_directory_of_worktree_path_does_not_match(self, tmp_path):
+        """A filter arg naming a directory that contains the worktree is not
+        the worktree's canonical path."""
+        ancestor = tmp_path / "ancestor"
+        worktree = ancestor / "nested" / "wt"
+        worktree.mkdir(parents=True)
+        result = _run_bash(f'''
+FILTER_ARGS=("{ancestor}")
+RC=0
+worktree_matches_filter "feat/unrelated" "{worktree.resolve()}" || RC=$?
+echo "exit:$RC"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["exit:1"]
+
+    def test_unassigned_filter_args_aborts_under_set_u(self, tmp_path):
+        """FILTER_ARGS is a caller-assigned global: calling the function
+        without assigning it aborts rather than matching everything."""
+        result = _run_bash(f'''
+cd "{tmp_path}"
+worktree_matches_filter "feat/target" "{tmp_path}"
+echo "reached"
+''', env=_ENV_WITHOUT_CDPATH)
+        assert result.returncode != 0
+        assert "FILTER_ARGS" in result.stderr
+        assert "reached" not in result.stdout

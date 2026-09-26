@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: deny `git commit` when the commit's content — added lines of the
 # staged diff, the commit message, or a referenced commit-message file —
 # contains personally-identifying or protected health information (PII/PHI),
@@ -65,8 +66,9 @@
 # content that is not in the index when this hook fires.
 #
 # Commit-message-source files: `-F <path>` / `--file <path>` are read and
-# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` pseudo-files are rejected
+# scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` / `/proc/*/fd/*` pseudo-files are rejected
 # fail-closed — the hook cannot statically verify what git will read.
+# Both apply only to the spellings the extractor recognises (see Known gaps).
 #
 # Self-exclusion: claude/.claude/hooks/tests/** and
 # claude/.claude/scripts/tests/** are always excluded from the diff scan
@@ -91,21 +93,120 @@
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
 #  - A chained `git add ... && git commit` staging content after this hook's
-#    staged-diff scan is denied outright by deny-invisible-commit-content.sh,
-#    so that shape never reaches this hook's PII/credential scan at all.
+#    staged-diff scan is denied by deny-invisible-commit-content.sh, so that
+#    shape does not reach this hook's PII/credential scan. That coverage is
+#    bounded by deny-invisible-commit-content.sh's own Known gaps list.
+#  - A `-F <path>` message file whose content changes after this hook fires
+#    is not re-read. `cp secret.src msg.txt && git commit -F msg.txt` is
+#    allowed when msg.txt is benign at hook time, by this hook and by
+#    deny-invisible-commit-content.sh.
+#  - A message that receives content through shell expansion is scanned as
+#    literal text at hook time, so a credential arriving that way is not
+#    seen. `git commit -m "$(cat f)"` and `M=$(cat f); git commit -m "$M"`
+#    are allowed by this hook and by deny-invisible-commit-content.sh.
 #  - Credit-card detection matches contiguous 13-19 digit runs only;
 #    space- or dash-separated card numbers are not caught.
+#  - An SSN or credit-card value written as an apostrophe-grouped thousands
+#    numeral (`N'NNN'NNN`, or an SSN whose last group is `N'NNN`) is allowed
+#    when stripping quotes would not join its digits to any other digit:
+#    - This covers a C++ digit-separated integer literal.
+#    - It also covers a quote splice at the same positions in unquoted
+#      command text.
+#    - Each occurrence is judged alone, so another copy of the value
+#      elsewhere in the commit does not change its verdict.
+#  - This waiver applies only to the built-in SSN/credit-card scan.
+#    A user-defined `<label>: <regex>` pattern from ~/.claude/pii-patterns.md
+#    remains exposed to the identical apostrophe-join false positive:
+#    - The credential-value and user-pattern scans read the unmasked
+#      SCAN_TARGET_BOTH, never the masked SSN_CC_SCAN_TARGET.
+#    - This is by design: a user-defined pattern belongs to the user who
+#      wrote it, not to this hook.
+#  - mask_thousands_numerals's sed -E expression is exercised only against
+#    GNU sed (this repo's CI and most dev machines). BSD/macOS sed's
+#    behavior on this expression is not independently checked.
 #  - `git -C <path> commit` aimed at a *different* repository is still
 #    detected as a commit, but the staged-diff scan runs against the
 #    session's current repository, not the `-C` target. `-C` into a
-#    subdirectory of the same repo is unaffected (the scan pathspecs are
-#    repo-root-relative).
+#    subdirectory of the same repo leaves the diff scan unaffected: the diff
+#    calls pass `-c diff.relative=false` and repo-root-relative pathspecs, so
+#    the scan covers the whole repo whatever the hook's cwd or `diff.relative`
+#    say. A relative `-F <path>` resolves against the hook's cwd, not the
+#    commit's, so `git -C a commit -F msg.txt` scans `msg.txt` while git reads
+#    `a/msg.txt`.
 #  - Every _lib_strip_shell_quotes/_lib_split_fragments call site in this
 #    hook checks its exit status and fails closed: the command's own
-#    fragment split, each fragment's git_fragment_unquoted strip, and the
-#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer.
+#    fragment split, each fragment's git_fragment_unquoted strip, the
+#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer, and
+#    the SSN/credit-card union's mask_thousands_numerals call and its own
+#    strip.
+#  - The scanned repo, index, and work tree, and both probes' repo, come from
+#    the hook's own cwd and environment, not the commit's effective ones.
+#  - When the hook's cwd is not itself a work tree, a `git -C <repo>`,
+#    `cd <repo> &&`, `--git-dir`, or `--work-tree` commit makes the probe
+#    exit 128 and skip the scan.
+#  - When the hook's cwd is a work tree, the same forms make the hook scan
+#    that work tree's repo instead of the commit's.
+#  - An env-prefix form before `git commit` redirects only the commit, not
+#    the hook's scan:
+#    - `GIT_DIR` redirects the repository.
+#    - `GIT_WORK_TREE` redirects the work tree, which matters only for the
+#      `-a`/pathspec scan of worktree content against HEAD.
+#    - `GIT_INDEX_FILE` redirects the index, so a token present only in the
+#      alternate index is allowed.
+#  - A linked worktree of the same repo, committed to from the main
+#    checkout, makes the diff scan read the wrong worktree's index.
+#  - With an unborn HEAD and a worktree-target commit form (`-a`, `--`, or a
+#    bare pathspec), worktree-vs-index content is not scanned.
+#  - Status 128 is git's generic fatal status; the probes treat it as "not a
+#    work tree" or "no HEAD" and skip without logging.
+#  - A descendant of a capped git call that ignores SIGTERM and holds the
+#    captured stdout pipe keeps the hook open past the cap, because the cap
+#    bounds only the direct child.
+#    The hook then stays open until the harness's own hook timeout.
+#    A PreToolUse command hook that times out does not block the tool call,
+#    so the commit then proceeds unscanned.
+#    _lib_capped_for's header in _lib.sh quotes the vendor rule.
+#  - The diff calls pass `--no-ext-diff` so a repo-local `diff.external`
+#    driver is not such a descendant.
+#  - A file git classifies as binary yields "Binary files differ" with no
+#    added lines, so the credential-value scan does not see it.
+#    Git classifies a file as binary through these routes:
+#    - A `-diff` or `binary` attribute, including one from a committed
+#      `.gitattributes` or one staged in the same commit as the file.
+#    - A NUL byte in the first 8000 bytes of the content.
+#    - A `diff.<driver>.binary=true` config setting.
+#    - A `core.bigFileThreshold` smaller than the file. The default is 512 MiB,
+#      so a large enough file needs no config.
+#    These are examples, not a closed list.
+#  - `--no-textconv` stops the scan from seeing text a textconv driver exposes
+#    from a binary-classified file.
+#  - An added line whose content starts with `++` renders as `+++...`, so the
+#    `+++` file-header filter in `added_lines_of` drops it.
+#  - GNU grep 3.11 drops an added line holding a byte that is invalid in the
+#    hook's locale encoding, so a credential on such a line is not scanned.
+#    Other greps (BSD/macOS) are unverified.
+#  - Git's attached short form (`-Fpath`, `-F-`) is not recognised as a
+#    message source, so this hook allows it without scanning the file or
+#    rejecting the stdin source. deny-invisible-commit-content.sh allows it too.
+#  - Git's unambiguous long-option abbreviations (`--fil=path`, `--fil=-`)
+#    are likewise allowed by both hooks without a scan or a stdin rejection.
+#  - A commit alias (`git config alias.ci commit`, then `git ci -m x`) is not
+#    detected as a commit, so both hooks allow it.
+#  - An attached short flag whose value ends in `m`, `F`, `C`, `c` or `t`
+#    (`-Fmsg.txt` and `-mtext` match, `-mwip` and `-mfoo` do not) makes
+#    `_lib_commit_fragment_has_worktree_target` read the next token as the
+#    flag's value, so a following pathspec is not seen as a worktree target
+#    and the worktree-content scan is skipped.
+#  - `-F=path` is recognised and scanned as a file named `path`, but git reads
+#    a file literally named `=path`, so a credential in that file is not scanned.
+#  - `--pathspec-from-file` (both spellings) commits worktree content that
+#    `_lib_commit_fragment_has_worktree_target` does not classify as a worktree target.
+#  - `-p`, `--patch` and `--interactive` likewise commit worktree content
+#    that `_lib_commit_fragment_has_worktree_target` does not classify.
+#  - The fix for the command-line-parsing gaps above is to scan the committed
+#    bytes rather than parse the command line.
 #
-# The `-F`/`--file` unreadable-source and pseudo-file checks below run for every commit, armed or not — fail-closed on content the hook cannot verify, independent of which scan tier triggered the commit-detection path.
+# The `-F`/`--file` unreadable-source and pseudo-file checks below run for every commit, armed or not — fail-closed on content the hook cannot verify, independent of which scan tier triggered the commit-detection path. They cover only the spellings the extractor recognises: spaced `-F path`, `--file path`, and `--file=path`.
 #
 # Fail-closed on unparseable hook input.
 
@@ -124,14 +225,14 @@ emit_deny() {
 
 # emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
 # still deny rather than silently allow.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh — hook cannot evaluate the commit safely."
+  emit_deny "could not source _lib.sh (run ./install.sh to pick up hook files this update added) — hook cannot evaluate the commit safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -195,19 +296,19 @@ if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
 fi
 
 # A `git commit` outside a work tree fails on its own; nothing to scan. Wrapped
-# in _lib_capped (5s backstop), which runs unconditionally (armed or not) --
-# distinguish the two failure shapes: a genuine non-work-tree exit (git commit
-# fails on its own too, so skipping is safe) from a timeout (exit 124), which
-# tells us nothing about work-tree state and must fail closed, or exiting 0
-# here would silently skip the always-on credential-value tier along with
-# everything else.
+# in _lib_capped (5s backstop), which runs unconditionally (armed or not).
+# The probe skips only on 128, git's generic fatal status, read as "not a
+# work tree".
+# Every other nonzero status denies, including any status the wrapper itself
+# produces on a cap kill, because exiting 0 here would silently skip the
+# always-on credential-value tier along with everything else.
 _lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1
 REV_PARSE_STATUS=$?
-if [ "$REV_PARSE_STATUS" -eq 124 ]; then
-  emit_deny "Commit — could not determine whether this is a git work tree within the scan timeout. Fail-closed — the guard cannot verify commit content is scannable without it."
+if [ "$REV_PARSE_STATUS" -eq 128 ]; then
   exit 0
 fi
 if [ "$REV_PARSE_STATUS" -ne 0 ]; then
+  emit_deny "Commit — could not determine whether this is a git work tree (exit ${REV_PARSE_STATUS}) — the probe was killed at the scan cap or failed. Fail-closed — the guard cannot verify commit content is scannable without it."
   exit 0
 fi
 
@@ -291,11 +392,12 @@ extract_commit_message_source_paths() {
   '
 }
 
-is_pseudo_file_path() {
-  case "$1" in
-    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
-    *) return 1 ;;
-  esac
+# The cap-kill statuses are listed in _lib_capped_for's header in _lib.sh,
+# which also says a status alone cannot prove the cap fired. This only picks
+# the deny message text ("by the scan cap or a signal"): callers deny on any
+# nonzero status either way.
+status_is_killed() {
+  [ "$1" -eq 124 ] || [ "$1" -eq 137 ] || [ "$1" -eq 143 ]
 }
 
 # --- Build the scan target -----------------------------------------------
@@ -324,19 +426,31 @@ added_lines_of() {
   grep -E '^\+' | grep -vE '^\+\+\+' || true
 }
 
+# Repo and user config (color.diff, diff.external, textconv drivers) can alter
+# diff output at exit 0 so the `^\+` filter above drops a credential line.
+# `diff.relative` would also scope the diff to the hook's cwd subdirectory.
+# These flags keep the scanned text plain and driver-free, and
+# `-c diff.relative=false` keeps it repo-wide.
+# `-c` is a git-level option, so it precedes `diff`, and it outranks repo and
+# user config. A git that predates the `diff.relative` key ignores it silently.
+# The flags follow `--cached` / `HEAD` because the fake-git shims in
+# test_deny_pii_in_commits.py match `git -c diff.relative=false diff --cached`
+# and `git -c diff.relative=false diff HEAD` by argument position.
+DIFF_PLAIN_FLAGS=(--no-color --no-ext-diff --no-textconv)
+
 # Both diff calls run unconditionally (the credential-value scan needs their
 # output regardless of arming), so each is wrapped in _lib_capped's 5s timeout
 # backstop -- and, per _lib_capped's own calling contract, its exit status is
 # checked and failed closed on. A silent truncated/empty diff on timeout would
 # scan less than the real diff and could let credential content past the gate.
-STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+STAGED_DIFF=$(_lib_capped git -c diff.relative=false diff --cached "${DIFF_PLAIN_FLAGS[@]}" -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
 STAGED_DIFF_STATUS=$?
-if [ "$STAGED_DIFF_STATUS" -eq 124 ]; then
-  emit_deny "Commit — could not compute the staged diff within the scan timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+if status_is_killed "$STAGED_DIFF_STATUS"; then
+  emit_deny "Commit — could not compute the staged diff: git diff --cached was killed (exit ${STAGED_DIFF_STATUS}), by the scan cap or a signal. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
 fi
 if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
-  emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+  emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}). Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
 fi
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
@@ -344,19 +458,22 @@ SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
 if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
   _lib_capped git rev-parse HEAD >/dev/null 2>&1
   HEAD_REV_STATUS=$?
-  if [ "$HEAD_REV_STATUS" -eq 124 ]; then
-    emit_deny "Commit — could not resolve HEAD within the scan timeout, and this commit form needs a HEAD-relative scan. Fail-closed."
+  if [ "$HEAD_REV_STATUS" -ne 0 ] && [ "$HEAD_REV_STATUS" -ne 128 ]; then
+    emit_deny "Commit — could not resolve HEAD (exit ${HEAD_REV_STATUS}), and this commit form needs a HEAD-relative scan. Fail-closed."
     exit 0
   fi
+  # An unborn HEAD has no commit to diff against, so the HEAD scan is
+  # skipped. Accepted residual: worktree-vs-index content of an unborn-HEAD
+  # commit is not scanned here.
   if [ "$HEAD_REV_STATUS" -eq 0 ]; then
-    HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
+    HEAD_DIFF=$(_lib_capped git -c diff.relative=false diff HEAD "${DIFF_PLAIN_FLAGS[@]}" -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
     HEAD_DIFF_STATUS=$?
-    if [ "$HEAD_DIFF_STATUS" -eq 124 ]; then
-      emit_deny "Commit — could not compute the HEAD diff within the scan timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+    if status_is_killed "$HEAD_DIFF_STATUS"; then
+      emit_deny "Commit — could not compute the HEAD diff: git diff HEAD was killed (exit ${HEAD_DIFF_STATUS}), by the scan cap or a signal. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
     fi
     if [ "$HEAD_DIFF_STATUS" -ne 0 ]; then
-      emit_deny "Commit — git diff HEAD failed (exit ${HEAD_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+      emit_deny "Commit — git diff HEAD failed (exit ${HEAD_DIFF_STATUS}). Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
     fi
     SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
@@ -367,7 +484,7 @@ COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
 if [ -n "$COMMIT_MSG_SOURCES" ]; then
   while IFS= read -r msg_path; do
     [ -z "$msg_path" ] && continue
-    if is_pseudo_file_path "$msg_path"; then
+    if _lib_is_pseudo_file_path "$msg_path"; then
       emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${msg_path}'). The gate cannot statically verify what git will read from '-' / '/dev/stdin' / '/dev/fd/*'. Inline the message with -m or use a real on-disk file."
       exit 0
     fi
@@ -379,13 +496,13 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
   done <<< "$COMMIT_MSG_SOURCES"
 fi
 
-# Raw+stripped union that every scan below reads instead of raw
-# $SCAN_TARGET alone. A quote-adjacent digit run (e.g. `x"4111111111111111"`)
-# loses the `\b` word boundary the SSN/credit-card regexes below need once
-# quotes are stripped, so only the raw copy still matches it -- same fix
-# shape as deny-private-project-refs.sh's SCAN_TARGET_BOTH. Checked and
-# fail-closed on a strip failure, matching deny-invisible-commit-content.sh's
-# own COMMAND_UNQUOTED computation.
+# Raw+stripped union that the credential-value and user-pattern scans read instead of raw
+# $SCAN_TARGET alone. A quote-adjacent credential-shaped token (e.g. `x"ghp_..."`)
+# loses the `\b` word boundary those scans need once quotes are stripped, so
+# only the raw copy still matches it -- same fix shape as
+# deny-private-project-refs.sh's SCAN_TARGET_BOTH. Checked and fail-closed on
+# a strip failure, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
 SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
 SCAN_TARGET_UNQUOTED_EXIT=$?
 if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
@@ -413,6 +530,15 @@ luhn_valid() {
   (( sum % 10 == 0 ))
 }
 
+# Prints $1 with each apostrophe-grouped thousands numeral replaced by a space, unless stripping quotes would join its digits to another digit.
+# The substitution runs twice because one global pass skips a numeral whose leading bound character the previous match consumed.
+# This expression must stay backreference-free — sed's runtime here is linear in input only without one.
+# A superlinear runtime here would reopen the fail-open timeout gap this hook's Known-gaps section already accepts as a residual risk.
+mask_thousands_numerals() {
+  local expr=$'s/(^|[^0-9\'"\\$])([\'"\\$]*)[0-9]{1,3}(\'[0-9]{3})+([\'"\\$]*)([^0-9\'"\\$]|$)/\\1\\2 \\4\\5/g'
+  printf '%s' "$1" | sed -E -e "$expr" -e "$expr"
+}
+
 # --- Scan -----------------------------------------------------------------
 # Each match test reads SCAN_TARGET_BOTH via a here-string, not
 # `printf | grep`. `grep -q` exits on the first match; in a pipeline that
@@ -428,11 +554,29 @@ if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET_BOTH"; then
 fi
 
 if [ "$PII_ARMED" -eq 1 ]; then
-  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET_BOTH"; then
+  # SSN/credit-card raw+stripped union, masked before the strip so a thousands separator cannot join digit groups.
+  # The credential-value and user-pattern scans keep reading the unmasked SCAN_TARGET_BOTH.
+  SSN_CC_MASKED=$(mask_thousands_numerals "$SCAN_TARGET")
+  SSN_CC_MASKED_EXIT=$?
+  if [ "$SSN_CC_MASKED_EXIT" -ne 0 ]; then
+    emit_deny "Commit — could not mask thousands numerals in the SSN/credit-card scan target (exit ${SSN_CC_MASKED_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+    exit 0
+  fi
+  SSN_CC_UNQUOTED=$(_lib_strip_shell_quotes "$SSN_CC_MASKED")
+  SSN_CC_UNQUOTED_EXIT=$?
+  if [ "$SSN_CC_UNQUOTED_EXIT" -ne 0 ]; then
+    emit_deny "Commit — could not quote-strip the SSN/credit-card scan target (exit ${SSN_CC_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+    exit 0
+  fi
+  # Keeps the raw $SCAN_TARGET copy alongside the masked+stripped one for the same
+  # reason SCAN_TARGET_BOTH above keeps its raw copy (see that comment).
+  SSN_CC_SCAN_TARGET=$(printf '%s\n%s' "$SCAN_TARGET" "$SSN_CC_UNQUOTED")
+
+  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SSN_CC_SCAN_TARGET"; then
     MATCHED_LABELS+=("US Social Security number")
   fi
 
-  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET_BOTH" | sort -u)
+  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SSN_CC_SCAN_TARGET" | sort -u)
   if [ -n "$CC_CANDIDATES" ]; then
     while IFS= read -r cc_candidate; do
       [ -z "$cc_candidate" ] && continue

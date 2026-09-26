@@ -54,7 +54,7 @@ Claude Code without enforcement will claim code is done before tests pass, skip 
 
 A CLAUDE.md instruction says "you should run code-review before committing." A PreToolUse hook says "the commit is denied until code-review ran against this exact diff." This distinction is the core design choice: enforce at the tool-call boundary, not at the prompt layer, because prompt-layer instructions are advisory — the model can disregard them on any change it judges simple enough not to need review.
 
-`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It wires in the `anthropics/claude-plugins-official` marketplace but ships official plugins and a set of bundled Claude Code skills that overlap with its review pipeline disabled by default, so contributors opt in deliberately (see the "Bundled skills disabled by default" section of [docs/skills.md](docs/skills.md)). `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
+`claude-config` is a **workflow-enforcement layer** — hooks that gate what Claude can do until explicit review steps are satisfied. It ships a set of bundled Claude Code skills that overlap with its review pipeline disabled by default, so contributors opt in deliberately (see the "Bundled skills disabled by default" section of [docs/skills.md](docs/skills.md)). `claude-config` ships the enforcement harness; hand-rolled `~/.claude/` configs improvise the patterns `claude-config` systematizes: content-addressed review markers, specialist reviewer routing, and three-tier redaction.
 
 ## Docs
 
@@ -75,7 +75,7 @@ The README below is organized by feature surface (hooks, skills, plugins, script
 - **Post-crash session recovery** — `post-crash-sessions` cross-references five session-liveness sources, including a never-swept lookup corpus that survives a same-day crash with no reboot, to find and resume crash-orphaned sessions. See [`docs/scripts.md`](docs/scripts.md).
 - **Project-layer composition by glob + Skill-tool dispatch** — `/plan-it`, `/plan-review`, `/code-review`, and `/test-conventions` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base skill without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). Add-on skills on the project side should set `disable-model-invocation: true` — the parent invokes them via the Skill tool, so their description doesn't need to be in the always-loaded skill-listing budget. See [docs/skills.md](docs/skills.md) and [`docs/design-decisions/project-layer-composition.md`](docs/design-decisions/project-layer-composition.md).
 - **Three-tier redaction** — always-on tracker-ID regex, opt-in user-local blocklist, reviewer discipline for structural fingerprints and private-corpus provenance. See [Private-project redaction](#private-project-redaction).
-- **Multi-account transcript corpus scope** — `transcript-analysis.py`, `post-crash-sessions`, `analyze-context.py`, and `token-analyzer.py` default to the union of every root in `~/.claude/transcript-config-dirs`, except `cost --summary` (active account only) — each subcommand's resolved-scope header states the root count so scope is never silently narrower than it looks. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md) for the per-subcommand mechanics.
+- **Multi-account transcript corpus scope** — `transcript-analysis.py`, `post-crash-sessions`, `analyze-context.py`, and `token-analyzer.py` default to the union of every root in `~/.claude/transcript-config-dirs`, except `cost --summary` (this repository on the active account only) — each subcommand's resolved-scope header states the root count so scope is never silently narrower than it looks. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md) for the per-subcommand mechanics.
 - **Leaf-module decomposition over a monolithic CLI script** — corpus read, scope resolution, redaction, pricing, and rendering logic live in an importable package so other scripts can reuse it directly instead of exec-loading the CLI module. See [`docs/transcript-analysis-architecture.md`](docs/transcript-analysis-architecture.md).
 - **Round-3-triggered architect consult, with a content-free non-rearming latch** — `require-architect-consult.sh` denies a reviewer-persona spawn once a branch's distinct `(HEAD sha, staged-diff sha256)` states hit a cap of two, interrupting a non-converging review loop before the round-3 fan-out it exists to prevent gets paid for. Unlike this repo's content-addressed markers described above (decision 2), the release latch is presence-only and does not re-arm on state change, since the diff changing is exactly what rounds 3+ look like. See [`docs/hooks.md`](docs/hooks.md) (`require-architect-consult.sh`, `log-reviewer-round.sh`) and `docs/design-decisions.md` §45.
 
@@ -94,6 +94,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
 - **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
+- **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
 - **Claude Code CLI:** `>= 2.1.218` for `transcript-narrative` and `error-mode-analysis`, this repo's two `context: fork` skills. An earlier version honors `context: fork` without honoring `background: false`. That produces a background fork whose narrowed tool set may omit `Bash`. Below that floor, each skill's first step stops and names the version requirement once it detects `Bash` is unavailable, rather than failing silently or half-run. Not enforced by `install.sh`, since it would block installation for every consumer who never invokes either skill.
@@ -160,7 +161,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
+| `require-skill-review.sh` | `git commit` — see [`docs/hooks.md`](docs/hooks.md)'s `require-skill-review.sh` bullet for the exact (base-relative) trigger | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
@@ -170,7 +171,7 @@ flowchart LR
 | `deny-network-installs.sh` | `Bash` command that installs a named package (including `uv add`), uses `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` with an explicit `-y`/`--yes`, uses `pnpm`/`yarn dlx` unconditionally, or hands fetched content to a shell/interpreter | No clear — no bypass valve; run the specific command outside Claude via the `!` shell escape |
 | `ask-new-dependency-disclosure.sh` | — (PreToolUse `Edit`/`Write`/`MultiEdit` to `package.json`, informational) | Asks, naming each `name@constraint` pair, when the edit adds a dependency not already declared; see [`docs/security-hardening.md`](docs/security-hardening.md) |
 | `redact-credential-values.sh` | — (PostToolUse `Bash`/`Read`/`WebFetch`/`Grep`/`Task`, informational) | Redacts a credential-shaped value in the tool result via `updatedToolOutput`; see [`docs/hooks.md`](docs/hooks.md) |
-| `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — copy the file to `/tmp` and mutate the copy there |
+| `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — confirm by reading and tracing; a persona's scratch work follows its `## Scratch execution` section |
 | `require-architect-consult.sh` | Reviewer-persona `Agent`/`Task` spawn when a branch is entering its third distinct reviewed state | A `plan-architect MODE=consult` dispatch (self-initiated or gate-prescribed), which `log-reviewer-round.sh` records as a per-branch latch; or `<config-dir>/.round-consult-gate-disabled` |
 | `deny-no-op-dispatch.sh` | `Agent`/`Task` spawn whose prompt is under 600 characters and matches a closed no-work idiom list | No clear — state the dispatch's actual work in the prompt, or end the turn without a tool call |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
@@ -240,14 +241,14 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 
 **`skill-fidelity-reviewer`** — a reviewer spawned by `/ready-for-review` (not by the two dispatchers, so it is outside the specialist-roster count above). It checks whether the skills a branch's work invoked were actually executed or silently abbreviated: it reads each invoked skill's body fresh and compares it to the delivered diff, so the observer never shares the deviating session's reasoning. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, because its task is closed-form (it is handed the skill-invocation list, not raw transcripts). Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
 
-**`comment-discipline-reviewer`** — a reviewer spawned by `/code-review`'s Ripple-effect-triage Change-type table (also outside the specialist-roster count above), for diffs that add or modify a comment or durable in-repo doc prose beyond a hygiene tweak. It checks the diff against CLAUDE.md §Code Comments, Documentation, and Prose from a context the authoring session never touched, enumerating every violating site rather than the one a human happened to point at. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, same closed-form rationale as `skill-fidelity-reviewer`: the task is reading a diff against a fixed rule set, not shelling out. Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
+**`comment-discipline-reviewer`** — a reviewer spawned by `/code-review`'s Ripple-effect-triage Change-type table (also outside the specialist-roster count above), for diffs that add or modify a comment or durable in-repo doc prose beyond a hygiene tweak. It checks the diff against CLAUDE.md §Durable text from a context the authoring session never touched, enumerating every violating site rather than the one a human happened to point at. Tools `Read`, `Grep`, `Glob`, `Write` — no `Bash`, same closed-form rationale as `skill-fidelity-reviewer`: the task is reading a diff against a fixed rule set, not shelling out. Like the specialist reviewers, it writes findings to `agent-reviews/<agent-name>-<epoch>-<slug>.md` under `findings_path:` and returns only a pointer line.
 
 **`code-writer`** — a non-reviewer Sonnet agent that implements delegated code changes and self-reviews its own diff before returning, verifying it against the relevant `staff-*` reviewer angles so review-finding-class defects are caught in its own context rather than as a parent round-trip. Dispatched by the parent in place of `general-purpose` for code-writing; see `claude/.claude/CLAUDE.md` "Model Routing" and `docs/design-decisions.md` §11.
 
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and test-tree packaging.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, and this repo's bash unit-test-seam mechanics.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, settings.json conventions, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
@@ -261,7 +262,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 ### Worktree enforcement
 
-`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via a `worktree-required` sentinel at `<config-dir>/worktree-required`, checked as a union with the legacy `~/.claude/worktree-required` so a sentinel armed before `CLAUDE_CONFIG_DIR` adoption still activates).
+`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via the `worktree_required` config key, checked as a union with the legacy `~/.claude/worktree-required` location so a value armed before `CLAUDE_CONFIG_DIR` adoption still activates — see [`docs/config-file.md`](docs/config-file.md)).
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
@@ -309,13 +310,13 @@ To opt out, delete `.claude/worktree-required`.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
-If you work across many repos and want enforcement everywhere without adding a marker to each:
+If you work across many repos and want enforcement everywhere without adding a marker to each, set the `worktree_required` config key:
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/worktree-required"
+printf 'worktree_required = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
+See [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract. This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
 
 ```bash
 mkdir -p .claude && touch .claude/worktree-optout
@@ -335,13 +336,15 @@ Without this, a `git add -A` in a repo that never got the per-repo `.gitignore` 
 
 ### Autonomous shipping
 
-If the agent ends its turn asking whether you want to review the diff before it commits — even after finishing the work you asked for — this is the setting that removes that pause. `advance-past-commit-stall.sh` (a `Stop` hook) force-continues the turn through `/code-review` → commit → `/ready-for-review` → PR-open, stopping only before merge, whenever the machine-level sentinel below is set and the current repo carries no `.claude/autonomous-shipping-optout`. A repo cannot grant this by committing anything — only this machine-level file can; see [`claude/.claude/hooks/_lib.sh`](claude/.claude/hooks/_lib.sh)'s `_lib_autonomous_shipping_active`.
+If the agent ends its turn asking whether you want to review the diff before it commits — even after finishing the work you asked for — this is the setting that removes that pause. `advance-past-commit-stall.sh` (a `Stop` hook) force-continues the turn through `/code-review` → commit → `/ready-for-review` → PR-open, stopping only before merge, whenever the machine-level `autonomous_shipping` config key resolves true and the current repo carries no `.claude/autonomous-shipping-optout`. A repo cannot grant this by committing anything — only this machine-level key can; see [`claude/.claude/hooks/_lib.sh`](claude/.claude/hooks/_lib.sh)'s `_lib_autonomous_shipping_active`.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
+printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
+
+See [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
 
 To exempt a specific repo:
 
@@ -353,15 +356,15 @@ See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire pred
 
 ### PR cost disclosure
 
-`pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by a mode read from a sentinel scoped to the Claude account, not to the repo.
+`pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by the `pr_cost_disclosure` config key, scoped to the Claude account, not to the repo.
 
 ```bash
-echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
+printf 'pr_cost_disclosure = "dollars"\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its content (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another.
+The key resolves to exactly one config dir (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its value (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another — see [`docs/config-file.md`](docs/config-file.md) for the file format and resolution precedence.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not a safe-by-default aggregate — see the "The disclosed fields are not neutral" paragraph in [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this key's state alongside every other opt-in.
 
 ### Prose tightening pass
 
@@ -446,7 +449,7 @@ For plan and model requirements, activation, the full hard-floor deny table, the
 
 ### Output preferences
 
-To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Prose and Output Format" section. That section also carries the non-personal prose rules — response shape, concision, sentence craft — and those apply to every session and subagent whether or not this file exists.
+To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s Main session group (under Working Style), which applies to the main session and forks. The "Prose and Output Format" section, in the Agent Core group, also carries the non-personal prose rules — response shape, concision, sentence craft — and those apply to every session and subagent whether or not this file exists.
 
 **Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Keep it to personal tone and style — rules already in the global CLAUDE.md apply regardless, and a second copy here costs context budget and drifts from the original.
 
@@ -520,10 +523,13 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. To cap it:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest claude/.claude/ claude-skills/` command has no such sizing; cap it manually:
 
-- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/ claude-skills/` and `select-tests.py`.
-- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
+  - Checks ahead of xdist's own core-count detection.
+  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
+- Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
@@ -536,6 +542,8 @@ For a faster local dev loop, `select-tests.py` runs pytest against just the test
 ```
 
 Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
+
+Set `test_selection_tracking = true` in `<config-dir>/claude-config.toml` (off by default) to log every `select-tests.py` invocation's selection outcome to `<config-dir>/.test-selection-log.jsonl`, one JSON line per invocation. Each line always records the selection reason. For a full-suite fallback, it also records which changed path triggered it. When that invocation computed a load-aware worker count, it also records the worker count and the 1-minute load average. This makes fallback-to-full-suite frequency measurable instead of a stderr line that scrolls away. Like [`.permission-prompt-log.jsonl`](docs/permission-prompt-tracking.md#known-limitations), the log is append-only with no automatic rotation; trim it manually if disk space or data age is a concern. Its invocation frequency is structurally higher than that log's, since it appends on every `select-tests.py` run rather than only on an interactive permission dialog.
 
 ## Acknowledgments
 

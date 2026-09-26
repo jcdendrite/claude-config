@@ -6,7 +6,7 @@ Worktree enforcement today is **per-repo opt-in**: the two gate hooks
 (`require-worktree-for-git-writes.sh`, `require-worktree-for-file-writes.sh`)
 enforce only when `.claude/worktree-required` exists at the repo root. That
 made sense when the friction was "one repo, one switch." It breaks down now
-that the user runs Claude against **25+ client repos** across two engagements:
+that the user runs Claude against many client repos across more than one engagement:
 activation is per-repo, so every new clone is another manual marker drop (and
 a forgotten one is a silent concurrent-session race waiting to happen).
 

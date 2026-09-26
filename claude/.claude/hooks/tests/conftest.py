@@ -9,26 +9,34 @@ per-test session id, not a fixed injected value; import it directly with
 """
 from __future__ import annotations
 
+import functools
 import os
 import shlex
 import shutil
 import subprocess
-import time
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import scaled_shim_sleep, symlink_hooks_lib_chain, write_scaled_timeout_shim
 
 # Shim sleep duration for the git/gh-timeout regression tests below: long
 # enough that a broken (uncapped) call site never returns before the
 # test's own timeout.
 TIMEOUT_SHIM_SLEEP_SECONDS = 10
-# Lower bound for asserting the 5s _lib_capped cap actually engaged.
-# Below the 5s cap, so cap-plus-overhead reliably clears it. Well above 0,
-# so a no-op shim (never invoked, or invoked without sleeping) can't pass
-# by accident.
-CAP_ENGAGED_FLOOR_SECONDS = 4
+
+
+@functools.cache
+def _real_timeout_is_gnu_coreutils() -> bool:
+    """True when the `timeout`/`gtimeout` that write_scaled_timeout_shim wraps
+    is GNU coreutils. BusyBox's has no `--version`, so its usage text lacks
+    the marker. Only the sigterm_immune cases depend on GNU behavior. This
+    guard skips them under a non-GNU timeout rather than fail misleadingly.
+    It does not make the rest of the suite BusyBox-supported."""
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if real_timeout is None:
+        return False
+    result = subprocess.run([real_timeout, "--version"], capture_output=True, text=True, check=False)
+    return "GNU coreutils" in result.stdout + result.stderr
 
 
 def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
@@ -115,18 +123,52 @@ def _write_conditional_sleep_shim(
     match_condition: str,
     fake_output: str | None = None,
     sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+    sigterm_immune: bool = False,
+    exit_status: int | None = None,
 ) -> None:
     """Write a fake `binary_name` under bin_dir that sleeps sleep_seconds
-    past the cap under test when `match_condition` matches, and execs
-    `real_binary` otherwise. Shared conditional-sleep logic behind
-    git_timeout_shim and gh_timeout_shim. sleep_seconds defaults to
+    (a production-cap-scale duration, scaled down by write_scaled_timeout_shim
+    before it is written) past the cap under test when `match_condition`
+    matches, and execs `real_binary` otherwise. Shared conditional-sleep logic
+    behind git_timeout_shim and gh_timeout_shim. sleep_seconds defaults to
     TIMEOUT_SHIM_SLEEP_SECONDS (calibrated for the shared 5s _lib_capped
     cap); a caller testing a wider cap (e.g. _lib_cumulative_diff_hash's 15s)
     must pass a larger value or the shim returns before that cap fires.
 
     When `fake_output` is set, it replaces the exec-real-binary fallback
     after the sleep completes, so a broken cap is observably distinct from
-    a working one instead of both converging on the real binary's result."""
+    a working one instead of both converging on the real binary's result.
+
+    sigterm_immune writes `trap '' TERM; exec sleep <n>` in place of a plain
+    `sleep <n>`.
+    A TERM disposition ignored via `trap ''` propagates to every command the
+    shell subsequently invokes, exec'd or not (bash(1)'s TRAP builtin).
+    The exec'd `sleep` therefore ignores `timeout`'s SIGTERM, and only the
+    `-k` grace-expiry SIGKILL can end it.
+    It is off by default, so every existing caller stays byte-identical.
+    It is mutually exclusive with fake_output, because the exec replaces this
+    shim's own process before any post-sleep block could run.
+
+    exit_status writes `exit <n>` in place of the sleep, so a matching call
+    fails at once with an arbitrary status and never engages the cap. It is
+    mutually exclusive with fake_output and sigterm_immune, which both
+    assume the shim sleeps."""
+    assert not (sigterm_immune and fake_output is not None), (
+        "sigterm_immune's exec makes the post-sleep fake_output block unreachable"
+    )
+    assert exit_status is None or (fake_output is None and not sigterm_immune), (
+        "exit_status replaces the sleep that fake_output and sigterm_immune both build on"
+    )
+    if exit_status is not None:
+        sleep_line = f"  exit {int(exit_status)}\n"
+    else:
+        if sleep_seconds > 0 and write_scaled_timeout_shim(bin_dir):
+            sleep_seconds = scaled_shim_sleep(sleep_seconds)
+        sleep_line = (
+            f"  trap '' TERM; exec sleep {sleep_seconds}\n"
+            if sigterm_immune
+            else f"  sleep {sleep_seconds}\n"
+        )
     post_sleep = (
         f"  echo {shlex.quote(fake_output)}\n  exit 0\n" if fake_output is not None else ""
     )
@@ -134,7 +176,7 @@ def _write_conditional_sleep_shim(
     fake_binary.write_text(
         f"#!/bin/bash\n"
         f"if {match_condition}; then\n"
-        f"  sleep {sleep_seconds}\n"
+        f"{sleep_line}"
         f"{post_sleep}"
         f"fi\n"
         f'exec {real_binary} "$@"\n'
@@ -150,7 +192,10 @@ def git_timeout_shim(tmp_path):
     test_deny_pii_in_commits.py and test_require_ready_for_review.py.
 
     `match_condition` is a `[ ... ]`/`[[ ... ]]` test expression, e.g.
-    `[ "$1" = "diff" ]` or `[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]`.
+    `[ "$1" = "diff" ]` or `[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]`. A
+    `$N`-pinned predicate is coupled to the target call site's argv shape
+    (e.g. a `-C <dir>` prefix shifts every position) and must be re-audited
+    whenever that call site's argv shape changes.
 
     Skips when `git` is absent, or when neither `timeout(1)` nor
     `gtimeout(1)` is available (stock macOS ships neither without Homebrew
@@ -166,8 +211,21 @@ def git_timeout_shim(tmp_path):
     _write_conditional_sleep_shim, for a call site whose real, uncapped
     result would otherwise coincidentally match the timed-out result.
 
-    `install`'s optional `sleep_seconds` also passes through, for a call
-    site testing a cap wider than the default TIMEOUT_SHIM_SLEEP_SECONDS.
+    `install`'s optional `sleep_seconds` is in production-cap units;
+    `write_scaled_timeout_shim` scales it down when it writes the shim.
+    Pass a larger value than `TIMEOUT_SHIM_SLEEP_SECONDS` to test a wider
+    cap.
+
+    `install`'s optional `sigterm_immune` passes through to
+    _write_conditional_sleep_shim, for a regression test that needs the
+    grace-expiry SIGKILL path (exit 137) rather than the ordinary
+    SIGTERM-honored one (exit 124). It skips on a non-GNU `timeout`: the
+    scaled shim hands the real binary a sub-second grace, which BusyBox
+    truncates to 0 and treats as no kill-after.
+
+    `install`'s optional `exit_status` passes through to
+    _write_conditional_sleep_shim, for a regression test that needs a matching
+    call to fail with an arbitrary status without engaging the cap.
     """
     real_git = shutil.which("git")
     if not real_git:
@@ -179,9 +237,13 @@ def git_timeout_shim(tmp_path):
         match_condition: str,
         fake_output: str | None = None,
         sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+        sigterm_immune: bool = False,
+        exit_status: int | None = None,
     ) -> dict[str, str]:
+        if sigterm_immune and not _real_timeout_is_gnu_coreutils():
+            pytest.skip("scaled sub-second -k grace is truncated to 0 by a non-GNU timeout, so SIGKILL never fires")
         _write_conditional_sleep_shim(
-            tmp_path, "git", real_git, match_condition, fake_output, sleep_seconds
+            tmp_path, "git", real_git, match_condition, fake_output, sleep_seconds, sigterm_immune, exit_status
         )
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
@@ -199,8 +261,10 @@ def gh_timeout_shim(tmp_path):
     _write_conditional_sleep_shim, for a call site whose real, uncapped
     result would otherwise coincidentally match the timed-out result.
 
-    `install`'s optional `sleep_seconds` also passes through, for a call
-    site testing a cap wider than the default TIMEOUT_SHIM_SLEEP_SECONDS.
+    `install`'s optional `sleep_seconds` is in production-cap units;
+    `write_scaled_timeout_shim` scales it down when it writes the shim.
+    Pass a larger value than `TIMEOUT_SHIM_SLEEP_SECONDS` to test a wider
+    cap.
     """
     real_gh = shutil.which("gh")
     if not real_gh:
@@ -219,29 +283,6 @@ def gh_timeout_shim(tmp_path):
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install
-
-
-@contextmanager
-def assert_cap_engaged(floor: float = CAP_ENGAGED_FLOOR_SECONDS):
-    """Time the wrapped block and assert it took longer than `floor` --
-    evidence some _lib_capped/_lib_capped_for timeout fired rather than,
-    say, the shim never being invoked at all. Deliberately no upper bound:
-    under `-n auto` parallel load, a passing run can take arbitrarily
-    longer than the shim's own sleep duration without the cap having
-    failed to engage.
-
-    `floor` defaults to CAP_ENGAGED_FLOOR_SECONDS (calibrated for the
-    shared 5s _lib_capped cap); a caller testing a wider cap (e.g.
-    _lib_cumulative_diff_hash's 15s) must pass a higher floor, or a
-    regression to the shared 5s cap would still clear the default floor
-    and pass undetected."""
-    start = time.monotonic()
-    yield
-    elapsed = time.monotonic() - start
-    assert elapsed > floor, (
-        f"expected a capped timeout to fire (the installed shim sleeps past "
-        f"it if the cap does not), took only {elapsed:.1f}s"
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +304,7 @@ def isolated_home(monkeypatch, tmp_path):
     (home / ".claude" / "code-review-markers").mkdir(parents=True)
     hooks_dir = home / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    (hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    symlink_hooks_lib_chain(hooks_dir)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     return home

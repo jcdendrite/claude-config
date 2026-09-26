@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: block git commit when a staged SKILL.md grows past its per-skill ceiling.
 #
 # Policy: deny when the staged file is over its limit AND longer than the
@@ -13,12 +14,16 @@
 # plan-review/ROUTING.md gets the same 500-line cap: it holds the
 # item-ownership / spawn-routing table extracted from plan-review/SKILL.md,
 # the same content class the cap was written for.
+# pr-description/DEFAULT_TEMPLATE.md has no override and falls to the
+# 200-line default.
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
-# pr-description/SKILL.md is capped at 210: it writes one paragraph per
-# line with no hard-wrap, so trimming words never reduces the line count,
-# only removing a whole paragraph, heading, or blank line does.
+# pr-description/SKILL.md is capped at 250 lines.
+# It holds the authoring standard and every check a PR body must pass.
+# It writes one paragraph per line with no hard-wrap, so trimming words never
+# reduces the line count; only removing a whole paragraph, heading, or blank
+# line does.
 #
 # The "if" field in settings.json is unreliable — the internal
 # _lib_command_invokes_git_subcmd check is the actual gate. See
@@ -28,9 +33,14 @@
 # git calls below uncapped, so a stalled git (locked index, network mount)
 # hangs this gate rather than degrading gracefully.
 #
-# The commit-detection, repo-root, growth-comparison, and deny-message logic
-# is shared with check-claude-md-length.sh via _lib_staged_length_gate in
-# _lib.sh — this file supplies only the staged-path pattern and limit_for.
+# The growth-comparison and deny-message logic is shared with
+# check-claude-md-length.sh via _lib_staged_length_gate in _lib.sh — this
+# file supplies only the staged-path pattern and limit_for. The commit-shape
+# check and REPO_ROOT resolution above are duplicated per file (not inside
+# _lib_staged_length_gate), matching require-code-review.sh's own ordering:
+# the commit-shape check must run before any git subprocess spawns, and
+# _lib_staged_length_gate needs REPO_ROOT already resolved as its own first
+# argument.
 
 set -uo pipefail
 
@@ -45,14 +55,14 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "could not source _lib.sh."
+  emit_deny "could not source _lib.sh; run ./install.sh to pick up hook files this update added (stow does not relink a new file into an existing directory until it is re-run)."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
@@ -63,13 +73,42 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
+# Only gate git commit commands -- checked here, before REPO_ROOT resolution
+# below, so the overwhelming majority of Bash calls this hook is dispatched
+# for (per the "if" field's documented unreliability above) never spawn a
+# git subprocess at all. Matches require-code-review.sh's actual ordering,
+# not just its REPO_ROOT-resolution shape. Checked and fail-closed: an
+# undetermined match (sed/tr missing, killed, or erroring inside the helper)
+# must not silently let an unscanned commit bypass the length check.
+_lib_command_invokes_git_subcmd "$COMMAND" commit
+GIT_COMMIT_MATCH_STATUS=$?
+if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
+  exit 0
+fi
+if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
+  emit_deny "could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
+  exit 0
+fi
+
+# Resolve the repo from the payload's cwd rather than this hook process's
+# ambient cwd, matching require-code-review.sh's shape -- an ambient-cwd
+# resolution would let a session whose shell drifted to a different working
+# tree of the same repo compare against the wrong tree.
+[ -z "$CWD" ] && CWD="$PWD"
+
+REPO_ROOT=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
+if [ -z "$REPO_ROOT" ]; then
+  # Not in a git repo — let git surface the error itself
+  exit 0
+fi
+
 # Per-skill limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
     claude-skills/skills/code-review/SKILL.md|claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
     claude-skills/skills/pr-description/SKILL.md)
-      echo 210 ;;
+      echo 250 ;;
     *)
       echo 200 ;;
   esac
@@ -79,8 +118,15 @@ limit_for() {
 # - stowed skills: claude-skills/skills/
 # - project-scoped plugins: plugins/*/skills/
 # - repo-root plugin layouts: skills/*/SKILL.md (marketplace declares "source": "./")
-# - the single hardcoded plan-review/ROUTING.md exception (see limit_for() above)
+# - project-layer skills: `.claude/skills/**/SKILL.md`, README.md's
+#   documented `<parent>-<project>` composition pattern — live for every
+#   stow consumer that adopts it, not a claude-config-internal no-op.
+#   Anchored at line start so it cannot also match claude/.claude/skills/
+#   (the stowed source tree).
+# - runtime auxiliary files, matched by exact path in the regex below:
+#   - plan-review/ROUTING.md (limit override in limit_for() above)
+#   - pr-description/DEFAULT_TEMPLATE.md (no override; 200-line default)
 #
 # A repo-root skill has no override path in limit_for() and resolves to the
 # 200-line default, same as plugins/*/skills/.
-_lib_staged_length_gate '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."
+_lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^\.claude/skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$|^claude-skills/skills/pr-description/DEFAULT_TEMPLATE\.md$' "one or more SKILL.md files grew past their per-skill limit."

@@ -21,7 +21,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 
 **"I found nothing" is one of those statistics.** A zero-match run is the case most likely to be a scoping failure rather than a real result, so quote its header too before reporting the absence — never report an empty result without stating the corpus it was empty across.
 
-`cost --summary` prints no resolved-scope header — it is always scoped to the active account only, and states so on its own `Scope: this account only (...)` line instead; quote that line rather than asking about other accounts.
+`cost --summary` prints no resolved-scope header; it states its scope on its own `Scope:` line instead, in the form `Scope: this repository only, <branches>. This account only, <window>.` It is always scoped to this repository, the given branch filter (or all branches), and the active account only, so quote that line rather than asking about other repos, branches, or accounts.
 
 ## Which subcommand to use
 
@@ -32,7 +32,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Did the user express frustration more with one model? | `struggle --branches <branch>` |
 | How much logged time was active vs idle gaps? | `duration --branches <branch>` |
 | How much work went through subagents vs the main thread? | `subagents --branches <branch>` |
-| Map branches to PRs; count per-author review comments | `pr-link --repo owner/repo --branches <branch>` |
+| Map branches to PRs; count per-author review comments | `pr-link --branches <branch>` |
 | Which sessions ran review skills, hit a hook denial, or spawned reviewer agents? | `review-trace` |
 | Which denial/friction shapes recur across sessions — a corpus-wide census, not per-session? | `review-trace --deny-summary` |
 | Which skills did a branch invoke, by source (auto-trigger / routing / `/slash`)? | `skill-invocation --branches <branch>` |
@@ -41,6 +41,7 @@ Before quoting a corpus-wide statistic from this toolkit's output, include the r
 | Is Opus spend doing Sonnet-tier code-read/write in parent sessions? | `audit-routing --since 35d --redact` |
 | Which lever costs the most in actual dollars — cache read/write, output, or input? | `cost --since 30d` |
 | How much does idle-gap prompt-cache TTL-expiry rebuild cost, and is it concurrent-session switching or real breaks? | `cache-rebuild --since 30d` |
+| Which prompt-cache TTL should the main or everything-else bucket run, and does every root agree? | `cache-rebuild --ttl-verdict --since 30d` |
 | What did this branch cost, as a publish-ready aggregate for a PR body? | `cost --this-repo --branches <branch> --summary` |
 | Are reviewer dispatches producing real findings, and do sessions then edit what was cited? | `reviewer-yield --since 30d --redact` |
 | Is spend climbing week over week? | `cost-trend` |
@@ -86,7 +87,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
-- `pr-link` requires `gh` and network access. `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default (override with `COST_LEDGER_PATH`) and requires the opt-in sentinel `<config-dir>/.cost-ledger-enabled` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`); every other subcommand, and `cost-ledger`'s own default read mode, is local-only and makes no writes.
+- `pr-link` requires `gh` and network access. `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default (override with `COST_LEDGER_PATH`) and requires `~/.claude/scripts/config-get.sh cost_ledger_recording` to exit 0 (see `docs/config-file.md`); every other subcommand, and `cost-ledger`'s own default read mode, is local-only and makes no writes.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis, `--deny-only` to isolate sessions that hit an enforcement hook, and `--deny-summary` for a corpus-wide census by hook, by command shape, and their cross-tab, plus a friction-kind breakout — a distinct axis from denials — see `docs/transcript-analysis.md`'s `review-trace` section for the full output shape.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
@@ -94,7 +95,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - `user-input` prints raw prompt text verbatim regardless of `--redact` — that flag anonymizes project labels and session IDs only, matching every other `--redact` implementation in this file (none scrub message content). Review output before pasting it anywhere public.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.
-- `cost`'s default redaction makes labels safe, not figures. Under a multi-root scope its totals, rates, and medians are pooled absolutes across accounts — see `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" before quoting one anywhere public. `--share-only` and `--summary` are the two modes scoped for publication.
+- `cost`'s default redaction makes labels safe, not figures. Under a multi-root scope its totals, rates, and medians are pooled absolutes across accounts, which `docs/private-project-redaction.md` § "Publishing a tooling measurement" keeps out of every public artifact — report them to the owner instead. `--summary` is the one mode scoped for publication; `--share-only` keeps raw absolutes out of the agent's context on a wider read that stays private.
 - `cost --config-dir` unions extra account profiles into one report on top of the declared-roots default; `--this-repo` and `--no-redact` are refused in that mode. Redacted labels (`private-project-N`, `account-N`) are comparable between two reports only when the same declared-roots file produced both — a changed root set renumbers every ordinal (each run still prints a corpus fingerprint).
 - `--projects` defaults to `*` — every project across every declared root; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
 - `review-trace` output is not publish-safe under the default multi-root scope — each event line's branch string can carry a ticket ID or project name. No flag currently guarantees single-account scope on `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, or `pr-link` short of an explicit single `--config-dir` — `--this-repo` does not imply single-account scope, since it unions across every declared root by default. Name `--config-dir` as the one narrowing control before quoting any of these seven anywhere public.
@@ -126,7 +127,7 @@ python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET
 
 # Link branches to PRs and count one author's review comments
 python3 ~/.claude/scripts/transcript-analysis.py pr-link \
-  --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
+  --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only

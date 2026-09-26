@@ -4,6 +4,9 @@
 # one call so a caller can't skip the check.
 set -euo pipefail
 
+# shellcheck source=_respond-pr-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_respond-pr-lib.sh"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/respond-pr-safe-patch.sh <owner/repo> <comment-id>
@@ -24,14 +27,11 @@ fi
 REPO="$1"
 COMMENT_ID="$2"
 
-# Reject a shape that could carry a `..` path segment into the gh api URL,
-# redirecting the PATCH to a different repo or comment than the caller
-# intended (gh's HTTP client normalizes `.`/`..` segments per RFC 3986).
-if [[ ! "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+if ! respond_pr_valid_repo_slug "$REPO"; then
   echo "respond-pr-safe-patch.sh: '$REPO' is not a valid owner/repo — no PATCH attempted." >&2
   exit 2
 fi
-if [[ ! "$COMMENT_ID" =~ ^[0-9]+$ ]]; then
+if ! respond_pr_valid_comment_id "$COMMENT_ID"; then
   echo "respond-pr-safe-patch.sh: '$COMMENT_ID' is not a valid numeric comment id — no PATCH attempted." >&2
   exit 2
 fi
@@ -42,7 +42,7 @@ COMMENT_PATH="repos/$REPO/pulls/comments/$COMMENT_ID"
 # the GET half-done.
 BODY=$(cat)
 
-if [[ -z "${BODY//[[:space:]]/}" ]]; then
+if respond_pr_body_is_blank "$BODY"; then
   echo "respond-pr-safe-patch.sh: stdin was empty or whitespace-only — no PATCH attempted." >&2
   exit 2
 fi
@@ -54,22 +54,17 @@ if ! CURRENT_BODY=$(gh api "$COMMENT_PATH" --jq '.body'); then
   exit 1
 fi
 
-case "$CURRENT_BODY" in
-  '**[Claude Code]**'*)
-    # Quoted literal, not bare -- unquoted, [Claude Code] is a glob
-    # bracket-expression (matches any one char), not the literal string.
-    if [[ "$BODY" != '**[Claude Code]**'* ]]; then
-      echo "respond-pr-safe-patch.sh: replacement body for comment $COMMENT_ID in $REPO does not start with '**[Claude Code]**' -- refusing to strip the ownership marker from an already-marked comment. No PATCH attempted." >&2
-      exit 1
-    fi
-    # -f (raw string), not -F (typed): -F applies gh's own type coercion
-    # (true/false/null/integer conversion, {owner}/{repo}/{branch}
-    # placeholder substitution, and a leading @ read as a filename) --
-    # unsafe for an arbitrary PR comment body.
-    gh api "$COMMENT_PATH" -X PATCH -f body="$BODY"
-    ;;
-  *)
-    echo "respond-pr-safe-patch.sh: comment $COMMENT_ID in $REPO does not start with '**[Claude Code]**' — not Claude-authored; reply via the /replies form instead. No PATCH attempted." >&2
+if respond_pr_body_is_claude_marked "$CURRENT_BODY"; then
+  if ! respond_pr_body_is_claude_marked "$BODY"; then
+    echo "respond-pr-safe-patch.sh: replacement body for comment $COMMENT_ID in $REPO does not start with '$RESPOND_PR_OWNERSHIP_MARKER' -- refusing to strip the ownership marker from an already-marked comment. No PATCH attempted." >&2
     exit 1
-    ;;
-esac
+  fi
+  # -f (raw string), not -F (typed): -F applies gh's own type coercion
+  # (true/false/null/integer conversion, {owner}/{repo}/{branch}
+  # placeholder substitution, and a leading @ read as a filename) --
+  # unsafe for an arbitrary PR comment body.
+  gh api "$COMMENT_PATH" -X PATCH -f body="$BODY"
+else
+  echo "respond-pr-safe-patch.sh: comment $COMMENT_ID in $REPO does not start with '$RESPOND_PR_OWNERSHIP_MARKER' — not Claude-authored; reply via the /replies form instead. No PATCH attempted." >&2
+  exit 1
+fi

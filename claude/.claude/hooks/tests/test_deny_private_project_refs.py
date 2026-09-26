@@ -22,13 +22,14 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     run_hook,
     run_hook_reason,
 )
 
-from .conftest import _write_conditional_sleep_shim, assert_cap_engaged
+from .conftest import _write_conditional_sleep_shim
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 
@@ -141,6 +142,8 @@ class TestDenyPrivateProjectRefs:
             "Deprecate MD-5",
             "Support HTTP-2",
             "Disable TLS-1",
+            "Licensed under AGPL-3.0",
+            "Licensed under BSD-3-Clause",
             "See PROJ-123 for the placeholder convention",
             "See TICKET-456 for the placeholder convention",
         ],
@@ -148,6 +151,7 @@ class TestDenyPrivateProjectRefs:
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
             "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
             "sha", "md", "http", "tls",
+            "agpl", "bsd",
             "proj_placeholder", "ticket_placeholder",
         ],
     )
@@ -171,6 +175,32 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_agpl_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """AGPL is allowlisted by prefix, the same unbounded-digit tradeoff
+        GPT/GH/BUG/JDK above already accept — an implausible version number
+        is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Licensed under AGPL-99999999'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_bsd_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """BSD is allowlisted by prefix, the same unbounded-digit tradeoff
+        GPT/GH/BUG/JDK above already accept — an implausible clause number
+        is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Licensed under BSD-99999999-Clause'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
@@ -188,13 +218,18 @@ class TestDenyPrivateProjectRefs:
             "Address SUPERTICKET-1 review",
             "Bump BIGPROJ-99 dep",
             "Land OURTICKET-42 follow-up",
+            "Fix MYAGPL-99 regression",
+            "Bump SUPERBSD-1 dep",
         ],
-        ids=["myproj", "superticket", "bigproj", "ourticket"],
+        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd"],
     )
     def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
         """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
-        but don't *equal* PROJ / TICKET in the deny path. Without this
-        test, a refactor that drops the anchor would pass CI silently."""
+        but don't *equal* PROJ / TICKET / AGPL / BSD in the deny path.
+        Without this test, a refactor that drops the anchor would pass CI
+        silently. The AGPL/BSD cases also pair with this file's AGPL/BSD
+        allow-path tests, giving the AGPL/BSD pair the same allow+deny
+        symmetry the PROJ/TICKET cases already have."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2563,11 +2598,13 @@ class TestDenyPrivateProjectRefs:
     #
     # These tests pin at the full-hook (`run_hook`) layer deliberately.
     # The hook scans the union of the raw scan target and a quote-stripped
-    # copy of it, and every case below turns on which character sits
-    # immediately before a `#`, `(`, or `]` -- quote stripping deletes
-    # characters and so changes that adjacency, which makes a unit-level
-    # assertion against `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw
-    # literal a different check than the one the hook performs.
+    # copy of it.
+    # Many cases below turn on which character sits immediately before a
+    # `#`, `(`, or `]`.
+    # Quote stripping deletes characters, so it changes that adjacency.
+    # For those cases, a unit-level assertion against
+    # `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw literal is a different
+    # check than the one the hook performs.
     # A unit pin would also miss a detector left out of
     # `STRUCTURAL_DETECTORS`, a scan-target regression, or a
     # fast-path/per-detector pattern drifting out of sync
@@ -2604,6 +2641,114 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Follow-up to #4210's",
+            "Follow-up to #4210's. Done",
+            "Follow-up to #4210's, then more",
+            "Follow-up (#4210's)",
+            "Follow-up to #4210's fix",
+        ],
+        ids=["end-of-message", "period", "comma", "close-paren", "space"],
+    )
+    def test_structural_slack_possessive_issue_reference_allowed(self, claude_config_repo, message):
+        """GH-826: a possessive issue reference is not a Slack channel.
+        Quote stripping deletes the apostrophe and joins the `s` onto the
+        digits, so the stripped copy of the possessive must still read as
+        an issue reference rather than a digit-led channel name."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f'git commit -m "{message}"'),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_typed_digits_plus_s_accepted_allowed(self, claude_config_repo):
+        """GH-826: a typed digits-plus-`s` token with no apostrophe is an
+        accepted gap. The quote-stripped copy cannot tell it from a
+        possessive, so the two share one verdict."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Follow-up to #4210s'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "channel",
+        [
+            "#_alerts",
+            "#-alerts",
+            "#42-alerts",
+            "#42_alerts",
+            "#2026-alerts",
+            "#7a",
+            "#42a",
+            "#42r",
+            "#42t",
+            "#42z",
+            "#42s0",
+            "#42s9",
+            "#42s_",
+            "#42s-",
+            "#42sa",
+            "#42sz",
+            "#42ss",
+        ],
+        ids=[
+            "underscore-led",
+            "hyphen-led",
+            "digits-hyphen",
+            "digits-underscore",
+            "four-digits-hyphen",
+            "single-digit-a",
+            "digits-a",
+            "digits-r",
+            "digits-t",
+            "digits-z",
+            "digits-s-zero",
+            "digits-s-nine",
+            "digits-s-underscore",
+            "digits-s-hyphen",
+            "digits-s-a",
+            "digits-s-z",
+            "digits-s-s",
+        ],
+    )
+    def test_structural_slack_channel_tail_alphabet_denied(self, claude_config_repo, channel):
+        """GH-826: each row pins one member of the tail class that must stay flagged:
+        - letter-led names
+        - digit-led names whose first non-digit is not `s`
+        - digit-led names whose first letter is `s` followed by another name character
+        """
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m 'Discussed in {channel} before filing'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_quote_split_digit_led_channel_denied(self, claude_config_repo):
+        """GH-826: an apostrophe splitting a digit-led channel name leaves
+        the raw copy allowed (`#42` then a quote). Only the quote-stripped
+        copy joins it into `#42s-alerts`, so this pins that the stripped
+        view still denies the `s` branch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m "Discussed in #42\'s-alerts before filing"'),
+                cwd=claude_config_repo,
+            )
+            == "deny"
         )
 
     def test_structural_slack_markdown_anchor_link_denied(self, claude_config_repo):
@@ -4078,13 +4223,15 @@ class TestDenyPrivateProjectRefs:
         both arms call the same _lib_capped-wrapped cat idiom."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         body_file = tmp_path / "body.md"
         body_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
         command = command_template.format(path=body_file)
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4102,13 +4249,15 @@ class TestDenyPrivateProjectRefs:
         _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         msg_file = tmp_path / "commit-msg.txt"
         msg_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(msg_file))} ]")
         command = f"git commit -F {msg_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4126,13 +4275,15 @@ class TestDenyPrivateProjectRefs:
         _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         body_file = tmp_path / "comment.json"
         body_file.write_text('{"body": "Fixes WIDGET-123"}\n')
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
         command = f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4150,13 +4301,15 @@ class TestDenyPrivateProjectRefs:
         share one _lib_capped-wrapped cat call."""
         real_cat = shutil.which("cat")
         assert real_cat, "test host must have a real cat binary on PATH"
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         leak_file = tmp_path / "leak.txt"
         leak_file.write_text("Fixes WIDGET-123\n")
         shim_dir = tmp_path / "cat-timeout-shim"
         shim_dir.mkdir()
         _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(leak_file))} ]")
         command = f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{leak_file}"
-        with assert_cap_engaged():
+        with assert_cap_engaged(shim_dir, production_cap=5):
             reason = run_hook_reason(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input(command),
@@ -4314,7 +4467,7 @@ class TestDenyPrivateProjectRefs:
         it, it must deny (fail-closed), not exit 0 — a broken _lib.sh must
         not silently turn the redaction gate into a no-op. Exercised by
         running a copy of the hook from a directory with no _lib.sh
-        alongside it, so `. "$(dirname "$0")/_lib.sh"` fails.
+        alongside it, so `. "${0%/*}/_lib.sh"` fails.
 
         The pre-source `emit_deny` bootstrap (see _lib.sh's _lib_emit_deny
         contract comment) is a minimal hard-block stub — it exits 2 with the

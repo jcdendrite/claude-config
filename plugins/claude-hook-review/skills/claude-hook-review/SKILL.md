@@ -61,7 +61,7 @@ emit_deny() {
     "$reason_json"
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
   exit 0
 fi
@@ -94,7 +94,7 @@ The canonical pattern — define `emit_deny` **before** sourcing `_lib.sh`, then
 ```bash
 emit_deny() { ... }  # defined before sourcing so a missing _lib.sh can still deny
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   emit_deny "Blocked by <gate-name> gate: could not source _lib.sh."
   exit 0
 fi
@@ -112,6 +112,8 @@ State the chosen posture in the script header. Reviewers shouldn't have to re-de
 - `# hook-class: gate` — fires PreToolUse and may deny. Required on all guard hooks.
 - `# hook-class: informational` — fires PostToolUse/SessionStart/etc. and never denies. The label describes the hardening posture (cannot deny), not functional importance — an essential workflow hook (e.g., `capture-session-id.sh`) and a purely advisory one both carry this label if neither issues a PreToolUse denial.
 - `# hook-class: turn-gate` — fires on `Stop` and may block the *turn* from ending (`{"decision":"block","reason":...}`) rather than a tool call from running. A distinct contract from `gate`, not a Stop hook mislabeled `gate`: the emission shape differs (see §9), and `GATE_HOOKS` — which drives every Layer-2 auto-parametrized behavior test in `test_hook_alignment.py` — excludes it entirely, so a turn-gate hook needs hand-written equivalents for cases like jq-absent (see §9's note on the reversed fail posture there).
+
+In a repo that adopts tier headers (in claude-config, see `docs/hooks.md` § "Threat-model tiers"), a new or edited `hook-class: gate` hook also carries a `# tier-threat-model: <tiers>` line on line 3. `cooperative` guards honest mistakes only; add `untrusted-input` when the hook's own header or docs entry states that steered content is part of its threat model, or another `untrusted-input` gate names it as a backstop; add `irreversible` when a bypass produces an outcome the session cannot retract. Checklist: the tier line matches the header's stated threat model. Adding or dropping `untrusted-input` or `irreversible` on an existing gate is a security-class relaxation either way; the commit message states the rationale.
 
 Flipping a marker from `gate` to `informational`, or from either to `turn-gate`, is a security-class change that removes or reshapes a deny path; the commit message must state the rationale.
 
@@ -157,7 +159,7 @@ Flag these on a hook PR:
 
 ## 10. Operational-footprint escalation
 
-After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pass the hook script or diff (not this review's output — each agent reads the source fresh) with these specific questions:
+After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pass two separate artifacts. The first is the hook script's path. The second, for a change to an existing hook, is its diff: the diff-file path you were handed, if any, otherwise the output of `git diff HEAD -- <hook path>` as literal text. If that command prints nothing (the change is already committed), tell the reviewer the diff is unavailable instead of passing the path alone. Never pass a branch or range name, and never this review's output — each agent reads the source fresh. Ask it these questions:
 
 - Does the per-fire latency hold across all system states (daemon present, absent, slow, unresponsive)?
 - Are external commands (`docker`, `systemctl`, `curl`, package managers, sockets) guarded by an explicit timeout?
@@ -166,4 +168,4 @@ After the section-9 checklist, spawn `staff-platform-engineer` synchronously. Pa
 
 Return ≤2K tokens of structured findings keyed to these questions; if over budget, prioritize by severity and note omissions. After the agent returns, fold its findings into the review output.
 
-Also spawn `ciso-reviewer` when the hook gates a security boundary — auth checks, secrets, env-var reads, private-data redaction, or credential handling. Pass the same source and ask: is the security boundary correctly enforced, and could sensitive data leak via the hook's stdout or failure path? Apply the same ≤2K-token constraint.
+Also spawn `ciso-reviewer` when the hook gates a security boundary — auth checks, secrets, env-var reads, private-data redaction, or credential handling. Pass the same path, and the same diff when you passed one, and ask: is the security boundary correctly enforced, and could sensitive data leak via the hook's stdout or failure path? Apply the same ≤2K-token constraint.

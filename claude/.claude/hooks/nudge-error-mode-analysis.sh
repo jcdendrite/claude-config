@@ -55,7 +55,7 @@ INPUT=$(cat 2>/dev/null)
 # 1. Source _lib.sh and resolve the active config directory before any
 # ~/.claude-rooted path is built. Fail-open per this hook's own contract
 # (see header): an unresolvable config dir just leaves the nudge dormant.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
@@ -83,10 +83,9 @@ TRANSCRIPT_PATH=""
 
 # 2. Opt-in gate: dormant unless the contributor has explicitly armed the
 # hook. Absent this file, every invocation exits here before doing any
-# transcript work.
-if [ ! -f "$CONFIG_DIR/.error-mode-nudge-enabled" ]; then
-  exit 0
-fi
+# transcript work. Delegates to _config_enabled's error_mode_nudge schema
+# row (presence-enables); exit code 2 (unresolvable) also exits here.
+_config_enabled error_mode_nudge || exit 0
 
 # 3. Subagent gate: only nudge in the main session, not in subagents.
 if [ -n "$AGENT_TYPE" ]; then
