@@ -563,7 +563,7 @@ class TestSelectPytestTargets:
 
     def test_other_plugin_manifest_change_also_selects_skills_tests(self):
         """test_plugin_manifests.py globs every plugin's plugin.json, not
-        only lovable-cloud's -- a plugin with no directory-wide DOMAIN_RULES
+        only lovable-cloud's. A plugin with no directory-wide DOMAIN_RULES
         entry of its own must still match _is_plugin_manifest_change rather
         than falling through to unmatched-path."""
         result = _mod.select_pytest_targets(["plugins/claude-hook-review/.claude-plugin/plugin.json"])
@@ -577,22 +577,27 @@ class TestSelectPytestTargets:
         assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/plugin.json")
 
     def test_manifest_wrong_middle_directory_is_not_a_manifest_change(self):
-        """Right depth and filename, wrong directory -- isolates the
+        """Right depth and filename, wrong directory. Isolates the
         parts[2] == ".claude-plugin" check from the predicate's other clauses."""
         assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/hooks/plugin.json")
 
     def test_manifest_one_level_too_deep_is_not_a_manifest_change(self):
-        """A file nested under .claude-plugin/ rather than directly in it --
-        the exact shape the predicate's own comment says stays narrower than
-        _is_plugin_subpath for."""
+        """A file nested under .claude-plugin/ rather than directly in it.
+        The predicate's own comment names this shape as the reason it is
+        narrower than _is_plugin_subpath."""
         assert not _mod._is_plugin_manifest_change(
             "plugins/claude-hook-review/.claude-plugin/sub/plugin.json"
         )
 
     def test_manifest_wrong_filename_is_not_a_manifest_change(self):
-        """Right directory, wrong file -- test_plugin_manifests.py globs
+        """Right directory, wrong file. test_plugin_manifests.py globs
         plugin.json specifically, not every file under .claude-plugin/."""
         assert not _mod._is_plugin_manifest_change("plugins/claude-hook-review/.claude-plugin/other.json")
+
+    def test_manifest_outside_plugins_dir_is_not_a_manifest_change(self):
+        """Right depth, directory, and filename, but not under plugins/.
+        Isolates the parts[0] == PLUGINS_DIR check from the predicate's other clauses."""
+        assert not _mod._is_plugin_manifest_change("vendor/claude-hook-review/.claude-plugin/plugin.json")
 
     def test_lovable_cloud_hooks_change_also_selects_hooks_tests(self):
         """test_hook_alignment.py and test_lib.py both glob

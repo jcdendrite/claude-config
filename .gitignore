@@ -153,8 +153,9 @@ claude/.claude/issue-triage/
 # would swap the locked inode out from under a racing recorder).
 docs/cost-ledger.md.lock
 
-# Local skill-deletion trash; no confirmed writer in this repo's scripts
-# (same no-writer shape as claude/.claude/cache/ above).
+# Local skill-deletion trash.
+# No confirmed writer in this repo's scripts.
+# Same no-writer shape as claude/.claude/cache/ above.
 # Untracked-and-unignored files show up in `git ls-files --others
 # --exclude-standard`, which trips select-tests.py's full-suite fallback
 # on every unrelated change.
