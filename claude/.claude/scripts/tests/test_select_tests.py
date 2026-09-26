@@ -1810,6 +1810,30 @@ class TestComputeChangedPathsGitSmoke:
 
         assert "claude/.claude/hooks/removed-hook.sh" in changed
 
+    def test_gitignored_trash_path_excluded_from_changed_set(self, tmp_path):
+        """Regression test for the `claude-skills/skills/.trash/` .gitignore
+        line: an untracked file there must not resurface in the changed-set,
+        since select_pytest_targets would otherwise fall open to the full
+        suite (reason="unmatched-path") on every unrelated change.
+
+        The fixture .gitignore below holds only that one line rather than a
+        copy of the real repo-root .gitignore's full content, since a
+        minimal fixture is easier to maintain and this test only exercises
+        the one line's behavior.
+
+        git honors an uncommitted, untracked .gitignore already present in
+        the working tree, so the fixture file is never staged or committed.
+        """
+        local, _bare = _make_repo_with_remote(tmp_path)
+        (local / ".gitignore").write_text("claude-skills/skills/.trash/\n")
+        trash_dir = local / "claude-skills" / "skills" / ".trash"
+        trash_dir.mkdir(parents=True)
+        (trash_dir / "deleted-skill.md").write_text("")
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert "claude-skills/skills/.trash/deleted-skill.md" not in changed
+
     def test_merge_base_lookup_failure_raises_for_caller_to_fall_open(self, tmp_path):
         """No origin remote configured at all (so origin/main can't
         resolve) plus a detached HEAD -- compute_changed_paths must raise
