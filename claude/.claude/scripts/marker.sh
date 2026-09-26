@@ -879,12 +879,13 @@ case "$SUBCOMMAND" in
     READY_FOR_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
     _status_report_completion_marker ready-for-review "$CONFIG_DIR/ready-for-review-markers" "$REPO_HASH_PREFIX" "$READY_FOR_REVIEW_VALUE"
 
-    # verification: same recipe as the `write verification` arm above,
-    # capped and stderr-suppressed like ready-for-review's line -- a
+    # verification: same recipe as the `write verification` arm above.
+    # Capped and stderr-suppressed like ready-for-review's line: a
     # zero-commit repo has no HEAD^{tree} to hash, which `status` must
-    # report as absent rather than error on. No age bound here: `check
-    # verification` applies VERIFICATION_CHECK_MAX_AGE_SECONDS, `status`
-    # reports hash state only, matching code-review's split above.
+    # report as absent rather than error on.
+    # No age bound here: `check verification` applies
+    # VERIFICATION_CHECK_MAX_AGE_SECONDS, `status` reports hash state only,
+    # matching code-review's split above.
     VERIFICATION_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT")
     _status_report_completion_marker verification "$CONFIG_DIR/verification-markers" "$REPO_HASH_PREFIX" "$VERIFICATION_VALUE"
 
@@ -976,6 +977,15 @@ case "$SUBCOMMAND" in
         ;;
       verification)
         REPO_ROOT=$(_resolve_repo_root) || exit 2
+        # Per-repo opt-in gate (docs/design-decisions/ready-for-review-verification-cache.md):
+        # a repo that hasn't committed the sentinel to its default branch
+        # never matches, regardless of hash freshness. Checked first so a
+        # not-opted-in repo short-circuits before the uncommitted-status and
+        # tree-hash calls below.
+        _lib_verification_cache_sentinel_present "$REPO_ROOT" || { printf 'no-match\n'; exit 1; }
+        # Every no-match exit below is byte-identical to this one; test_marker_script.py's
+        # TestMarkerScriptVerification class depends on its _opted_in_origin autouse
+        # fixture to reach any of them for the right reason.
         # Same hash recipe as the `write verification` arm. Read-only: no
         # SESSION_ID needed since this never writes.
         # A hash that can't be computed must read as no-match, not match --

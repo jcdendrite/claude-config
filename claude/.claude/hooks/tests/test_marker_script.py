@@ -121,6 +121,59 @@ def _commit_the_fixtures_staged_change(repo):
     )
 
 
+VERIFICATION_CACHE_SENTINEL_PATH = ".claude/ready-for-review-verification-cache-optin"
+
+
+def _arm_verification_cache_optin(repo) -> None:
+    """Points refs/remotes/origin/main (+ origin/HEAD symref) at a forged
+    commit carrying the verification-cache opt-in sentinel under
+    VERIFICATION_CACHE_SENTINEL_PATH, layered on top of repo's current
+    HEAD^{tree} via a throwaway index -- never touches repo's own working
+    tree, real index, or local HEAD, since every test in
+    TestMarkerScriptVerification depends on git_repo's own committed tree
+    and staged change being exactly as conftest.py built them. Mirrors
+    _build_forged_anchor_clean_merge's commit-tree-without-checkout shape
+    in test_lib_reviewer_round_state.py."""
+    head_oid = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.strip()
+    tmp_index = repo / ".git" / "optin-sentinel-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    if head_oid:
+        subprocess.run(["git", "read-tree", head_oid], cwd=repo, env=index_env, check=True)
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# sentinel\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         f"100644,{blob_oid},{VERIFICATION_CACHE_SENTINEL_PATH}"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_args = ["git", "commit-tree", tree_oid, "-m", "add opt-in sentinel"]
+    if head_oid:
+        commit_args += ["-p", head_oid]
+    commit_oid = subprocess.run(
+        commit_args, cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", commit_oid], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+
 def _record_subject(
     repo, home, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -3466,6 +3519,20 @@ class TestMarkerScriptVerification:
 
     SID = "test-session-verification"
 
+    @pytest.fixture(autouse=True)
+    def _opted_in_origin(self, git_repo):
+        """Class-wide retrofit for the per-repo opt-in gate: `check
+        verification` now checks `_lib_verification_cache_sentinel_present`
+        before the uncommitted-status/tree-hash calls every test below was
+        originally written against, so every test in this class must reach
+        an armed, opted-in origin first -- not only the tests that assert
+        `match`. `write` and `status` never read the sentinel, so this
+        fixture is inert, not harmful, for tests that only exercise those
+        subcommands. See _arm_verification_cache_optin's own docstring for
+        why the sentinel is layered on via a forged commit rather than
+        touching git_repo's own working tree, index, or local HEAD."""
+        _arm_verification_cache_optin(git_repo)
+
     def test_write_creates_marker_with_tree_hash(self, isolated_home, git_repo):
         sid = self.SID
         _commit_the_fixtures_staged_change(git_repo)
@@ -3800,13 +3867,142 @@ class TestMarkerScriptVerification:
     def test_check_no_match_when_tree_hash_cannot_be_computed(self, isolated_home, tmp_path):
         """A commit-less repo has no HEAD^{tree} to hash -- check must
         degrade to no-match, never crash or misread an empty computed hash
-        as a match against some marker's stored content."""
+        as a match against some marker's stored content. Built outside the
+        `git_repo` fixture, so the class-wide autouse fixture above never
+        reaches it -- armed here directly so the opt-in gate passes and the
+        no-match this test asserts on is actually the tree-hash-unresolvable
+        path, not the gate short-circuiting for an unrelated reason."""
         repo = tmp_path / "zero-commit-repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        _arm_verification_cache_optin(repo)
         result = _run(["check", "verification"], cwd=repo, home=isolated_home)
         assert result.returncode == 1
         assert result.stdout.strip().startswith("no-match")
+
+    # ── Opt-in gate ──────────────────────────────────────────────────────
+    # The class-wide _opted_in_origin fixture above covers every
+    # pre-existing test's own precondition; these cases prove the gate's
+    # actual, scoped security property (residual 10 in
+    # docs/design-decisions/ready-for-review-verification-cache.md):
+    # resistant to a branch committing the sentinel to itself, not to local
+    # ref fabrication.
+
+    def test_check_no_match_when_sentinel_absent_everywhere(self, isolated_home, git_repo):
+        """Default-off: even a fresh, matching marker on an otherwise-armed
+        origin must not authorize a skip when the sentinel itself was never
+        committed there. Re-arms origin/main at plain HEAD, undoing the
+        class-wide fixture's own forged sentinel commit for this test only."""
+        _arm_default_branch_ref(git_repo)
+        _commit_the_fixtures_staged_change(git_repo)
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_check_match_when_sentinel_present_on_origin_default(self, isolated_home, git_repo):
+        """The positive case: the class-wide fixture already committed the
+        sentinel to origin/main, so a fresh, matching marker must authorize
+        a match -- confirming the gate actually admits the opted-in case,
+        not just fails to block the not-opted-in one."""
+        _commit_the_fixtures_staged_change(git_repo)
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+
+    def test_check_no_match_when_sentinel_committed_only_to_local_head(
+        self, isolated_home, git_repo
+    ):
+        """The self-authorization case residual 10 (in
+        docs/design-decisions/ready-for-review-verification-cache.md) names:
+        committing the sentinel to the branch under review's own local HEAD
+        must not opt that branch in -- only origin/<default-branch>'s copy
+        counts.
+        Committed, not merely staged or untracked: an uncommitted-only
+        variant is already subsumed by the pre-existing untracked-file
+        guard and proves nothing new about this property."""
+        _commit_the_fixtures_staged_change(git_repo)
+        _arm_default_branch_ref(git_repo)  # origin/main -> HEAD, no sentinel
+        sentinel_dir = git_repo / ".claude"
+        sentinel_dir.mkdir(parents=True, exist_ok=True)
+        (sentinel_dir / "ready-for-review-verification-cache-optin").write_text("# sentinel\n")
+        subprocess.run(
+            ["git", "add", VERIFICATION_CACHE_SENTINEL_PATH], cwd=git_repo, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "commit sentinel to local HEAD only"],
+            cwd=git_repo,
+            check=True,
+        )
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_check_no_match_when_origin_head_is_unset(self, isolated_home, git_repo):
+        """_lib_default_branch_from_origin_head's own fail-closed contract:
+        an unset refs/remotes/origin/HEAD must disable the cache outright,
+        never fall back to guessing a branch name."""
+        subprocess.run(
+            ["git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+            cwd=git_repo,
+            check=True,
+        )
+        _commit_the_fixtures_staged_change(git_repo)
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    @pytest.mark.timing
+    def test_sentinel_presence_check_times_out_to_no_match(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Mirrors test_head_tree_hash_computation_times_out_to_no_match and
+        test_check_status_call_times_out_to_no_match above: the new capped
+        `git cat-file -e` call inside _lib_verification_cache_sentinel_present
+        is a third call on the same `check` fast-path, ordered before both of
+        those, and needs the identical stub-and-assert-degradation proof."""
+        _commit_the_fixtures_staged_change(git_repo)
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "cat-file" ] && [ "$4" = "-e" ] && [ "$#" -eq 5 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "verification"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
+            f"it does not), took {elapsed:.1f}s"
+        )
 
     def test_status_live_when_hash_matches_current_tree(self, isolated_home, git_repo):
         sid = self.SID

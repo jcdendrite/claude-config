@@ -69,6 +69,10 @@ When editing a `SKILL.md`, invoke the skill on its own diff before committing. A
 
 The same rule applies to agent files (`claude/.claude/agents/*.md`, `plugins/*/agents/*.md`): run `/agent-review` via the Skill tool and check the diff against its output before staging. `/agent-review` is a stowed skill (no plugin install needed) and is dispatcher-invoked by `/code-review`; unlike `/skill-review` it is not hook-enforced (see [README — Workflow](./README.md#workflow) for the asymmetry rationale).
 
+## Forking
+
+A fork copies `.claude/ready-for-review-verification-cache-optin` but not the branch-protection setting it attests to (see [the sentinel file](./.claude/ready-for-review-verification-cache-optin) and [its design doc](./docs/design-decisions/ready-for-review-verification-cache.md)). Verify your fork's own branch protection requires CI before relying on the skip, and delete the file otherwise.
+
 ## Contact
 
 Bug reports and feature requests: [GitHub Issues](https://github.com/jcdendrite/claude-config/issues).  
