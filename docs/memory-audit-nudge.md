@@ -74,9 +74,12 @@ that prefix to count which project stores hold at least one file. This
 avoids a separate per-project-directory `grep` pass, which would scale with
 project count rather than file count.
 `find -H` follows a `memory` start point that is itself a symlink to a
-directory, so a store kept behind a symlink still counts. A symlink met
-during traversal is skipped: without `-L`, the `-type f` test matches only a
-real file. A path containing a newline is pruned, because `wc` prints paths
+directory, so a store kept behind a symlink still counts. This also means a
+symlinked `memory` start point can fold in bytes from outside the resolved
+config directory entirely — including a different `CLAUDE_CONFIG_DIR`-scoped
+account's tree on the same machine, if that account's `memory` happens to be
+the symlink target. A symlink met during traversal is skipped: without `-L`,
+the `-type f` test matches only a real file. A path containing a newline is pruned, because `wc` prints paths
 verbatim and a newline in one would let a directory name forge extra rows in
 the byte total.
 
@@ -176,6 +179,11 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
   not at the moment a write pushes a store over threshold — `SessionStart`
   is the cheapest event that reaches every session for a signal that only
   changes on memory writes.
+- **The advisory text is cross-project.** The measured total is a
+  machine-wide aggregate across every project's memory store, not anything
+  scoped to the triggering session's own project. The nudge surfaces inside
+  whatever project's session happens to trigger it, regardless of which
+  project that is.
 - **No `--check` query mode.** Nothing consumes this hook's number
   programmatically, unlike the handoff nudge's `--check`, which `plan-it`
   and the `handoff` skill call mid-session.
@@ -206,15 +214,17 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
   nudge, no log line, and no state change. The state file is untouched, so the
   next session start retries the scan, and a persistent stall repeats at every
   session start with no signal. Silence cannot distinguish an under-threshold
-  run from a discarded one. Running the hook by hand against the real config
+  run from a discarded one — running the hook by hand against the real config
   dir would write the state file and log when over threshold and consume the
-  re-arm band, so check without side effects instead: run the hook with
-  `CLAUDE_CONFIG_DIR` set to a throwaway directory whose `projects` entry is a
-  symlink to the real `<config-dir>/projects`, and pass `{"source":"startup"}`
-  on stdin (an empty stdin exits in about 1 s without scanning and looks
-  healthy). Treat a run that takes 5 s or longer, or never returns, as a stall.
-  A stall can outlast every cap, as the timeout item above describes. The
-  kill-switch is the remedy.
+  re-arm band, so check without side effects instead:
+  1. Run the hook with `CLAUDE_CONFIG_DIR` set to a throwaway directory whose
+     `projects` entry is a symlink to the real `<config-dir>/projects`.
+  2. Pass `{"source":"startup"}` on stdin.
+  3. Note the baseline: an empty stdin exits in about 1 s without scanning
+     and looks healthy.
+  4. Treat a run that takes 5 s or longer, or never returns, as a stall — a
+     stall can outlast every cap, as the timeout item above describes. The
+     kill-switch is the remedy.
 - **A stale peak delays the first re-crossing by one band.** The state file is
   rewritten only on a fire or a shrink, never on a below-threshold scan. After
   an audit drops the total below threshold, the old peak persists, so the next

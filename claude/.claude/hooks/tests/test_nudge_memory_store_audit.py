@@ -75,6 +75,18 @@ def _run_hook(payload: dict, home: Path, extra_env: dict | None = None) -> subpr
     )
 
 
+@pytest.fixture(autouse=True)
+def _clear_memory_audit_nudge_override_env(monkeypatch):
+    """The hook's two documented override knobs pass through _run_hook's
+    `{**os.environ, ...}` env dict unchanged from the ambient environment.
+    Without this, a real exported MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES or
+    MEMORY_AUDIT_NUDGE_REARM_BYTES value could silently satisfy a test that
+    never sets it explicitly, mirroring conftest.py's _clear_claude_pid_env
+    fixture for the same category of bug."""
+    monkeypatch.delenv("MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES", raising=False)
+    monkeypatch.delenv("MEMORY_AUDIT_NUDGE_REARM_BYTES", raising=False)
+
+
 def _base_payload(source: str = "startup") -> dict:
     return {"source": source}
 
@@ -91,6 +103,7 @@ def _isolated_hooks_dir(tmp_path: Path) -> Path:
     (isolated / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
     (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
     (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    (isolated / "nudge-memory-store-audit.awk").symlink_to(WC_TOTAL_ROW_AWK_PROGRAM)
     return isolated / NUDGE_HOOK.name
 
 
@@ -107,17 +120,10 @@ def _parse_log_line(text: str) -> dict:
     return dict(token.split("=", 1) for token in text.strip().split() if "=" in token)
 
 
-def _extract_wc_total_row_awk_program() -> str:
-    """Extract the wc-total-row-exclusion awk program verbatim from between
-    its HOOK_TEST_FIXTURE sentinels in the hook source, for a standalone awk
-    invocation outside the hook's own subprocess."""
-    source = NUDGE_HOOK.read_text()
-    start = source.index("# HOOK_TEST_FIXTURE: wc-total-row-awk — start")
-    end = source.index("# HOOK_TEST_FIXTURE: wc-total-row-awk — end", start)
-    block = source[start:end]
-    program_start = block.index("awk '") + len("awk '")
-    program_end = block.index("'", program_start)
-    return block[program_start:program_end]
+# The wc-total-row-exclusion and project-store-count awk program lives in
+# its own sidecar file, invoked directly via `awk -f` below so the tests run
+# the exact program the hook runs, rather than a copy extracted from it.
+WC_TOTAL_ROW_AWK_PROGRAM = HOOKS_DIR / "nudge-memory-store-audit.awk"
 
 
 def _write_shim(shim_dir: Path, name: str, body: str) -> None:
@@ -575,13 +581,12 @@ class TestNudgeMemoryStoreAudit:
     # -- wc-total-row-and-project-count awk program -------------------------
 
     def test_wc_total_row_awk_excludes_multiple_total_rows(self):
-        """The single-pass awk program, extracted verbatim from the hook
-        source, discriminates every 'total' row from real per-file lines
-        even when a batched `find -exec` produces more than one -- summing
-        $1 unconditionally would count those rows as if they were files.
-        Its two-line output is the byte total (excluding total rows) then
-        the distinct-project-memory-directory count."""
-        program = _extract_wc_total_row_awk_program()
+        """The single-pass awk program, run from its own sidecar file exactly
+        as the hook runs it, discriminates every 'total' row from real
+        per-file lines even when a batched `find -exec` produces more than
+        one -- summing $1 unconditionally would count those rows as if they
+        were files. Its two-line output is the byte total (excluding total
+        rows) then the distinct-project-memory-directory count."""
         synthetic_wc_output = (
             "     100 /config/projects/a/memory/MEMORY.md\n"
             "     200 /config/projects/b/memory/topic.md\n"
@@ -590,7 +595,7 @@ class TestNudgeMemoryStoreAudit:
             "     500 total\n"
         )
         result = subprocess.run(
-            ["awk", program],
+            ["awk", "-f", str(WC_TOTAL_ROW_AWK_PROGRAM)],
             input=synthetic_wc_output,
             capture_output=True,
             text=True,
@@ -603,13 +608,12 @@ class TestNudgeMemoryStoreAudit:
         """A project store contributing more than one file counts once
         toward the project-store total, not once per file -- pins the
         one-pass bucketing against a regression to a per-file tally."""
-        program = _extract_wc_total_row_awk_program()
         synthetic_wc_output = (
             "     100 /config/projects/a/memory/MEMORY.md\n"
             "     200 /config/projects/a/memory/topic.md\n"
         )
         result = subprocess.run(
-            ["awk", program],
+            ["awk", "-f", str(WC_TOTAL_ROW_AWK_PROGRAM)],
             input=synthetic_wc_output,
             capture_output=True,
             text=True,
@@ -662,6 +666,44 @@ class TestNudgeMemoryStoreAudit:
         bare_hook.write_text(NUDGE_HOOK.read_text())
         bare_hook.chmod(0o755)
         result = run_copy(bare_hook)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_missing_awk_sidecar_fails_open(self, tmp_path):
+        """A copy of the hook with _lib.sh/_config.sh siblings present but no
+        nudge-memory-store-audit.awk sidecar exits 0 with no output rather
+        than erroring -- `awk -f` on an absent/unreadable program file fails
+        the way this hook's fail-open contract requires. A control with the
+        sidecar present and the same over-threshold store fires, so the
+        silence is attributable to the missing sidecar and not to an empty
+        store. Mirrors test_missing_lib_sh_sibling_fails_open above for the
+        newer sidecar dependency introduced by the wc-total-row-and-project-
+        count refactor."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-no-awk", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
+        )
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        def run_copy(hook_path: Path) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [str(hook_path)],
+                input=json.dumps(_base_payload()),
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+
+        control = run_copy(_isolated_hooks_dir(tmp_path))
+        assert control.stdout.strip() != "", "control with the sidecar present must fire"
+
+        no_awk_dir = tmp_path / "no-awk-sidecar-hooks"
+        no_awk_dir.mkdir()
+        (no_awk_dir / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
+        (no_awk_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+        (no_awk_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+        result = run_copy(no_awk_dir / NUDGE_HOOK.name)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 

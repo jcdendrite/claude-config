@@ -4575,3 +4575,66 @@ class TestDenyPrivateProjectRefs:
         assert result.returncode == 2, f"expected hard-block exit 2, got {result.returncode}"
         assert not result.stdout.strip(), f"expected no stdout, got {result.stdout!r}"
         assert "_lib.sh" in result.stderr
+
+    # -- Non-regular-file targets at each of the 5 read sites ---------------
+    # The 5 sites below were tightened from `[ ! -r "$path" ]` to
+    # `[ ! -f "$path" ] || [ ! -r "$path" ]`. A directory passes the
+    # readability check but not the regular-file check, so it proves the
+    # new `[ ! -f ]` branch is reachable and fails closed rather than only
+    # theoretically present. Command templates shared with the FIFO variant
+    # below so the 5 read sites stay defined in one place.
+    _NON_REGULAR_FILE_READ_SITE_COMMANDS = [
+        "git commit -F {path}",
+        "gh pr create --body-file {path}",
+        "gh issue create --body-file {path}",
+        "gh api repos/x/y/pulls/1/comments -X POST --input {path}",
+        "gh api repos/x/y/pulls/1/comments -X POST -F body=@{path}",
+    ]
+    _NON_REGULAR_FILE_READ_SITE_IDS = [
+        "git-commit-F",
+        "gh-pr-body-file",
+        "gh-issue-body-file",
+        "gh-api-input",
+        "gh-api-field-at",
+    ]
+
+    @pytest.mark.parametrize(
+        "command_template",
+        _NON_REGULAR_FILE_READ_SITE_COMMANDS,
+        ids=_NON_REGULAR_FILE_READ_SITE_IDS,
+    )
+    def test_directory_target_denied_as_non_regular_file(
+        self, claude_config_repo, tmp_path, command_template,
+    ):
+        target_dir = tmp_path / "not-a-regular-file"
+        target_dir.mkdir()
+        command = command_template.format(path=target_dir)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None, f"expected deny for {command!r}"
+        assert "is not a regular file, or is not readable" in reason
+
+    # A FIFO is the other non-regular-file shape the header comment above
+    # `[ ! -f ] || [ ! -r ]` names as motivating: a FIFO with no writer used
+    # to hang the read at each site until the `_lib_capped` timeout(1) cap
+    # killed it (deny-private-project-refs.sh's header, "Every body/message-
+    # source file read in this hook is timeout-capped"). The `[ ! -f ]`
+    # branch now denies before any read is attempted, since a FIFO isn't a
+    # regular file either — so this test proves that fast-fail path, not the
+    # timeout cap, and does not need its own wall-clock backstop: `[ -f ]` is
+    # a stat(2)-only check that never blocks on an unopened FIFO, and even if
+    # a regression dropped the `[ ! -f ]` branch, `_lib_capped`'s 5-second cap
+    # (`_lib.sh`'s `_lib_capped_for`) still bounds the fallback read.
+    @pytest.mark.parametrize(
+        "command_template",
+        _NON_REGULAR_FILE_READ_SITE_COMMANDS,
+        ids=_NON_REGULAR_FILE_READ_SITE_IDS,
+    )
+    def test_fifo_target_denied_as_non_regular_file(
+        self, claude_config_repo, tmp_path, command_template,
+    ):
+        target_fifo = tmp_path / "not-a-regular-file"
+        os.mkfifo(target_fifo)
+        command = command_template.format(path=target_fifo)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None, f"expected deny for {command!r}"
+        assert "is not a regular file, or is not readable" in reason

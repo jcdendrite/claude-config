@@ -25,9 +25,7 @@
 #   The deny message explains exactly what to do.
 # - Blocks a body-source file whose literal spelling is a pseudo-file, or that
 #   is not a regular file, is not readable, or whose capped read ends in any
-#   nonzero status. deny-private-project-refs.sh checks readability only
-#   before its capped read, so a directory or FIFO reaches that read there.
-#   The deny text says "killed" only for the statuses
+#   nonzero status. The deny text says "killed" only for the statuses
 #   _lib_status_consistent_with_cap_kill accepts.
 #
 # Known gaps (documented, not closed):

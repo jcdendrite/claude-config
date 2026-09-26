@@ -202,9 +202,10 @@ if [ -n "$BODY_SOURCES" ]; then
     _lib_is_pseudo_file_path "$body_source_path" && continue
     [ ! -r "$body_source_path" ] && continue
     BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null)
-    # Timeout (exit 124) gets the same disposition as an unreadable file
-    # above: skip this source, don't count it toward the reminder check.
-    [ "$?" -eq 124 ] && continue
+    BODY_CONTENT_STATUS=$?
+    # A cap kill (124/137/143) gets the same disposition as an unreadable
+    # file above: skip this source, don't count it toward the reminder check.
+    _lib_status_consistent_with_cap_kill "$BODY_CONTENT_STATUS" && continue
     SCAN_TARGET+=$'\n'"$BODY_CONTENT"
   done <<< "$BODY_SOURCES"
 fi

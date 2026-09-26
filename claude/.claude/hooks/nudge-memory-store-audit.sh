@@ -30,8 +30,12 @@
 # at that value is unverified.
 # With timeout(1) or gtimeout(1) on PATH, _lib_capped caps each find, awk, and
 # jq process it wraps, and without either those calls run uncapped.
-# A cap signals only the wrapped process, so the wc that find -exec spawns can
-# outlive it when it ignores or cannot honour SIGTERM.
+# GNU timeout puts its child in a new process group and signals the whole
+# group, so it takes down the wc that find -exec spawns along with find
+# itself in the common case. The wc can still outlive the cap in two
+# narrower cases: the fully-uncapped fallback (neither timeout nor
+# gtimeout on PATH), and a BusyBox timeout build, which signals only the
+# direct child.
 # The hook makes up to four sequential capped calls (jq parse, find, awk, and
 # fire-time jq), so their cumulative worst case can exceed one cap and the
 # registration timeout.
@@ -120,32 +124,12 @@ if [ "$#" -gt 0 ]; then
   if _lib_status_consistent_with_cap_kill "$FIND_STATUS"; then exit 0; fi
 fi
 
-# HOOK_TEST_FIXTURE: wc-total-row-awk — start
-# test_nudge_memory_store_audit.py extracts this program verbatim between
-# these sentinels.
-# Keep both lines.
-# See docs/memory-audit-nudge.md for why a batched `find -exec ... {} +` can
-# emit more than one "total" row.
-# A per-file line's path always contains "/"; a "total" row's remaining text
-# (the bare word "total") never does, which `index(path, "/") == 0` discriminates on.
-# Prints two lines: the byte total, then the project-store count bucketed by
-# the text up to the rightmost "/memory/" in each path.
-# shellcheck disable=SC2016 # single-quoted on purpose: $1/$0 are awk field variables, not shell variables; double-quoting would expand them in the shell before awk sees them.
-TOTAL_AND_COUNT=$(_lib_capped awk '
-  {
-    count = $1
-    path = $0
-    sub(/^[ \t]*[0-9]+[ \t]+/, "", path)
-    if (index(path, "/") == 0) next
-    sum += count
-    if (match(path, /^.*\/memory\//)) seen[substr(path, 1, RLENGTH - 1)] = 1
-  }
-  END {
-    print sum + 0
-    print length(seen)
-  }
-' <<< "$WC_OUTPUT" 2>/dev/null)
-# HOOK_TEST_FIXTURE: wc-total-row-awk — end
+# The wc-total-row-exclusion and project-store-count logic lives in the
+# sidecar nudge-memory-store-audit.awk, invoked via -f so both this hook and
+# test_nudge_memory_store_audit.py's direct `awk -f` invocations run the
+# exact same program. See that file's header for the program's own
+# documentation.
+TOTAL_AND_COUNT=$(_lib_capped awk -f "${0%/*}/nudge-memory-store-audit.awk" <<< "$WC_OUTPUT" 2>/dev/null)
 AWK_STATUS=$?
 if _lib_status_consistent_with_cap_kill "$AWK_STATUS"; then exit 0; fi
 
