@@ -337,12 +337,10 @@ class TestAskReviewPermissions:
         )
 
     def test_partial_realpath_failure_with_non_concatenated_alias_stays_allowed(self, tmp_path):
-        """Pins the disclosed residual, not a bug to fix: `file_path` reaches
-        the same settings.json via a doubled-slash decoration rather than a
-        literal concatenation of the raw config-dir string, so the
-        both-or-neither guard's raw-vs-raw fallback (forced here by a
-        one-sided `_lib_realpath_m` failure) misses the anchored pattern and
-        no ask fires. See
+        """Pins the disclosed residual, not a bug to fix: a doubled-slash decoration
+        reaches the same settings.json without literally concatenating the raw
+        config-dir string, so the both-or-neither guard's raw-vs-raw fallback misses
+        the anchored pattern and no ask fires. See
         docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
         Open residuals and re-review triggers section, the
         `_lib_config_dir`/`_lib_realpath_m` failure bullet."""

@@ -141,9 +141,8 @@ _lib_realpath_m() {
   fi
   local suffix="" current="$target" suffix_component
   while true; do
-    # `--` is deliberately omitted here and on the `test -L` call below, unlike
-    # basename/dirname/realpath in this same loop, because GNU coreutils'
-    # external `test` binary treats a 3-argument `test -e -- PATH` as its
+    # Unlike basename/dirname/realpath in this loop, `test -e` and `test -L` omit `--`.
+    # GNU coreutils' external `test` binary treats a 3-argument `test -e -- PATH` as its
     # binary-operator form and rejects it.
     if _lib_capped test -e "$current"; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
