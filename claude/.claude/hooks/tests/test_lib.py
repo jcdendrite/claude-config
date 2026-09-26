@@ -3240,6 +3240,11 @@ def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path |
         text=True,
         env=env,
         check=False,
+        # A regressed `|| return 1` on a capped call inside the fallback
+        # loop's `while true` retries forever against an always-hanging
+        # stub instead of terminating -- bound it so that regression fails
+        # the test fast instead of hanging the pytest worker.
+        timeout=30,
     )
 
 
@@ -3319,6 +3324,262 @@ class TestLibRealpathM:
         resolved = result.stdout.strip()
         assert resolved == target
         assert "//" not in resolved
+
+    def test_forced_fallback_dirname_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the `_lib_capped` wrap around the fallback
+        loop's `dirname` call. Before the fix, its exit status went
+        unchecked, so a cap-firing timeout (empty stdout, nonzero exit) was
+        read as success: `current` became "", the loop's `/`/`.` termination
+        guard never matched it, and the next iteration's `test -e "."`
+        (GNU dirname's empty-input return value) resolved to the hook
+        process's own CWD with exit 0 -- a corrupted result indistinguishable
+        from success to callers that only guard against nonzero exit. Same
+        PATH-stub technique as
+        test_active_bypass_marker_live_find_hang_capped_withholds_bypass: the
+        stub sleeps past the cap, then -- only if not killed -- execs the
+        real `dirname`, which would let a broken/missing `_lib_capped` wrap
+        pass regardless of whether the cap engaged."""
+        real_dirname = shutil.which("dirname")
+        if not real_dirname:
+            pytest.skip("dirname not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        stub_dirname = shim_dir / "dirname"
+        # Scoped to the `--`-prefixed argument shape the fallback loop
+        # passes, so it doesn't also intercept _lib.sh's and _config.sh's
+        # own bare, load-time `dirname "${BASH_SOURCE[0]}"` bootstrap calls.
+        stub_dirname.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "--" ]; then\n'
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_dirname} "$@"\n'
+        )
+        stub_dirname.chmod(0o755)
+
+        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="dirname"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out dirname must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_basename_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the `_lib_capped` wrap around the fallback
+        loop's `basename` call (`_lib.sh`'s `suffix_component=$(_lib_capped
+        basename -- "$current") || return 1`) -- the same fail-closed
+        contract as test_forced_fallback_dirname_hang_capped_fails_closed,
+        pinned at a different call site so a future edit dropping just this
+        site's `|| return 1` isn't left uncaught. Same target shape and
+        PATH-stub technique: the first `basename -- "$current"` call in the
+        walk is the one under test."""
+        real_basename = shutil.which("basename")
+        if not real_basename:
+            pytest.skip("basename not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        stub_basename = shim_dir / "basename"
+        # Scoped the same way as the dirname stub above, for consistency,
+        # though basename has no load-time bootstrap caller today.
+        stub_basename.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "--" ]; then\n'
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_basename} "$@"\n'
+        )
+        stub_basename.chmod(0o755)
+
+        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="basename"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out basename must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_dot_branch_dirname_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the `_lib_capped` wrap around the fallback
+        loop's `.`-branch `dirname` call (`_lib.sh`'s `current=$(_lib_capped
+        dirname -- "$current") || return 1` inside the `.` case), reached
+        only after a literal `.` path segment resolves to its own basename
+        mid-walk -- same target shape as
+        test_forced_fallback_collapses_dot_in_unresolved_suffix. Pins the
+        `.`-branch's own `|| return 1` independently of
+        test_forced_fallback_dirname_hang_capped_fails_closed, which only
+        exercises the bottom-of-loop dirname call one iteration earlier."""
+        real_dirname = shutil.which("dirname")
+        if not real_dirname:
+            pytest.skip("dirname not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        stub_dirname = shim_dir / "dirname"
+        # For this target, the walk's first dirname call (bottom-of-loop,
+        # on the untouched target) must succeed to reach the `.`-branch at
+        # all. The second dirname call, against "<tmp_path>/newdir1/.", is
+        # the one under test.
+        dot_branch_arg = f"{tmp_path}/newdir1/."
+        stub_dirname.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "--" ] && [ "$2" = "{dot_branch_arg}" ]; then\n'
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_dirname} "$@"\n'
+        )
+        stub_dirname.chmod(0o755)
+
+        target = f"{tmp_path}/newdir1/./newfile.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="dirname"):
+            result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out `.`-branch dirname must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_test_e_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the ambiguous-status branch at `_lib.sh`'s
+        `elif [ "$test_e_status" -ne 1 ]; then return 1` -- without it, a
+        cap-fired `test -e` (nonzero, but not the clean "does not exist" 1)
+        fell through to the decomposition logic below and was misread as
+        "does not exist". The ambiguous component is a real, existing
+        directory one level up from the nonexistent leaf, mirroring
+        test_forced_fallback_dot_branch_dirname_hang_capped_fails_closed's
+        directory-walk setup. Unlike the basename/dirname stubs above,
+        `test -e`/`test -L` omit `--` (the loop's own comment in _lib.sh
+        explains why), so this stub keys on the bare `-e PATH` shape
+        instead of a `--`-prefix check."""
+        real_test = shutil.which("test")
+        if not real_test:
+            pytest.skip("test(1) not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        ambiguous_dir = tmp_path / "realdir"
+        ambiguous_dir.mkdir()
+        stub_test = shim_dir / "test"
+        # Scoped to the bare `-e PATH` shape and the exact ambiguous
+        # component under test, so it doesn't also intercept every other
+        # `test -e` call the walk makes at other path depths.
+        stub_test.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "-e" ] && [ "$2" = "{ambiguous_dir}" ]; then\n'
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_test} "$@"\n'
+        )
+        stub_test.chmod(0o755)
+
+        target = ambiguous_dir / "does-not-exist-xyz123.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out `test -e` must fail closed, not fall through as a clean \"does not exist\""
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_test_l_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the ambiguous-status branch at `_lib.sh`'s
+        `elif [ "$test_l_status" -ne 1 ]; then return 1` -- the same
+        ambiguity as test_forced_fallback_test_e_hang_capped_fails_closed,
+        pinned independently at the `test -L` call one branch below. The
+        ambiguous component is a real, existing dangling symlink one level
+        up from the nonexistent leaf, so `test -e` on it legitimately
+        returns false and the walk reaches the `test -L` check before the
+        stub intercepts that second call."""
+        real_test = shutil.which("test")
+        if not real_test:
+            pytest.skip("test(1) not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        ambiguous_symlink = tmp_path / "dangling_link"
+        ambiguous_symlink.symlink_to(tmp_path / "does-not-exist-symlink-target-xyz")
+        stub_test = shim_dir / "test"
+        # Scoped to the bare `-L PATH` shape and the exact ambiguous
+        # component, so the walk's earlier, legitimate `test -e`/`test -L`
+        # calls on other path depths still run against the real binary.
+        stub_test.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "-L" ] && [ "$2" = "{ambiguous_symlink}" ]; then\n'
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_test} "$@"\n'
+        )
+        stub_test.chmod(0o755)
+
+        target = ambiguous_symlink / "leaf.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out `test -L` must fail closed, not fall through as a clean \"not a symlink\""
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_bare_invocation_under_set_e_reaches_caller_line_after_call(self, tmp_path: Path) -> None:
+        """Regression test for invocation-style safety: `_lib_realpath_m`
+        must not abort its caller under `set -e` when invoked as a bare
+        statement, not wrapped in `$(...)` or an `if`. A bare invocation
+        runs the function in the caller's own shell, so any bare (non-`if`,
+        non-`$(...)`) command inside it that returns nonzero would also
+        abort the caller. Unlike `_run_realpath_m`'s `set -uo pipefail`
+        (no `-e`), this test sources `_lib.sh` under `set -e` itself so a
+        regression is actually exercised. The target is a normal
+        nonexistent leaf directly under an existing directory, so the
+        fallback loop's first `test -e` legitimately returns its ordinary
+        false status -- the cap-timeout/ambiguous case is already covered by
+        test_forced_fallback_test_e_hang_capped_fails_closed and
+        test_forced_fallback_test_l_hang_capped_fails_closed."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        shim = shim_dir / "realpath"
+        shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        shim.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+
+        target = tmp_path / "does-not-exist-invocation-safety.txt"
+        sentinel = "REACHED_LINE_AFTER_BARE_CALL"
+        script = f'set -e\n. {_LIB_SH}\n_lib_realpath_m "$1"\necho "{sentinel}"\n'
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(target)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, (
+            f"set -e aborted the caller before its line after the bare call: "
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert sentinel in result.stdout.splitlines(), (
+            f"caller never reached the line after the bare call: stdout={result.stdout!r}"
+        )
 
 
 def _run_config_dir(env: dict) -> subprocess.CompletedProcess:

@@ -144,7 +144,13 @@ _lib_realpath_m() {
     # Unlike basename/dirname/realpath in this loop, `test -e` and `test -L` omit `--`.
     # GNU coreutils' external `test` binary treats a 3-argument `test -e -- PATH` as its
     # binary-operator form and rejects it.
+    local test_e_status
     if _lib_capped test -e "$current"; then
+      test_e_status=0
+    else
+      test_e_status=$?
+    fi
+    if [ "$test_e_status" -eq 0 ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
       [ -n "$resolved" ] || return 1
       if [ -z "$suffix" ]; then
@@ -155,20 +161,30 @@ _lib_realpath_m() {
         printf '%s/%s\n' "$resolved" "$suffix"
       fi
       return 0
+    elif [ "$test_e_status" -ne 1 ]; then
+      return 1  # a cap-fired timeout or test's own error is not a clean "does not exist"; fail closed instead of falling through to the decomposition logic below
     fi
+    local test_l_status
     if _lib_capped test -L "$current"; then
+      test_l_status=0
+    else
+      test_l_status=$?
+    fi
+    if [ "$test_l_status" -eq 0 ]; then
       return 1  # dangling symlink: the existence check above reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    elif [ "$test_l_status" -ne 1 ]; then
+      return 1  # same ambiguity as test -e above: a cap-fired or errored status is not a clean "not a symlink", so fail closed here too
     fi
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(_lib_capped basename -- "$current")
+    suffix_component=$(_lib_capped basename -- "$current") || return 1
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
         ;;
       .)
-        current=$(_lib_capped dirname -- "$current")
+        current=$(_lib_capped dirname -- "$current") || return 1
         continue  # a lone `.` contributes nothing to the resolved path and, unlike `..`, can never defeat a same-prefix boundary check.
         ;;
     esac
@@ -177,7 +193,7 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(_lib_capped dirname -- "$current")
+    current=$(_lib_capped dirname -- "$current") || return 1
   done
 }
 
