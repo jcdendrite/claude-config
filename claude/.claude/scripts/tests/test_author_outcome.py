@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -70,6 +69,13 @@ def _dispatch_complete(tool_id: str, ts: str) -> dict:
     return _user_msg([_tool_result(tool_id, "done")], branch="feat", ts=ts)
 
 
+def _entries(rows: list[dict], file_index: int = 0) -> list[tuple[int, dict]]:
+    """Tags every row with the same source file index -- _round_number_mismatch's
+    own (file_index, row) input shape, for the common single-file case most
+    of its unit tests exercise."""
+    return [(file_index, row) for row in rows]
+
+
 class TestIsCleanMarkerWrite:
     def test_marker_write_chained_with_git_commit_is_matched(self):
         assert ao._is_clean_marker_write("marker.sh write code-review && git commit -m wip") is True
@@ -128,7 +134,7 @@ class TestConfigDirRootForSession:
         assert ao._config_dir_root_for_session(jsonl_b) == root_b
 
 
-class TestLedgerPathForSession:
+class TestLedgerFilesForSession:
     def test_finds_ledger_file_by_session_id_glob(self, tmp_path):
         config_dir_root = tmp_path
         ledger_dir = config_dir_root / "review-narrative-ledger"
@@ -139,22 +145,39 @@ class TestLedgerPathForSession:
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        assert ao._ledger_path_for_session(jsonl) == expected
+        assert ao._ledger_files_for_session(jsonl) == [expected]
 
-    def test_returns_none_when_no_ledger_file_exists(self, tmp_path):
+    def test_returns_empty_list_when_no_ledger_file_exists(self, tmp_path):
         jsonl = tmp_path / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        assert ao._ledger_path_for_session(jsonl) is None
+        assert ao._ledger_files_for_session(jsonl) == []
+
+    def test_finds_every_repo_hash_prefixed_file_for_the_same_session_id(self, tmp_path):
+        """A session spanning two git worktrees of the same repo writes one
+        ledger file per repo-hash under the same session id -- both must be
+        found, sorted by filename."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        first = ledger_dir / ("0" * 64 + ".sess-1.jsonl")
+        second = ledger_dir / ("1" * 64 + ".sess-1.jsonl")
+        second.write_text("")
+        first.write_text("")
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        assert ao._ledger_files_for_session(jsonl) == [first, second]
 
 
-class TestReadLedgerRowsForSession:
+class TestReadLedgerRowEntriesForSession:
     """_write_ledger_file/_ledger_row (the conftest fixtures every other
     test in this file uses) can only ever produce valid-JSON lines, so they
     can't exercise the malformed-line/unreadable-file tolerance
-    _read_ledger_rows_for_session's own docstring claims -- these write the
-    ledger file directly instead."""
+    _read_ledger_row_entries_for_session's own docstring claims -- these
+    write the ledger file directly instead."""
 
     def test_malformed_line_is_skipped_not_fatal(self, tmp_path):
         config_dir_root = tmp_path
@@ -170,12 +193,14 @@ class TestReadLedgerRowsForSession:
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        rows = ao._read_ledger_rows_for_session(jsonl)
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+        rows = [row for _file_index, row in entries]
 
         assert [r["round"] for r in rows] == [1, 2], (
             "the malformed line must be dropped, and the surrounding valid "
             "rows must still be returned in file order"
         )
+        assert any_file_found is True
 
     def test_non_dict_json_line_is_skipped_not_fatal(self, tmp_path):
         """A bare JSON array parses cleanly but isn't a row.
@@ -190,26 +215,77 @@ class TestReadLedgerRowsForSession:
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        rows = ao._read_ledger_rows_for_session(jsonl)
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+        rows = [row for _file_index, row in entries]
 
         assert [r["round"] for r in rows] == [1], (
             "the non-dict line must be dropped, and the surrounding valid "
             "row must still be returned"
         )
+        assert any_file_found is True
 
-    def test_unreadable_ledger_path_returns_empty_list(self, tmp_path):
+    def test_unreadable_ledger_path_returns_empty_list_and_is_not_found(self, tmp_path):
+        """A directory where a ledger file is expected raises OSError
+        (IsADirectoryError) on open() -- the same branch a permission
+        error or other unreadable-file condition would hit. A file that
+        matched the glob but couldn't be opened at all must not count
+        toward any_file_found (see _read_ledger_rows_from_file's own
+        opened=False contract): it's indistinguishable here from the file
+        never having existed, which is exactly what makes it a possibly-
+        swept signal rather than a present-but-empty one."""
         config_dir_root = tmp_path
         ledger_dir = config_dir_root / "review-narrative-ledger"
         ledger_dir.mkdir(parents=True)
-        # A directory where a ledger file is expected raises OSError
-        # (IsADirectoryError) on open() -- the same branch a permission
-        # error or other unreadable-file condition would hit.
         (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).mkdir()
         jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        assert ao._read_ledger_rows_for_session(jsonl) == []
+        assert ao._read_ledger_row_entries_for_session(jsonl) == ([], False)
+
+    def test_file_vanishing_between_glob_and_open_is_not_found(self, tmp_path, monkeypatch):
+        """A file present when _ledger_files_for_session globbed it, but
+        gone by the time _read_ledger_rows_from_file actually opens it
+        (e.g. a concurrent review-ledger.sh clear-stale sweep), must not
+        count toward any_file_found. Simulated here by having the glob
+        stub return a path that was never created, which raises the
+        identical OSError branch a real mid-read deletion would."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        vanished_path = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+        monkeypatch.setattr(ao, "_ledger_files_for_session", lambda _jsonl: [vanished_path])
+
+        assert ao._read_ledger_row_entries_for_session(jsonl) == ([], False)
+
+    def test_one_file_vanishing_does_not_suppress_a_surviving_siblings_rows(self, tmp_path, monkeypatch):
+        """The realistic multi-worktree race: two files glob-matched, one
+        opens fine, the other gets evicted (e.g. by a concurrent
+        clear-stale sweep) before its own open(). Guards against
+        `any_file_opened = any_file_opened or opened` regressing to `and`,
+        which would silently report any_file_found=False and misroute a
+        live session into the possibly-swept bucket even though a real
+        file's rows were read fine."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        surviving_path = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        surviving_path.write_text('{"round":1,"disposition":"ADDRESS"}\n')
+        vanished_path = ledger_dir / ("b" * 64 + ".sess-1.jsonl")
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+        monkeypatch.setattr(
+            ao, "_ledger_files_for_session", lambda _jsonl: [surviving_path, vanished_path]
+        )
+
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+
+        assert any_file_found is True
+        assert [row["round"] for _file_index, row in entries] == [1]
 
     def test_unreadable_ledger_path_prints_diagnostic_to_stderr(self, tmp_path, capsys):
         config_dir_root = tmp_path
@@ -221,11 +297,47 @@ class TestReadLedgerRowsForSession:
         jsonl.parent.mkdir(parents=True)
         jsonl.write_text("")
 
-        ao._read_ledger_rows_for_session(jsonl)
+        ao._read_ledger_row_entries_for_session(jsonl)
 
         captured = capsys.readouterr()
         assert str(ledger_path) in captured.err
         assert captured.out == ""
+
+    def test_merge_sorts_by_event_time_not_file_glob_order(self, tmp_path):
+        """Two files matching the session-id glob, with real (fixture-
+        supplied, not the shared constant default) event_time values that
+        invert filename/glob order -- repo_hash "0"*64 sorts first by
+        glob, but carries the LATER event_time, while "f"*64 sorts last by
+        glob and carries the EARLIER one. Every row in every fixture used
+        elsewhere in this file shares one fixed event_time, which makes
+        Python's stable sort fall back to file-encounter order and would
+        silently mask a broken sort key. Mirrors
+        test_show_merges_rows_from_a_different_repo_hash_in_event_time_order
+        in test_review_ledger_script.py, which pins the same invariant on
+        the shell side."""
+        config_dir_root = tmp_path
+        _write_ledger_file(
+            config_dir_root, "sess-1",
+            [_ledger_row(round=2, disposition="DEFER", event_time="2026-08-01T10:05:00Z")],
+            repo_hash="0" * 64,
+        )
+        _write_ledger_file(
+            config_dir_root, "sess-1",
+            [_ledger_row(round=1, disposition="ADDRESS", event_time="2026-08-01T10:00:00Z")],
+            repo_hash="f" * 64,
+        )
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+
+        assert any_file_found is True
+        assert [row["round"] for _file_index, row in entries] == [1, 2], (
+            "the merged order must follow event_time (the 'f'*64 file's "
+            "earlier row first), not glob/file-encounter order (the "
+            "'0'*64 file sorts first alphabetically but is read second here)"
+        )
 
 
 class TestRoundNumberMismatch:
@@ -236,24 +348,24 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=3, disposition="DEFER"),
         ]
-        assert ao._round_number_mismatch(rows, round_open_count=3) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is False
 
     def test_gap_in_sequence_is_a_mismatch(self):
         """Round 2 opened in the transcript but never got a ledger row --
         a gap between the ledger's own round 1 and round 3."""
         rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=3, disposition="DEFER")]
-        assert ao._round_number_mismatch(rows, round_open_count=3) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is True
 
     def test_ledger_round_with_no_corresponding_open_is_a_mismatch(self):
         rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=5, disposition="DEFER")]
-        assert ao._round_number_mismatch(rows, round_open_count=1) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=1) is True
 
     def test_legacy_only_ledger_is_not_a_mismatch(self):
         """Every row predates the round field -- nothing to evaluate a
         sequence against, so this must not flag every pre-migration
         session as a mismatch."""
         rows = [_ledger_row(round=None, disposition="ADDRESS"), _ledger_row(round=None, disposition="DEFER")]
-        assert ao._round_number_mismatch(rows, round_open_count=2) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is False
 
     def test_empty_ledger_is_not_a_mismatch(self):
         assert ao._round_number_mismatch([], round_open_count=3) is False
@@ -269,7 +381,7 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=1, disposition="DEFER"),
         ]
-        assert ao._round_number_mismatch(rows, round_open_count=3) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is True
 
     def test_round_value_reappearing_after_a_later_round_is_a_mismatch(self):
         """Round rows in file order 1, 2, 1 -- a session-resume counter
@@ -282,7 +394,7 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=1, disposition="ADDRESS"),
         ]
-        assert ao._round_number_mismatch(rows, round_open_count=2) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is True
 
     def test_zero_round_opens_with_a_round_keyed_row_is_a_mismatch(self):
         """round_open_count=0 (the transcript's own round-open detector
@@ -292,7 +404,7 @@ class TestRoundNumberMismatch:
         resolve True rather than slip through as the legacy-only-ledger
         False case above."""
         rows = [_ledger_row(round=1, disposition="ADDRESS")]
-        assert ao._round_number_mismatch(rows, round_open_count=0) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=0) is True
 
     def test_bool_round_only_ledger_is_not_a_mismatch(self):
         """round=True/False are JSON booleans, not round numbers -- Python's
@@ -301,7 +413,92 @@ class TestRoundNumberMismatch:
         round=None row is, so this must not flag a bool-only ledger as a
         mismatch."""
         rows = [_ledger_row(round=True, disposition="ADDRESS"), _ledger_row(round=False, disposition="DEFER")]
-        assert ao._round_number_mismatch(rows, round_open_count=2) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is False
+
+    def test_worktree_switch_without_compaction_across_two_files_is_not_a_mismatch(self):
+        """Rounds 1 and 2 both appended from one worktree's file (index 0),
+        round 3 from a second worktree's file (index 1) -- a clean switch
+        with no round number claimed by more than one file. This is the
+        common non-buggy multi-file case and must not regress into a
+        false-positive exclusion."""
+        entries = [
+            (0, _ledger_row(round=1, disposition="DEFER")),
+            (0, _ledger_row(round=2, disposition="DEFER")),
+            (1, _ledger_row(round=3, disposition="DEFER")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=3) is False
+
+    def test_same_round_number_claimed_by_two_different_files_is_a_mismatch(self):
+        """A worktree-subagent race: file 0 and file 1 each independently
+        append their own row for round 1 -- there is no safe way to pick
+        one file's row as authoritative, so this must fail closed even
+        though each file's own round sequence looks fine in isolation."""
+        entries = [
+            (0, _ledger_row(round=1, disposition="DEFER")),
+            (1, _ledger_row(round=1, disposition="ADDRESS")),
+            (0, _ledger_row(round=2, disposition="DEFER")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+
+    def test_same_file_reusing_a_round_non_contiguously_is_a_mismatch_by_true_identity(self):
+        """Guards a regression that tagged file identity by each entry's
+        own position in the merged list instead of its true source file:
+        file 0 claims round 1, file 1's own unrelated round 2 sits between
+        them, then file 0 claims round 1 again. By true file identity,
+        round 1's file set is {0} alone -- not a two-file collision -- so
+        this must resolve to a mismatch via the round-sequence check
+        (round 1 reappearing after round 2 already appeared), the same
+        path test_round_value_reappearing_after_a_later_round_is_a_mismatch
+        pins for the single-file case."""
+        entries = [
+            (0, _ledger_row(round=1, disposition="DEFER")),
+            (1, _ledger_row(round=2, disposition="DEFER")),
+            (0, _ledger_row(round=1, disposition="ADDRESS")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+
+    def test_round_shared_by_two_files_with_a_third_files_row_interleaved_is_a_mismatch(self):
+        """The complementary case to the same-file reuse above: round 1 is
+        genuinely claimed by two different files (0 and 1), with file 2's
+        own unrelated round sitting between them so the two round-1 rows
+        are non-adjacent in the merged order. Pins that the round-sequence
+        check catches a cross-file collision across the whole blocks list,
+        not just adjacent entries, for a 3-distinct-file merge."""
+        entries = [
+            (0, _ledger_row(round=1, disposition="ADDRESS")),
+            (2, _ledger_row(round=5, disposition="DEFER")),
+            (1, _ledger_row(round=1, disposition="DEFER")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+
+    def test_round_shared_by_non_adjacent_files_zero_and_two_is_a_mismatch(self):
+        """3 distinct file_index values, with the colliding round claimed
+        by files 0 and 2 while file 1's own round sits strictly between
+        them -- pins that the round-sequence check catches the collision
+        across the whole blocks list, not only adjacent ones."""
+        entries = [
+            (0, _ledger_row(round=1, disposition="ADDRESS")),
+            (1, _ledger_row(round=2, disposition="DEFER")),
+            (2, _ledger_row(round=1, disposition="DEFER")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+
+    def test_legacy_file_merged_with_schema_v2_file_is_not_a_mismatch(self):
+        """A legacy-only file (file_index 0, no `round` key at all) merged
+        with a schema-v2 file (file_index 1, real round-keyed rows) --
+        the legacy rows must be filtered out before the sequence check
+        runs, neither triggering nor suppressing the mismatch that the
+        schema-v2 file's own valid 1..2 sequence would otherwise not
+        have. Distinct from test_legacy_only_ledger_is_not_a_mismatch,
+        which covers a single all-legacy file via _entries()'s always
+        file_index=0 tagging."""
+        entries = [
+            (0, _ledger_row(round=None, disposition="DEFER")),
+            (0, _ledger_row(round=None, disposition="ADDRESS")),
+            (1, _ledger_row(round=1, disposition="DEFER")),
+            (1, _ledger_row(round=2, disposition="DEFER")),
+        ]
+        assert ao._round_number_mismatch(entries, round_open_count=2) is False
 
 
 class TestLedgerPossiblySwept:
@@ -309,24 +506,16 @@ class TestLedgerPossiblySwept:
     _NOW_WELL_PAST_WINDOW = corpus._parse_ts("2026-09-15T10:00:00.000Z")  # 45 days after _OLD_RECORD_TS
     _NOW_WITHIN_WINDOW = corpus._parse_ts("2026-08-10T10:00:00.000Z")  # 9 days after _OLD_RECORD_TS
 
-    def _jsonl(self, tmp_path: Path) -> Path:
-        jsonl = tmp_path / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
-        jsonl.parent.mkdir(parents=True)
-        jsonl.write_text("")
-        return jsonl
-
-    def test_old_session_with_no_ledger_file_is_possibly_swept(self, tmp_path):
-        jsonl = self._jsonl(tmp_path)
+    def test_old_session_with_no_ledger_file_is_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is True
 
-    def test_recent_session_with_no_ledger_file_is_not_possibly_swept(self, tmp_path):
-        jsonl = self._jsonl(tmp_path)
+    def test_recent_session_with_no_ledger_file_is_not_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WITHIN_WINDOW,
+            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WITHIN_WINDOW,
         ) is False
 
     def test_widened_cleanup_period_days_does_not_delay_possibly_swept(self, tmp_path):
@@ -336,196 +525,79 @@ class TestLedgerPossiblySwept:
         clear-stale's dynamic cleanupPeriodDays-widened window, so a
         session aged past the floor but still within a wider configured
         value is still flagged as possibly swept."""
-        jsonl = self._jsonl(tmp_path)
         (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is True
 
-    def test_no_code_review_rounds_is_never_possibly_swept(self, tmp_path):
-        jsonl = self._jsonl(tmp_path)
+    def test_no_code_review_rounds_is_never_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            jsonl, [], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            [], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
-    def test_nonempty_ledger_rows_is_never_possibly_swept(self, tmp_path):
-        jsonl = self._jsonl(tmp_path)
+    def test_nonempty_ledger_rows_is_never_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         rows = [_ledger_row(round=1, disposition="DEFER")]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], rows, records, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], rows, records, any_ledger_file_found=True, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
-    def test_ledger_file_present_but_zero_rows_is_never_possibly_swept(self, tmp_path):
+    def test_ledger_file_present_but_zero_rows_is_never_possibly_swept(self):
         """A ledger file that exists but is empty (or every line malformed)
         is a different failure mode from a swept/never-written ledger --
-        this check keys on the file's own presence, not its row count."""
-        config_dir_root = tmp_path
-        ledger_dir = config_dir_root / "review-narrative-ledger"
-        ledger_dir.mkdir(parents=True)
-        (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).write_text("not json\n")
-        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
-        jsonl.parent.mkdir(parents=True)
-        jsonl.write_text("")
+        this check keys on any_ledger_file_found, not the row count."""
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, any_ledger_file_found=True, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
-    def test_explicit_ledger_path_is_trusted_over_a_file_that_actually_exists(self, tmp_path):
-        """A caller-supplied LEDGER_PATH of None is trusted as-is, not
-        re-resolved. A ledger file exists on disk for this session, yet the
-        call still evaluates as possibly swept -- proof that the explicit
-        None short-circuited the internal _ledger_path_for_session
-        lookup."""
-        config_dir_root = tmp_path
-        ledger_dir = config_dir_root / "review-narrative-ledger"
-        ledger_dir.mkdir(parents=True)
-        (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).write_text('{"round": 1}\n')
-        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
-        jsonl.parent.mkdir(parents=True)
-        jsonl.write_text("")
-        records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW, ledger_path=None,
-        ) is True
-
-    def test_explicit_ledger_path_provided_short_circuits_without_an_internal_resolve(self, tmp_path):
-        """A caller-supplied LEDGER_PATH that isn't None is trusted as-is
-        too: a session with no ledger file on disk still evaluates as not
-        possibly swept when a (fake) resolved path is passed in directly."""
-        jsonl = self._jsonl(tmp_path)
-        records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
-            ledger_path=tmp_path / "review-narrative-ledger" / ("a" * 64 + ".sess-1.jsonl"),
-        ) is False
-
-    def test_no_parseable_timestamp_is_never_possibly_swept(self, tmp_path):
-        jsonl = self._jsonl(tmp_path)
+    def test_no_parseable_timestamp_is_never_possibly_swept(self):
         records = [{"timestamp": None}, {}]
         assert ao._ledger_possibly_swept(
-            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
-    def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self, tmp_path):
-        """max(timestamps) == now - _LEDGER_SWEEP_FLOOR_DAYS * 86400 sits on
-        the strict `<` inequality's excluded side, one second short of
-        swept -- the fixed floor _ledger_possibly_swept actually compares
-        against."""
-        jsonl = self._jsonl(tmp_path)
+    def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self):
+        """The earliest round-open's own timestamp == now -
+        _LEDGER_SWEEP_FLOOR_DAYS * 86400 sits on the strict `<`
+        inequality's excluded side, one second short of swept -- the
+        fixed floor _ledger_possibly_swept actually compares against."""
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
         now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is False
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False, now=now) is False
 
-    def test_boundary_one_second_past_sweep_window_is_possibly_swept(self, tmp_path):
+    def test_boundary_one_second_past_sweep_window_is_possibly_swept(self):
         """One second older than the exact boundary above crosses onto
         the swept side of the same strict `<` inequality."""
-        jsonl = self._jsonl(tmp_path)
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
         now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400 + 1
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is True
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False, now=now) is True
 
-    def test_now_omitted_defaults_to_the_real_clock(self, tmp_path, monkeypatch):
+    def test_now_omitted_defaults_to_the_real_clock(self, monkeypatch):
         """now=None (the default) falls back to the real time.time() call,
         confirmed here by monkeypatching it directly rather than passing an
         override."""
-        jsonl = self._jsonl(tmp_path)
         monkeypatch.setattr(ao.time, "time", lambda: self._NOW_WELL_PAST_WINDOW)
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records) is True
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False) is True
 
-
-class TestCleanupPeriodDays:
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        """functools.cache is process-global; cleared before and after
-        every test in this class so a config_dir_root Path from one test
-        can never leak a stale cached result into another test, mirroring
-        TestRepoTrackedAgentTypeNames' identical precedent in
-        test_transcript_analysis.py."""
-        ao._cleanup_period_days.cache_clear()
-        yield
-        ao._cleanup_period_days.cache_clear()
-
-    def test_defaults_to_thirty_when_settings_json_absent(self, tmp_path):
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_custom_cleanup_period_days_is_honored(self, tmp_path):
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
-        assert ao._cleanup_period_days(tmp_path) == 60
-
-    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path):
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 5}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path):
-        (tmp_path / "settings.json").write_text("{not valid json")
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path):
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": "60"}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_boolean_cleanup_period_days_defaults_to_thirty(self, tmp_path):
-        """bool is an int subclass in Python -- a JSON true/false must not
-        be accepted as a day count."""
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": True}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
-    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
-        self, tmp_path, cleanup_period_days,
-    ):
-        """json.loads parses a whole-number float like 90.0 as float, never
-        int -- this pins that isinstance(value, int) rejects it and the
-        result is the floor (30), never the truncated integer (90)."""
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_absurdly_large_all_digit_value_floors_to_thirty(self, tmp_path):
-        """Mirrors _lib.sh's own
-        test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring
-        in test_lib.py, and its identical 99999999999999999999 value: a
-        value this large must floor here too, rather than flow unfloored
-        into the max() comparison via Python's unbounded int arithmetic."""
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(self, tmp_path):
-        """Mirrors _lib.sh's own
-        test_eight_digit_value_below_the_nine_digit_guard_is_not_floored:
-        99999999 (8 digits) sits one digit under the guard's 10**8
-        threshold and is a real, above-floor value that must not be
-        truncated by the guard firing early."""
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 99999999}))
-        assert ao._cleanup_period_days(tmp_path) == 99999999
-
-    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(self, tmp_path):
-        """Mirrors _lib.sh's own
-        test_nine_digit_value_at_the_guard_threshold_floors_to_thirty:
-        100000000 (10**8, 9 digits) is the guard's exact threshold -- pins
-        that the boundary itself floors, not just values far past it."""
-        (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 100000000}))
-        assert ao._cleanup_period_days(tmp_path) == 30
-
-    def test_cache_resolves_two_distinct_config_dir_roots_independently(self, tmp_path):
-        """The one invariant the cache exists to serve: two roots resolved
-        in the same process must not collide on -- or overwrite -- each
-        other's cached value."""
-        root_a = tmp_path / "root-a"
-        root_b = tmp_path / "root-b"
-        root_a.mkdir()
-        root_b.mkdir()
-        (root_a / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
-        (root_b / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 90}))
-
-        assert ao._cleanup_period_days(root_a) == 60
-        assert ao._cleanup_period_days(root_b) == 90
+    def test_fresh_newest_record_but_stale_earliest_round_open_is_possibly_swept(self):
+        """The session's LAST record is fresh (well within the sweep
+        window), but the record at its earliest code-review round's own
+        open_idx is stale -- keying on the newest record instead (the
+        prior behavior) would read this session as recent and miss it.
+        This is the exact case Fix 2 changes behavior for."""
+        records = [
+            {"timestamp": self._OLD_RECORD_TS},  # round 1 opens here, index 0
+            {"timestamp": "2026-09-14T10:00:00.000Z"},  # fresh, unrelated later activity
+        ]
+        assert ao._ledger_possibly_swept(
+            [(0, 2)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+        ) is True
 
 
 class TestLedgerSweepFloorDaysMatchesLibSh:
@@ -545,78 +617,6 @@ class TestLedgerSweepFloorDaysMatchesLibSh:
         )
         assert result.returncode == 0, result.stderr
         assert int(result.stdout) == ao._LEDGER_SWEEP_FLOOR_DAYS
-
-
-class TestLedgerSweepWindowMatchesShellScript:
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        """functools.cache is process-global, keyed on config_dir (a
-        Path); pytest's tmp_path directory name is truncated+numbered
-        from the test's own node id, so this test's two parametrize
-        cases can land on the identical tmp_path string and otherwise
-        hit each other's cached result. See TestCleanupPeriodDays'
-        identical fixture above."""
-        ao._cleanup_period_days.cache_clear()
-        yield
-        ao._cleanup_period_days.cache_clear()
-
-    @pytest.mark.parametrize(
-        "cleanup_period_days",
-        [
-            pytest.param(45, id="above-floor"),
-            pytest.param(5, id="below-floor-both-sides-floor-to-30"),
-        ],
-    )
-    def test_bash_and_python_resolve_the_same_window_from_the_same_settings_json(
-        self, tmp_path, cleanup_period_days,
-    ):
-        """review-ledger.sh's _ledger_sweep_window_days and this module's
-        _cleanup_period_days each read cleanupPeriodDays from the same
-        settings.json independently -- this pins them to the identical
-        resolved day count rather than a shared literal, at both a value
-        above the floor and one below it, so the two languages' floor
-        constants can't silently drift apart on the below-floor branch.
-        Exercises bash's side through the public clear-stale surface
-        (there is no unit-test seam into an unexported shell function:
-        sourcing review-ledger.sh runs its own top-level `exit`
-        unconditionally)."""
-        home = tmp_path / "home"
-        config_dir = home / ".claude"
-        config_dir.mkdir(parents=True)
-        (config_dir / "settings.json").write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
-
-        python_days = ao._cleanup_period_days(config_dir)
-        assert python_days == max(cleanup_period_days, 30)
-
-        ledger_dir = config_dir / "review-narrative-ledger"
-        ledger_dir.mkdir()
-        fresh = ledger_dir / ("a" * 64 + ".fresh-session.jsonl")
-        stale = ledger_dir / ("b" * 64 + ".stale-session.jsonl")
-        fresh.write_text('{"finding":"fresh"}\n')
-        stale.write_text('{"finding":"stale"}\n')
-        # +/- a full day of margin around the resolved boundary avoids
-        # relying on find(1)'s own day-truncation rounding at the exact edge.
-        fresh_age = time.time() - (python_days - 1) * 86400
-        stale_age = time.time() - (python_days + 2) * 86400
-        os.utime(fresh, (fresh_age, fresh_age))
-        os.utime(stale, (stale_age, stale_age))
-
-        env = {**os.environ, "HOME": str(home)}
-        env.pop("CLAUDE_CONFIG_DIR", None)
-        result = subprocess.run(
-            ["bash", str(_REVIEW_LEDGER_SH), "clear-stale", "--dry-run"],
-            cwd=tmp_path, env=env, capture_output=True, text=True,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert fresh.name not in result.stdout, (
-            f"a {python_days - 1}-day-old file must survive a {python_days}-day "
-            f"window: {result.stdout}"
-        )
-        assert stale.name in result.stdout, (
-            f"a {python_days + 2}-day-old file must be evicted by a "
-            f"{python_days}-day window: {result.stdout}"
-        )
 
 
 class TestClassifyRound:
@@ -731,8 +731,8 @@ class TestReviewLedgerSubprocessIntegration:
         )
 
     def _fake_transcript_path(self, home: Path) -> Path:
-        # _read_ledger_rows_for_session only reads jsonl.stem (the session
-        # id) and walks three parents up to the config-dir root -- see
+        # _read_ledger_row_entries_for_session only reads jsonl.stem (the
+        # session id) and walks three parents up to the config-dir root -- see
         # _config_dir_root_for_session's own docstring for that resolution.
         # A placeholder transcript path with the right stem and depth under
         # $HOME/.claude is therefore enough.
@@ -759,8 +759,10 @@ class TestReviewLedgerSubprocessIntegration:
         assert result.returncode == 0, result.stderr
 
         jsonl = self._fake_transcript_path(home)
-        rows = ao._read_ledger_rows_for_session(jsonl)
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+        rows = [row for _file_index, row in entries]
         assert len(rows) == 1
+        assert any_file_found is True
         data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
         classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
         assert classification == ao._OUTCOME_FAILURE
@@ -776,21 +778,24 @@ class TestReviewLedgerSubprocessIntegration:
         assert result.returncode == 0, result.stderr
 
         jsonl = self._fake_transcript_path(home)
-        rows = ao._read_ledger_rows_for_session(jsonl)
+        entries, any_file_found = ao._read_ledger_row_entries_for_session(jsonl)
+        rows = [row for _file_index, row in entries]
         assert len(rows) == 1
+        assert any_file_found is True
         data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
         classification, _matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
         assert classification == ao._OUTCOME_PASS
 
 
-class TestComputeAuthorOutcomesLedgerPathResolution:
-    """compute_author_outcomes must resolve each session's ledger path
-    exactly once and reuse it for both the row-read and the sweep check,
-    not glob for it once per lookup. The resolution must not be cached
-    across sessions: a session seen later in the same run still gets its
-    own fresh resolution, not one read through an earlier snapshot."""
+class TestComputeAuthorOutcomesLedgerFilesResolution:
+    """compute_author_outcomes must resolve each session's ledger files
+    exactly once and reuse the result for the round-number-mismatch check,
+    the sweep check, and every round's own classification, not glob for it
+    once per lookup. The resolution must not be cached across sessions: a
+    session seen later in the same run still gets its own fresh
+    resolution, not one read through an earlier snapshot."""
 
-    def test_ledger_path_for_session_is_called_once_per_session(self, fake_projects, monkeypatch):
+    def test_ledger_files_for_session_is_called_once_per_session(self, fake_projects, monkeypatch):
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
@@ -798,17 +803,17 @@ class TestComputeAuthorOutcomesLedgerPathResolution:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        real_ledger_path_for_session = ao._ledger_path_for_session
+        real_ledger_files_for_session = ao._ledger_files_for_session
         call_count = 0
 
-        def _counting_ledger_path_for_session(jsonl):
+        def _counting_ledger_files_for_session(jsonl):
             nonlocal call_count
             call_count += 1
-            return real_ledger_path_for_session(jsonl)
+            return real_ledger_files_for_session(jsonl)
 
-        monkeypatch.setattr(ao, "_ledger_path_for_session", _counting_ledger_path_for_session)
+        monkeypatch.setattr(ao, "_ledger_files_for_session", _counting_ledger_files_for_session)
         ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert call_count == 1, f"expected one glob for sess-1's ledger path, got {call_count}"
+        assert call_count == 1, f"expected one glob for sess-1's ledger files, got {call_count}"
 
     def test_second_sessions_ledger_file_created_between_sessions_is_still_seen(self, fake_projects, monkeypatch):
         """A corpus-wide index memoized once before the loop starts would
@@ -829,15 +834,15 @@ class TestComputeAuthorOutcomesLedgerPathResolution:
                 ),
                 _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
             ])
-        real_ledger_path_for_session = ao._ledger_path_for_session
+        real_ledger_files_for_session = ao._ledger_files_for_session
 
         def _write_session_2_ledger_once_session_1_resolves(jsonl):
-            resolved = real_ledger_path_for_session(jsonl)
+            resolved = real_ledger_files_for_session(jsonl)
             if jsonl.stem == session_1:
                 _seed_ledger(fake_projects, session_2, [_ledger_row(round=1, disposition="ADDRESS")])
             return resolved
 
-        monkeypatch.setattr(ao, "_ledger_path_for_session", _write_session_2_ledger_once_session_1_resolves)
+        monkeypatch.setattr(ao, "_ledger_files_for_session", _write_session_2_ledger_once_session_1_resolves)
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
 
@@ -1393,43 +1398,6 @@ class TestRoundNumberMismatchIntegration:
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
 
-    def test_two_worktrees_of_one_session_id_trigger_the_mismatch_exclusion(self, fake_projects):
-        """Accepted risk (docs/transcript-analysis.md's author-outcome
-        section): a session spanning more than one worktree writes one
-        ledger file per repo-hash under the same session id, but
-        _ledger_path_for_session's sorted-first glob picks only one of
-        them. Here the picked file (repo_hash "0"*64, sorts first) covers
-        only round 1 of the session's two code-review rounds, while the
-        other worktree's file (repo_hash "1"*64, never read) covers both --
-        pinning that the round-number-mismatch exclusion this design
-        already relies on for a same-worktree gap also fires for a genuine
-        cross-worktree collision, dropping the session's dispatches from
-        `outcomes`."""
-        session_id = "sess-multi-worktree"
-        config_dir_root = _config_dir_root(fake_projects)
-        _write_ledger_file(
-            config_dir_root, session_id,
-            [_ledger_row(round=1, disposition="ADDRESS")],
-            repo_hash="0" * 64,
-        )
-        _write_ledger_file(
-            config_dir_root, session_id,
-            [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=2, disposition="DEFER")],
-            repo_hash="1" * 64,
-        )
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
-            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
-            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s2", "code-review")]),
-        ])
-
-        result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
-        # a1's attributed round (round 1, ADDRESS from the picked file)
-        # would otherwise be a FAILURE -- excluded by the mismatch instead.
-        assert sum(result["outcomes"].values()) == 0
-
     def test_zero_round_opens_with_a_round_keyed_ledger_excludes_the_unresolved_dispatch(
         self, fake_projects,
     ):
@@ -1510,6 +1478,108 @@ class TestRoundNumberMismatchIntegration:
         # rounds 1 and 3), but its own marker write still lets the
         # kill-switch-inferred-clean fallback fire.
         assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
+
+
+class TestMultiWorktreeLedgerMerge:
+    """A session spanning more than one git worktree of the same repo
+    writes one ledger file per repo-hash under the same session id.
+    compute_author_outcomes merges every matching file (see
+    _read_ledger_row_entries_for_session) rather than reading only the
+    sorted-first one."""
+
+    def test_worktree_switch_without_compaction_classifies_every_round_correctly(self, fake_projects):
+        """Rounds 1 and 2 both appended from one worktree's ledger file,
+        round 3 from a second worktree's file after a mid-session worktree
+        switch -- no round number is claimed by more than one file, so
+        this must not be flagged as a mismatch. This is the common
+        non-buggy multi-file case."""
+        session_id = "sess-multi-worktree-clean-switch"
+        config_dir_root = _config_dir_root(fake_projects)
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=2, disposition="DEFER")],
+            repo_hash="0" * 64,
+        )
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=3, disposition="DEFER")],
+            repo_hash="1" * 64,
+        )
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _dispatch_start("a1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:02:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:03:00.000Z", content=[_skill_block("s3", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:04:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        # a1 attributes to round 3 (the second file's own DEFER row) -- PASS.
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
+
+    def test_same_round_number_claimed_by_two_worktrees_is_excluded_as_a_mismatch(self, fake_projects):
+        """A worktree-subagent race: the parent session's own worktree
+        (repo_hash "0"*64) and a subagent dispatched into a different
+        worktree under the same parent session id (repo_hash "1"*64) each
+        independently append their own row for round 1. Neither file's own
+        round 1 row is safe to treat as authoritative, so the session's
+        dispatches must be excluded from the headline aggregate instead of
+        silently keeping one file's version."""
+        session_id = "sess-multi-worktree-interleaved"
+        config_dir_root = _config_dir_root(fake_projects)
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="ADDRESS")],
+            repo_hash="0" * 64,
+        )
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="DEFER")],
+            repo_hash="1" * 64,
+        )
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # a1's attributed round (round 1) would otherwise be a FAILURE (the
+        # "0"*64 file's own ADDRESS row) -- excluded by the mismatch instead.
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_one_worktrees_ledger_file_already_swept_still_reads_the_survivor_without_crashing(
+        self, fake_projects,
+    ):
+        """One of the session's two ledger files has already been evicted
+        by retention sweep -- only the survivor matches the glob. This must
+        not crash, and (since the survivor alone shows a gap against the
+        transcript's own two round-opens) fails closed via the existing
+        round-number-mismatch exclusion rather than misclassifying the
+        session as clean."""
+        session_id = "sess-multi-worktree-partial-sweep"
+        config_dir_root = _config_dir_root(fake_projects)
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="ADDRESS")],
+            repo_hash="0" * 64,
+        )
+        # The "1"*64 file that used to cover round 2 has already been
+        # swept -- deliberately not written here.
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s2", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert sum(result["outcomes"].values()) == 0
 
 
 class TestLedgerPossiblySweptIntegration:
@@ -1610,6 +1680,33 @@ class TestLedgerPossiblySweptIntegration:
         # a3 never gets a paired tool_result, so it's undecidable regardless
         # of the exclusion above.
         assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
+
+    def test_ledger_file_vanishing_between_glob_and_open_is_possibly_swept(
+        self, fake_projects, monkeypatch,
+    ):
+        """Before _read_ledger_row_entries_for_session distinguished a
+        failed open() from a successful one, any_ledger_file_found stayed
+        True purely from the glob snapshot, so a ledger file evicted by a
+        concurrent review-ledger.sh clear-stale sweep between the glob and
+        the read silently read as 'found' and this old session was never
+        flagged possibly-swept. Simulated by stubbing the glob to return a
+        path that was never created."""
+        session_id = "sess-vanished-ledger"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+        vanished_path = (
+            _config_dir_root(fake_projects) / "review-narrative-ledger" / ("a" * 64 + f".{session_id}.jsonl")
+        )
+        monkeypatch.setattr(ao, "_ledger_files_for_session", lambda _jsonl: [vanished_path])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-09-15T10:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_LEDGER_POSSIBLY_SWEPT] == 1
 
 
 class TestMultiRootLedgerLookup:

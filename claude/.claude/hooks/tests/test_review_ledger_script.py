@@ -914,6 +914,128 @@ class TestReviewLedgerShow:
         record = json.loads(result.stdout.splitlines()[0])
         assert record["finding"] == "Missing error handling in foo()"
 
+    def test_show_merges_rows_from_a_different_repo_hash_in_event_time_order(
+        self, isolated_home, git_repo
+    ):
+        """A session that appends from two different git worktrees of the
+        same repo produces two ledger files under the shared LEDGER_DIR, one
+        per repo-hash. `show` must merge both files' rows rather than print
+        only the current worktree's, and order the merge by event_time
+        rather than by glob/alphabetical file order."""
+        _seed_session(isolated_home, SID)
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+
+        # "0"*64 sorts before "f"*64 alphabetically, but carries the LATER
+        # event_time -- only a real event_time sort, not glob order, puts
+        # this file's row second in the output.
+        (ledger_dir / ("0" * 64 + f".{SID}.jsonl")).write_text(
+            json.dumps({"finding": "alpha-first-file", "event_time": "2024-06-01T00:00:00Z"})
+            + "\n"
+        )
+        (ledger_dir / ("f" * 64 + f".{SID}.jsonl")).write_text(
+            json.dumps({"finding": "alpha-last-file", "event_time": "2024-01-01T00:00:00Z"})
+            + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
+        assert findings == ["alpha-last-file", "alpha-first-file"], (
+            "show must merge rows from every repo-hash file for this session "
+            "id and sort the result by event_time, not glob/alphabetical order"
+        )
+
+    def test_show_tags_each_merged_row_with_its_own_source_repo_hash(self, isolated_home, git_repo):
+        """The one tool engineers use to debug the round-number-mismatch
+        race a multi-worktree session can produce (see
+        author_outcome.py's _round_number_mismatch) needs to tell which
+        worktree wrote which row -- each merged row must carry a
+        source_repo_hash matching the repo-hash prefix of the ledger file
+        it actually came from, not review-ledger.sh append's own write
+        schema (which never carries this field; see
+        test_append_creates_ledger_with_expected_fields's exact-match
+        assertion for that contract)."""
+        _seed_session(isolated_home, SID)
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        repo_hash_a = "0" * 64
+        repo_hash_b = "f" * 64
+        (ledger_dir / f"{repo_hash_a}.{SID}.jsonl").write_text(
+            json.dumps({"finding": "from-file-a", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
+        )
+        (ledger_dir / f"{repo_hash_b}.{SID}.jsonl").write_text(
+            json.dumps({"finding": "from-file-b", "event_time": "2024-06-01T00:00:00Z"}) + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        by_finding = {r["finding"]: r["source_repo_hash"] for r in records}
+        assert by_finding == {"from-file-a": repo_hash_a, "from-file-b": repo_hash_b}
+
+    def test_show_sorts_a_row_missing_event_time_first(self, isolated_home, git_repo):
+        """A pre-existing schema-v1 row (Phase 1 predates the event_time
+        field) sorts before any row carrying a real timestamp, via the
+        `// ""` fallback -- empty string sorts before any ISO-8601 string."""
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            json.dumps({"finding": "has-timestamp", "event_time": "2024-01-01T00:00:00Z"})
+            + "\n"
+            + json.dumps({"finding": "schema-v1-no-timestamp"})
+            + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
+        assert findings == ["schema-v1-no-timestamp", "has-timestamp"]
+
+    def test_show_falls_back_to_unsorted_cat_when_jq_fails(self, isolated_home, git_repo, tmp_path):
+        """Before this PR, `show` never touched jq (plain `cat`); the merge
+        sort above gives it a new jq dependency with its own failure mode.
+        A `jq` shim on PATH ahead of the real one, that always exits
+        nonzero, makes `_lib_jq` fail exactly like a missing jq would.
+        `show` must still print every row -- unsorted, since the merge
+        never ran -- rather than losing them. The file-vanishing-mid-read
+        race for the shell side specifically is accepted as untested here:
+        it has no monkeypatch seam in bash, so constructing it
+        deterministically (a real concurrent delete mid-`_lib_jq` call) is
+        impractical."""
+        fake_jq = tmp_path / "jq"
+        fake_jq.write_text("#!/bin/bash\nexit 1\n")
+        fake_jq.chmod(0o755)
+        _seed_session(isolated_home, SID)
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        # Deliberately out of event_time order in the raw file -- since the
+        # sort never runs, the fallback must reproduce this exact raw
+        # (unsorted) order, not the event_time-sorted one the tests above pin.
+        (ledger_dir / ("0" * 64 + f".{SID}.jsonl")).write_text(
+            json.dumps({"finding": "written-first", "event_time": "2024-06-01T00:00:00Z"})
+            + "\n"
+            + json.dumps({"finding": "written-second", "event_time": "2024-01-01T00:00:00Z"})
+            + "\n"
+        )
+
+        result = _run(
+            ["show"], cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "could not sort ledger rows for display" in result.stderr
+        findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
+        assert findings == ["written-first", "written-second"], (
+            "show must still print every row via the raw cat fallback when "
+            "jq fails, in on-disk (unsorted) order"
+        )
+
 
 class TestReviewLedgerLocking:
     def test_lock_released_after_successful_append(self, isolated_home, git_repo):

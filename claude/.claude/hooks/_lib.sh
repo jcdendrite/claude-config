@@ -3570,9 +3570,11 @@ _lib_append_json_line_locked() {
 
 # Floor for _ledger_sweep_window_days below: the ledger must never sweep
 # more aggressively than the transcript retention it depends on (GH-973).
-# author_outcome.py's own _LEDGER_SWEEP_FLOOR_DAYS mirrors this value and
-# floors identically from the same settings.json key, with no shared
-# process call between the two languages.
+# review-ledger.sh's own clear-stale subcommand, via _ledger_sweep_window_days
+# below, is the only production reader of cleanupPeriodDays.
+# author_outcome.py's _LEDGER_SWEEP_FLOOR_DAYS duplicates this floor
+# constant, with no corresponding helper function on the Python side to
+# cross-reference.
 _LEDGER_SWEEP_FLOOR_DAYS=30
 
 # _ledger_sweep_window_days SETTINGS_FILE
@@ -3591,8 +3593,7 @@ _LEDGER_SWEEP_FLOOR_DAYS=30
 # jq's `select(type == "number")` passes a fractional value like 45.5 (or
 # a whole-number float like 90.0, which jq prints as "90.0", not "90")
 # through unchanged; the digit-only case pattern below then rejects it as
-# non-integer rather than truncating it. This is deliberate and matches
-# author_outcome.py's own _cleanup_period_days.
+# non-integer rather than truncating it. This is deliberate.
 #
 # Side effects: each fallback branch above prints a diagnostic to stderr
 # naming why it floored, matching _lib_capped_for's stderr-diagnostic

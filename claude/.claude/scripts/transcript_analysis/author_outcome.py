@@ -11,17 +11,18 @@ Imports corpus, pricing, render, review_rounds, and scope by module
 (attribute access, not by name). This matches review_rounds.py's own
 cross-module discipline (see scope.py's own top-of-file comment for why).
 
-Classifies each round by reading its own review-narrative-ledger file
-directly. The file is located per session by a session-id glob, a direct
-1:1 point lookup, since session ids are globally unique (UUIDs) and need
-no repo-hash join. The transcript is still the sole source for round-open
-positions, dispatch completion ordering, and the marker-write fallback
-signal. Only the disposition/authoring-agent values move to the ledger.
+Classifies each round by reading its own review-narrative-ledger files
+directly. Every file matching a session-id glob is read and merged --
+session ids are globally unique (UUIDs), but a session spanning more than
+one git worktree of the same repo appends under more than one repo-hash
+prefix, so this is a merge across every matching file, not a 1:1 point
+lookup. The transcript is still the sole source for round-open positions,
+dispatch completion ordering, and the marker-write fallback signal. Only
+the disposition/authoring-agent values move to the ledger.
 """
 from __future__ import annotations
 
 import argparse
-import functools
 import itertools
 import json
 import os
@@ -78,9 +79,11 @@ _DATA_QUALITY_KEYS = (
 # Code config-dir root -- mirrors review-ledger.sh's own $LEDGER_DIR.
 _REVIEW_LEDGER_DIRNAME = "review-narrative-ledger"
 
-# Floor for _cleanup_period_days: see _lib.sh's own _LEDGER_SWEEP_FLOOR_DAYS
-# for the retention rationale (GH-973). Both sides independently read the
-# same settings.json `cleanupPeriodDays` key and floor it identically.
+# Fixed floor _ledger_possibly_swept compares against below: see _lib.sh's
+# own _LEDGER_SWEEP_FLOOR_DAYS for the retention rationale (GH-973) and the
+# duplicated-literal precedent. review-ledger.sh's own clear-stale
+# subcommand is the only production reader of cleanupPeriodDays; this
+# module never reads that setting.
 _LEDGER_SWEEP_FLOOR_DAYS = 30
 
 
@@ -158,107 +161,34 @@ def _config_dir_root_for_session(jsonl: Path) -> Path:
     return jsonl.parent.parent.parent
 
 
-@functools.cache
-def _cleanup_period_days(config_dir_root: Path) -> int:
-    """Claude Code's own `cleanupPeriodDays` setting from
-    <config_dir_root>/settings.json, floored at _LEDGER_SWEEP_FLOOR_DAYS.
-    Mirrors review-ledger.sh's own _ledger_sweep_window_days.
+def _ledger_files_for_session(jsonl: Path) -> list[Path]:
+    """Every review-narrative-ledger file for this transcript's own
+    session id, sorted by filename for a deterministic read order. The
+    ledger filename is `<repo_hash>.<session_id>.jsonl` -- one per git
+    worktree that appended to this session id -- so a session spanning
+    more than one worktree of the same repo matches more than one file
+    here, all of which _read_ledger_row_entries_for_session reads and
+    merges.
 
-    Single settings.json read -- deliberately skips Claude Code's full
-    settings-precedence resolution (project-local overrides, enterprise-
-    managed settings, CLI flag overrides), which this retention-floor
-    purpose doesn't need.
-
-    Defaults to the floor when:
-    - the file is missing or unreadable
-    - its content isn't valid JSON
-    - cleanupPeriodDays is absent
-    - its value isn't a whole number
-
-    bool is excluded even though it's an int subclass in Python, since a
-    JSON true/false is not a day count. A whole-number JSON float (e.g.
-    90.0) is also excluded -- json.loads parses it as float, never int --
-    rejected rather than truncated, matching review-ledger.sh's own
-    bash-side rejection of the same shape.
-
-    A value of 10**8 (100,000,000 -- review-ledger.sh's own 9-digit
-    threshold) or more floors the same way, instead of flowing into the
-    max() comparison below: Python's arbitrary-precision int has no
-    equivalent to the integer-range failure bash's own -lt comparison
-    guards against, but leaving this unbounded would let an absurdly
-    large value pass through unfloored here while _ledger_sweep_window_days
-    floors it in bash, drifting the two languages' resolved sweep window
-    apart for the same settings.json.
-
-    Cached per config_dir_root: every session under one root shares the
-    same settings.json, so an uncached call would re-parse it once per
-    session instead of once per root. Unbounded is safe because the key
-    space is config-dir roots (`scope.declared_transcript_roots`), not
-    sessions.
-    """
-    try:
-        raw = json.loads((config_dir_root / "settings.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return _LEDGER_SWEEP_FLOOR_DAYS
-    value = raw.get("cleanupPeriodDays") if isinstance(raw, dict) else None
-    if not isinstance(value, int) or isinstance(value, bool):
-        return _LEDGER_SWEEP_FLOOR_DAYS
-    if value >= 100_000_000:
-        return _LEDGER_SWEEP_FLOOR_DAYS
-    return max(value, _LEDGER_SWEEP_FLOOR_DAYS)
-
-
-def _ledger_path_for_session(jsonl: Path) -> Path | None:
-    """The one review-narrative-ledger file for this transcript's own
-    session id, found by session-id glob. Correct only under the
-    precondition that at most one repo-hash writes a ledger file for this
-    session id. The ledger filename is `<repo_hash>.<session_id>.jsonl`.
-    A session spanning more than one worktree of the same repo produces
-    two files matching the glob, and this returns only one of them. See
-    docs/transcript-analysis.md's "Accepted risk: a session spanning
-    multiple worktrees..." entry for the round-number-mismatch exclusion
-    this currently relies on.
-
-    None when no such file exists:
+    [] when no such file exists:
     - the kill switch was on for the session's entire lifetime
     - the session predates review-ledger.sh
-    - its ledger was already swept
+    - every one of its ledger files was already swept
     """
     session_id = jsonl.stem
     ledger_dir = _config_dir_root_for_session(jsonl) / _REVIEW_LEDGER_DIRNAME
-    matches = sorted(ledger_dir.glob(f"*.{session_id}.jsonl"))
-    return matches[0] if matches else None
+    return sorted(ledger_dir.glob(f"*.{session_id}.jsonl"))
 
 
-def _read_ledger_rows_for_session(jsonl: Path) -> list[dict]:
-    """Every JSON row from this session's own ledger file, in file order.
-
-    [] when no ledger file exists for this session -- callers treat that
-    identically, per round, to "no ledger row matched this round". A
-    malformed line is skipped, not fatal, mirroring
-    corpus._parse_jsonl_records' own per-line tolerance for a transcript
-    file with a corrupted line.
-    """
-    return _read_ledger_rows_for_path(_ledger_path_for_session(jsonl))
-
-
-def _read_ledger_rows_for_path(ledger_path: Path | None) -> list[dict]:
-    """Every JSON row from LEDGER_PATH, already resolved by the caller --
-    see _read_ledger_rows_for_session's own docstring for the malformed-
-    line and missing-file behavior this implements.
-
-    compute_author_outcomes' loop calls this directly with a path it
-    already resolved via _ledger_path_for_session. That avoids a second
-    glob for sessions where _ledger_possibly_swept would otherwise
-    re-resolve the same path itself -- an open review round with no
-    matching ledger row, which covers:
-
-    - a legacy (pre-schema-v2) session
-    - a kill-switch session
-    - a swept session
-    """
-    if ledger_path is None:
-        return []
+def _read_ledger_rows_from_file(ledger_path: Path) -> tuple[list[dict], bool]:
+    """(every JSON row from one ledger file, in file order; whether the
+    file itself could be opened at all). A malformed line is skipped, not
+    fatal, mirroring corpus._parse_jsonl_records' own per-line tolerance
+    for a transcript file with a corrupted line. A file that opens
+    successfully but yields zero valid rows still reports opened=True.
+    opened=False only when open() itself raised OSError -- e.g. the file
+    matched a caller's earlier glob but was deleted or became unreadable
+    before this call."""
     rows: list[dict] = []
     try:
         with open(ledger_path) as fh:
@@ -277,20 +207,60 @@ def _read_ledger_rows_for_path(ledger_path: Path | None) -> list[dict]:
             f"author-outcome: couldn't read ledger file {ledger_path}: {exc}",
             file=sys.stderr,
         )
-        return []
-    return rows
+        return [], False
+    return rows, True
 
 
-def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bool:
-    """True if this session's ledger `round` values, in first-occurrence
-    file order, don't equal the exact 1..round_open_count sequence the
-    transcript's own round-open detector found for this session:
+def _read_ledger_row_entries_for_session(jsonl: Path) -> tuple[list[tuple[int, dict]], bool]:
+    """Every JSON row from every ledger file matching this session's own
+    id, each tagged with source_index -- that file's own position in
+    _ledger_files_for_session's sorted order.
+
+    Rows are concatenated file by file in that sorted order, then
+    stable-sorted by each row's own `event_time` field (an ISO-8601 UTC
+    string that sorts correctly lexically; missing -> "" so a legacy
+    pre-event_time row sorts first). Python's sort is stability-guaranteed,
+    so ties keep that original concatenation (file-encounter) order.
+    review-ledger.sh's own `show` merge (`sort_by(.event_time // "")`) has
+    no such guarantee from jq -- see that comment for the caveat.
+
+    Returns (entries, any_file_found). any_file_found is True iff at
+    least one glob-matched file was also successfully opened. A file that
+    matched the glob but raised OSError on open() -- e.g. evicted by
+    review-ledger.sh clear-stale in the window between the glob and this
+    read -- does not count, which is what distinguishes that race from N
+    opened files that all round-trip to zero valid JSON rows. See
+    _ledger_possibly_swept, the only caller that cares about the
+    distinction.
+    """
+    files = _ledger_files_for_session(jsonl)
+    entries: list[tuple[int, dict]] = []
+    any_file_opened = False
+    for file_index, ledger_path in enumerate(files):
+        rows, opened = _read_ledger_rows_from_file(ledger_path)
+        any_file_opened = any_file_opened or opened
+        entries.extend((file_index, row) for row in rows)
+    entries.sort(key=lambda entry: entry[1].get("event_time") or "")
+    return entries, any_file_opened
+
+
+def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> bool:
+    """True if this session's ledger rows -- merged across every
+    worktree that appended to it, each tagged with its own source file's
+    index (see _read_ledger_row_entries_for_session) -- don't resolve to
+    the exact 1..round_open_count sequence the transcript's own
+    round-open detector found for this session:
 
     - a gap (a round-open whose round never got a ledger row)
     - a ledger round number with no corresponding round-open
     - round rows recorded out of sequence
     - a round value reappearing non-contiguously after a different round
       value already appeared (e.g. [1, 2, 1])
+    - the same round number claimed by more than one source file -- a
+      worktree-subagent race where two files each independently append
+      their own row for what the transcript treats as a single
+      round-open, with no safe way to pick one file's row as
+      authoritative
 
     A ledger with zero rows carrying a `round` key at all is not
     evaluated: entirely legacy rows (pre-schema-v2), or no ledger file for
@@ -298,77 +268,71 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     always returns False for that case rather than flagging every
     pre-migration or ledger-less session as a mismatch.
     """
-    rounds_with_key = [
-        row["round"] for row in ledger_rows
+    keyed_entries = [
+        (file_index, row["round"]) for file_index, row in row_entries
         if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
     ]
-    if not rounds_with_key:
+    if not keyed_entries:
         return False
-    # groupby collapses each maximal run of a repeated value into one
-    # entry, so a round value whose rows are split across two
-    # non-adjacent blocks (the reappearance case above) keeps a second,
-    # separate entry in contiguous_blocks even though dict.fromkeys-style
-    # first-occurrence dedup would collapse it away. That extra entry
-    # already makes contiguous_blocks unequal to the expected
-    # 1..round_open_count sequence below, so no separate duplicate check
-    # is needed.
-    contiguous_blocks = [round_value for round_value, _ in itertools.groupby(rounds_with_key)]
-    return contiguous_blocks != list(range(1, round_open_count + 1))
-
-
-# Sentinel default for _ledger_possibly_swept's ledger_path parameter below,
-# distinct from a resolved-to-None Path. Two cases:
-#
-# - the caller didn't pre-resolve one: resolve internally.
-# - the caller resolved one and it's None: no ledger file exists, use that
-#   fact directly.
-#
-# A dedicated type, not a bare object(), so the parameter's own annotation
-# below can name it instead of falling back to the unchecked `object`.
-class _LedgerPathUnset:
-    """Marker type for the _LEDGER_PATH_UNSET singleton below; not
-    instantiated a second time."""
-
-
-_LEDGER_PATH_UNSET = _LedgerPathUnset()
+    # groupby collapses each maximal run of an identical (file, round)
+    # pair into one block. A round value whose rows are split across two
+    # non-adjacent blocks (the reappearance case above, or a genuine
+    # cross-file split) keeps a second, separate entry here even though
+    # dict.fromkeys-style first-occurrence dedup would collapse it away.
+    blocks = [key for key, _ in itertools.groupby(keyed_entries)]
+    round_sequence = [round_value for _file_index, round_value in blocks]
+    return round_sequence != list(range(1, round_open_count + 1))
 
 
 def _ledger_possibly_swept(
-    jsonl: Path,
     code_review_rounds: list[tuple[int, int]],
     ledger_rows: list[dict],
     records: list[dict],
     *,
+    any_ledger_file_found: bool,
     now: float | None = None,
-    ledger_path: Path | None | _LedgerPathUnset = _LEDGER_PATH_UNSET,
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
-    file at all, and its own newest record is older than
+    file at all (zero files matched the session's own glob -- not merely
+    zero rows across whichever files did match), and the record at its
+    EARLIEST code-review round's own open_idx is older than
     _LEDGER_SWEEP_FLOOR_DAYS -- review-ledger.sh's `append` command (the
     dominant eviction path) passes that fixed floor directly, not the
     dynamically-resolved window `clear-stale` uses. False otherwise,
-    including when no record in the session has a parseable timestamp to
-    compare. See docs/transcript-analysis.md's "Ledger-possibly-swept
-    check" section for the rationale.
+    including when that record has no parseable timestamp to compare.
 
-    LEDGER_PATH lets a caller that already resolved this session's ledger
-    path (compute_author_outcomes' loop) pass it straight through instead
-    of re-globbing. Every other caller leaves it unset, and this resolves
-    it internally via _ledger_path_for_session.
+    Keyed on the EARLIEST round's own open, not the session's newest
+    record: a swept file's last successful append is necessarily older
+    than the floor, and that append happened inside some round that
+    opened at or before it, so the earliest round's own open timestamp is
+    always at or before every append -- keying there never misses a
+    truly-swept file. It only over-excludes a session whose later rounds
+    never appended at all, which carries no ledger signal to lose anyway.
+    Keying on the newest record instead could read such a session as
+    recent even though its ledger file is actually swept, letting a real
+    FAILURE round misclassify as a kill-switch-inferred PASS. See
+    docs/transcript-analysis.md's "Ledger-possibly-swept check" section
+    for the rationale.
+
+    This checks only the earliest round-open's own record for a
+    timestamp, with no fallback to any other record in the session if
+    that one is unparseable -- accepted because Claude Code transcript
+    records reliably carry a `timestamp` field.
+
+    any_ledger_file_found is the caller's own
+    _read_ledger_row_entries_for_session result, resolved once per
+    session and passed straight through here instead of re-globbing.
     """
     if not code_review_rounds:
         return False
-    if ledger_path is _LEDGER_PATH_UNSET:
-        ledger_path = _ledger_path_for_session(jsonl)
-    if ledger_rows or ledger_path is not None:
+    if ledger_rows or any_ledger_file_found:
         return False
-    timestamps = [
-        ts for ts in (corpus._parse_ts(rec.get("timestamp")) for rec in records) if ts is not None
-    ]
-    if not timestamps:
+    earliest_open_idx = code_review_rounds[0][0]
+    ts = corpus._parse_ts(records[earliest_open_idx].get("timestamp"))
+    if ts is None:
         return False
     now = time.time() if now is None else now
-    return max(timestamps) < now - _LEDGER_SWEEP_FLOOR_DAYS * 86400
+    return ts < now - _LEDGER_SWEEP_FLOOR_DAYS * 86400
 
 
 def _classify_round(
@@ -507,21 +471,19 @@ def compute_author_outcomes(
         records = pricing.dedup_turns_by_request_id(raw_records)
         tool_result_index = _build_tool_result_index_map(records)
         code_review_rounds = _code_review_rounds(records)
-        # Resolved once per session and passed to both lookups below.
-        # `_read_ledger_rows_for_path` takes the path directly.
-        # `_ledger_possibly_swept` skips its own internal resolution when
-        # `ledger_path` is supplied, avoiding a second glob for the subset
-        # of sessions where it would otherwise re-resolve the same path.
-        ledger_path = _ledger_path_for_session(jsonl)
-        ledger_rows = _read_ledger_rows_for_path(ledger_path)
+        # Resolved once per session and reused for the round-number-mismatch
+        # check, the possibly-swept check, and every round's own
+        # classification below, instead of re-globbing per lookup.
+        ledger_row_entries, any_ledger_file_found = _read_ledger_row_entries_for_session(jsonl)
+        ledger_rows = [row for _file_index, row in ledger_row_entries]
 
-        session_round_mismatch = _round_number_mismatch(ledger_rows, len(code_review_rounds))
+        session_round_mismatch = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
         if session_round_mismatch:
             data_quality[_DQ_ROUND_NUMBER_MISMATCH] += 1
 
         session_ledger_possibly_swept = _ledger_possibly_swept(
-            jsonl, code_review_rounds, ledger_rows, records, now=now,
-            ledger_path=ledger_path,
+            code_review_rounds, ledger_rows, records,
+            any_ledger_file_found=any_ledger_file_found, now=now,
         )
         if session_ledger_possibly_swept:
             data_quality[_DQ_LEDGER_POSSIBLY_SWEPT] += 1

@@ -41,7 +41,9 @@ Subcommands:
              ~/.claude/.review-narrative-ledger-disabled is present.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
-  show       Print this session's ledger contents, or an absence message.
+  show       Print this session's ledger contents merged across every
+             repo-hash and sorted by event_time, each row tagged with its
+             own source_repo_hash, or an absence message.
   clear-stale [--dry-run]
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
              than the resolved sweep window (Claude Code's cleanupPeriodDays
@@ -294,8 +296,8 @@ case "$SUBCOMMAND" in
     # event_time varies on every call, so it is excluded from the dedup key
     # filter below rather than baked into LINE per attempt.
     # event_time is for a human reading `review-ledger.sh show` to
-    # reconstruct the review's own narrative timeline. No code reader
-    # branches on it.
+    # reconstruct the review's own narrative timeline. `show` also sorts on
+    # it, to interleave rows from multiple worktree files chronologically.
     EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # jq -nc avoids hand-escaping free text -- this repo's convention for
@@ -336,14 +338,49 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
-    REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-    LEDGER_FILE="$LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl"
-    if [ ! -s "$LEDGER_FILE" ]; then
-      printf 'review-ledger.sh: no ledger for this session (%s).\n' "$LEDGER_FILE"
+    # Globs every repo-hash prefix for this session id, not just the current
+    # worktree's own file. A session that touches more than one git worktree
+    # -- a mid-session switch, or a subagent dispatched to a different
+    # worktree under the same parent session id -- appends under this shared
+    # LEDGER_DIR but splits across one file per worktree.
+    shopt -s nullglob
+    LEDGER_FILES=("$LEDGER_DIR"/*."$SESSION_ID".jsonl)
+    shopt -u nullglob
+    NONEMPTY_LEDGER_FILES=()
+    # ${LEDGER_FILES[@]+...} guards a zero-match glob: under `set -u`, bash
+    # before 4.4 (macOS's frozen system bash 3.2) treats "${arr[@]}" on a
+    # declared-but-empty array as an unbound-variable error.
+    for f in "${LEDGER_FILES[@]+"${LEDGER_FILES[@]}"}"; do
+      [ -s "$f" ] && NONEMPTY_LEDGER_FILES+=("$f")
+    done
+    if [ "${#NONEMPTY_LEDGER_FILES[@]}" -eq 0 ]; then
+      printf 'review-ledger.sh: no ledger for this session (%s).\n' "$LEDGER_DIR/*.$SESSION_ID.jsonl"
       exit 0
     fi
-    cat -- "$LEDGER_FILE"
+    # Sorted by event_time so rows from multiple worktree files interleave
+    # chronologically instead of concatenating in glob order. A row with no
+    # event_time (a pre-existing schema-v1 row, if any) sorts first via the
+    # `// ""` fallback, since empty string sorts before any real timestamp.
+    # sort_by is stable in practice (verified against jq 1.7) for rows that
+    # tie on event_time, but this repo doesn't pin a jq version, so a future
+    # jq isn't guaranteed to preserve that tie-break order.
+    # Each row is also tagged with its own source ledger file's repo-hash
+    # prefix, display-time only. append's own write schema never carries
+    # this field: a single-file session has no cross-worktree ambiguity
+    # for it to resolve. `-n`/`inputs` (rather than `-s`) is what lets
+    # input_filename report each row's own originating file as jq walks
+    # the file list -- slurp mode loses that per-element attribution.
+    SHOW_OUTPUT=$(_lib_jq -n -r '
+      [inputs | . + {source_repo_hash: (input_filename | split("/")[-1] | split(".")[0])}]
+      | sort_by(.event_time // "") | .[] | tojson
+    ' -- "${NONEMPTY_LEDGER_FILES[@]}")
+    SHOW_STATUS=$?
+    if [ "$SHOW_STATUS" -ne 0 ]; then
+      printf 'review-ledger.sh: could not sort ledger rows for display (jq missing, failed, or timed out) -- printing unsorted instead.\n' >&2
+      cat -- "${NONEMPTY_LEDGER_FILES[@]}"
+    else
+      printf '%s\n' "$SHOW_OUTPUT"
+    fi
     ;;
   clear-stale)
     DRY_RUN=0

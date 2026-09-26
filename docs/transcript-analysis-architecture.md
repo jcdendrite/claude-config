@@ -129,11 +129,11 @@ The author-outcome command family: `cmd_author_outcome` and every helper used on
 for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
 that judged its diff (`compute_author_outcomes`), by completion-index ordering against
 `review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
-session's own review-narrative-ledger file directly. `_ledger_path_for_session` locates the file
-by a session-id glob under `<config_dir_root>/review-narrative-ledger/`. See
-`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the
-at-most-one-repo-hash-per-session-id precondition this assumes and the "Accepted risk" its
-violation falls back on. Ledger rows are
+session's own review-narrative-ledger files directly. `_ledger_files_for_session` locates every
+file matching a session-id glob under `<config_dir_root>/review-narrative-ledger/`, and
+`_read_ledger_row_entries_for_session` reads and merges all of them, sorted by `event_time`. See
+`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the merge behavior
+and the residual gaps it still leaves. Ledger rows are
 matched to a round by exact `round`-field equality against that round's own 1-indexed position in
 the transcript's round-open sequence. The transcript is still the sole source for round-open
 positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
