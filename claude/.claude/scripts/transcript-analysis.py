@@ -7438,10 +7438,10 @@ def _cost_ledger_path() -> Path:
 
 
 _MACHINE_IDENTITY_FILENAME = "machine-id"
-# Deliberately narrower than _MACHINE_LABEL_RE: a hand-written value that is
-# well-formed under the wider _MACHINE_LABEL_RE (e.g. "acme1") is refused
-# here rather than silently adopted, since secrets.token_hex(4) can only
-# produce exactly eight lowercase hex characters.
+# Deliberately narrower than _MACHINE_LABEL_RE, since secrets.token_hex(4)
+# can only produce exactly eight lowercase hex characters. A hand-written
+# value that is well-formed under the wider regex (e.g. "acme1") is refused
+# here rather than silently adopted.
 #
 # \Z (not $), matching _MACHINE_LABEL_RE's own anchor, so a trailing newline
 # doesn't slip past it.
@@ -7472,15 +7472,16 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
     home-rooted-path redaction discipline. `location_label` names the
     identity file's location in the refusal message instead. Deleting the
     file mints a new identity, under which existing rows read as a
-    different machine, so the message says that rather than auto-healing
-    it."""
+    different machine. The refusal message states that instead of
+    auto-healing the file."""
     try:
         # errors="replace" (not read_text()'s strict decode), so non-UTF-8
         # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
         # rather than raising UnicodeDecodeError uncaught.
         # Assumes path is a regular file or a symlink to one. A FIFO would
-        # block indefinitely here; accepted, because triggering it needs a
-        # planted special file in a config dir the attacker already writes to.
+        # block indefinitely here. This is accepted, because triggering it
+        # needs a planted special file in a config dir the attacker already
+        # writes to.
         raw = path.read_bytes()
     except OSError:
         raw = None
@@ -9484,9 +9485,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         )
 
         # Read under this account's own write lock, immediately before the
-        # warn call, matching _cost_ledger_report's read-under-lock symmetry:
-        # a read taken before any lock could warn from a state a concurrent
-        # writer has already superseded.
+        # warn call — matching _cost_ledger_report's own read-under-lock
+        # symmetry. A read taken outside any lock could warn from a state a
+        # concurrent writer has already superseded.
         # Known, accepted residual: the ledger write happens in a later,
         # separate per-branch lock, so a concurrent writer landing between
         # this lock's release and that lock's acquire still sees a stale
@@ -10000,8 +10001,9 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     # debris. Same mkstemp+os.link idiom as _resolve_machine_identity's own
     # publish step.
     #
-    # mkstemp creates the temp file 0600, and os.link's new name shares that
-    # same inode's mode, so --out ends up 0600 with no separate chmod needed.
+    # `mkstemp` creates the temp file `0600`, and `os.link`'s new name shares
+    # that same inode's mode. `--out` therefore ends up `0600` with no
+    # separate `chmod` needed.
     tmp_name: str | None = None
     try:
         tmp_fd, tmp_name = tempfile.mkstemp(dir=str(open_path.parent), prefix=".pr-cost-export-", suffix=".tmp")

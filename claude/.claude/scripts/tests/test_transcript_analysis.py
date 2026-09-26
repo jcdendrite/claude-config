@@ -26752,9 +26752,9 @@ class TestCmdPrCostEndToEndViaRealArgparse:
         assert args.all_accounts is True
         assert args.func == _mod.cmd_pr_cost
 
-        # Parsing succeeds -- the refusal is body-level, not an
-        # argparse-level constraint -- but cmd_pr_cost itself refuses this
-        # namespace since --machine-label is no longer accepted with --record.
+        # Parsing succeeds; the refusal is body-level, not an argparse-level
+        # constraint. cmd_pr_cost itself still refuses this namespace, since
+        # --machine-label is no longer accepted with --record.
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_pr_cost(args)
         assert exc_info.value.code == 1
@@ -28285,9 +28285,9 @@ class TestPrCostExportSchema:
 
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
-        # pr-cost-export makes no gh call at all -- unlike --record, it only
-        # reads already-captured ledger rows, so the sole expected call is
-        # the git-tracked check on --out (_ledger_path_is_git_tracked).
+        # pr-cost-export makes no gh call at all, unlike --record — it only
+        # reads already-captured ledger rows. The sole expected call is
+        # therefore the git-tracked check on --out (_ledger_path_is_git_tracked).
         assert call_log == [["git", "-C", str(tmp_path.resolve()), "rev-parse", "--is-inside-work-tree"]]
 
         lines = out_path.read_text().splitlines()
