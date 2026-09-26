@@ -198,7 +198,16 @@ Scoped to the Claude account, not the repo, for the same reason as `pr_cost_disc
 
 Two properties govern every review gate. They pull in opposite directions and are easy to conflate.
 
-**What a marker's filename means vs. what its content means.** A completion marker lives at `<markers-dir>/<repo-hash>.<session-id>`, and its *content* is a hash of exactly the state that was reviewed — the staged diff for `/code-review` and `/skill-review`, the active plan set's paths-plus-contents for `/plan-review`, the HEAD sha for `/ready-for-review`, and the cumulative PR-vs-base diff for the `cumulative-review` kind (read back by `ready-for-review` step 3 itself via `marker.sh status`, not gated by a separate `require-*.sh` hook). For the `cumulative-review` kind specifically, that content is the hash of the diff recorded as the review subject at `cumulative-review-subject-markers/<repo-hash>.<session-id>`, captured by `pr-diff-against-base.sh --record` at step 3's entry rather than recomputed at write time.
+**What a marker's filename means vs. what its content means.** A completion marker lives at `<markers-dir>/<repo-hash>.<session-id>`, and its *content* is a hash of exactly the state that was reviewed:
+
+- `code-review` and `skill-review` — the staged diff.
+- `plan-review` — the active plan set's paths-plus-contents.
+- `ready-for-review` — the HEAD sha.
+- `cumulative-review` — the cumulative PR-vs-base diff.
+  - Read back by `ready-for-review` step 3 itself via `marker.sh status`, not gated by a separate `require-*.sh` hook.
+  - That content is itself the hash of the diff recorded as the review subject at `cumulative-review-subject-markers/<repo-hash>.<session-id>`, captured by `pr-diff-against-base.sh --record` at step 3's entry rather than recomputed at write time.
+- `verification` — `HEAD^{tree}`.
+  - Read back by `ready-for-review` step 2 itself via `marker.sh check verification`, likewise not gated by a separate `require-*.sh` hook.
 
 `--diff-file` writes the cumulative diff to `cumulative-review-diff-markers/<repo-hash>.<session-id>`. `--staged --diff-file` writes the staged diff to `code-review-diff-markers/<repo-hash>.<session-id>`. The two are separate directories so a staged write can never clobber a cumulative artifact the same session is still reading. `enforce-marker-script-shape.sh` protects both directories, plus the subject directory named in the paragraph above, via the same `*-markers/` name-suffix glob that protects every other marker directory, not because it recognizes any of them as holding a review input rather than a completion record.
 

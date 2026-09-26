@@ -2294,6 +2294,176 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
     assert result.stdout == "develop"
 
 
+# --- _lib_verification_cache_sentinel_present -------------------------------
+#
+# Pure predicate over local refs, unlike the hash-computing helpers above --
+# tested directly at this layer rather than only through marker.sh's `check
+# verification` arm.
+
+
+def _sentinel_present(repo_root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_verification_cache_sentinel_present "$1"',
+         "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _commit_sentinel_at_ref(repo: Path, ref: str) -> None:
+    """Creates a lone-file commit holding the verification-cache opt-in
+    sentinel and points REF at it, via a throwaway index -- never touches
+    the repo's own checked-out branch, working tree, or real index."""
+    tmp_index = repo / ".git" / "sentinel-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# sentinel\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         f"100644,{blob_oid},.claude/ready-for-review-verification-cache-optin"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_on_origin_default(tmp_path: Path) -> None:
+    """The positive case the opt-in gate depends on: the sentinel committed
+    at origin/<default-branch> reads present."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
+def test_verification_cache_sentinel_absent_from_origin_default(tmp_path: Path) -> None:
+    """origin/<default-branch> exists and resolves, but the sentinel was
+    never committed to it -- the default-off gate's ordinary state."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_absent_when_origin_head_unset(tmp_path: Path) -> None:
+    """No origin/HEAD symbolic ref at all, even though the sentinel is
+    committed somewhere reachable -- fails closed through
+    _lib_default_branch_from_origin_head's own two-outcome contract rather
+    than falling back to guessing a branch name."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_present_only_on_non_default_branch_reads_absent(
+    tmp_path: Path,
+) -> None:
+    """The sentinel is committed to origin/other, but origin/HEAD points at
+    origin/main, which lacks it -- presence on a non-default branch must not
+    count as opted in."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/other")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def _commit_sentinel_tree_at_ref(repo: Path, ref: str) -> None:
+    """Same throwaway-index technique as _commit_sentinel_at_ref, but nests a
+    file one level under the sentinel path so the path itself resolves to a
+    git tree (directory) rather than a blob."""
+    tmp_index = repo / ".git" / "sentinel-tree-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# nested\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         "100644,"
+         f"{blob_oid},"
+         ".claude/ready-for-review-verification-cache-optin/nested-file"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel tree"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path) -> None:
+    """Pins the `cat-file -e` design choice documented in _lib.sh: it confirms
+    an object exists at the sentinel path but not its type, so a tree
+    (directory) committed there reads as present identically to a blob."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_tree_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
 #     _lib_fragment_has_token --------------------------------------------
 #
