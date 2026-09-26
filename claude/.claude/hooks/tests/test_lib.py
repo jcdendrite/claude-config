@@ -26,7 +26,6 @@ from pathlib import Path
 
 import pytest
 from helpers import (
-    _FORCED_FALLBACK_REALPATH_SHIM,
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
     _forced_fallback_path_env,
@@ -3636,13 +3635,8 @@ class TestLibRealpathM:
         ambiguous case is already covered by
         test_forced_fallback_test_e_hang_capped_fails_closed and
         test_forced_fallback_test_l_hang_capped_fails_closed."""
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir()
-        shim = shim_dir / "realpath"
-        shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
-        shim.chmod(0o755)
         env = dict(os.environ)
-        env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+        env["PATH"] = _forced_fallback_path_env(tmp_path)
 
         target = tmp_path / "does-not-exist-invocation-safety.txt"
         sentinel = "REACHED_LINE_AFTER_BARE_CALL"
