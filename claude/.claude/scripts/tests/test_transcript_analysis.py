@@ -29175,6 +29175,36 @@ class TestPrCostExportProvenanceLine:
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out3)))
         assert digest_of(out3) != digest_of(out1)
 
+    def test_corpus_digest_is_unchanged_when_a_second_row_is_appended_to_the_ledger(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """corpus= is built from each account's raw_rows[0] alone (the
+        ledger's first line), which append-only writes never move or
+        rewrite -- so a later --force correction or a second captured PR
+        appended to the same ledger must leave the digest unchanged. The
+        same-account-set test above only proves stability when row count
+        itself never changes; this proves the first-row-never-moves
+        invariant docs/pr-cost.md asserts."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        first_row = _sample_pr_cost_row(pr_number=1, captured_at="2026-01-01T00:00:00Z", machine="ci1")
+        _mod._write_pr_cost_ledger_file(ledger_path, [first_row])
+        out1 = tmp_path / "out1.tsv"
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out1)))
+
+        second_row = _sample_pr_cost_row(pr_number=2, captured_at="2026-02-01T00:00:00Z", machine="ci2")
+        _mod._write_pr_cost_ledger_file(ledger_path, [first_row, second_row])
+        out2 = tmp_path / "out2.tsv"
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out2)))
+
+        def digest_of(path):
+            tokens = path.read_text().splitlines()[0].split(" ")[3:]
+            return dict(t.split("=", 1) for t in tokens)["corpus"]
+
+        assert digest_of(out1) == digest_of(out2)
+
 
 class TestPrCostExportRefusals:
     def test_missing_out_exits_2(self, fake_projects, monkeypatch):
@@ -29309,10 +29339,10 @@ class TestPrCostExportRefusals:
     def test_malformed_ledger_stderr_omits_raw_value_for_machine_pr_number_and_timestamp(
         self, tmp_path, fake_projects, monkeypatch, capsys, column, malformed_value,
     ):
-        """The column-count fixture above never embedded a raw value in the
-        first place -- this covers the branches that used to, proving
-        pr-cost-export's own stderr line doesn't leak a peer account's raw
-        cell for those either."""
+        """Covers the `machine`/`pr_number`/`merged_at` branches, whose own
+        upstream parser error messages do embed a raw value -- proving
+        `pr-cost-export`'s stderr line still doesn't leak a peer account's
+        raw cell for those either."""
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
@@ -29539,8 +29569,9 @@ class TestPrCostExportWriteOSError:
 class TestFormatPrCostLedgerRowColumnsParameterRegression:
     def test_default_columns_rendering_is_unchanged(self):
         """Golden literal captured from _format_pr_cost_ledger_row(_sample_pr_cost_row())
-        before the `columns` keyword-only parameter was added -- pins that
-        the default-columns rendering is unaffected by that change.
+        with the default `columns`; pins that the default-columns rendering
+        stays unaffected by the `columns` keyword-only parameter
+        pr-cost-export also uses.
         Not derived from _PR_COST_LEDGER_HEADER_LINE plus a per-column type
         loop, which would re-implement the formatter's own branching inside
         the test."""
