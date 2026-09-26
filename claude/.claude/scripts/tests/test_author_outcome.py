@@ -1727,6 +1727,39 @@ class TestCmdAuthorOutcomeReport:
         err = capsys.readouterr().err
         assert "reserved sentinel" in err
 
+    def test_agent_mixed_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_MIXED))
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "reserved sentinel" in err
+        assert ao._AUTHORING_AGENT_MIXED in err
+
+    def test_agent_unknown_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_UNKNOWN))
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "reserved sentinel" in err
+        assert ao._AUTHORING_AGENT_UNKNOWN in err
+
+    def test_agent_near_miss_case_is_accepted_not_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
+        """A cased near-miss of a sentinel (e.g. "Mixed") is not the sentinel
+        itself -- the reserved-sentinel guard is exact-case, so it must not
+        raise SystemExit."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", agent_type="Mixed"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _mod.cmd_author_outcome(self._args(agent="Mixed"))
+        out = capsys.readouterr().out
+        assert "agent=Mixed  window=all time" in out
+        assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
+
     def test_agent_empty_string_passes_through_not_remapped_to_default(self, fake_projects, capsys):
         """--agent "" is a literal empty string, not the code-writer default
         -- an explicit empty value must not be silently remapped."""

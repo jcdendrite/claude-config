@@ -47,6 +47,10 @@ _AUTHORING_AGENT_CODE_WRITER = "code-writer"
 _AUTHORING_AGENT_INLINE = "inline"
 _AUTHORING_AGENT_MIXED = "mixed"
 _AUTHORING_AGENT_UNKNOWN = "unknown"
+# None of these three is ever a real subagent_type. Each is synthesized by
+# review-ledger.sh or this module's own transcript join, not a name --agent
+# could legitimately be given.
+_RESERVED_AGENT_TYPES = (_AUTHORING_AGENT_INLINE, _AUTHORING_AGENT_MIXED, _AUTHORING_AGENT_UNKNOWN)
 
 _OUTCOME_FAILURE = "FAILURE"
 _OUTCOME_PASS = "PASS"
@@ -610,10 +614,10 @@ def cmd_author_outcome(args: argparse.Namespace) -> None:
     """
     agent_type: str = args.agent
     # Exact-case match only -- a near-miss (e.g. "INLINE") doesn't collide with
-    # the sentinel this guards against, so it's accepted, not normalized.
-    if agent_type == _AUTHORING_AGENT_INLINE:
+    # any of the sentinels this guards against, so it's accepted, not normalized.
+    if agent_type in _RESERVED_AGENT_TYPES:
         print(
-            f"author-outcome: --agent {_AUTHORING_AGENT_INLINE!r} is a reserved sentinel value "
+            f"author-outcome: --agent {agent_type!r} is a reserved sentinel value "
             "(no dispatch attributed), not a valid --agent value",
             file=sys.stderr,
         )
