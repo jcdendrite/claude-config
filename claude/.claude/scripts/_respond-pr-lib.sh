@@ -24,23 +24,18 @@ respond_pr_valid_repo_slug() (
   [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
 )
 
-# LC_ALL=C pins bash's bracket-expression matching to raw ASCII bytes. A UTF-8
-# locale's glibc collation equivalence classes otherwise widen [0-9] to match
-# non-ASCII lookalikes such as Arabic-Indic digits, so the same input would
-# validate differently depending on the caller's ambient locale.
-# The body is a subshell rather than `local LC_ALL=C`, matching
-# _lib_passes_path_char_allowlist in claude/.claude/hooks/_lib.sh: that
-# file documents local's restore-on-return as unverified on bash 4.x.
+# LC_ALL=C forces ASCII-only bracket matching; a UTF-8 locale otherwise
+# widens [0-9] to accept non-ASCII digit lookalikes (e.g. Arabic-Indic).
+# Subshell body, not `local LC_ALL=C` — see _lib_passes_path_char_allowlist
+# in claude/.claude/hooks/_lib.sh for why `local`'s restore isn't relied on.
 respond_pr_valid_comment_id() (
   LC_ALL=C
   [[ "$1" =~ ^[0-9]+$ ]]
 )
 
-# [[:space:]] shares the bracket-expression locale-widening in the two
-# predicates above (a UTF-8 locale admits NBSP/ideographic space here too),
-# but it's intentionally left unpinned: see
-# test_ascii_whitespace_only_body_is_blank_under_c_locale in
-# claude/.claude/scripts/tests/test_respond_pr_lib.py.
+# [[:space:]] shares the same locale-widening as the two predicates above
+# (UTF-8 also admits NBSP/ideographic space here) but is left unpinned.
+# See test_ascii_whitespace_only_body_is_blank_under_c_locale for why.
 respond_pr_body_is_blank() {
   [[ -z "${1//[[:space:]]/}" ]]
 }

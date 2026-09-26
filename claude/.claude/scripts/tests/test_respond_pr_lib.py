@@ -22,15 +22,10 @@ _MARKER = "**[Claude Code]**"
 
 
 def _en_us_utf8_widens_digit_bracket_matching() -> bool:
-    """True only when this runner's en_US.UTF-8 widens bash's `=~` `[0-9]`
-    bracket expression to match a non-ASCII decimal digit; if it collapses to
-    C, the LC_ALL=C fix below is untestable here. This targets `=~`
-    regex-bracket matching, not the glob/`==` bracket matching that
-    claude/.claude/hooks/tests/test_lib_path_char_allowlist.py's sibling probe
-    exercises. That other construct does not widen for the letter class on
-    this bash build (it does widen for the digit class), but `=~` widens for
-    both the digit class probed here and the letter class probed by
-    _en_us_utf8_widens_letter_bracket_matching below."""
+    """True when this runner's en_US.UTF-8 widens bash `=~` `[0-9]` to match a
+    non-ASCII digit; false means the LC_ALL=C fix is untestable here. Targets
+    `=~` bracket matching, not the glob/`==` matching probed in
+    claude/.claude/hooks/tests/test_lib_path_char_allowlist.py."""
     probe = subprocess.run(
         ["bash", "-c", '[[ "٤" =~ ^[0-9]$ ]]'],
         capture_output=True,
@@ -174,10 +169,10 @@ class TestValidRepoSlug:
     def test_non_ascii_slug_is_invalid_under_utf8_caller_locale(self, utf8_locale_widens_letters):
         """Pins the predicate's own LC_ALL=C override: under a UTF-8 caller
         locale, glibc's bracket-expression collation otherwise widens
-        [A-Za-z0-9._-] to accept non-ASCII lookalikes. "日本/repo" is not used
-        here: CJK code points have no equivalence-class entry against
-        [A-Za-z0-9._-], so that case is already covered by
-        test_malformed_slug_is_invalid without discriminating this fix."""
+        [A-Za-z0-9._-] to accept non-ASCII lookalikes. "日本/repo" is not used here
+        because CJK code points have no equivalence-class entry against
+        [A-Za-z0-9._-]. That input is already covered by
+        test_malformed_slug_is_invalid, which would pass with or without this fix."""
         _skip_if_utf8_letter_widening_not_functional(utf8_locale_widens_letters)
         utf8_env = {**_base_test_env(), "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
         assert _predicate_result("respond_pr_valid_repo_slug", "owner/rëpo", env=utf8_env) is False
