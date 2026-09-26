@@ -120,8 +120,8 @@ reviewer-thread comment dismissing the concern.
 
 Primary sources for the reviewer entry-read rule proposed in
 `.claude/plans/code-file-size-splits.md`'s "Reviewer read methodology:
-recommendation (implemented by child B)" section. Not yet reflected in
-this skill's rules — read this to ground child B's rule when it lands.
+recommendation" section (implemented by that plan's child issue B). Not yet
+reflected in this skill's rules — read this to ground that rule when it lands.
 
 ### Whole-file reads are the conditional case, not the default
 
@@ -193,8 +193,8 @@ authoring (2026-09-25):
 
 Claude Code's Read tool caps a single call by tokens, not lines — a
 whole-file read beyond the cap returns a `PARTIAL view` notice instead
-of the rest of the file. One live default Read in this repo's
-`code-file-size-splits` planning session measured the cap once, against
+of the rest of the file. One live default Read in this repo measured
+the cap once, against
 `claude/.claude/scripts/tests/test_transcript_reviewer_yield.py` (1,935
 lines): the tool returned lines 1–956, with the notice `[Truncated:
 PARTIAL view — <path>: showing lines 1-956 of 1935 total (43009 tokens,
@@ -202,11 +202,11 @@ cap 25000). ...]`.
 
 - The cap is 25,000 tokens.
 - That file averages about 22 tokens per line, predicting roughly
-  1,100–1,125 lines per page; the observed page held 956, about 15%
-  fewer. The gap is unexplained (candidates: per-page overhead, uneven
-  density), and this is one sample — token density varies by file, so
-  ~1,000 lines is a rough predictor of where the cap falls, not a fixed
-  boundary.
+  1,100–1,125 lines per page. The observed page held 956 lines, about
+  15% fewer, for an unexplained reason (candidates: per-page overhead,
+  uneven density).
+- This is one sample — token density varies by file, so ~1,000 lines is
+  a rough predictor of where the cap falls, not a fixed boundary.
 
 Source: `code.claude.com/docs/en/tools-reference` "Read tool behavior",
 fetched by a `verify-sources` subagent 2026-09-25; re-verify by

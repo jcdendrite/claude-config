@@ -121,7 +121,7 @@ _DENIAL_HOOK_NAME_COLON_RE = re.compile(
 # echoed verbatim. Examples of "anything else": a coincidental match, an
 # unanticipated wording, an unbounded interpolated value that survived the
 # character-class bound. Regression coverage: TestDenialHookLabelEnumeration
-# in test_transcript_analysis.py drives each hook's real deny-path wording
+# in test_transcript_denials.py drives each hook's real deny-path wording
 # and asserts the label it produces is a member here, so a hook's wording
 # change or a new hook shows up as a test failure rather than a silently
 # stale set.
