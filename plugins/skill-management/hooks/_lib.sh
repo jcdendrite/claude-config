@@ -10,12 +10,17 @@
 # _lib_skill_review_diff_base, and _lib_conflict_marker_deny_paths. No
 # worktree-enforcement helpers.
 #
-# _lib_config_dir and _marker_lib_repo_hash must stay byte-identical to the
-# same functions in the stowed claude/.claude/hooks/_lib.sh. marker.sh (the
-# write side) always sources that stowed copy directly
-# ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one. A divergence
-# here would break the config-directory resolution or the repo-hash key
-# shared between the write side and this hook's read side.
+# _lib_config_dir must stay byte-identical to the same function in the
+# stowed claude/.claude/hooks/_lib.sh. _marker_lib_repo_hash instead needs
+# only behavioral equivalence to that file's copy -- the same output for
+# the same input. This copy inlines the sha256sum/awk recipe directly; the
+# stowed copy delegates through _lib_hash_diff_text.
+# test_require_skill_review.py's test_plugin_lib_sh_repo_hash_matches_stowed_lib_sh
+# and test_plugin_lib_sh_repo_hash_fails_closed_like_stowed_lib_sh_on_broken_sha256sum
+# pin that parity. marker.sh (the write side) always sources the stowed copy
+# directly ($HOME/.claude/hooks/_lib.sh), never a plugin-bundled one. A
+# divergence here would break the config-directory resolution or the
+# repo-hash key shared between the write side and this hook's read side.
 # _lib_marker_value_present is duplicated from that same file for the same
 # reason the others are: a plugin cannot source across the plugin boundary.
 # _lib_capped, _lib_default_branch_from_origin_head,
