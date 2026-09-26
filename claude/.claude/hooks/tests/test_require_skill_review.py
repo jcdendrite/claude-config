@@ -3449,6 +3449,19 @@ def _plain_body(name, body_line):
     return f"# {name}\n{body_line}\n"
 
 
+def _skill_body_fixed_across_merge_stages(fixed_name, marker_line):
+    """A `render_body` for `_build_merge_conflicting_in_two_gated_skills` that
+    renders `fixed_name` as `marker_line` at every stage (base/ours/origin),
+    so that path never conflicts and HEAD ends up committing `marker_line`
+    verbatim."""
+    def render(name, body_line):
+        if name == fixed_name:
+            return _skill_body(name, marker_line)
+        return _skill_body(name, body_line)
+
+    return render
+
+
 def _assert_trusted_anchor(repo):
     """The conflict-marker scan runs only with a non-empty base, so an
     allow-side test that lost its anchor would pass without the scan running."""
@@ -4069,6 +4082,37 @@ class TestSkillReviewGateConflictMarkerHardDeny:
             run_hook(
                 SKILL_REVIEW_HOOK,
                 bash_input("git commit -m merge", session_id="markers-eight-char-separator-session"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_an_eight_character_run_stays_excluded_when_the_grep_e_call_actually_runs(
+        self, isolated_home, tmp_path
+    ):
+        """The two eight-character-run tests above stage no real marker
+        anywhere, so `git diff -G` finds zero candidates and `git grep -E`
+        never runs: `-E`'s own boundary fidelity goes untested. Here
+        skill-a's body is fixed at `=======` across every merge stage, so it
+        never conflicts and HEAD commits that genuine marker line verbatim;
+        the resolution removes it, which makes skill-a a `-G` candidate, and
+        adds an unrelated `========` run elsewhere in the same file. If `-E`
+        ever treated that run as a match, skill-a would wrongly stay in the
+        deny set."""
+        repo, skill_paths = _build_merge_conflicting_in_two_gated_skills(
+            tmp_path,
+            merge_target="oid",
+            render_body=_skill_body_fixed_across_merge_stages("skill-a", "======="),
+        )
+        (repo / skill_paths["skill-a"]).write_text(_skill_body("skill-a", "resolved\n========"))
+        (repo / skill_paths["skill-b"]).write_text(_skill_body("skill-b", "resolved line"))
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        write_skill_review_marker(isolated_home, repo)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m merge", session_id="markers-eight-char-grep-e-session"),
                 cwd=repo,
             )
             == "allow"
