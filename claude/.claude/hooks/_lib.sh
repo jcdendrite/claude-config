@@ -164,6 +164,10 @@ _lib_realpath_m() {
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
         ;;
+      .)
+        current=$(dirname -- "$current")
+        continue  # a lone `.` contributes nothing to the resolved path and, unlike `..`, can never defeat a same-prefix boundary check.
+        ;;
     esac
     if [ -z "$suffix" ]; then
       suffix="$suffix_component"

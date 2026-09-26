@@ -40,9 +40,10 @@ _FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
 
 def _forced_fallback_path_env(tmp_path: Path) -> str:
     """Build a PATH whose `realpath` is the forced-fallback shim above,
-    ahead of /usr/bin:/bin -- excludes any grealpath the host might also
-    have on a wider PATH, since `command -v grealpath` succeeding would
-    skip the fallback branch this exists to force."""
+    ahead of /usr/bin:/bin. The shim dir is placed first specifically to
+    exclude any `grealpath` the host might also have on a wider PATH --
+    `command -v grealpath` succeeding would skip the fallback branch this
+    exists to force."""
     shim_dir = tmp_path / "realpath_shim"
     shim_dir.mkdir(exist_ok=True)
     shim = shim_dir / "realpath"
@@ -159,12 +160,13 @@ class TestAskReviewPermissions:
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
 
     def test_aliased_nested_settings_path_stays_allowed(self):
-        """Allow-path pairing for the alias/case-normalization arm above: a
-        `.`-segment decoration still routes through `_lib_realpath_m`
-        normalization, but the nested `settings/x.json` shape it resolves to
-        is legitimately excluded by the `[^/]*` boundary.
-        test_non_settings_paths_allowed already excludes this shape on the
-        raw path; this exercises the same exclusion after normalization."""
+        """This is the allow-path pairing for the alias/case-normalization
+        arm above. A `.`-segment decoration still routes through
+        `_lib_realpath_m` normalization, but the nested `settings/x.json`
+        shape it resolves to is legitimately excluded by the `[^/]*`
+        boundary. `test_non_settings_paths_allowed` already excludes this
+        shape on the raw path -- this test exercises the same exclusion
+        after normalization."""
         assert (
             run_hook(
                 REVIEW_PERMS_HOOK,
@@ -335,6 +337,59 @@ class TestAskReviewPermissions:
                     "CLAUDE_CONFIG_DIR": config_dir_raw,
                     "PATH": _forced_fallback_path_env(tmp_path),
                 },
+            )
+            == "ask"
+        )
+
+    def test_dot_segment_aliased_path_asks_under_forced_realpath_fallback(self, tmp_path):
+        """Regression pin for `_lib_realpath_m`'s manual fallback, which must
+        drop a `.` component rather than reattach it literally, or the
+        normalized path still contains `./` and the hook's match misses it.
+        On a host with neither native `realpath -m` nor `grealpath` (forced
+        here via the PATH shim), a `.`-segment alias to a nonexistent
+        settings path must still ask, same as
+        `test_aliased_or_case_varied_settings_path_asks`'s dot-segment case
+        already pins for the native-realpath path."""
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input("/some/project/.claude/./settings.json"),
+                extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
+            )
+            == "ask"
+        )
+
+    def test_dotdot_segment_aliased_path_stays_allowed_under_forced_realpath_fallback(self, tmp_path):
+        """Pins the disclosed residual, not a bug to fix: `_lib_realpath_m`
+        deliberately fails closed on a `..` component in the manual
+        fallback's unresolved suffix, since a `..` there could defeat
+        another caller's same-prefix boundary check. On a host that takes
+        the manual fallback, a `..`-segment alias to a nonexistent settings
+        path therefore normalizes to nothing, and the raw-path comparison
+        doesn't match the literal `../` segment either — see gap (h) in
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Known gaps list."""
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input("/some/project/.claude/sub/../settings.json"),
+                extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
+            )
+            == "allow"
+        )
+
+    def test_double_slash_aliased_path_asks_under_forced_realpath_fallback(self, tmp_path):
+        """Completes the gap (h) alias-normalization matrix under forced
+        fallback: `dirname`/`basename` collapse a doubled slash on their own,
+        independent of the `.`/`..` case arms above, so this shape already
+        worked before those arms existed — this test pins that it keeps
+        working, same as `test_aliased_or_case_varied_settings_path_asks`'s
+        double-slash case already pins for the native-realpath path."""
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input("/some/project/.claude//settings.json"),
+                extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
             )
             == "ask"
         )

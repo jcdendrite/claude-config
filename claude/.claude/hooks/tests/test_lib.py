@@ -3261,6 +3261,20 @@ class TestLibRealpathM:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == str(target)
 
+    def test_forced_fallback_collapses_dot_in_unresolved_suffix(self, tmp_path: Path) -> None:
+        """Required regression test: a lone `.` component in the not-yet-
+        existing suffix must be dropped, not reattached verbatim, or a
+        caller comparing the result against a literal substring (e.g.
+        ask-review-permissions.sh's `.claude/settings` match) misses a path
+        that is semantically identical but textually decorated with `./`.
+        Uses an f-string rather than pathlib's `/` operator to build the
+        target, since pathlib silently collapses a `.` segment on
+        construction and would defeat the test."""
+        target = f"{tmp_path}/newdir1/./newfile.txt"
+        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{tmp_path}/newdir1/newfile.txt"
+
     def test_forced_fallback_rejects_dotdot_in_unresolved_suffix(self, tmp_path: Path) -> None:
         """Required regression test for a High-severity finding: the
         fallback's not-yet-existing suffix must not be reattached verbatim
