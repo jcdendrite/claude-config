@@ -214,7 +214,7 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
   nudge, no log line, and no state change. The state file is untouched, so the
   next session start retries the scan, and a persistent stall repeats at every
   session start with no signal. Silence cannot distinguish an under-threshold
-  run from a discarded one — running the hook by hand against the real config
+  run from a discarded one. Running the hook by hand against the real config
   dir would write the state file and log when over threshold and consume the
   re-arm band, so check without side effects instead:
   1. Run the hook with `CLAUDE_CONFIG_DIR` set to a throwaway directory whose
