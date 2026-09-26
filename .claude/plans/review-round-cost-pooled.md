@@ -26,9 +26,9 @@ Add `--pooled` to `review-round-cost` as a **dedicated render path that emits pe
 
 The load-bearing choice is that the pooled block emits **no absolute figure of any kind**; row 5 carries that argument and its citations.
 
-This revision closes the silent-exclusion bug class at every level of the traversal `--pooled` reads: scan root, project directory, and session transcript. The listing and read that already happen now record each unreadable directory or transcript in an opt-in counter, and the pooled block refuses when that counter is non-empty (rows 20-27). A missing path, or one that is not the kind of object its level expects, stays an empty scope rather than a gap, as it was before this revision (rows 32, 33). The pooled stderr filter also fails closed: an unrecognized diagnostic is withheld behind one fixed notice rather than printed (row 29).
+This revision closes the silent-exclusion bug class at every level of the traversal `--pooled` reads: scan root, project directory, and session transcript. The listing and read that already happen now record each unreadable directory or transcript in an opt-in counter, and the pooled block refuses when that counter is non-empty (rows 20-27). A missing path, or one that is not the kind of object its level expects, stays an empty scope rather than a gap, as it was before this revision (rows 32, 33). Because the root-level listing now matches `--projects` against one directory name, the CLI rejects any value `Path.glob` would read as another shape, rather than let it silently select nothing (row 36). The pooled stderr filter also fails closed: an unrecognized diagnostic is withheld behind one fixed notice rather than printed (row 29).
 
-Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules. This revision's own set-aside alternatives sit in rows 21, 26, 29, 30, 32, and 33.
+Alternatives set aside: (a) a `--summary`-style block that also prints median `$` per round — rejected, because a permitted per-round rate composes with that already-published round count into the raw pooled total `docs/private-project-redaction.md:132-133` bars outright; (b) mirroring `cost --summary`'s single-root requirement — rejected, because the figure this exists to produce is machine-wide across every declared account (`docs/cost-levers-considered.md:552-554`), so a single-account requirement would make the feature unable to compute the thing it was asked for; (c) sharing a refusal-policy helper with `cost --summary` — rejected, because the two policies differ in the root-count direction (summary refuses multi-root, pooled requires it), so one helper would be an abstraction over two different rules. This revision's own set-aside alternatives sit in rows 21, 26, 29, 30, 32, 33, and 36.
 
 ### Cross-machine reporting (engineer-confirmed this session)
 
@@ -148,7 +148,7 @@ this session]`
     - `scan_gaps: collections.Counter[str] | None = None` is added to both iterators and `_resolve_project_scope`. Only the `--pooled` path in `review_rounds.py` passes one; every other `_resolve_project_scope` caller keeps the `None` default. `[verified: grep for "_resolve_project_scope(" under claude/.claude/scripts]`
     - Keys are three module constants in `scope.py` naming the level. A key never holds a path or an account ordinal, so the counter is not itself a per-account dimension.
     - With `scan_gaps=None`, every listing `OSError` is skipped silently, matching the old `glob` path on CPython 3.12. That path swallowed every `OSError` from `scandir` and returned nothing for a non-directory (G6). The new helper returns `[]` for every `OSError` and records only when given a counter. Other interpreter versions are `[unverified]`. `[verified: /usr/lib/python3.12/pathlib.py:163-170, 199-206]`
-    - Root-level project selection moves from `root.glob(projects_glob)` to the listing plus `fnmatch.fnmatchcase(name, projects_glob)`. The two match identically for a single-segment pattern, which is the flag's documented meaning (a project-dir glob). `[verified: transcript-analysis.py:12592, 12821-12823; grep finds no "/"-bearing --projects value in any test under claude/.claude/scripts]`
+    - Root-level project selection moves from `root.glob(projects_glob)` to the listing plus `fnmatch.fnmatchcase(name, projects_glob)`. The two select the same entries only when `Path.glob` compiles the value as one wildcard component. It then matches each entry name with `fnmatch.translate`, case-sensitively on POSIX, which is `fnmatchcase`'s own rule. Row 36 rejects every other value at the CLI. `[verified: /usr/lib/python3.12/pathlib.py:57-58, 81-108, 190-219 (CPython 3.12.3)]`
 26. **Mechanism — `--pooled` refuses on any recorded gap, after the scan and before the first print.** `anchors: row20`.
     - Refusing, not disclosing, matches the precedent the root-level `os.access` clause set. A digit-free notice printed beside the block (the ciso finding's alternative) was set aside: a printed figure stays citable whether or not its reader saw a stderr line.
     - `scan_gaps` fills only as `compute_review_round_costs` consumes the lazy session iterator. The earliest refusal point is therefore `_render_pooled_block`'s existing refusal call, which already runs before that function's first print. Nothing on the `--pooled` path prints to stdout before it, since the banner and the resolved-scope header are both suppressed.
@@ -197,6 +197,25 @@ this session]`
     `[verified: /usr/lib/python3.12/pathlib.py:44-53, 155-161, 199-219, 888-900; corpus.py:65-82, 104-117]`
 34. Row 29's fail-closed filter removed the check that caught a recognized diagnostic slipping past its own pattern. `test_pooled_run_prints_no_root_count_diagnostic_to_stderr` caught a `scanning root` line that stopped matching only through its digit-free assertion. That worked while the `else:` branch printed the raw, digit-bearing line. After row 29 the same line becomes the digit-free withheld notice, and the test passes. Each of the two end-to-end stderr tests therefore gains one assertion that `_POOLED_STDERR_WITHHELD_NOTICE` is absent, rather than a new test being added. The declared-root test's `count == 1` already catches a full slip of its own pattern. Its new assertion catches a recognized line that also reaches the `else:` branch. `[verified: review_rounds.py:788-794, 831-840; test_transcript_review_rounds.py:2254-2294]`
 35. The withheld-diagnostics notice sends an operator to a non-pooled rerun (row 29). That rerun surfaces the diagnostic only while the non-pooled path calls `compute_review_round_costs` outside the filter (`review_rounds.py:944`). No test pinned that, as the ciso FYI noted. Decision: add the test now rather than defer it. It reuses `_pooled_two_root_fixture`, needs no chmod, and guards the only route an operator has to a withheld diagnostic. `[verified: review_rounds.py:844-850, 940-952]`
+36. **Mechanism — `--projects` accepts only a value `Path.glob` reads as one directory-name pattern.** `anchors: row25`. Row 25's root-level `fnmatchcase` matches a single entry name, so a `--projects` value `Path.glob` read any other way would now silently select something else. That reaches every subcommand whose scan resolves more than one root — any subcommand on a machine that declares a second account (`scope.py:353-366`) — not only `--pooled`, which refuses a non-default `--projects` anyway. On CPython 3.12, `Path.glob` departs from `fnmatchcase` in four shapes:
+    - A `/` splits the value across directory levels (`pathlib.py:404, 1093-1095`). `fnmatchcase` never matches it, since no entry name contains `/`.
+    - A whole-component `**` selects every directory at every depth, subagent directories included (`:85-93, 222-229`). `fnmatchcase` reads it as `*`.
+    - A `**` inside a component raises `ValueError` (`:98-99`). `fnmatchcase` accepts it.
+    - `.` parses to no component, so `_make_selector` raises `IndexError` (`:82, 404`). `..` selects the root's parent (`:96-97, 179-187`). `fnmatchcase` matches neither, since `iterdir()` lists neither.
+
+    The new argparse `type=` function `scope._single_level_projects_glob` rejects all four with exit 2. It is wired into both `--projects` definitions that reach `_iter_glob_scoped_sessions`: `_add_project_scope_args`'s, and `skill-invocation`'s own, whose command calls `_iter_glob_scoped_sessions` directly (`transcript-analysis.py:2339-2344`).
+    - It rejects on a single-root machine too, where `corpus.iter_sessions` still passes the value to `Path.glob`. Whether a command is accepted should not depend on how many accounts the machine declares.
+    - Every value it admits also selects the same project directories in `_scan_root_transcripts`, which keeps `root.glob(projects_glob)` (`scope.py:650`), as in the session iterator `cost` runs beside it.
+    - `user-input`'s own `--projects` stays unvalidated. It reads only `scope.PROJECTS_DIR` through `corpus.iter_sessions`, which this revision leaves unchanged (`transcript-analysis.py:541, 572`).
+    - Every production caller of `_iter_glob_scoped_sessions` gets `projects_glob` from a parsed `--projects`. A direct Python caller bypasses the check, so the function's docstring states the precondition.
+    - Alternatives checked:
+      - Document and test the single-level narrowing as accepted. Rejected: a value that silently selects nothing is this revision's own bug class. The docs already call the flag a project-directory glob, and nothing enforced it.
+      - Validate inside `_resolve_project_scope`. Rejected: it runs mid-subcommand, and `cmd_skill_invocation` bypasses it, so it would need a second copy there. An argparse `type=` rejects before any subcommand code runs, and `_iso_date` (`transcript-analysis.py:240-246`) is this file's precedent for one.
+      - Keep `root.glob(projects_glob)` for selection beside a separate listing that records the root-level gap. Rejected: a listing separate from the one that reads is row 21's rejected shape.
+    - No test literal and no documented invocation uses any of the four shapes, so no existing invocation changes. `[verified: grep of --projects and projects= literals under claude/.claude/scripts/tests; grep for --projects values containing "/" or "**" across the repo outside .claude/plans]`
+    - Whether other interpreter versions depart in the same four shapes is `[unverified]`. It bears only on this one-time change: after it, root-level selection is `fnmatchcase` on every version.
+
+    `[verified: /usr/lib/python3.12/pathlib.py:81-102, 179-187, 222-229, 404, 1083-1096 (CPython 3.12.3); transcript-analysis.py:240-246, 541, 572, 2337-2346, 12584-12596, 12636, 12819-12824; scope.py:353-366, 448-451, 650, 703-704]`
 
 ### Design detail
 
@@ -280,7 +299,7 @@ Every figure is formatted by one helper, `_fmt_share_with_ci(point, lo, hi) -> s
 
 **Structure.** `_render_pooled_block` is a new module-level function; `cmd_review_round_cost` gains an early return into it after `compute_review_round_costs`, before any per-branch printing. The existing per-branch renderer is deliberately *not* extracted into a symmetric `_render_per_branch` — that is a ~180-line refactor of well-tested code with no bearing on this feature.
 
-**Traversal gap recording (`scope.py`, rows 21-25, 32, 33).**
+**Traversal gap recording (`scope.py`, rows 21-25, 32, 33, 36).**
 
 ```python
 _SCAN_GAP_ROOT = "root"
@@ -300,14 +319,17 @@ def _iter_project_dir_sessions(
 def _iter_scoped_sessions(slugs, include_subagents, roots=None, *, scan_gaps=None): ...
 def _iter_glob_scoped_sessions(roots, projects_glob, include_subagents, *, scan_gaps=None): ...
 def _resolve_project_scope(args, subcommand, include_subagents=False, roots=None, *, scan_gaps=None): ...
+
+def _single_level_projects_glob(value: str) -> str: ...
 ```
 
 - `_list_dir_recording_gaps`: `sorted(directory.iterdir())`. `FileNotFoundError` or `NotADirectoryError` → `[]`, nothing recorded. Any other `OSError` → `[]`, plus `scan_gaps[level] += 1` when `scan_gaps` is not `None`. It never prints.
 - `_failed_transcript_read_is_gap`: returns `jsonl.is_file()`. An `OSError` raised by `is_file()` → `True`.
-- `_iter_project_dir_sessions`: for each project dir, list with `_SCAN_GAP_PROJECT_DIR` and keep entries where `fnmatch.fnmatchcase(entry.name, "*.jsonl")`. Read each with `corpus._read_session_file_partitioned`. On `[]`, record `_SCAN_GAP_SESSION_FILE` when `scan_gaps` is not `None` and `_failed_transcript_read_is_gap(jsonl)` is true, then skip either way. Otherwise flatten the groups in order and yield when non-empty — the existing `if records:` rule.
-- `_iter_glob_scoped_sessions`: list the root with `_SCAN_GAP_ROOT`, filter by `fnmatch.fnmatchcase(entry.name, projects_glob)`, pass through `_dedup_new_project_dirs` as today, then the shared generator. The "scanning root" print stays unchanged; `--pooled`'s stderr filter drops it.
+- `_iter_project_dir_sessions`: for each project dir, list with `_SCAN_GAP_PROJECT_DIR` and keep entries where `fnmatch.fnmatchcase(entry.name, "*.jsonl")`. Read each with `corpus._read_session_file_partitioned`. On `[]`, `scan_gaps[_SCAN_GAP_SESSION_FILE] += 1` when `scan_gaps` is not `None` and `_failed_transcript_read_is_gap(jsonl)` is true, then skip either way. Otherwise flatten the groups in order and yield when non-empty — the existing `if records:` rule.
+- `_iter_glob_scoped_sessions`: list the root with `_SCAN_GAP_ROOT`, filter by `fnmatch.fnmatchcase(entry.name, projects_glob)`, pass through `_dedup_new_project_dirs` as today, then the shared generator. That filter selects what `root.glob(projects_glob)` did for every value `_single_level_projects_glob` admits (rows 25, 36). The "scanning root" print stays unchanged; `--pooled`'s stderr filter drops it.
 - `_iter_scoped_sessions`: its existing root-level `try/except OSError` and stderr diagnostic stay. The `except` also records `_SCAN_GAP_ROOT` when `scan_gaps` is not `None`. The inner loop becomes the shared generator.
 - `_resolve_project_scope`: threads `scan_gaps` into both iterators. The single-root glob branch raises `ValueError` when `scan_gaps is not None`.
+- `_single_level_projects_glob`: an argparse `type=` for `--projects`, beside `_projects_glob` (`:703-704`). A value containing `/` or `**`, or equal to `.` or `..`, raises `argparse.ArgumentTypeError("must match one project-directory name: no '/' or '**', and not '.' or '..'")`. Any other value, `""` included, is returned unchanged. `transcript-analysis.py` wires it into `_add_project_scope_args`'s `--projects` and `skill-invocation`'s. `user-input`'s own `--projects` stays unwired (row 36).
 
 **Refusal and stderr wiring (`review_rounds.py`, rows 26, 27, 29).**
 
@@ -324,6 +346,8 @@ Durable comments and docstrings to write (one fact per sentence):
 - Its `FileNotFoundError`/`NotADirectoryError` branch: "A missing path or a non-directory is an empty scope, not a gap."
 - `_failed_transcript_read_is_gap`'s docstring: "A transcript that failed to read is a gap only while it is still a regular file. A missing path or a non-regular file is an empty scope, as a missing directory is. A failing stat counts as a gap."
 - `_resolve_project_scope`'s docstring: "`scan_gaps`, when given, records one level tag per unreadable directory or transcript the returned iterator skips. The single-root glob branch cannot record gaps, so it raises ValueError rather than ignore the counter."
+- `_single_level_projects_glob`'s docstring: "argparse type for --projects. The multi-root scan matches the value against one directory name with fnmatch. A value containing '/' or '**', or equal to '.' or '..', would silently match nothing there or match something else, so it is rejected."
+- `_iter_glob_scoped_sessions`'s docstring, one added sentence: "projects_glob must name one directory level, since each root entry's name is matched against it with fnmatch; the CLI enforces this through _single_level_projects_glob."
 - `_pooled_scope_refusal`'s docstring: "roots=None defers the root-count check. scan_gaps=None defers the scan-gap check. Only cmd_review_round_cost's own calls may rely on either deferral, since both precede the scan. Every other caller must pass a resolved list and a counter."
 - `_render_pooled_block`'s docstring: "scan_gaps fills only as the session iterator is consumed, so this function's refusal call is the only point the scan-gap clause can fire."
 - The pattern-table comment at `review_rounds.py:804-807`: "Known diagnostic shapes and their replacements. Any stderr line matching none of them is withheld behind _POOLED_STDERR_WITHHELD_NOTICE."
@@ -332,60 +356,18 @@ Durable comments and docstrings to write (one fact per sentence):
 
 ### This revision
 
-One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, its consumer in `review_rounds.py`, and the end-to-end chmod tests that pin both are one body of shared context — a CLI-level scan-gap test can only be debugged against the traversal it exercises.
+Two `code-writer` dispatches, run in sequence, never in parallel: Dispatch 1, then Dispatch 2. They overlap on three files — `review_rounds.py`, `test_transcript_review_rounds.py`, and `docs/transcript-analysis.md` — but in disjoint functions, tests, and paragraphs. Sequencing keeps either from clobbering the other, and neither prompt needs the other's context. Dispatch 1 goes first because Dispatch 2's scan-gap refusal item 6 asserts on `_POOLED_STDERR_WITHHELD_NOTICE`, which Dispatch 1 introduces. Dispatch 2's line numbers predate Dispatch 1's edits; locate each target by its symbol. Each dispatch ends with the Verification section's `select-tests.py` and `ruff` commands. The mutation checks run once, after Dispatch 2.
 
-**Modify — `claude/.claude/scripts/transcript_analysis/scope.py`**
-- Add the three level constants, `_list_dir_recording_gaps`, `_failed_transcript_read_is_gap`, and `_iter_project_dir_sessions` (Design detail, Traversal gap recording).
-- `_iter_scoped_sessions` (`:240-296`): keyword-only `scan_gaps=None`. Record `_SCAN_GAP_ROOT` in the existing `except OSError` (`:284-291`), keeping its stderr line. Replace the inner loop (`:292-296`) with the shared generator.
-- `_iter_glob_scoped_sessions` (`:299-329`): keyword-only `scan_gaps=None`. Replace `sorted(root.glob(projects_glob))` (`:325`) with the listing helper plus `fnmatch.fnmatchcase`. Replace the inner loop (`:325-329`) with the shared generator.
-- `_resolve_project_scope` (`:369-451`): keyword-only `scan_gaps=None`, threaded into both iterators. `ValueError` in the single-root glob branch (`:449-450`) when `scan_gaps is not None`. Add the docstring sentence from Design detail.
-- Imports: add `fnmatch`, `collections.Counter`, and `_read_session_file_partitioned` to the corpus import (`:31`). Drop `read_session_file` from that import if nothing else uses it (ruff F401 will say).
-- Unchanged: `_scan_root_transcripts` and its docstring caveat (`:616-634`) — cost's per-root path, not a `--pooled` path.
-- Reuse: `_dedup_new_project_dirs` (`:193-214`); `corpus._read_session_file_partitioned` (`corpus.py:85-117`).
+#### Dispatch 1 — fail-closed stderr filter, heading-helper move, bootstrap partial-zero test
 
-**Modify — `claude/.claude/scripts/transcript_analysis/corpus.py`** — docstring only.
-- `read_session_file`'s docstring (`:123-126`) names `_iter_scoped_sessions` as its second caller. Replace that with the durable fact: `scope._iter_project_dir_sessions` calls `_read_session_file_partitioned` directly so it can tell an unreadable file from an empty one. No behavior change.
+Batched, not coupled. Its three pieces share no design context: the fail-closed stderr filter and its tests (rows 29, 34, 35), the heading-helper move (row 30), and the partial-zero-denominator bootstrap test (row 31). They share only `test_transcript_review_rounds.py`, down to its import line. None needs another to pass, so splitting further would put three agents on that one file for no gain. Review each piece against its own row.
 
 **Modify — `claude/.claude/scripts/transcript_analysis/review_rounds.py`**
-- `_pooled_scope_refusal` (`:516-573`): add the `scan_gaps=None` parameter. Delete the `os.access` clause (`:563-572`). Add the scan-gap clause after the root-count clause. Rewrite the docstring's deferral sentence per Design detail. Drop `import os` if it becomes unused.
-- New constants `_POOLED_SCAN_GAP_REFUSAL` and `_POOLED_STDERR_WITHHELD_NOTICE` (Design detail).
-- `_render_pooled_block` (`:702-785`): required keyword-only `scan_gaps: Counter[str]`, passed to its refusal call at `:721`. Add the docstring sentence.
-- `cmd_review_round_cost` (`:853-958`): build the counter under `--pooled`. Pass it at `:931` and `:957`.
+- New constant `_POOLED_STDERR_WITHHELD_NOTICE` (Design detail).
 - Stderr filter (`:788-841`): fail-closed `else:` branch. Rewrite the comment at `:804-807` and the pass-through sentence in `_pooled_filtered_stderr_call`'s docstring (`:822-823`).
-
-**Modify — `claude/.claude/scripts/tests/test_transcript_analysis.py`**
-- New class `TestScanGapCounter` directly after `TestIterScopedSessionsUnreadableRoot` (`:20649-20678`). Each chmod test carries `@pytest.mark.skipif(os.geteuid() == 0, ...)` and restores permissions in `finally`, matching `:20658-20671`. Assertions reference `_mod.scope._SCAN_GAP_*`, never raw strings.
-  1. `_iter_glob_scoped_sessions` over two roots, one unreadable → counter is `{_SCAN_GAP_ROOT: 1}`, and the readable root's sessions are still yielded.
-  2. A readable root holding one readable and one unreadable project dir → `{_SCAN_GAP_PROJECT_DIR: 1}`, and the readable project's sessions are still yielded.
-  3. An unreadable `.jsonl` → `{_SCAN_GAP_SESSION_FILE: 1}`. A readable empty `.jsonl` beside it records nothing — the distinction row 24 relies on.
-  4. A root that doesn't exist → the counter stays empty.
-  5. `_iter_scoped_sessions` with an unreadable slug-matched project dir → `{_SCAN_GAP_PROJECT_DIR: 1}` — the structural sibling gets the fix (row 22).
-  6. `_resolve_project_scope(..., roots=[one_root], scan_gaps=Counter())` → `ValueError`.
-  7. Item 2's fixture with `scan_gaps` omitted → no exception, and the same sessions item 2 yields. Non-pooled callers are unchanged.
-  8. Across items 1-3, `set(counter) <= {the three constants}`: no path, no ordinal.
-  9. `_iter_glob_scoped_sessions` over two roots, one of them a regular file rather than a directory → the counter stays empty, and the directory root's sessions are still yielded. This is the test that catches a missing `NotADirectoryError` branch (row 32). No chmod.
-  10. A regular file named `.DS_Store` directly under a readable root, matched by the default `*` → the counter stays empty, and the root's sessions are still yielded. This test only pins existing behaviour. `_dedup_new_project_dirs`'s `is_dir()` skip filters the entry before any project-dir listing, so it passes with or without row 32's branch. No chmod.
-  11. Inside a readable project dir holding one readable `.jsonl`, add a directory named `stray.jsonl` and a dangling `dangling.jsonl` symlink → the counter stays empty, and the readable transcript is still yielded. Paired with item 3, this pins row 33's classification in both directions. No chmod.
-  12. Several gap levels in one run: `_iter_glob_scoped_sessions` over two roots, with `roots[0]` chmod'd `000`. `roots[1]` holds one project dir chmod'd `000`, plus one readable project dir with two `.jsonl` files chmod'd `000` beside one readable `.jsonl`. Expect `counter == Counter({_SCAN_GAP_ROOT: 1, _SCAN_GAP_PROJECT_DIR: 1, _SCAN_GAP_SESSION_FILE: 2})` exactly, and only the readable transcript yielded. Exact equality catches a level recorded under another level's key. The count of two also distinguishes `+= 1` from `= 1`.
-  13. `roots[1]` holds a symlink to a readable project dir under `roots[0]` → the counter stays empty, and each of that project's sessions is yielded exactly once. A candidate `_dedup_new_project_dirs` drops is skipped, not recorded as a gap. No chmod.
-- Existing tests must pass unchanged, including every multi-root `--projects` glob test (fnmatch parity, row 25) and `TestIterScopedSessionsUnreadableRoot`.
 
 **Modify — `claude/.claude/scripts/tests/test_transcript_review_rounds.py`**
 - Imports: add `pricing` to the `transcript_analysis` import (`:11`), and `REPO_ROOT`, `heading_texts`, `normalize_heading` from `helpers`.
-- Every surviving direct `_render_pooled_block(...)` call (`:1803, :1814, :1823, :1834, :2002, :2005, :2083, :2204`) passes `scan_gaps=Counter()`.
-- Scan-gap refusal, in `TestCmdReviewRoundCostPooled` (chmod tests skip under `euid == 0`):
-  1. New: `_pooled_two_root_fixture` plus a second project dir under `roots[1]` holding a round, chmod'd `000`. That account still contributes through its readable project, so the refusal can only come from the scan-gap clause. Assert `SystemExit` code 2, `out == ""`, `review_rounds._POOLED_SCAN_GAP_REFUSAL` in `err`, no digit in `err`, and the unreadable directory's path not in `err`.
-  2. New: the same fixture, with one of `roots[1]`'s two session `.jsonl` files chmod'd `000` instead → the same assertions.
-  3. `test_refuses_unreadable_scan_root_via_cmd_review_round_cost` and `test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost` (`:1837-1877`): keep their assertions. Rewrite both docstrings: the refusal now comes from the traversal's root-level record after the scan, not from a pre-scan probe.
-  4. Replace `test_render_pooled_block_called_directly_refuses_unreadable_scan_root` (`:1879-1891`) with a direct call passing two fabricated roots and `scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1})` → exit 2. No chmod needed.
-  5. `test_missing_active_profile_projects_dir_is_not_refused_as_unreadable` (`:1893-1912`): run `cmd_review_round_cost` with `--pooled` end to end on the same fixture and assert it renders without `SystemExit`. Its current `_pooled_scope_refusal` assertion targets a clause that no longer exists.
-  6. New: `test_pooled_clean_scan_with_harmless_entries_does_not_refuse`, the explicit test that a clean scan does not trip the scan-gap clause.
-     - Run `cmd_review_round_cost` with `--pooled` on `_pooled_two_root_fixture` and keep `out`.
-     - Then add a regular file named `.DS_Store` directly under `roots[1]`. Inside `roots[1]`'s project dir, add a readable empty `.jsonl` and a directory named `stray.jsonl`.
-     - Run again.
-     - Assert that neither run raises `SystemExit`, and that the second run's `out` equals the first's byte for byte.
-     - Assert that neither run's `err` contains `_POOLED_SCAN_GAP_REFUSAL` or `_POOLED_STDERR_WITHHELD_NOTICE`.
-     - No chmod, so no `skipif`.
 - Stderr filter:
   1. Rename `test_pooled_stderr_filter_passes_through_a_genuine_diagnostic` (`:2296`) to `test_pooled_stderr_filter_withholds_an_unrecognized_diagnostic` and invert it. The injected line is absent from `err`, `_POOLED_STDERR_WITHHELD_NOTICE` appears exactly once, and "scanning root" is still dropped. Rewrite the docstring to match; this supersedes the stale-name finding.
   2. Rename `test_pooled_stderr_filter_reemits_buffered_lines_when_wrapped_call_raises` (`:2319`) to `test_pooled_stderr_filter_withholds_buffered_lines_when_wrapped_call_raises`. The `RuntimeError` still propagates, the raw line is absent, and the notice is present.
@@ -410,17 +392,88 @@ One `code-writer` dispatch. Do not split: the counter contract in `scope.py`, it
 - Delete the moved definitions (`:3252-3279`). Add `heading_texts` and `normalize_heading` to the existing `from helpers import ...` line (`:54`). Rename every call site (`:3357, :3401, :3406, :3419, :3821, :4924, :4927, :4939, :4942`) and the comment at `:3908`. `test_normalize_heading` (`:3817`) stays here and now tests the helper.
 
 **Modify — `docs/transcript-analysis.md`** (`## review-round-cost`, Pooled mode paragraph, `:1148-1159`)
-- Replace the bullet at `:1157` with: "a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool; checked only after the full scan, and the refusal names neither the path nor a count".
 - Add one sentence to the paragraph at `:1159`: under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
 
 **Modify — `docs/private-project-redaction.md`**
 - Replace the six-sentence paragraph at `:193-201`, under § "The owner can authorize one figure, case by case", with two sentences. First: "`transcript-analysis.py review-round-cost --pooled` is a worked instrument for this section." Second: "`docs/transcript-analysis.md` § "review-round-cost" is the canonical home for its refusal list, contributing-account floor, and output grammar." Keep the citation on one line (`.claude/rules/citation-grammar.md`). Cite that section heading, not "Pooled mode", which is a bold lead-in, not a heading.
 - Do not touch the "What it permits" passage (row 15).
 
-**Not a repository file — PR #1009 body.** After implementation, the session runs `/pr-description` for three items. They come from this round's reviewer findings; this plan did not read the body itself.
+#### Dispatch 2 — scan-gap traversal and `--projects` validation
+
+Do not split: the counter contract in `scope.py`, its consumer in `review_rounds.py`, and the end-to-end chmod tests that pin both are one body of shared context — a CLI-level scan-gap test can only be debugged against the traversal it exercises. The `--projects` validator belongs here because it exists only for the traversal's new root-level `fnmatch` match (row 36).
+
+**Modify — `claude/.claude/scripts/transcript_analysis/scope.py`**
+- Add the three level constants, `_list_dir_recording_gaps`, `_failed_transcript_read_is_gap`, and `_iter_project_dir_sessions` (Design detail, Traversal gap recording).
+- `_iter_scoped_sessions` (`:240-296`): keyword-only `scan_gaps=None`. Record `_SCAN_GAP_ROOT` in the existing `except OSError` (`:284-291`), keeping its stderr line. Replace the inner loop (`:292-296`) with the shared generator.
+- `_iter_glob_scoped_sessions` (`:299-329`): keyword-only `scan_gaps=None`. Replace `sorted(root.glob(projects_glob))` (`:325`) with the listing helper plus `fnmatch.fnmatchcase`, which selects what the old `glob` did for every value `_single_level_projects_glob` admits (rows 25, 36). Replace the inner loop (`:325-329`) with the shared generator. Add the docstring sentence from Design detail.
+- `_resolve_project_scope` (`:369-451`): keyword-only `scan_gaps=None`, threaded into both iterators. `ValueError` in the single-root glob branch (`:449-450`) when `scan_gaps is not None`. Add the docstring sentence from Design detail.
+- Add `_single_level_projects_glob` beside `_projects_glob` (`:703-704`), with its docstring from Design detail (row 36).
+- Imports: add `fnmatch`, `collections.Counter`, and `_read_session_file_partitioned` to the corpus import (`:31`). Drop `read_session_file` from that import if nothing else uses it (ruff F401 will say).
+- Unchanged: `_scan_root_transcripts` and its docstring caveat (`:616-634`) — cost's per-root path, not a `--pooled` path.
+- Reuse: `_dedup_new_project_dirs` (`:193-214`); `corpus._read_session_file_partitioned` (`corpus.py:85-117`).
+
+**Modify — `claude/.claude/scripts/transcript-analysis.py`**
+- Add `_single_level_projects_glob` to the `transcript_analysis.scope` import (`:156-171`).
+- Pass `type=_single_level_projects_glob` to `--projects` in `_add_project_scope_args` (`:12592`) and in `skill-invocation`'s scope group (`:12820-12824`). Leave `user-input`'s own `--projects` (`:12636`) unchanged (row 36).
+
+**Modify — `claude/.claude/scripts/transcript_analysis/corpus.py`** — docstring only.
+- `read_session_file`'s docstring (`:123-126`) names `iter_sessions` and `_iter_scoped_sessions` as its callers. After this revision `_iter_scoped_sessions` no longer calls it, and it already had callers the paragraph never named: `analyze-context.py:132`, `token-analyzer.py:77`, and `transcript-analysis.py:12293`, beside `iter_sessions` (`corpus.py:157`). Replace the paragraph with two sentences that name no caller list, so the next caller cannot make it stale: "The shared merged-records read, so callers cannot drift in how they parse records or merge subagent files. Inside scope.py, `_iter_project_dir_sessions` calls `_read_session_file_partitioned` directly instead, to tell an unreadable main file from a readable empty one, and repeats only the flatten below." No behavior change.
+
+**Modify — `claude/.claude/scripts/transcript_analysis/review_rounds.py`**
+- `_pooled_scope_refusal` (`:516-573`): add the `scan_gaps=None` parameter. Delete the `os.access` clause (`:563-572`). Add the scan-gap clause after the root-count clause. Rewrite the docstring's deferral sentence per Design detail. Drop `import os` if it becomes unused.
+- New constant `_POOLED_SCAN_GAP_REFUSAL` (Design detail).
+- `_render_pooled_block` (`:702-785`): required keyword-only `scan_gaps: Counter[str]`, passed to its refusal call at `:721`. Add the docstring sentence.
+- `cmd_review_round_cost` (`:853-958`): build the counter under `--pooled`. Pass it at `:931` and `:957`.
+
+**Modify — `claude/.claude/scripts/tests/test_transcript_analysis.py`**
+- New class `TestScanGapCounter` directly after `TestIterScopedSessionsUnreadableRoot` (`:20649-20678`). Each chmod test carries `@pytest.mark.skipif(os.geteuid() == 0, ...)` and restores permissions in `finally`, matching `:20658-20671`. Assertions reference `_mod.scope._SCAN_GAP_*`, never raw strings. Fixture names within one directory stay distinct under `str.casefold()`, per `.claude/skills/test-conventions-claude-config/SKILL.md`; the literal names in items 3 and 12 satisfy it.
+  1. `_iter_glob_scoped_sessions` over two roots, one unreadable → counter is `{_SCAN_GAP_ROOT: 1}`, and the readable root's sessions are still yielded.
+  2. A readable root holding one readable and one unreadable project dir → `{_SCAN_GAP_PROJECT_DIR: 1}`, and the readable project's sessions are still yielded.
+  3. An unreadable `sealed.jsonl` → `{_SCAN_GAP_SESSION_FILE: 1}`. A readable empty `empty.jsonl` beside it records nothing — the distinction row 24 relies on.
+  4. A root that doesn't exist → the counter stays empty.
+  5. `_iter_scoped_sessions` with an unreadable slug-matched project dir → `{_SCAN_GAP_PROJECT_DIR: 1}` — the structural sibling gets the fix (row 22).
+  6. `_resolve_project_scope(..., roots=[one_root], scan_gaps=Counter())` → `ValueError`.
+  7. Item 2's fixture with `scan_gaps` omitted → no exception, and the same sessions item 2 yields. Non-pooled callers are unchanged.
+  8. Across items 1-3, `set(counter) <= {the three constants}`: no path, no ordinal.
+  9. `_iter_glob_scoped_sessions` over two roots, one of them a regular file rather than a directory → the counter stays empty, and the directory root's sessions are still yielded. This is the test that catches a missing `NotADirectoryError` branch (row 32). No chmod.
+  10. A regular file named `.DS_Store` directly under a readable root, matched by the default `*` → the counter stays empty, and the root's sessions are still yielded. This test only pins existing behaviour. `_dedup_new_project_dirs`'s `is_dir()` skip filters the entry before any project-dir listing, so it passes with or without row 32's branch. No chmod.
+  11. Inside a readable project dir holding one readable `.jsonl`, add a directory named `stray.jsonl` and a dangling `dangling.jsonl` symlink → the counter stays empty, and the readable transcript is still yielded. Paired with item 3, this pins row 33's classification in both directions. No chmod.
+  12. Several gap levels in one run, with two gaps at each increment site: `_iter_glob_scoped_sessions` over two roots, with `roots[0]` chmod'd `000`. `roots[1]` holds two project dirs chmod'd `000` (`proj-sealed-a`, `proj-sealed-b`), plus one readable project dir (`proj-open`) holding `sealed-a.jsonl` and `sealed-b.jsonl` chmod'd `000` beside a readable `open.jsonl`. Expect `counter == Counter({_SCAN_GAP_ROOT: 1, _SCAN_GAP_PROJECT_DIR: 2, _SCAN_GAP_SESSION_FILE: 2})` exactly, and only `open.jsonl` yielded. Exact equality catches a level recorded under another level's key. The two counts of two distinguish `+= 1` from `= 1` at both increment sites: `_list_dir_recording_gaps` records the project-dir gaps, and `_iter_project_dir_sessions` records the session-file gaps (mutation check 9).
+  13. `roots[1]` holds a symlink to a readable project dir under `roots[0]` → the counter stays empty, and each of that project's sessions is yielded exactly once. A candidate `_dedup_new_project_dirs` drops is skipped, not recorded as a gap. This test only pins existing behaviour. `_dedup_new_project_dirs` drops the aliased candidate before any scan-gap code runs, so no scan-gap mutation changes its result. No chmod.
+  14. `_iter_scoped_sessions` over two roots, one of them chmod'd `000`, called with `scan_gaps=Counter()` and a literal slug list → `{_SCAN_GAP_ROOT: 1}`, and the readable root's slug-matched sessions are still yielded. Its root-level `except OSError` is the one increment site outside `_list_dir_recording_gaps` and `_iter_project_dir_sessions`, and no other item reaches it.
+- New class `TestSingleLevelProjectsGlob` directly after `TestScanGapCounter` (row 36). No chmod and no fixture directory.
+  1. `_mod.scope._single_level_projects_glob` returns each accepted value unchanged, parametrized: `"*"`, `"-home-user-repo*"`, `"feat-?"`, `"[ab]*"`, and `""`.
+  2. It raises `argparse.ArgumentTypeError` for each rejected value, parametrized: `"a/b"`, `"a/"`, `"/a"`, `"**"`, `"a**"`, `"."`, `".."`.
+  3. `_mod.build_parser().parse_args([...])` with `--projects a/b` exits with `SystemExit` code 2 on `buckets`, which reaches the `_add_project_scope_args` wiring, and on `skill-invocation`, which has its own `--projects`. The captured `err` names `--projects`.
+- Existing tests must pass unchanged, including every multi-root `--projects` glob test (fnmatch parity, rows 25 and 36) and `TestIterScopedSessionsUnreadableRoot`.
+
+**Modify — `claude/.claude/scripts/tests/test_transcript_review_rounds.py`**
+- Every surviving direct `_render_pooled_block(...)` call (`:1803, :1814, :1823, :1834, :2002, :2005, :2083, :2204`) passes `scan_gaps=Counter()`. `Counter` and `scope` are already imported (`:7, :11`).
+- Scan-gap refusal, in `TestCmdReviewRoundCostPooled` (chmod tests skip under `euid == 0`):
+  1. New: `_pooled_two_root_fixture` plus a second project dir under `roots[1]` holding a round, chmod'd `000`. That account still contributes through its readable project, so the refusal can only come from the scan-gap clause. Assert `SystemExit` code 2, `out == ""`, `review_rounds._POOLED_SCAN_GAP_REFUSAL` in `err`, no digit in `err`, and the unreadable directory's path not in `err`.
+  2. New: the same fixture, with one of `roots[1]`'s two session `.jsonl` files chmod'd `000` instead → the same assertions.
+  3. `test_refuses_unreadable_scan_root_via_cmd_review_round_cost` and `test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost` (`:1837-1877`): keep their assertions. Rewrite both docstrings: the refusal now comes from the traversal's root-level record after the scan, not from a pre-scan probe.
+  4. Replace `test_render_pooled_block_called_directly_refuses_unreadable_scan_root` (`:1879-1891`) with a direct call passing two fabricated roots and `scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1})` → exit 2. No chmod needed.
+  5. `test_missing_active_profile_projects_dir_is_not_refused_as_unreadable` (`:1893-1912`): run `cmd_review_round_cost` with `--pooled` end to end on the same fixture and assert it renders without `SystemExit`. Its current `_pooled_scope_refusal` assertion targets a clause that no longer exists.
+  6. New: `test_pooled_clean_scan_with_harmless_entries_does_not_refuse`, the explicit test that a clean scan does not trip the scan-gap clause.
+     - Run `cmd_review_round_cost` with `--pooled` on `_pooled_two_root_fixture` and keep `out`.
+     - Then add a regular file named `.DS_Store` directly under `roots[1]`. Inside `roots[1]`'s project dir, add a readable empty `.jsonl` and a directory named `stray.jsonl`.
+     - Run again.
+     - Assert that neither run raises `SystemExit`, and that the second run's `out` equals the first's byte for byte.
+     - Assert that neither run's `err` contains `_POOLED_SCAN_GAP_REFUSAL` or `_POOLED_STDERR_WITHHELD_NOTICE`.
+     - No chmod, so no `skipif`.
+
+**Modify — `docs/transcript-analysis.md`**
+- § "Scoping to this repo: `--this-repo`", first paragraph (`:22`): append "On every subcommand that accepts `--this-repo`, `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2." (row 36).
+- `## review-round-cost`, Pooled mode paragraph: replace the bullet at `:1157` with: "a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool; checked only after the full scan, and the refusal names neither the path nor a count".
+
+#### After both dispatches — PR #1009 body (not a repository file)
+
+After implementation, the session runs `/pr-description` for four items. The first three come from reviewer findings in an earlier round; this plan did not read the body itself.
 - DEFER row 2: drop the claim that the test's docstring calls it "a regression-guard pin, not a discriminator". No such text exists in `test_transcript_review_rounds.py` `[verified: grep for "regression-guard", "not a discriminator", "pins pre-existing" returns zero matches]`. The deferral itself stands; restate its actual reason.
 - DEFER row 3: re-evaluate for removal (Out of scope); don't edit its text in place.
 - The Notes-for-the-reviewer claim that nothing reachable on the `--pooled` path needed changing is superseded by this revision.
+- State row 36's `--projects` validation as a user-visible change: a value containing `/` or `**`, or equal to `.` or `..`, now exits 2 on every subcommand that accepts `--this-repo`.
 
 ### Original feature (implemented in earlier commits on this branch; kept for reference)
 
@@ -474,7 +527,7 @@ One `code-writer` dispatch. Do not split: the refusal policy, the output grammar
 
 - `select-tests.py` decides the scope and widens on its own when a diff warrants it. This revision edits `claude/.claude/tests/helpers.py`, the shared test-helper module (`test_skills.py:54` imports it), so expect a wider selection than earlier revisions. Neither hand-widen nor hand-narrow it.
 - The run's `-ra` summary (`pyproject.toml`'s `addopts`) lists every skipped test. Confirm none of the new chmod-based tests reports as skipped. A run as root would skip them and verify nothing about rows 21-27.
-- Run each mutation check below once locally and revert it before commit. Together they prove the new tests catch the bugs they target. Each check must fail on an assertion, or on pytest's `DID NOT RAISE`, or on an unexpected `SystemExit(2)` where stated. It must never fail on an uncaught exception from the code under test.
+- Run each mutation check below once locally, after Dispatch 2 has landed, and revert it before commit. Together they prove the new tests catch the bugs they target. Each check must fail on an assertion, or on pytest's `DID NOT RAISE`, or on an unexpected `SystemExit(2)` where stated. It must never fail on an uncaught exception from the code under test.
   1. Put `project_dir.glob("*.jsonl")` back in `_iter_project_dir_sessions` in place of its project-dir listing.
      - Expected: `TestScanGapCounter` items 2, 5, and 12 fail with an `AssertionError` on the counter, because the `_SCAN_GAP_PROJECT_DIR` entry is missing. Scan-gap refusal item 1 fails with `DID NOT RAISE` for `SystemExit`.
      - That failure shape re-confirms G6 on the interpreter under test.
@@ -486,6 +539,8 @@ One `code-writer` dispatch. Do not split: the refusal policy, the output grammar
   6. Drop `NotADirectoryError` from `_list_dir_recording_gaps`'s silent branch → `TestScanGapCounter` item 9 fails with an `AssertionError`, because the counter holds `{_SCAN_GAP_ROOT: 1}` instead of being empty. Item 10 still passes, as row 32 predicts.
   7. Make `_failed_transcript_read_is_gap` return `True` unconditionally → `TestScanGapCounter` item 11 fails with an `AssertionError`, and scan-gap refusal item 6 fails with an unexpected `SystemExit(2)`.
   8. Change `_SCANNING_ROOT_DIAGNOSTIC_RE` so it no longer matches `scanning root N/M...` → `test_pooled_run_prints_no_root_count_diagnostic_to_stderr` fails on its new withheld-notice assertion, and so does scan-gap refusal item 6. Its digit-free assertion alone no longer catches this (row 34).
+  9. Change `scan_gaps[level] += 1` to `scan_gaps[level] = 1` in `_list_dir_recording_gaps` → `TestScanGapCounter` item 12 fails with an `AssertionError` on exact counter equality, because `_SCAN_GAP_PROJECT_DIR` reads 1 instead of 2. Revert it, then make the same change to `_iter_project_dir_sessions`'s `_SCAN_GAP_SESSION_FILE` increment → item 12 fails the same way on `_SCAN_GAP_SESSION_FILE`. Item 12 is the only fixture with two gaps at one level, so it alone tells accumulation from assignment. No refusal test notices either change, since the refusal reads only the counter's truthiness.
+  10. Remove `type=_single_level_projects_glob` from `_add_project_scope_args`'s `--projects` → `TestSingleLevelProjectsGlob` item 3's `buckets` case fails with `DID NOT RAISE` for `SystemExit`. Restore it, then delete the validator's `/` check → item 2's `"a/b"`, `"a/"`, and `"/a"` cases fail with `DID NOT RAISE` for `ArgumentTypeError`.
 
 Then, once green, run the command against the real corpus at both scopes to confirm the block renders and the refusals fire:
 
@@ -495,7 +550,17 @@ python3 claude/.claude/scripts/transcript-analysis.py review-round-cost --pooled
 python3 claude/.claude/scripts/transcript-analysis.py review-round-cost --pooled --since 2026-08-01   # expect exit 2
 ```
 
-Record wall-clock time for the first invocation. The bootstrap is `2,000 × <branches in scope> × ~13` float accumulations on top of the corpus scan; if it materially lengthens the run, note the measurement as a follow-up rather than changing the design.
+Record wall-clock time for the first invocation. The bootstrap is `2,000 × <branches in scope> × ~13` float accumulations on top of the corpus scan; if it materially lengthens the run, note the finding, without its number, as a follow-up rather than changing the design.
+
+Then bound what a refusal now costs. The deleted `os.access` clause refused an unreadable root before any scan. The scan-gap clause refuses only after `compute_review_round_costs` has consumed every readable root's sessions (row 26), so a refused run now pays a full scan of the readable corpus. Bound that from the happy-path run instead of reproducing a refusal: never chmod a real config directory to test this. Profile the first invocation once:
+
+```bash
+python3 -m cProfile -s cumtime claude/.claude/scripts/transcript-analysis.py review-round-cost --pooled 2>/dev/null | grep -E 'function calls|\(_bootstrap_share_intervals\)'
+```
+
+The run's total minus `_bootstrap_share_intervals`'s cumulative time upper-bounds a refused run on this machine. `_render_pooled_block`'s refusal call precedes the bootstrap and every print (`review_rounds.py:721-726`), and an unreadable root adds no sessions. The `grep` keeps the pooled block's figures out of the output. If the bound is most of the run, record that as the known cost of refusing after the scan; do not restore a pre-scan probe (row 21 rejects it).
+
+Every timing above is measured over the machine-wide, multi-account corpus. Report it to the engineer in session only, never in the PR body, a commit, an issue, or this plan (`docs/private-project-redaction.md` § "A wider corpus goes to the owner, never into a public artifact").
 
 If the first invocation now exits 2 with the scan-gap refusal, the new traversal check found a real unreadable path on this machine. Locate it with the refusal's own hint and report it to the engineer in session. Never paste that path into the PR, the commit, or this plan: it can name a private project. If it prints the withheld-diagnostics notice, rerun without `--pooled` to read the diagnostics, and report them in session only.
 
@@ -521,3 +586,5 @@ If the first invocation now exits 2 with the scan-gap refusal, the new traversal
 - **Editing PR #1009's DEFER row 3** (`_iter_glob_scoped_sessions` has no `OSError` guard). This revision closes exactly the function it names. Re-evaluate the row for removal after implementation, via `/pr-description`, rather than editing its text in place.
 - **A CI-level guard against the chmod-based tests skipping when the runner's effective user ID is root.** Every such test here carries `@pytest.mark.skipif(os.geteuid() == 0, ...)`, as the five existing sites already do (`test_transcript_review_rounds.py:1837, 1859, 1879`; `test_transcript_analysis.py:17476, 20658`). Verification's manual `-ra` check is this PR's mitigation. A durable guard is a candidate follow-up issue.
 - **A scan root that is readable but not searchable (`r` without `x`).** Listing it succeeds, but `_dedup_new_project_dirs`'s `is_dir()` on each entry raises `PermissionError`. `Path.is_dir()` re-raises every `OSError` outside `ENOENT`, `ENOTDIR`, `EBADF`, and `ELOOP` (`pathlib.py:44, 872-880`). The pre-revision `glob` path raised the same way. The result is a loud crash, not a silent exclusion or a false refusal, so it stays outside this revision's bug class. A project directory in the same state is covered: row 33 counts its transcripts as gaps.
+- **Validating `user-input`'s own `--projects` (row 36).** It reads only `scope.PROJECTS_DIR` through `corpus.iter_sessions`, whose `Path.glob` matching this revision leaves unchanged, so no value it accepts changes meaning.
+- **A FIFO or other special file named `*.jsonl`.** `open()` on a FIFO blocks until a writer appears, so a scan that reaches one hangs. This predates the revision: the old `project_dir.glob("*.jsonl")` yielded the same entry, and `read_session_file` opened it the same way. `_failed_transcript_read_is_gap` never runs, because the read never returns. A hang is loud, not a silent exclusion, so it falls outside this revision's bug class and stays an accepted residual.
