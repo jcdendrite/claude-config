@@ -108,6 +108,8 @@ when absent, and every record inside that round's window is attributed to it, ne
 never needs. `REVIEW_SKILLS` and `compute_review_round_counts` are the two public names here;
 `REVIEW_SKILLS` is also back-imported by the still-unmigrated `cmd_judgment_pair` in the shim for
 its own `--skills` default — a second entry in the one-directional exception noted above.
+`_round_skill_name` is a third entry, back-imported by the still-unmigrated review-trace code for
+its own `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison.
 `cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than moving into
 the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type disclosure
 allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the package may
