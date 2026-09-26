@@ -21,6 +21,37 @@ _LIB = Path(__file__).parent.parent / "_respond-pr-lib.sh"
 _MARKER = "**[Claude Code]**"
 
 
+def _en_us_utf8_widens_digit_bracket_matching() -> bool:
+    """True only when this runner's en_US.UTF-8 makes bash's `[0-9]` bracket
+    expression match a non-ASCII decimal digit; if it collapses to C, the
+    LC_ALL=C fix below is untestable here. Targets `[0-9]` specifically
+    (not `[a-z]`, as claude/.claude/hooks/tests/test_lib_path_char_allowlist.py's
+    parallel probe does) because the two constructs can diverge on the same
+    bash build: this repo's own pinned bash reproduces the digit widening
+    but not the letter one."""
+    probe = subprocess.run(
+        ["bash", "-c", '[[ "٤" =~ ^[0-9]$ ]]'],
+        capture_output=True,
+        env={**_base_test_env(), "LC_ALL": "en_US.UTF-8"},
+        check=False,
+    )
+    assert probe.returncode in (0, 1), (probe.returncode, probe.stderr)
+    return probe.returncode == 0
+
+
+@pytest.fixture(scope="module")
+def utf8_locale_is_functional() -> bool:
+    return _en_us_utf8_widens_digit_bracket_matching()
+
+
+def _skip_if_utf8_locale_not_functional(utf8_locale_is_functional: bool) -> None:
+    if not utf8_locale_is_functional:
+        pytest.skip(
+            "en_US.UTF-8 did not widen [0-9] to admit a non-ASCII digit on this "
+            "bash/glibc, so the LC_ALL=C pin is invisible here."
+        )
+
+
 def _run_bash(script_body: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Source _respond-pr-lib.sh, then run script_body under `set -euo pipefail`.
 
@@ -108,6 +139,24 @@ class TestValidRepoSlug:
     def test_malformed_slug_is_invalid(self, slug):
         assert _predicate_result("respond_pr_valid_repo_slug", slug) is False
 
+    def test_non_ascii_slug_is_invalid_under_utf8_caller_locale(self, utf8_locale_is_functional):
+        """Pins the predicate's own LC_ALL=C override: under a UTF-8 caller
+        locale, glibc's bracket-expression collation otherwise widens
+        [A-Za-z0-9._-] to accept non-ASCII lookalikes. "日本/repo" is not used
+        here: CJK code points have no equivalence-class entry against
+        [A-Za-z0-9._-], so that case is already covered by
+        test_malformed_slug_is_invalid without discriminating this fix."""
+        _skip_if_utf8_locale_not_functional(utf8_locale_is_functional)
+        utf8_env = {**_base_test_env(), "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+        assert _predicate_result("respond_pr_valid_repo_slug", "owner/rëpo", env=utf8_env) is False
+
+    def test_well_formed_slug_is_valid_under_utf8_caller_locale(self, utf8_locale_is_functional):
+        """Pairs with test_non_ascii_slug_is_invalid_under_utf8_caller_locale:
+        the same forced locale must not also reject legitimate ASCII input."""
+        _skip_if_utf8_locale_not_functional(utf8_locale_is_functional)
+        utf8_env = {**_base_test_env(), "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+        assert _predicate_result("respond_pr_valid_repo_slug", "owner/repo", env=utf8_env) is True
+
 
 class TestValidCommentId:
     @pytest.mark.parametrize("comment_id", ["0", "42", "007", "9" * 40])
@@ -127,6 +176,38 @@ class TestValidCommentId:
     ])
     def test_non_numeric_id_is_invalid(self, comment_id):
         assert _predicate_result("respond_pr_valid_comment_id", comment_id) is False
+
+    def test_arabic_indic_digits_are_invalid_under_utf8_caller_locale(self, utf8_locale_is_functional):
+        """Pins the predicate's own LC_ALL=C override: under a UTF-8 caller
+        locale, glibc's bracket-expression collation otherwise widens [0-9]
+        to accept non-ASCII decimal digits such as Arabic-Indic ٤٢."""
+        _skip_if_utf8_locale_not_functional(utf8_locale_is_functional)
+        utf8_env = {**_base_test_env(), "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+        assert _predicate_result("respond_pr_valid_comment_id", "٤٢", env=utf8_env) is False
+
+    def test_numeric_id_is_valid_under_utf8_caller_locale(self, utf8_locale_is_functional):
+        """Pairs with test_arabic_indic_digits_are_invalid_under_utf8_caller_locale:
+        the same forced locale must not also reject a legitimate numeric id."""
+        _skip_if_utf8_locale_not_functional(utf8_locale_is_functional)
+        utf8_env = {**_base_test_env(), "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+        assert _predicate_result("respond_pr_valid_comment_id", "42", env=utf8_env) is True
+
+
+class TestLocalePinDoesNotLeak:
+    @pytest.mark.parametrize("function_name, valid_input", [
+        ("respond_pr_valid_repo_slug", "owner/repo"),
+        ("respond_pr_valid_comment_id", "42"),
+    ])
+    def test_caller_locale_is_unaffected_by_the_predicates_own_pin(self, function_name, valid_input):
+        """Each predicate's LC_ALL=C runs in a subshell body (see
+        _lib_passes_path_char_allowlist in claude/.claude/hooks/_lib.sh for
+        the same pattern), so it must not leak into the caller's own shell."""
+        result = _run_bash(
+            f'LC_ALL=en_US.UTF-8\n{function_name} "$1"\nprintf %s "$LC_ALL"',
+            valid_input,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "en_US.UTF-8"
 
 
 class TestBodyIsBlank:
