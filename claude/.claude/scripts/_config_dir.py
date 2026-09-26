@@ -50,6 +50,20 @@ def declared_roots_file() -> Path:
     return Path(os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE") or (Path.home() / ".claude" / "transcript-config-dirs"))
 
 
+def declared_roots_file_is_overridden() -> bool:
+    """True only when the resolved root set is a synthetic-corpus fixture, not a real declared-roots file.
+
+    Triggers:
+    - TRANSCRIPT_CONFIG_DIRS_FILE is set.
+    - CLAUDE_CONFIG_DIR is set and declared_roots_file_state() == "absent" (declared_roots_file()
+      resolves against Path.home(), never CLAUDE_CONFIG_DIR, so this only fires when no real
+      ~/.claude/transcript-config-dirs exists alongside the synthetic profile).
+    """
+    if os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE"):
+        return True
+    return bool(os.environ.get("CLAUDE_CONFIG_DIR")) and declared_roots_file_state() == "absent"
+
+
 def declared_roots_file_state() -> RootsFileState:
     """Return whether the roots file is absent, unreadable (exists but raised
     OSError on read, e.g. permissions), or present (read successfully --
