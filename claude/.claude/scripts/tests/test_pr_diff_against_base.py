@@ -1016,29 +1016,15 @@ class TestDiffFileFlagWithoutASession:
         assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
 
 
-_HASH_STAGED_DIFF_FIXTURE_START = "# MARKER_TEST_FIXTURE: hash-staged-diff — start\n"
-_HASH_STAGED_DIFF_FIXTURE_END = "# MARKER_TEST_FIXTURE: hash-staged-diff — end"
-_MARKER_SH = _SCRIPT.parent / "marker.sh"
-
-
-def _marker_hash_staged_diff(repo_root: str, env: dict) -> str:
-    """Shell out to the real _hash_staged_diff, extracted from marker.sh by
-    its own MARKER_TEST_FIXTURE delimiters rather than sourced whole.
-    marker.sh's subcommand dispatch runs unconditionally when sourced (no
-    BASH_SOURCE guard), so sourcing the whole file would hit its `case` and
-    exit before this ever called the function directly. This is the same
-    extraction mechanism test_marker_script.py's
-    _extract_hash_staged_diff_block uses. Invoked uncapped with no
-    pathspec, matching `write code-review`'s own call in marker.sh."""
-    marker_text = _MARKER_SH.read_text()
-    start = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_START)
-    assert start != -1, f"{_HASH_STAGED_DIFF_FIXTURE_START!r} not found in {_MARKER_SH}"
-    end = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_END, start)
-    assert end != -1, f"{_HASH_STAGED_DIFF_FIXTURE_END!r} not found after start marker in {_MARKER_SH}"
-    block = marker_text[start + len(_HASH_STAGED_DIFF_FIXTURE_START) : end]
-    script = block + '\n_hash_staged_diff "$@"\n'
+def _lib_staged_diff_hash_of_repo(repo_root: str, env: dict) -> str:
+    """Shell out to the real _lib_staged_diff_hash, sourced directly from
+    _lib.sh, which has no unconditional subcommand dispatch. Passes an empty
+    BASE, the HEAD-relative recipe every write site uses outside a trusted
+    in-progress state, matching `write code-review`'s own call in
+    marker.sh."""
+    script = f'. "{_LIB_SH}"\n_lib_staged_diff_hash "$@"\n'
     result = subprocess.run(
-        ["bash", "-c", script, "bash", "uncapped", repo_root],
+        ["bash", "-c", script, "bash", repo_root, ""],
         capture_output=True,
         text=True,
         check=True,
@@ -1060,8 +1046,8 @@ class TestStagedMode:
     - dirty-index isolation of the non-staged modes
     - the --record mutual exclusion, in both flag orders
     - the `git diff --cached` failure branch
-    - byte-equality between the --diff-file artifact and marker.sh's own
-      _hash_staged_diff value"""
+    - byte-equality between the --diff-file artifact and
+      _lib_staged_diff_hash's own value"""
 
     SID = "test-session-staged-mode"
 
@@ -1123,12 +1109,16 @@ class TestStagedMode:
         assert "gh pr view failed; defaulting base to" not in result.stderr
         assert "no default branch resolved" not in result.stderr
 
-    def test_staged_diff_file_artifact_hashes_identically_to_marker_hash_staged_diff(self, tmp_path):
+    def test_staged_diff_file_artifact_hashes_identically_to_lib_staged_diff_hash(self, tmp_path):
         """The byte-equality property docs/scripts.md's --staged bullet
         claims: hashing the --diff-file artifact's own bytes must equal
-        marker.sh's `_hash_staged_diff` value for the same staged tree, so
-        the artifact a reviewer reads and the subject `write code-review`
-        hashes can never silently diverge."""
+        `_lib_staged_diff_hash`'s value for the same staged tree (the
+        function every marker write site, including `write code-review`,
+        calls), so the artifact a reviewer reads and the subject
+        `write code-review` hashes can never silently diverge. This claim
+        holds outside any in-progress state only -- an empty BASE is passed
+        explicitly, matching every write site's own HEAD-relative recipe
+        there."""
         local, _bare = _make_repo_with_remote(tmp_path)
         env = _env_with_gh_shim(tmp_path, "main")
 
@@ -1141,9 +1131,9 @@ class TestStagedMode:
         artifact = _staged_diff_artifact_path(env, local, self.SID)
         from_artifact = hashlib.sha256(artifact.read_bytes()).hexdigest()
 
-        from_marker = _marker_hash_staged_diff(str(local), env)
+        from_lib = _lib_staged_diff_hash_of_repo(str(local), env)
 
-        assert from_artifact == from_marker
+        assert from_artifact == from_lib
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_staged_diff_file_artifact_mode_is_0600(self, tmp_path):
