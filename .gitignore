@@ -153,9 +153,11 @@ claude/.claude/issue-triage/
 # would swap the locked inode out from under a racing recorder).
 docs/cost-ledger.md.lock
 
-# Local skill-deletion trash.
-# No confirmed writer in this repo's scripts.
-# Same no-writer shape as claude/.claude/cache/ above.
+# Claude Code's skill trash.
+# claude/.claude/settings.json's syncClaudeAiSkills: false makes the CLI move
+# already-synced skills into ~/.claude/skills/.trash/ (see
+# docs/design-decisions/claude-ai-skill-sync-disabled-by-default.md).
+# Under stow directory-fold, that path resolves to this one inside the repo.
 # Untracked-and-unignored files show up in `git ls-files --others
 # --exclude-standard`, which trips select-tests.py's full-suite fallback
 # on every unrelated change.

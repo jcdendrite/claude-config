@@ -1816,10 +1816,8 @@ class TestComputeChangedPathsGitSmoke:
         since select_pytest_targets would otherwise fall open to the full
         suite (reason="unmatched-path") on every unrelated change.
 
-        The fixture .gitignore below holds only that one line rather than a
-        copy of the real repo-root .gitignore's full content, since a
-        minimal fixture is easier to maintain and this test only exercises
-        the one line's behavior.
+        The fixture hand-copies the production .gitignore line, so an edit
+        to the real line will not fail this test.
 
         git honors an uncommitted, untracked .gitignore already present in
         the working tree, so the fixture file is never staged or committed.
