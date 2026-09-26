@@ -301,18 +301,9 @@ def _ledger_possibly_swept(
     dynamically-resolved window `clear-stale` uses. False otherwise,
     including when that record has no parseable timestamp to compare.
 
-    Keyed on the EARLIEST round's own open, not the session's newest
-    record: a swept file's last successful append is necessarily older
-    than the floor, and that append happened inside some round that
-    opened at or before it, so the earliest round's own open timestamp is
-    always at or before every append -- keying there never misses a
-    truly-swept file. It only over-excludes a session whose later rounds
-    never appended at all, which carries no ledger signal to lose anyway.
-    Keying on the newest record instead could read such a session as
-    recent even though its ledger file is actually swept, letting a real
-    FAILURE round misclassify as a kill-switch-inferred PASS. See
-    docs/transcript-analysis.md's "Ledger-possibly-swept check" section
-    for the rationale.
+    Keyed on the earliest round-open, not the newest record, to never
+    miss a truly-swept file -- see docs/transcript-analysis.md's
+    "Ledger-possibly-swept check" section for why.
 
     This checks only the earliest round-open's own record for a
     timestamp, with no fallback to any other record in the session if
