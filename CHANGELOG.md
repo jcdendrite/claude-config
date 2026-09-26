@@ -48,6 +48,27 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The output-preferences read instruction is main-session-only.
   - The Stopping bullet is split: the blocked-stop half stays in Agent Core, and "Do not ask permission to proceed with work that is already done" moves to Main session's Shipping.
   - The shipping clause now names forks: any fork or subagent returns its work to its dispatcher instead of committing or opening a PR.
+- **`require-skill-review.sh` now diffs against a novel-content base instead of HEAD, so a merge/cherry-pick/rebase that brings in an already-reviewed `SKILL.md`/`claude-skills/skills/plan-review/ROUTING.md` unchanged no longer blocks the commit that completes it.** Mid-revert stays HEAD-relative, because a revert's synthesized base is a subtraction (HEAD minus a reviewed patch), so its removals were reviewed nowhere. This gate specifically audits removals, which is why that gap matters here. The trigger narrows, so this ships as a **major** bump: `skill-management` 3.6.2 → 4.0.0. The gate now denies, rather than skips, in these cases:
+  - Mid-merge, cherry-pick, or rebase only: a staged gated file that carries a column-0 conflict-marker line its staged change touches, because the merge-tree base itself holds conflict-marker blobs and would otherwise hide the unresolved file.
+  - Mid-merge, cherry-pick, or rebase only: a failed conflict-marker scan — a retry clears a transient failure such as a cap kill.
+  - In every state: a failed listing of a staged gated path — a retry clears a transient failure such as a cap kill.
+  - In every state: an unreadable staged blob — its cause needs fixing before the commit can proceed.
+
+  See [`docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md`](docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md) for the full mechanism and its known residuals.
+
+  `marker.sh write skill-review`'s hash computation now runs under the shared 5s cap plus 2s grace: a slow `git diff` aborts the write with exit 2 and no marker written, instead of hanging.
+
+  - Rollback is forward-only (4.0.1 or later) — `require-plugin-version-bump.sh` denies a plain revert of the plugin half.
+  - **Migration:** run `claude plugin update skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code).
+  - The stowed `marker.sh` and the plugin update independently. See `docs/hooks.md` § "Gate deadlock recovery" for the recipe when they skew.
+  - The stowed half updates on `git pull` with no re-install.
+- **`_lib_gate_diff_base`'s anchor check now reads the fully-qualified `refs/remotes/origin/<default>`, which changes the stowed code-review and plan-review gates too.** It reaches every caller of `_lib_gate_diff_base`:
+  - the stowed code-review and plan-review gates
+  - `check-claude-md-length.sh` and `check-skill-length.sh` (through `_lib_staged_length_gate`)
+  - `require-architect-consult.sh` and `log-reviewer-round.sh` (through `_lib_reviewer_round_state_value`)
+  - the `marker.sh` arms that compute a staged-diff hash
+
+  It changes behavior only where a local branch or tag named `origin/<default>` exists.
 - **The `/ready-for-review` active bypass now releases `git push` only, and the skill records its completion marker before it creates the PR.** `gh pr create` and `gh pr ready` need the completion marker at HEAD even while the active marker is live. A session mid-run on the previous skill text is denied once at PR creation after pulling. No migration required.
 - **`docs/auto-mode.md` now notes Anthropic's announced default of auto mode on Enterprise, the Claude API, and cloud-provider surfaces.** This is a pending announcement, not yet live. See `docs/auto-mode.md`'s Activating section.
 - **`deny-pii-in-commits.sh` now denies on every nonzero status from its work-tree probe and its HEAD probe except git's own 128, and `_lib_capped_for` escalates to SIGKILL 2s after the cap.** Both probes previously denied only on the cap-kill status 124 and skipped the scan on any other nonzero status, so a probe that failed with any other status (127 for a missing `git`, for example) skipped its scan. Status 128 still skips, with two different extents:

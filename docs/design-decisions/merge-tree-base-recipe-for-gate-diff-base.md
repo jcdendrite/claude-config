@@ -43,3 +43,15 @@ Reaching neither anchor falls back to the empty base — over-scoping the diff r
 Every caller of `_lib_gate_diff_base` consumes its stdout unconditionally, regardless of its exit status. A partial or candidate OID escaping to stdout on a kill path — an in-flight capped git call that timed out, was killed, or found its binary missing — would therefore be consumed by a caller as if it were a real, validated base. That would narrow an authorization hash on nobody's authority, since the escaped value never passed the anchor-admissibility or tree-validation checks above. No caller changes its allow/deny decision on status 2 alone. Each applies the same empty-base over-gating it already applies to status 1, per its own existing fail posture. A caller may additionally name the undetermined base in its own deny message.
 
 This distinction does not extend to the trust anchor's own check. `git merge-base --is-ancestor`'s non-zero exit — whether driven by the timeout cap or by a genuine "not an ancestor" result — is always treated as "not trusted." Collapsing those failure modes is safe because either cause produces the same conservative empty-base fallback that status 1 already produces.
+
+## Accepted residual: the code-review gate can release an unresolved conflict
+
+`merge-tree --write-tree` writes conflict-marker blobs into the base tree for every conflicted path. A staged blob equal to the base blob on such a path therefore diffs empty against the base, even though it is an unresolved conflict rather than reviewed content.
+
+The skill-review gate closes this with a HEAD-relative conflict-marker scan; see "Conflict-marker hard deny" in `skill-review-gate-disarms-on-empty-base-relative-diff.md`. The code-review gate consumes the same base through `_lib_code_review_marker_value` and has no such scan.
+
+The code-review gate does not verify that conflicts are resolved, whether the merge is named by ref or by full OID. A merge named by full OID whose conflict is staged with `git add -A` can therefore release the code-review gate with the unresolved markers committed. In that OID case the marker's hash preimage is also the empty-base sentinel from `_lib_code_review_empty_base_sentinel`.
+
+`require-plan-review.sh` also consumes `_lib_gate_diff_base` and disarms when the base-relative active plan set is empty. Its exposure to the hidden conflict is unassessed. A code-level defect found in the revert bracket or the conflict-marker scan reopens the choice of base; see "Declined alternative: per-path parent-blob comparison" in `skill-review-gate-disarms-on-empty-base-relative-diff.md`.
+
+The code-review gap is accepted.

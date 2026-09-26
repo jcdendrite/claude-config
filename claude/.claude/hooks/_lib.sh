@@ -912,7 +912,7 @@ _lib_gate_diff_base() {
   local default_branch anchor_reached=1
   default_branch=$(_lib_default_branch_or_guess "$repo_root")
   if [ -n "$default_branch" ] \
-    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "origin/$default_branch" >/dev/null 2>&1
+    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "refs/remotes/origin/$default_branch" >/dev/null 2>&1
   then
     anchor_reached=0
   elif _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" HEAD >/dev/null 2>&1; then
@@ -960,6 +960,48 @@ _lib_gate_diff_base() {
   printf '%s' "$tree_oid"
 }
 
+# _lib_skill_review_diff_base REPO_ROOT
+# Returns the same tri-state contract as _lib_gate_diff_base, except mid-revert
+# returns 1, empty stdout, in place of the synthesized tree.
+# A revert's synthesized tree is HEAD minus a reviewed patch, so its removals
+# were reviewed nowhere.
+# A pre-sample reading no in-progress state returns 1 directly, without
+# calling _lib_gate_diff_base, the same answer _lib_gate_diff_base itself
+# gives on the same resolved gitdir.
+# The state is sampled once before and once after the _lib_gate_diff_base
+# call, not only after, because both reads hit the same mutable gitdir.
+_lib_skill_review_diff_base() {
+  [ "$#" -eq 1 ] || return 2
+  local repo_root="$1"
+
+  local gitdir
+  gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || return 2
+  [ -n "$gitdir" ] || return 2
+
+  local pre_state pre_status
+  pre_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  pre_status=$?
+  # Unreachable: gitdir is verified non-empty above, and _lib_git_inprogress_state
+  # returns 2 on a passed-in GITDIR only when it is empty.
+  [ "$pre_status" -eq 2 ] && return 2
+  [ "$pre_status" -eq 1 ] && return 1
+  [ "$pre_state" = revert ] && return 1
+
+  local base base_status
+  base=$(_lib_gate_diff_base "$repo_root")
+  base_status=$?
+  [ "$base_status" -eq 0 ] || return "$base_status"
+
+  local post_state post_status
+  post_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  post_status=$?
+  # Unreachable: same gitdir, already verified non-empty above.
+  [ "$post_status" -eq 2 ] && return 2
+  [ "$post_status" -eq 0 ] && [ "$post_state" = revert ] && return 1
+
+  printf '%s' "$base"
+}
+
 # _lib_staged_diff_hash REPO_ROOT BASE [PATHSPEC...]
 # Shared body behind every content-addressed marker preimage and round-state
 # value in this file and in scripts/marker.sh: sha256 of `git diff --cached`,
@@ -989,9 +1031,9 @@ _lib_gate_diff_base() {
 # relative to the caller's cwd -- every current call site already validates
 # REPO_ROOT, but this is a shared primitive future callers may not.
 # A no-op GIT_EXTERNAL_DIFF/diff.external driver makes a genuinely-staged
-# change hash as empty here, an accepted, untested residual mirroring
-# marker.sh's own documented posture for the identical risk on
-# _hash_staged_diff.
+# change hash as empty here, an accepted residual pinned by
+# test_git_external_diff_noop_misclassifies_staged_skill_content_as_empty
+# in test_marker_script.py.
 _lib_staged_diff_hash() {
   [ "$#" -ge 2 ] || return 1
   local repo_root="$1" base="$2"
