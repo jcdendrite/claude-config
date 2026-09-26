@@ -79,7 +79,10 @@ fi
 # Fails open on an unresolvable config dir (empty/unset $HOME, no
 # CLAUDE_CONFIG_DIR), mirroring the SESSION_ID fail-open below — a
 # merely-missing-but-resolvable projects/ (fresh install) is fine since
-# realpath -m tolerates a missing path.
+# realpath -m tolerates a missing path. A transient cap-timeout on the
+# manual fallback's `_lib_capped`-wrapped `test -e`/`test -L` calls reaches
+# this same accepted fail-open, on an actual stall, as does an ancestor
+# chain deep enough to hit `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH`.
 #
 # Resolves config_dir/projects, not config_dir alone — a setup that symlinks
 # projects/ independently of its parent needs the full target resolved to

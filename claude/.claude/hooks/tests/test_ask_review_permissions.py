@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 from helpers import (
-    _FORCED_FALLBACK_REALPATH_SHIM,
     HOOKS_DIR,
+    _forced_fallback_path_env,
     bash_input,
     edit_input,
     multiedit_input,
@@ -31,20 +31,6 @@ def _filesystem_is_case_sensitive() -> bool:
     with tempfile.TemporaryDirectory() as probe_dir:
         (Path(probe_dir) / "case-probe").touch()
         return not (Path(probe_dir) / "CASE-PROBE").exists()
-
-
-def _forced_fallback_path_env(tmp_path: Path) -> str:
-    """Build a PATH whose `realpath` is the forced-fallback shim
-    (`helpers._FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The
-    shim dir is placed first specifically to exclude any `grealpath` the
-    host might also have on a wider PATH -- `command -v grealpath`
-    succeeding would skip the fallback branch this exists to force."""
-    shim_dir = tmp_path / "realpath_shim"
-    shim_dir.mkdir(exist_ok=True)
-    shim = shim_dir / "realpath"
-    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
-    shim.chmod(0o755)
-    return f"{shim_dir}:/usr/bin:/bin"
 
 
 class TestAskReviewPermissions:
@@ -350,9 +336,9 @@ class TestAskReviewPermissions:
         config_dir_raw = f"{config_dir_real.parent}/./WORK"
         # dangling: _lib_realpath_m fails on CLAUDE_CONFIG_DIR only. `WORK` is a
         # distinct filesystem entry from `work` on a case-sensitive filesystem, so
-        # the dangling symlink never touches config_dir_real; the hook's own
-        # case-fold (tr) is what makes the raw match still fire despite the case
-        # difference between the two.
+        # the dangling symlink never touches config_dir_real.
+        # The hook's own case-fold (tr) is what makes the raw match still fire
+        # despite the case difference between the two.
         dangling_config_dir = config_dir_real.parent / "WORK"
         dangling_config_dir.symlink_to(config_dir_real.parent / "does-not-exist")
         assert (
@@ -441,6 +427,23 @@ class TestAskReviewPermissions:
             )
             == "ask"
         )
+
+    def test_symlinked_config_json_leaf_bypasses_cheap_prefilter_stays_allowed(self, tmp_path):
+        """Pins the disclosed residual, not a bug to fix: the cheap
+        `*settings*.json` prefilter runs on FILE_PATH's own literal string
+        before any `_lib_realpath_m` call, so a symlinked leaf whose name
+        never contains "settings" exits allow before the symlink could ever
+        be resolved. Here `.claude/config.json` is itself a symlink to a
+        real `settings.json`. See gap (i) in
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Known gaps list."""
+        config_dir = tmp_path / "project" / ".claude"
+        config_dir.mkdir(parents=True)
+        real_settings = config_dir / "settings.json"
+        real_settings.write_text("{}")
+        symlinked_leaf = config_dir / "config.json"
+        symlinked_leaf.symlink_to(real_settings)
+        assert run_hook(REVIEW_PERMS_HOOK, edit_input(str(symlinked_leaf))) == "allow"
 
     def test_ask_reason_names_allow_deny_default_mode_and_review_skill(self):
         """Pins the ask-reason wording — it must name permissions.allow,

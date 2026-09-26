@@ -125,6 +125,20 @@ _lib_capped_for() {
   fi
 }
 
+# Caps the manual-fallback loop's ancestor walk below: each iteration forks
+# several _lib_capped-wrapped external commands, so an unbounded walk over a
+# deep nonexistent-ancestor chain risks the <100ms/fire hook performance
+# budget (claude-hook-review's SKILL.md §7). The cap bounds an otherwise
+# unbounded worst case to a known, finite one — 64 iterations x up to 4
+# _lib_capped-wrapped calls per iteration is ~256 external calls, empirically
+# ~1-2ms each on this hardware, i.e. several hundred ms total, not a
+# guaranteed sub-100ms bound. That worst case is reached only when a path is
+# 64+ ancestor levels deep AND both native `realpath -m` and `grealpath` are
+# absent from PATH — a combination well above any depth this repo's own
+# paths reach, so 64 is deliberately set high enough to avoid triggering in
+# practice rather than to stay inside the budget.
+_LIB_REALPATH_M_FALLBACK_MAX_DEPTH=64
+
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
 # Every external command below, including the manual-fallback loop's own test/basename/dirname calls, is wrapped individually in _lib_capped. `timeout` can't wrap a shell function directly.
 _lib_realpath_m() {
@@ -140,7 +154,12 @@ _lib_realpath_m() {
     return 0
   fi
   local suffix="" current="$target" suffix_component
+  local depth=0
   while true; do
+    depth=$((depth + 1))
+    if [ "$depth" -gt "$_LIB_REALPATH_M_FALLBACK_MAX_DEPTH" ]; then
+      return 1  # fail closed: a chain this deep is not a realistic ancestor walk. Continuing to fork risks the hook's own latency budget.
+    fi
     # Unlike basename/dirname/realpath in this loop, `test -e` and `test -L` omit `--`.
     # GNU coreutils' external `test` binary treats a 3-argument `test -e -- PATH` as its
     # binary-operator form and rejects it.

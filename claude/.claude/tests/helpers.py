@@ -1748,6 +1748,22 @@ _FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
 """)
 
 
+def _forced_fallback_path_env(tmp_path: Path) -> str:
+    """Build a PATH whose `realpath` is the forced-fallback shim
+    (`_FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The shim dir
+    is placed first specifically to exclude any `grealpath` the host might
+    also have on a wider PATH -- `command -v grealpath` succeeding would
+    skip the fallback branch this exists to force. Shared by
+    test_ask_review_permissions.py and test_lib.py's `_run_realpath_m`,
+    both of which force the same fast-path failure for the same reason."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "realpath"
+    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+    shim.chmod(0o755)
+    return f"{shim_dir}:/usr/bin:/bin"
+
+
 # -- Scaled timeout(1) shim for cap-boundary tests ---------------------------
 #
 # A cap-boundary test proves timeout(1) actually killed a hung command by
