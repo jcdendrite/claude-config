@@ -288,3 +288,80 @@ def test_transcript_analysis_reviewer_yield_subprocess_finds_seeded_dispatch(tmp
 
     assert result.returncode == 0, result.stderr
     assert "staff-backend-engineer" in result.stdout
+
+
+def test_transcript_analysis_review_trace_help_exits_zero():
+    result = _run("transcript-analysis.py", "review-trace", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--deny-summary" in result.stdout
+
+
+def _seed_review_trace_skill_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one code-review Skill invocation --
+    review-trace's own event-timeline detector reads a main-thread Skill
+    tool_use block whose input.skill is a REVIEW_TRACE_SKILLS member."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": "2026-05-19T10:00:00.000Z",
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "s1", "name": "Skill", "input": {"skill": "code-review"}}],
+            "usage": {},
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_review_trace_subprocess_finds_seeded_skill_invocation(tmp_path):
+    """Proves `from transcript_analysis import review_trace` resolves under a
+    real subprocess -- no in-process `_mod.cmd_review_trace(...)` test can see
+    a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "review-trace")
+
+    assert result.returncode == 0, result.stderr
+    assert "skill" in result.stdout
+    assert "code-review" in result.stdout
+
+
+def _seed_review_trace_denial_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one current-format hook denial --
+    --deny-summary's own corpus-wide accumulation reads a `user` record's
+    tool_result block carrying is_error and a hook-denial message signature."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    record = {
+        "type": "user",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": "2026-05-19T10:00:00.000Z",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": "Blocked by code-review gate: run /code-review.", "is_error": True},
+        ]},
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_review_trace_deny_summary_subprocess_finds_seeded_denial(tmp_path):
+    """Proves `from transcript_analysis import denials` (via review_trace's own
+    --deny-summary accumulation) resolves under a real subprocess -- no
+    in-process `_mod.cmd_review_trace(...)` test can see a broken re-export in
+    the real shim entrypoint."""
+    config_dir = _seed_review_trace_denial_account(tmp_path)
+
+    result = _run(
+        "transcript-analysis.py", "--config-dir", str(config_dir), "review-trace", "--deny-summary",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "code-review" in result.stdout

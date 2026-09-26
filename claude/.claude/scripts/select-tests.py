@@ -62,11 +62,15 @@ CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 # collected.
 WORKTREES_DIR_NAME = "worktrees"
 
-# test_transcript_analysis.py and its two siblings shell into specific hook
-# scripts and read specific SKILL.md files by path, not by import.
-# Domain-narrowing can't see that dependency, so it's declared here as a
-# cross-domain exception rather than folded into the scripts domain rule.
+# test_transcript_analysis.py and its two siblings (matched by the glob
+# below) shell into specific hook scripts and read specific SKILL.md files by
+# path, not by import. Domain-narrowing can't see that dependency, so it's
+# declared here as a cross-domain exception rather than folded into the
+# scripts domain rule. test_transcript_denials.py has the identical
+# dependency shape but isn't glob-matched (its own name doesn't share the
+# "test_transcript_analysis" prefix), so it gets its own exact-path constant.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
+TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_denials.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -401,8 +405,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # A green run therefore means no known read is unmapped, not that none
 # exists.
 #
-# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB shells into hook
-# scripts and reads SKILL.md files by path.
+# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB and
+# TRANSCRIPT_DENIALS_TEST_PATH shell into hook scripts and read SKILL.md
+# files by path.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
 # SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
@@ -478,7 +483,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
-    (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
+    (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
