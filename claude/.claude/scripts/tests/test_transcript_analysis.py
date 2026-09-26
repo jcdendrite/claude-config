@@ -8732,22 +8732,26 @@ class TestCacheEfficiencyArgparseWiring:
 @pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     """Isolated config dir carrying the cost-ledger opt-in sentinel and a
-    seeded machine identity. Sets CLAUDE_CONFIG_DIR explicitly, rather than
-    relying on _isolate_transcript_corpus_lookups' autouse fixture landing on
-    the same literal tmp-path string by coincidence: _cost_ledger_report's
-    sentinel check goes through _config.config_enabled, which resolves
-    config_dir via _config.py's own independent binding, not _mod's --
-    patching _mod's config_dir binding alone has no effect on it. The env var
-    alone is not sufficient either: fake_projects monkeypatches _mod.config_dir
-    to a lambda returning its own tmp_path, which wins over an env var read
-    since it never re-reads the environment -- so fake_projects is declared
-    as this fixture's own dependency (not merely requested alongside it by
-    convention in each test's signature), which pytest's fixture graph
-    guarantees runs first regardless of a test's own parameter order, and
-    _mod.config_dir is patched again here to make _mod.config_dir() (the
-    ledger-path resolution _cost_ledger_path() and _machine_identity_path()
-    read) and _config.config_enabled()'s own env-var-based resolution agree
-    on the same directory."""
+    seeded machine identity.
+
+    - Sets `CLAUDE_CONFIG_DIR` explicitly, rather than relying on
+      `_isolate_transcript_corpus_lookups`' autouse fixture landing on the
+      same literal tmp-path string by coincidence: `_cost_ledger_report`'s
+      sentinel check goes through `_config.config_enabled`, which resolves
+      `config_dir` via `_config.py`'s own independent binding, not `_mod`'s
+      -- patching `_mod.config_dir` alone has no effect on it.
+    - The env var alone is not sufficient either: `fake_projects`
+      monkeypatches `_mod.config_dir` to a lambda returning its own
+      `tmp_path`, which wins over an env var read since it never re-reads
+      the environment. So `fake_projects` is declared as this fixture's own
+      dependency (not merely requested alongside it by convention in each
+      test's signature), which pytest's fixture graph guarantees runs first
+      regardless of a test's own parameter order, and `_mod.config_dir` is
+      patched again here to make `_mod.config_dir()` (the ledger-path
+      resolution `_cost_ledger_path()` and `_machine_identity_path()` read)
+      and `_config.config_enabled()`'s own env-var-based resolution agree
+      on the same directory.
+    """
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
@@ -28277,10 +28281,16 @@ class TestPrCostExportSchema:
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         source_row = _sample_pr_cost_row()
         _mod._write_pr_cost_ledger_file(ledger_path, [source_row])
-        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        call_log: list[list[str]] = []
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(call_log=call_log))
         out_path = tmp_path / "export.tsv"
 
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        # pr-cost-export makes no gh call at all -- unlike --record, it only
+        # reads already-captured ledger rows, so the sole expected call is
+        # the git-tracked check on --out (_ledger_path_is_git_tracked).
+        assert call_log == [["git", "-C", str(tmp_path.resolve()), "rev-parse", "--is-inside-work-tree"]]
 
         lines = out_path.read_text().splitlines()
         assert lines[1] == _mod._PR_COST_EXPORT_HEADER_LINE
@@ -28295,11 +28305,14 @@ class TestPrCostExportSchema:
         source_cells = dict(zip(
             _mod._PR_COST_LEDGER_COLUMNS, _mod._format_pr_cost_ledger_row(source_row).split("\t"), strict=True,
         ))
-        # Tokenized (host/repo/pr_number/head_branch), truncated (merged_at/
-        # captured_at), and replaced (supersedes) columns are excluded --
-        # they're supposed to differ. Every other column is byte-identical
-        # to _format_pr_cost_ledger_row's own rendering of the source row.
-        transformed_columns = {"host", "repo", "pr_number", "head_branch", "merged_at", "captured_at", "supersedes"}
+        # Tokenized (host/repo/pr_number/head_branch/machine), truncated
+        # (merged_at/captured_at), and replaced (supersedes) columns are
+        # excluded -- they're supposed to differ. Every other column is
+        # byte-identical to _format_pr_cost_ledger_row's own rendering of
+        # the source row.
+        transformed_columns = {
+            "host", "repo", "pr_number", "head_branch", "machine", "merged_at", "captured_at", "supersedes",
+        }
         for col in _mod._PR_COST_LEDGER_COLUMNS:
             if col in transformed_columns:
                 continue
@@ -28313,18 +28326,18 @@ class TestRedactPrCostRowForExportColumnShape:
         same tuple, but a future caller that iterates .items() instead
         should not silently inherit the ledger's own stale head_branch/
         supersedes keys."""
-        result = _mod._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {})
+        result = _mod._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {}, {})
         assert set(result) == set(_mod._PR_COST_EXPORT_COLUMNS)
 
     def test_every_ledger_column_is_triaged_for_export_redaction(self):
         """Guards against a new _PR_COST_LEDGER_COLUMNS member reaching the
         export unredacted: every column must already be triaged below as
         tokenized, date-truncated, or an explicitly-approved passthrough."""
-        tokenized = {"host", "repo", "pr_number", "head_branch"}
+        tokenized = {"host", "repo", "pr_number", "head_branch", "machine"}
         date_truncated = {"merged_at", "captured_at"}
         renamed_to_correction_count = {"supersedes"}
         approved_passthrough = {
-            "machine", "rate_stamp", "join_confidence", "status",
+            "rate_stamp", "join_confidence", "status",
             "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
             "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
             "unpriced_turns", "unpriced_tokens", "turn_count", "session_count",
@@ -28565,10 +28578,13 @@ class TestPrCostExportOptIn:
         assert len(rows) == 2
         # not renumbered despite acct_c's zero-row ledger and acct_d's skip
         assert [row.split("\t")[0] for row in rows] == ["account-1", "account-2"]
-        provenance = text.splitlines()[0]
-        assert "declared=4" in provenance
-        assert "opted_in=3" in provenance
-        assert "skipped_not_opted_in=1" in provenance
+        # Same parse-into-dict pattern as
+        # TestPrCostExportProvenanceLine.test_provenance_line_present_above_header_and_parses_as_key_value_tokens,
+        # not a substring check -- "declared=4" would also match "declared=40".
+        parsed = dict(t.split("=", 1) for t in text.splitlines()[0].split(" ")[3:])
+        assert parsed["declared"] == "4"
+        assert parsed["opted_in"] == "3"
+        assert parsed["skipped_not_opted_in"] == "1"
         out = capsys.readouterr().out
         assert str(out_path) in out
         assert "wrote 2 row(s) from 3 of 4 declared account(s)" in out
@@ -28911,8 +28927,8 @@ class TestPrCostExportLegacyHeader:
         current_row = _sample_pr_cost_row(host="github.com")
 
         host_map: dict = {}
-        legacy_token = _mod._redact_pr_cost_row_for_export(legacy_row, 1, 0, host_map, {}, {}, {})["host"]
-        current_token = _mod._redact_pr_cost_row_for_export(current_row, 1, 0, host_map, {}, {}, {})["host"]
+        legacy_token = _mod._redact_pr_cost_row_for_export(legacy_row, 1, 0, host_map, {}, {}, {}, {})["host"]
+        current_token = _mod._redact_pr_cost_row_for_export(current_row, 1, 0, host_map, {}, {}, {}, {})["host"]
         assert legacy_token == current_token
 
     def test_legacy_header_account_is_counted_in_the_provenance_line(self, tmp_path, fake_projects, monkeypatch):
@@ -28986,6 +29002,29 @@ class TestPrCostExportProvenanceLine:
         provenance = out_path.read_text().splitlines()[0]
         assert "legacy_machine_value_rows=2" in provenance
 
+    def test_legacy_machine_value_rows_counts_post_collapse_not_per_raw_capture(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """Two raw captures sharing one (host, repo, pr_number, machine) key
+        -- an in-place correction under the same legacy machine value --
+        collapse to a single current row, so legacy_machine_value_rows must
+        count =1, not =2. A count taken over raw_rows before collapse would
+        double-count this correction."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=1, machine="legacy1", captured_at="2026-01-01T00:00:00Z"),
+            _sample_pr_cost_row(pr_number=1, machine="legacy1", captured_at="2026-01-02T00:00:00Z"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        provenance = out_path.read_text().splitlines()[0]
+        assert "legacy_machine_value_rows=1" in provenance
+
     def test_same_pr_recaptured_under_new_machine_identity_exports_both_rows(
         self, tmp_path, fake_projects, monkeypatch,
     ):
@@ -29011,8 +29050,41 @@ class TestPrCostExportProvenanceLine:
         assert "legacy_machine_value_rows=1" in lines[0]
         rows = [dict(zip(_mod._PR_COST_EXPORT_COLUMNS, line.split("\t"), strict=True)) for line in lines[2:]]
         assert len(rows) == 2
-        assert {row["machine"] for row in rows} == {"acme1", "1a2b3c4d"}
+        assert {row["machine"] for row in rows} == {"account-1/machine-1", "account-1/machine-2"}
         assert all(row["correction_count"] == "0" for row in rows)
+
+    def test_same_raw_machine_value_tokenizes_differently_across_accounts(
+        self, tmp_path, monkeypatch,
+    ):
+        """machine_map is a fresh dict scoped to one _pr_cost_export_rows
+        call, keyed by (ordinal, raw value) -- two accounts whose ledgers
+        each record the identical raw machine value must not collapse into
+        one shared token. Each keeps its own account-K ordinal prefix,
+        mirroring TestPrCostExportLegacyHeader's identical-host-tokenizes-
+        identically proof but for the opposite claim: same raw value,
+        different accounts, different tokens."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        (acct_b / ".pr-cost-enabled").touch()
+        _mod._write_pr_cost_ledger_file(
+            acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1, machine="same1")],
+        )
+        _mod._write_pr_cost_ledger_file(
+            acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2, machine="same1")],
+        )
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        rows = [
+            dict(zip(_mod._PR_COST_EXPORT_COLUMNS, line.split("\t"), strict=True))
+            for line in out_path.read_text().splitlines()[2:]
+        ]
+        assert len(rows) == 2
+        machine_tokens = {row["account"]: row["machine"] for row in rows}
+        assert machine_tokens == {"account-1": "account-1/machine-1", "account-2": "account-2/machine-1"}
 
     def test_corpus_override_true_from_claude_config_dir_alone_with_no_roots_file_override(
         self, tmp_path, fake_projects, monkeypatch,

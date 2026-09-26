@@ -337,11 +337,11 @@ def test_is_overridden_true_when_claude_config_dir_is_set_and_roots_file_absent(
 
 
 def test_is_overridden_false_when_claude_config_dir_is_set_and_roots_file_present(monkeypatch, tmp_path):
-    """The real multi-account scenario this predicate must not regress: a
-    real non-personal-account run legitimately sets CLAUDE_CONFIG_DIR while
-    ~/.claude/transcript-config-dirs (account-independent, resolved against
-    $HOME) exists and declares the account roster -- that must stay
-    corpus_override=0, not be flagged as a synthetic-corpus test."""
+    """The real multi-account scenario this predicate must not regress:
+    `CLAUDE_CONFIG_DIR` is set while the account-independent
+    `~/.claude/transcript-config-dirs` (resolved against `$HOME`) still
+    declares the real roster. That combination must stay
+    `corpus_override=0`."""
     monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
     home = tmp_path / "home-with-real-roots-file"
     (home / ".claude").mkdir(parents=True)

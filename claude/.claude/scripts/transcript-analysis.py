@@ -9704,13 +9704,13 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
 
 def _redact_pr_cost_row_for_export(
     row: dict, ordinal: int, correction_count: int,
-    host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict,
+    host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict, machine_map: dict,
 ) -> dict:
     """One collapsed ledger row rendered into _PR_COST_EXPORT_COLUMNS' own
     shape:
 
-    - host/repo/pr_number/head_branch are tokenized through four separate
-      per-kind maps.
+    - host/repo/pr_number/head_branch/machine are tokenized through five
+      separate per-kind maps.
     - merged_at/captured_at are truncated to a date.
     - supersedes is replaced by the caller-computed correction_count.
 
@@ -9719,6 +9719,10 @@ def _redact_pr_cost_row_for_export(
     assigned under whichever run's own ordinal scheme recorded it, so
     passing it through as-is would put two disagreeing account-K numberings
     in one row.
+
+    `machine` is tokenized uniformly, whether it holds a tool-generated hex
+    identity or a legacy operator-chosen `--machine-label` value -- both are
+    potentially identifying, so neither passes through raw.
     """
     exported = dict(row)
     exported["account"] = f"account-{ordinal}"
@@ -9728,6 +9732,7 @@ def _redact_pr_cost_row_for_export(
     exported["head_branch_label"] = _assign_root_scoped_redact_label(
         "branch", ordinal, row["head_branch"], branch_map
     )
+    exported["machine"] = _assign_root_scoped_redact_label("machine", ordinal, row["machine"], machine_map)
     exported["merged_at"] = _pr_cost_export_date_only(row["merged_at"])
     exported["captured_at"] = _pr_cost_export_date_only(row["captured_at"])
     exported["correction_count"] = correction_count
@@ -9754,6 +9759,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
     repo_map: dict[tuple[int, str], str] = {}
     pr_map: dict[tuple[int, str], str] = {}
     branch_map: dict[tuple[int, str], str] = {}
+    machine_map: dict[tuple[int, str], str] = {}
 
     for resolved_root in sorted(ordinals):
         ordinal = ordinals[resolved_root]
@@ -9805,10 +9811,9 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         if not pr_cost_recording_enabled:
             # account-N, not account_config_dir, to avoid a resolved
             # home-rooted path in output -- same discipline as pr-cost's own
-            # --all-accounts skip message. Worded generically ("not opted
-            # in"), not as a missing-sentinel-file claim, since an explicit
-            # pr_cost_recording = false in claude-config.toml reaches this
-            # branch with no sentinel file involved at all.
+            # --all-accounts skip message.
+            # Worded generically for the same reason as pr-cost's
+            # --all-accounts skip message above.
             print(
                 f"pr-cost-export: account-{ordinal} is not opted in (pr_cost_recording) --"
                 " skipped, see docs/pr-cost.md",
@@ -9862,7 +9867,7 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
             if not _MACHINE_IDENTITY_RE.match(row["machine"]):
                 legacy_machine_value_rows += 1
             exported = _redact_pr_cost_row_for_export(
-                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map
+                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map, machine_map
             )
             try:
                 formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
@@ -14137,7 +14142,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_cost_export.add_argument(
         "--out", metavar="PATH",
         help=(
-            "Required: destination TSV path, refused if it already exists (O_EXCL, never"
+            "Required: destination TSV path, refused if it already exists (never"
             " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
             " captured into that session's own transcript."
         ),
