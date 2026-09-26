@@ -16,6 +16,7 @@ from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    absolute_git_dir,
     assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
     bare_remote_with_default_branch,
@@ -2959,7 +2960,7 @@ def _assert_trusted_state_with_empty_active_plan_set(
     fixture that reaches no admissible anchor leaves the base empty, and the
     unrelated no-trusted-state disarm would then make every verdict assertion
     below pass vacuously."""
-    assert (repo / ".git" / ref_file).exists(), (
+    assert (absolute_git_dir(repo) / ref_file).exists(), (
         f"fixture setup never left {ref_file} in place"
     )
     assert (repo / plan_rel_path).exists(), (
