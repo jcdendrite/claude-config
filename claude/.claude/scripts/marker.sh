@@ -429,6 +429,10 @@ case "$SUBCOMMAND" in
         # silently force a re-review. Same shape as the code-review arm above.
         MARKER_VALUE=$(_lib_staged_diff_hash "$REPO_ROOT" "$SKILL_REVIEW_BASE" "${SKILL_REVIEW_PATHSPECS[@]}")
         if [ -z "$MARKER_VALUE" ]; then
+          # _lib_staged_diff_hash's two-outcome contract collapses a cap kill
+          # and an ordinary git failure into the same empty-stdout result, so
+          # this message can't distinguish "timed out, retry" from "git
+          # failed, investigate" (see that function's docstring in _lib.sh).
           printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2
           exit 2
         fi

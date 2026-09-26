@@ -980,7 +980,6 @@ class TestRequireSkillReview:
         timeout(1) SIGTERMs the hung process before it can flush stderr, so
         the generic message would otherwise render an empty/misleading
         reason."""
-        import shutil
         import time
 
         if not shutil.which("timeout") and not shutil.which("gtimeout"):
@@ -1045,8 +1044,6 @@ class TestRequireSkillReview:
         and deny a real structural violation -- not crash with "command not
         found" (the pre-fix regression on a bare `timeout 10s` call) and not
         silently skip validation."""
-        import shutil
-
         bin_dir = tmp_path / "bin-without-timeout"
         bin_dir.mkdir()
         for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
@@ -1395,8 +1392,6 @@ class TestRequireSkillReview:
         technique: build a PATH with jq/bash/coreutils symlinked in but
         timeout deliberately omitted.
         """
-        import shutil
-
         jq_path = shutil.which("jq")
         bash_path = shutil.which("bash")
         if not jq_path or not bash_path:
@@ -1441,8 +1436,6 @@ class TestRequireSkillReview:
     @pytest.mark.timing
     def test_plugin_lib_sh_capped_for_enforces_cap_when_timeout_present_matches_stowed_lib_sh(self, tmp_path):
         """timeout(1) present: both _lib_capped_for copies cap a hung command at exit 124."""
-        import shutil
-
         harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
@@ -1485,8 +1478,6 @@ class TestRequireSkillReview:
         self, tmp_path
     ):
         """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): both copies still cap at exit 124."""
-        import shutil
-
         harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
@@ -1530,8 +1521,6 @@ class TestRequireSkillReview:
         stock macOS without Homebrew coreutils has neither binary, and must
         not skip alongside the timeout(1)-requiring cases above.
         """
-        import shutil
-
         harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
@@ -1589,8 +1578,6 @@ class TestRequireSkillReview:
         """A SIGTERM-immune child (see `_write_conditional_sleep_shim` in
         conftest.py) must return status 137 within cap+grace from each copy of
         `_lib_capped_for`, not hang to the fixture's own much longer sleep."""
-        import shutil
-
         harness = '. "{lib}"; _lib_capped_for "$1" "${{@:2}}"'
         bash_path = shutil.which("bash")
         sleep_path = shutil.which("sleep")
@@ -1891,8 +1878,6 @@ class TestSharedGateDiffBaseClosureResidual:
         pinned identically for both copies via the promoted exit-status git
         shim rather than a real cap firing (no new test may depend on a cap
         actually firing)."""
-        import shutil
-
         build_conflicted_revert(git_repo)
         bin_dir = tmp_path / "bin-exiting-with-status"
         _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
@@ -1913,8 +1898,6 @@ class TestSharedGateDiffBaseClosureResidual:
         below -- is ever reached, so it cannot exercise this propagation
         line. An anchored merge falls through the pre-sample unexcluded and
         reaches the same cap-kill inside _lib_gate_diff_base."""
-        import shutil
-
         repo = _build_conflicted_merge_via_origin(tmp_path)
         bin_dir = tmp_path / "bin-exiting-with-status"
         _make_git_exiting_with_status(bin_dir, "merge-tree", 137)
@@ -1995,8 +1978,6 @@ class TestSkillReviewDiffBaseRevertBracket:
         and exits early for an unrelated reason (a failed trust-anchor
         check, say) would also satisfy. Asserted against the whole argv
         log, not the absence of merge-tree alone."""
-        import shutil
-
         build_conflicted_revert(git_repo)
         bin_dir = tmp_path / "bin-recording-argv"
         log_file = tmp_path / "argv.log"
@@ -2023,8 +2004,6 @@ class TestSkillReviewDiffBaseRevertBracket:
         reads state. The shim deletes REVERT_HEAD on the first
         `merge-base --is-ancestor` call, which only _lib_gate_diff_base
         makes, so a surviving REVERT_HEAD proves it was never entered."""
-        import shutil
-
         build_conflicted_revert(git_repo)
         gitdir = absolute_git_dir(git_repo)
         bin_dir = tmp_path / "bin-recording-argv"
@@ -2068,8 +2047,6 @@ class TestSkillReviewDiffBaseRevertBracket:
         `rev-parse --absolute-git-dir` call never fires. Asserted against
         the whole argv log, since without the early-out the wrapper would
         exit 0 with the subtraction tree."""
-        import shutil
-
         repo = _three_commit_stateless_repo(tmp_path)
         planted_oid = subprocess.run(
             ["git", "rev-parse", "HEAD~1"],
@@ -2122,8 +2099,6 @@ class TestSkillReviewDiffBaseRevertBracket:
         call, and deletes REVERT_HEAD on the first `merge-base
         --is-ancestor` call. The design doc's "The bracket" section carries
         the residual reasoning."""
-        import shutil
-
         repo = _three_commit_stateless_repo(tmp_path)
         planted_oid = subprocess.run(
             ["git", "rev-parse", "HEAD~1"],
@@ -2186,8 +2161,6 @@ class TestSkillReviewDiffBaseRevertBracket:
         """The post-sample independently excludes a revert that appears
         after the pre-sample and persists: the shim plants REVERT_HEAD on
         _lib_gate_diff_base's internal probe and never removes it."""
-        import shutil
-
         repo = _three_commit_stateless_repo(tmp_path)
         planted_oid = subprocess.run(
             ["git", "rev-parse", "HEAD~1"],
@@ -2482,8 +2455,6 @@ class TestCorpusBudgetWarning:
         uncapped fallback still runs the corpus scan to completion rather than
         failing with "command not found" (exit 127) -- the commit must still
         be allowed, mirroring the structural validator's sibling test above."""
-        import shutil
-
         bin_dir = tmp_path / "bin-without-timeout"
         bin_dir.mkdir()
         for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
@@ -2612,6 +2583,15 @@ _MARKER_PATHSPECS = (
 )
 
 
+# Merge-aware, marker-agreement, and conflict-marker-scan fixtures below all
+# stage the gated file under only the `claude-skills/skills/**/SKILL.md`
+# pathspec form; the other three `SKILL_CONTENT_PATHSPECS` forms
+# (`plugins/*/skills/**/SKILL.md`, `skills/**/SKILL.md`,
+# `.claude/skills/**/SKILL.md`) are exercised only by
+# TestSkillReviewPathspecParity's static equality check, never through an
+# actual base-relative-diff or conflict-marker scenario -- an accepted,
+# deliberately deferred test-coverage gap (GH-1076: edge case below
+# current scale).
 class TestSkillReviewGateMergeAwareVerdict:
     """The gate's verdict, end to end, mid-merge (GH-1076): an
     upstream-reviewed SKILL.md edit allows with no marker, plus the
@@ -3049,8 +3029,6 @@ class TestSkillReviewGateStatusVisibility:
     text and changes no verdict."""
 
     def test_undetermined_base_denies_and_names_it_mid_merge(self, isolated_home, tmp_path):
-        import shutil
-
         repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
         x_dir = repo / "claude-skills" / "skills" / "undetermined-base-skill"
         x_dir.mkdir(parents=True)
@@ -3076,8 +3054,6 @@ class TestSkillReviewGateStatusVisibility:
         assert "gated against HEAD" in reason
 
     def test_undetermined_base_allows_with_head_relative_marker(self, isolated_home, tmp_path):
-        import shutil
-
         repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
         x_dir = repo / "claude-skills" / "skills" / "undetermined-base-skill-allow"
         x_dir.mkdir(parents=True)
@@ -3117,8 +3093,6 @@ class TestSkillReviewGateNoCapBinaryAndHashFailure:
     computation failure denies, never allows."""
 
     def test_no_cap_binary_on_path_mid_merge_allows(self, isolated_home, tmp_path):
-        import shutil
-
         repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
         bin_dir = tmp_path / "bin-without-timeout"
         bin_dir.mkdir()
@@ -4449,8 +4423,6 @@ def _listing_only_failure_shim_env(tmp_path):
     own resolution (rev-parse, merge-base --is-ancestor, merge-tree
     --write-tree) and `_lib_staged_diff_hash`'s later hash call never pass
     `--name-only`, so neither is affected by this shim."""
-    import shutil
-
     bin_dir = tmp_path / "bin-name-only-failure"
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"

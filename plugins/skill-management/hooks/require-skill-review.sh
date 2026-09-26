@@ -295,9 +295,10 @@ if [ "${#STAGED_SKILL_PATHS[@]}" -gt 0 ]; then
   done
 
   if [ "${#STAGED_BLOB_PATHS[@]}" -gt 0 ]; then
-    # 10s caps validator latency (12s including the -k grace); this call and
-    # the corpus scan below both run per commit, so worst-case combined
-    # latency is ~24s.
+    # 10s caps validator latency (12s including the -k grace). This call and
+    # the corpus scan below cost ~24s combined, but are only two of the
+    # hook's many capped sites. Worst-case sizing for the whole hook:
+    # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md, "Latency".
     VALIDATOR_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" "${STAGED_BLOB_PATHS[@]}" 2>&1)
     VALIDATOR_EXIT=$?
     if [ "$VALIDATOR_EXIT" -ne 0 ]; then
