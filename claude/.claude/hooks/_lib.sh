@@ -766,6 +766,33 @@ _lib_head_tree_hash() {
   printf '%s' "$hash"
 }
 
+# _lib_verification_cache_sentinel_present REPO_ROOT
+# Reports whether REPO_ROOT has opted into the `verification` cache: whether
+# .claude/ready-for-review-verification-cache-optin is committed at the tip
+# of origin/<default-branch>, resolved via _lib_default_branch_from_origin_head.
+# Never the working tree -- a working-tree read would let the branch under
+# review opt itself in (docs/design-decisions/ready-for-review-verification-cache.md).
+# Pinned reading: `cat-file -e` confirms an object exists at that path, not
+# its type, so a tree (directory) there reads as present identically to a
+# blob -- deliberate, since either shape is a deliberate commit by whoever
+# controls the default branch.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the sentinel path exists at origin/<default-branch>.
+#   - exit 1: origin/HEAD is unset, dangling, or the path is absent there.
+_lib_verification_cache_sentinel_present() {
+  local repo_root="$1"
+  local default_branch
+  default_branch=$(_lib_default_branch_from_origin_head "$repo_root") || return 1
+  # Normalized to exit 1, not git's own raw status: `cat-file -e` exits 128
+  # (a fatal revision-parse error), not 1, when the ref resolves but the
+  # path inside its tree does not -- the far more common "not opted in"
+  # case this helper's two-outcome contract must still cover cleanly.
+  if _lib_capped git -C "$repo_root" cat-file -e "origin/$default_branch:.claude/ready-for-review-verification-cache-optin" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # _lib_default_branch_from_origin_head REPO_ROOT
 # Resolve REPO_ROOT's default branch from the local symbolic ref
 # refs/remotes/origin/HEAD alone, verifying the target actually resolves to

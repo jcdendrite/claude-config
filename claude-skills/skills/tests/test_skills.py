@@ -5494,8 +5494,9 @@ _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
     "Any of steps 1–6 did not run, or ended in an outcome its own text does "
     "not define as complete. Only these outcomes count as complete without "
     "full execution: step 2's scope-exception skip, step 2's skip of "
-    "undefined commands, step 3's reported cache hit, step 4's empty-list "
-    "no-op, and step 5's already-in-sync report (see Completion)."
+    "undefined commands, step 2's reported cache hit, step 3's reported "
+    "cache hit, step 4's empty-list no-op, and step 5's already-in-sync "
+    "report (see Completion)."
 )
 _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE = (
     "With no PR open, step 5 is also incomplete unless it reported a "
