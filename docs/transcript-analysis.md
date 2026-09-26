@@ -1154,7 +1154,7 @@ Unpriced turns inside round windows: 0
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). Each in-scope transcript's own ledger file is located by session-id glob, so this flag governs the transcript side; the ledger side follows automatically, one file per session.
-- `--agent NAME` -- the `subagent_type` to join dispatches against (default: `code-writer`). The mechanism is not hardcoded to `code-writer`; every other reviewer-agent type is a legal (if less meaningful) value.
+- `--agent NAME` -- the `subagent_type` to join dispatches against (default: `code-writer`). The mechanism is not hardcoded to `code-writer`; every other reviewer-agent type is a legal (if less meaningful) value. `inline`, `mixed`, and `unknown` are reserved `authoring_agent` sentinels, not real `subagent_type` values -- passing one exits with an error instead of joining against zero dispatches.
 - `--since Nd` -- limit to dispatches with a timestamp in the last N days (e.g. `30d`); default: all time.
   - Compares against the dispatch's own `Agent`/`Task` tool_use record (its *start* position), not its completion -- distinct from the completion index the failure definition below uses for round attribution.
   - Filters which *dispatches* enter "Dispatches in scope" and the reported outcome buckets.
