@@ -934,12 +934,10 @@ class TestDenyPiiInCommits:
         sequence), so the mask cannot recognize it as a thousands numeral.
         It still joins into a contiguous Luhn-valid run once
         _lib_strip_shell_quotes simulates the shell's own quote removal, and
-        must still deny. A genuine, maskable copy of the same value present
-        elsewhere in the commit -- staged in a file, or in a second
-        double-quoted -m on the same command line -- must not vouch for the
-        spliced copy: masking is judged per occurrence, so a genuine copy of
-        the value elsewhere in the commit does not change this occurrence's
-        verdict."""
+        must still deny. A genuine, maskable copy of the same value elsewhere
+        in the commit -- staged in a file, or in a second double-quoted -m on
+        the same command line -- does not change this occurrence's verdict,
+        because masking is judged per occurrence."""
         pii_patterns("# no user patterns\n")
         idiom_value = CARD_VALID_THOUSANDS.replace("'", "'\\''")
         command = f"git commit -m 'card {idiom_value}'"

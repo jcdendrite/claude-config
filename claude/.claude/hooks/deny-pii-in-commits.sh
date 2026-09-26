@@ -113,6 +113,13 @@
 #      command text.
 #    - Each occurrence is judged alone, so another copy of the value
 #      elsewhere in the commit does not change its verdict.
+#  - This waiver applies only to the built-in SSN/credit-card scan.
+#    A user-defined `<label>: <regex>` pattern from ~/.claude/pii-patterns.md
+#    remains exposed to the identical apostrophe-join false positive:
+#    - The credential-value and user-pattern scans read the unmasked
+#      SCAN_TARGET_BOTH, never the masked SSN_CC_SCAN_TARGET.
+#    - This is by design: a user-defined pattern belongs to the user who
+#      wrote it, not to this hook.
 #  - mask_thousands_numerals's sed -E expression is exercised only against
 #    GNU sed (this repo's CI and most dev machines). BSD/macOS sed's
 #    behavior on this expression is not independently checked.
@@ -556,9 +563,7 @@ if [ "$PII_ARMED" -eq 1 ]; then
     exit 0
   fi
   # Keeps the raw $SCAN_TARGET copy alongside the masked+stripped one for the same
-  # reason SCAN_TARGET_BOTH does above. A quote-adjacent digit run (e.g.
-  # `x"4111111111111111"`) loses the `\b` word boundary the SSN/credit-card
-  # regexes below need once quotes are stripped, so only the raw copy still matches it.
+  # reason SCAN_TARGET_BOTH above keeps its raw copy (see that comment).
   SSN_CC_SCAN_TARGET=$(printf '%s\n%s' "$SCAN_TARGET" "$SSN_CC_UNQUOTED")
 
   if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SSN_CC_SCAN_TARGET"; then
