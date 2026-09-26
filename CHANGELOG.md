@@ -6,11 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
-- **`ask-review-permissions.sh` now asks on a settings file at a config-dir root with no `.claude/` segment, and normalizes path aliasing and case before matching.** Two gaps closed:
-  - a non-personal `CLAUDE_CONFIG_DIR` account root has no `.claude/` segment, so its `settings.json` got no ask from either layer
-  - the hook's regex ran on the raw, case-sensitive `file_path`, so a doubled slash, `./`/`../` segment, or case variant (`.CLAUDE/`, `SETTINGS.json`) produced no ask
-
-  Both now ask; pinned by `test_ask_review_permissions.py`. See GH-1094.
+- **`ask-review-permissions.sh` now asks on a settings file at a config-dir root with no `.claude/` segment, and normalizes path aliasing and case before matching.** Two gaps closed — see gaps (c) and (h) in `docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md`'s Known gaps list. Pinned by `test_ask_review_permissions.py`. See GH-1094.
 - **The eight Bash-holding reviewer personas (`ciso-reviewer` and the seven `staff-*`) now follow a shared `## Scratch execution` section, and `deny-reviewer-tree-mutation.sh` denial text is rewritten to match.** Refs GH-1099. Consumer-visible changes:
   - Personas confirm a claim by tracing the code first and run something only when tracing cannot settle it. They:
     - work in one `mktemp -d /tmp/<name>.XXXXXX` directory

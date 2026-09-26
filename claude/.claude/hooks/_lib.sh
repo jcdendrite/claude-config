@@ -126,7 +126,7 @@ _lib_capped_for() {
 }
 
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
-# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+# Every external command below, including the manual-fallback loop's own test/basename/dirname calls, is wrapped individually in _lib_capped. `timeout` can't wrap a shell function directly.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -141,7 +141,7 @@ _lib_realpath_m() {
   fi
   local suffix="" current="$target" suffix_component
   while true; do
-    if [ -e "$current" ]; then
+    if _lib_capped test -e "$current"; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
       [ -n "$resolved" ] || return 1
       if [ -z "$suffix" ]; then
@@ -153,19 +153,19 @@ _lib_realpath_m() {
       fi
       return 0
     fi
-    if [ -L "$current" ]; then
-      return 1  # dangling symlink: [ -e ] reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    if _lib_capped test -L "$current"; then
+      return 1  # dangling symlink: the existence check above reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
     fi
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(basename -- "$current")
+    suffix_component=$(_lib_capped basename -- "$current")
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
         ;;
       .)
-        current=$(dirname -- "$current")
+        current=$(_lib_capped dirname -- "$current")
         continue  # a lone `.` contributes nothing to the resolved path and, unlike `..`, can never defeat a same-prefix boundary check.
         ;;
     esac
@@ -174,7 +174,7 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(dirname -- "$current")
+    current=$(_lib_capped dirname -- "$current")
   done
 }
 

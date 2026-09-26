@@ -98,11 +98,10 @@ class TestAskReviewPermissions:
         assert run_hook(REVIEW_PERMS_HOOK, bash_input("cat /some/project/.claude/settings.json")) == "allow"
 
     def test_read_tool_on_settings_path_allowed(self):
-        """A Bash tool_input has no file_path, so test_bash_tool_allowed passes
-        regardless of whether the tool-name filter works: the path check falls
-        through on the missing field either way. A Read on an actual settings
-        path isolates the tool-name filter, since the path check alone would
-        otherwise match."""
+        """Isolates the tool-name filter: unlike `test_bash_tool_allowed`
+        (whose input has no `file_path` and would pass regardless), this uses
+        an actual settings path so only the tool-name check can produce the
+        allow."""
         assert run_hook(REVIEW_PERMS_HOOK, read_input("/some/project/.claude/settings.json")) == "allow"
 
     def test_settings_file_at_config_dir_root_with_no_claude_segment_asks(self, tmp_path):
@@ -123,8 +122,9 @@ class TestAskReviewPermissions:
 
     def test_settings_file_nested_under_config_dir_root_not_matched(self, tmp_path):
         """A settings file nested below the config-dir root, rather than
-        directly at it, is outside gap (c)'s fixed shape and stays allowed —
-        same [^/]* boundary the `.claude/settings*.json` match already uses."""
+        directly at it, is outside gap (c)'s fixed shape and stays allowed.
+        The same `[^/]*` boundary the `.claude/settings*.json` match uses
+        excludes it."""
         config_dir = tmp_path / "claude-accounts" / "work"
         file_path = config_dir / "nested" / "settings.json"
         assert (
@@ -147,26 +147,18 @@ class TestAskReviewPermissions:
         ids=["double-slash", "dot-segment", "dotdot-segment", "case-variant"],
     )
     def test_aliased_or_case_varied_settings_path_asks(self, file_path):
-        """Pins that the hook's regex is case-insensitive and
-        alias-normalized (gap (h) — see
-        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
-        Known gaps list): a doubled slash, `.`/`..` segment, or a
-        case variant still asks. The alias decorations sit between `.claude`
-        and `settings` specifically, so the raw string doesn't already
-        contain the literal `.claude/settings` substring. A decoration
-        elsewhere in the path, e.g. before `.claude`, would already pass
-        without normalization, since the substring survives intact. This
-        test doesn't cover that shape."""
+        """Pins that the regex is case-insensitive and alias-normalized
+        (gap (h)). The fixtures decorate the path between `.claude` and
+        `settings` so the raw string doesn't already contain the literal
+        substring; a decoration elsewhere in the path would already pass
+        without normalization and isn't covered here."""
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
 
     def test_aliased_nested_settings_path_stays_allowed(self):
-        """This is the allow-path pairing for the alias/case-normalization
-        arm above. A `.`-segment decoration still routes through
-        `_lib_realpath_m` normalization, but the nested `settings/x.json`
-        shape it resolves to is legitimately excluded by the `[^/]*`
-        boundary. `test_non_settings_paths_allowed` already excludes this
-        shape on the raw path -- this test exercises the same exclusion
-        after normalization."""
+        """A `.`-decorated path that normalizes to a nested `settings/x.json`
+        still falls outside the `[^/]*` boundary. See
+        `test_non_settings_paths_allowed` for the same exclusion on the raw
+        path."""
         assert (
             run_hook(
                 REVIEW_PERMS_HOOK,
@@ -176,12 +168,10 @@ class TestAskReviewPermissions:
         )
 
     def test_settings_path_through_symlinked_claude_ancestor_asks(self, tmp_path):
-        """Regression control: _lib_realpath_m follows symlinks even under
-        `-m`, so a dotfiles layout where `.claude` is itself a symlink to a
-        differently-named real directory would resolve away the literal
-        `.claude/settings...json` substring the normalized match relies on.
-        The raw-path check runs alongside the normalized one, not in its
-        place, specifically so this case still asks."""
+        """Regression control: `_lib_realpath_m` follows symlinks even under
+        `-m`, so resolving a symlinked `.claude` away would defeat a
+        normalized-only match. The raw-path check (run alongside, not
+        instead) is what still catches this case."""
         real_target = tmp_path / "dotfiles" / "claude"
         real_target.mkdir(parents=True)
         project_dir = tmp_path / "project"
@@ -272,17 +262,21 @@ class TestAskReviewPermissions:
             ("work?2024", "wor2024"),
             ("work{1,2}2024", "workk2024"),
             ("work|2024", "workx2024"),
+            ("work[2024]", "work2"),
         ],
-        ids=["plus", "star", "question-mark", "brace-interval", "pipe"],
+        ids=["plus", "star", "question-mark", "brace-interval", "pipe", "left-bracket"],
     )
     def test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators(
         self, tmp_path, config_dir_name, near_miss_dir_name
     ):
         """Extends the dot-escaping test above to the escape class's other
         members (`s/[.[\\*^$()+?{|]/\\&/g`): `+`, `*`, `?`, `{}` interval
-        syntax, and `|` alternation. Each near-miss directory name is the
-        string an unescaped interpretation of the metacharacter would
-        incorrectly match against the fixed config-dir pattern."""
+        syntax, `|` alternation, and `[` bracket-expression start. Each
+        near-miss directory name is the string an unescaped interpretation
+        of the metacharacter would incorrectly match against the fixed
+        config-dir pattern. For `[`, an unescaped `[2024]` reads as an ERE
+        bracket expression matching exactly one of `0`/`2`/`4`, which is
+        what makes `work2` the near miss."""
         config_dir = tmp_path / config_dir_name
         exact_match_path = config_dir / "settings.json"
         assert (
@@ -325,9 +319,10 @@ class TestAskReviewPermissions:
         config_dir_real.mkdir(parents=True)
         config_dir_raw = f"{config_dir_real.parent}/./work"
         file_path_raw = f"{config_dir_raw}/settings.json"
-        # dangling: _lib_realpath_m fails on FILE_PATH only. Pathlib collapses the
-        # "/./" segment on construction, but the kernel resolves it identically, so
-        # this creates the symlink at the same real location config_dir_real names.
+        # dangling: _lib_realpath_m fails on FILE_PATH only.
+        # Path(file_path_raw) collapses the "/./" segment on construction, but the
+        # kernel resolves it identically, so the symlink still lands at the real
+        # location config_dir_real names.
         Path(file_path_raw).symlink_to(config_dir_real / "does-not-exist")
         assert (
             run_hook(
@@ -342,14 +337,10 @@ class TestAskReviewPermissions:
         )
 
     def test_dot_segment_aliased_path_asks_under_forced_realpath_fallback(self, tmp_path):
-        """Regression pin for `_lib_realpath_m`'s manual fallback, which must
-        drop a `.` component rather than reattach it literally, or the
-        normalized path still contains `./` and the hook's match misses it.
-        On a host with neither native `realpath -m` nor `grealpath` (forced
-        here via the PATH shim), a `.`-segment alias to a nonexistent
-        settings path must still ask, same as
-        `test_aliased_or_case_varied_settings_path_asks`'s dot-segment case
-        already pins for the native-realpath path."""
+        """Regression pin: `_lib_realpath_m`'s manual fallback must drop a
+        `.` component rather than reattach it, or the hook's
+        `.claude/settings` match misses an aliased path. Forces the fallback
+        via the PATH shim (no native `realpath -m`/`grealpath`)."""
         assert (
             run_hook(
                 REVIEW_PERMS_HOOK,
@@ -365,8 +356,8 @@ class TestAskReviewPermissions:
         fallback's unresolved suffix, since a `..` there could defeat
         another caller's same-prefix boundary check. On a host that takes
         the manual fallback, a `..`-segment alias to a nonexistent settings
-        path therefore normalizes to nothing, and the raw-path comparison
-        doesn't match the literal `../` segment either — see gap (h) in
+        path normalizes to nothing and the raw-path comparison doesn't match
+        the literal `../` segment either. See gap (h) in
         docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
         Known gaps list."""
         assert (
@@ -380,11 +371,9 @@ class TestAskReviewPermissions:
 
     def test_double_slash_aliased_path_asks_under_forced_realpath_fallback(self, tmp_path):
         """Completes the gap (h) alias-normalization matrix under forced
-        fallback: `dirname`/`basename` collapse a doubled slash on their own,
-        independent of the `.`/`..` case arms above, so this shape already
-        worked before those arms existed — this test pins that it keeps
-        working, same as `test_aliased_or_case_varied_settings_path_asks`'s
-        double-slash case already pins for the native-realpath path."""
+        fallback: a doubled slash is collapsed by `dirname`/`basename`
+        independent of the `.`/`..` case arms, so this test only needs to
+        pin that it still asks."""
         assert (
             run_hook(
                 REVIEW_PERMS_HOOK,

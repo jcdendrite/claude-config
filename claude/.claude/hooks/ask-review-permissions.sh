@@ -79,9 +79,13 @@ if [ "$MATCHED" -eq 0 ]; then
             COMPARE_PATH="$FOLDED_RAW_PATH"
             COMPARE_CONFIG_DIR="$CONFIG_DIR"
           fi
-          # DEFER: `[ \ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
+          # DEFER: `\ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
           # are session-level trusted config rather than attacker-controlled input. Of these,
           # `(`/`)` are the most practically plausible to hit in a real config-dir name (e.g. "Work (2024)").
+          # `[` is pinned separately by the left-bracket case in
+          # test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
+          # Left unescaped, it opens an ERE bracket expression and silently fails to
+          # match, so a real config-dir name like `work[2024]` would get no ask.
           # shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
           FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[.[\*^$()+?{|]/\\&/g')
           if printf '%s\n' "$COMPARE_PATH" | grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$"; then
