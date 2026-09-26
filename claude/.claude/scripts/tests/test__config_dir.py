@@ -324,11 +324,10 @@ def test_is_overridden_false_when_seam_env_var_is_unset(monkeypatch):
 
 
 def test_is_overridden_true_when_claude_config_dir_is_set_and_roots_file_absent(monkeypatch, tmp_path):
-    """A CLAUDE_CONFIG_DIR-only isolation with no real
-    ~/.claude/transcript-config-dirs to isolate from (declared_roots_file()
-    resolves against $HOME, not CLAUDE_CONFIG_DIR) is just as synthetic as a
-    TRANSCRIPT_CONFIG_DIRS_FILE override, so this predicate must catch it too
-    rather than reporting a false-negative corpus_override."""
+    """declared_roots_file() resolves against $HOME, never CLAUDE_CONFIG_DIR.
+    A CLAUDE_CONFIG_DIR-only isolation with no real roots file is just as
+    synthetic as a TRANSCRIPT_CONFIG_DIRS_FILE override, so the predicate
+    must catch it too."""
     monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home-with-no-roots-file"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "acct"))
@@ -354,8 +353,8 @@ def test_is_overridden_false_when_claude_config_dir_is_set_and_roots_file_presen
 
 def test_is_overridden_false_when_claude_config_dir_is_set_and_roots_file_unreadable(monkeypatch, tmp_path):
     """A present-but-unreadable roots file (e.g. a permissions problem) is a
-    real config-file problem an operator must fix, not a synthetic fixture --
-    it does not combine with CLAUDE_CONFIG_DIR to flag corpus_override."""
+    real config-file problem an operator must fix, not a synthetic fixture.
+    It does not combine with CLAUDE_CONFIG_DIR to flag corpus_override."""
     monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
     home = tmp_path / "home-with-unreadable-roots-file"
     (home / ".claude").mkdir(parents=True)

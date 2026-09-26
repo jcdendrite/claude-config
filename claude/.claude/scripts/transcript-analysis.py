@@ -7452,9 +7452,9 @@ def _machine_identity_path(config_dir_override: Path | None = None) -> Path:
     """Path to the generated, per-config-dir machine identity file.
     Mirrors _pr_cost_ledger_path's own override-parameter shape. Resolved
     through the module-global config_dir binding only, deliberately never
-    through COST_LEDGER_PATH/PR_COST_LEDGER_PATH: either override may point
+    through COST_LEDGER_PATH/PR_COST_LEDGER_PATH. Either override may point
     at a shared or synced location distinct from this machine's own config
-    directory, and an identity resolved there would be shared by every
+    directory, so an identity resolved there would be shared by every
     machine writing to it."""
     return (config_dir_override or config_dir()) / _MACHINE_IDENTITY_FILENAME
 
@@ -7478,8 +7478,8 @@ def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label
         # errors="replace" (not read_text()'s strict decode), so non-UTF-8
         # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
         # rather than raising UnicodeDecodeError uncaught.
-        # Assumes path is a regular file or a symlink to one; a FIFO would
-        # block indefinitely here, accepted since triggering it needs a
+        # Assumes path is a regular file or a symlink to one. A FIFO would
+        # block indefinitely here; accepted, because triggering it needs a
         # planted special file in a config dir the attacker already writes to.
         raw = path.read_bytes()
     except OSError:
@@ -7540,11 +7540,11 @@ def _resolve_machine_identity(
 
 def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
     """Print a one-time stderr notice when `rows` is non-empty and none of
-    them carries `identity` -- the expected split the first --record run
-    under a freshly generated identity produces, since a generated identity
-    is never adopted from an existing row. Fires at most once per ledger per
-    --record run: once a row carrying `identity` lands, the guard no longer
-    applies.
+    them carries `identity`. This is the expected split the first --record
+    run under a freshly generated identity produces, since a generated
+    identity is never adopted from an existing row. Fires at most once per
+    ledger per --record run: once a row carrying `identity` lands, the
+    guard no longer applies.
     """
     if not rows:
         return
@@ -9290,10 +9290,10 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     if force and target_pr is None:
         print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
         sys.exit(1)
-    # Precedes the format check below: --record's machine identity is
-    # generated, never operator-supplied, so this must fire before a
-    # malformed --machine-label gets a fix-the-format message that would
-    # invite retrying with --record still set.
+    # Precedes the format check below, because --record's machine identity
+    # is generated, never operator-supplied. Firing first avoids giving a
+    # malformed --machine-label a fix-the-format message that would invite
+    # retrying with --record still set.
     if record and machine_label is not None:
         print(
             "pr-cost: --machine-label is not accepted with --record -- machine identity is"
@@ -9928,11 +9928,12 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     # path identifies an engagement" discipline.
     # Only the operator's own literal `out` string is echoed below.
     resolved_out = Path(out).resolve()
-    # lexists() here buys nothing over exists(): resolve() above already
-    # followed every symlink, so this is a UX-only fast path that fails
-    # fast on the common case. The actual symlink defense is below, at the
-    # unresolved open_path + os.link publish step, which raises
-    # FileExistsError on an existing destination rather than dereferencing it.
+    # lexists() here buys nothing over exists(), since resolve() above
+    # already followed every symlink. This check is therefore a UX-only
+    # fast path that fails fast on the common case. The actual symlink
+    # defense is below, at the unresolved open_path + os.link publish step.
+    # That step raises FileExistsError on an existing destination rather
+    # than dereferencing it.
     if os.path.lexists(str(resolved_out)):
         print(
             f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",

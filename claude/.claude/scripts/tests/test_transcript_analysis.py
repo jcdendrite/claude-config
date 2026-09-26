@@ -8734,12 +8734,11 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     """Isolated config dir carrying the cost-ledger opt-in sentinel and a
     seeded machine identity.
 
-    - Sets `CLAUDE_CONFIG_DIR` explicitly, rather than relying on
-      `_isolate_transcript_corpus_lookups`' autouse fixture landing on the
-      same literal tmp-path string by coincidence: `_cost_ledger_report`'s
-      sentinel check goes through `_config.config_enabled`, which resolves
-      `config_dir` via `_config.py`'s own independent binding, not `_mod`'s
-      -- patching `_mod.config_dir` alone has no effect on it.
+    - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
+      `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
+      `_cost_ledger_report`'s sentinel check resolves `config_dir` through
+      `_config.py`'s own binding, not `_mod`'s, so patching
+      `_mod.config_dir` alone has no effect on it.
     - The env var alone is not sufficient either. `fake_projects`
       monkeypatches `_mod.config_dir` to its own `tmp_path`, which wins over
       the env var since it never re-reads the environment.
@@ -23685,9 +23684,10 @@ class TestPlanBoundaryArgparseWiring:
 
 
 def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
-    """Opt an account into pr-cost --record and seed its machine identity --
+    """Opt an account into pr-cost --record and seed its machine identity.
     pr-cost has no shared opt-in fixture the way cost-ledger's
-    cost_ledger_enabled does, since every test resolves its own config dir(s)."""
+    cost_ledger_enabled does, because every test here resolves its own
+    config dir(s)."""
     (config_dir / ".pr-cost-enabled").touch()
     (config_dir / _mod._MACHINE_IDENTITY_FILENAME).write_text(identity)
 
@@ -23879,11 +23879,10 @@ def _sample_pr_cost_row(**overrides) -> dict:
 
 
 def _legacy_row_line(**overrides) -> str:
-    """A _sample_pr_cost_row(**overrides), formatted and stripped of its
-    host cell -- host is always _PR_COST_LEDGER_COLUMNS' first cell, so
-    dropping it from a current-schema formatted line reproduces the legacy
-    (pre-host-column) row shape without a second column-ordering
-    implementation to keep in sync."""
+    """Returns a _sample_pr_cost_row(**overrides), formatted and stripped of
+    its host cell. Host is always _PR_COST_LEDGER_COLUMNS' first cell, so
+    dropping it reproduces the legacy (pre-host-column) row shape without a
+    second column-ordering implementation to keep in sync."""
     return "\t".join(_mod._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides)).split("\t")[1:])
 
 
@@ -24720,9 +24719,9 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         assert exc_info.value.code == 1
 
     def test_malformed_machine_label_in_read_mode_exits_1(self, fake_projects, monkeypatch):
-        """Read mode's own uncaptured-PR filter validation (--record is not
-        set here) -- --machine-label's format check survives the
-        not-accepted-with-record refusal, since read mode still accepts it."""
+        """Read mode's own --machine-label format-check path (--record is
+        not set here). The format check survives the not-accepted-with-
+        --record refusal because read mode still accepts --machine-label."""
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(machine_label="Not-Valid!")
         with pytest.raises(SystemExit) as exc_info:
@@ -24743,10 +24742,11 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         self, fake_projects, monkeypatch, capsys,
     ):
         """Direct test of the check-ordering claim: the not-accepted-with
-        --record refusal fires before the format check, so a malformed
-        --machine-label combined with --record never gets the fix-the-format
-        message -- that message would invite retrying with --record still
-        set, the elicitation path this change exists to close."""
+        --record refusal fires before the format check. A malformed
+        --machine-label combined with --record therefore never gets the
+        fix-the-format message. That message would invite retrying with
+        --record still set -- the elicitation path this change exists to
+        close."""
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(record=True, machine_label="Not-Valid!")
         with pytest.raises(SystemExit) as exc_info:
@@ -24904,9 +24904,9 @@ class TestParsePrCostLedgerFileTextMalformed:
 
     def _line_with_malformed_cell(self, column: str, malformed_value: str) -> str:
         """A valid formatted row line with `column`'s own cell replaced by
-        malformed_value -- bypasses _format_pr_cost_ledger_row's own
-        bool/float rendering, which would reject an arbitrary string before
-        parsing is ever reached for those columns."""
+        malformed_value. This bypasses _format_pr_cost_ledger_row's own
+        bool/float rendering, which would otherwise reject an arbitrary
+        string before parsing is ever reached for those columns."""
         cells = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
         cells[_mod._PR_COST_LEDGER_COLUMNS.index(column)] = malformed_value
         return "\t".join(cells)
@@ -28320,9 +28320,9 @@ class TestPrCostExportSchema:
 class TestRedactPrCostRowForExportColumnShape:
     def test_returned_dict_keys_exactly_match_export_columns(self):
         """_redact_pr_cost_row_for_export must return a dict scoped exactly
-        to _PR_COST_EXPORT_COLUMNS -- the sole caller pins columns= to that
-        same tuple, but a future caller that iterates .items() instead
-        should not silently inherit the ledger's own stale head_branch/
+        to _PR_COST_EXPORT_COLUMNS. The sole caller pins columns= to that
+        same tuple today, but a future caller that iterates .items() instead
+        must not silently inherit the ledger's own stale head_branch/
         supersedes keys."""
         result = _mod._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {}, {})
         assert set(result) == set(_mod._PR_COST_EXPORT_COLUMNS)
@@ -28366,12 +28366,11 @@ class TestCollapsePrCostRowsToCurrent:
     def test_collapse_compares_full_precision_captured_at_before_any_truncation(self):
         """Guards the collapse-before-truncation ordering requirement:
         collapse must run before merged_at/captured_at are truncated to a
-        date. Two same-key rows
-        share a calendar day but differ by seconds, and the row appended
-        FIRST is the chronologically later one by full-precision
-        captured_at -- if collapse instead compared truncated dates (both
-        equal) and fell back to append-order, it would wrongly pick the
-        second (older) row.
+        date. Two same-key rows share a calendar day but differ by seconds;
+        the row appended FIRST is the chronologically later one by
+        full-precision captured_at. If collapse instead compared truncated
+        dates (both equal) and fell back to append order, it would wrongly
+        pick the second (older) row.
         """
         newer_appended_first = _sample_pr_cost_row(additions=10, captured_at="2026-01-01T09:00:10Z")
         older_appended_second = _sample_pr_cost_row(additions=20, captured_at="2026-01-01T09:00:05Z")
@@ -28497,10 +28496,10 @@ class TestPrCostExportOrdinalsAndOrder:
     ):
         """Accounts are visited in _redaction_ordinals order (sorted by
         resolved path), not _resolve_cost_roots' own active-profile-first
-        order -- run against cmd_pr_cost_export itself, since mirroring
-        the existing ordinal-stability test would only re-test an
-        unchanged helper and would still pass against a bug that reverted
-        this ordering."""
+        order. This test runs against cmd_pr_cost_export itself rather than
+        mirroring the existing ordinal-stability test, because that would
+        only re-test an unchanged helper and would still pass against a bug
+        that reverted this ordering."""
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
@@ -28679,9 +28678,9 @@ class TestPrCostExportOptIn:
     ):
         """Regression test: an explicit pr_cost_recording = false in
         claude-config.toml must exclude the account even with a leftover
-        .pr-cost-enabled sentinel still present on disk (the default
-        post-migration state, since migrate-legacy-config.sh's delete offer
-        defaults to No) -- a bare sentinel_path.exists() check wrongly
+        .pr-cost-enabled sentinel still present on disk. That sentinel is
+        typically still present because migrate-legacy-config.sh's delete
+        offer defaults to No. A bare sentinel_path.exists() check wrongly
         included this account despite the explicit revocation."""
         (tmp_path / "claude-config.toml").write_text("pr_cost_recording = false\n")
         (tmp_path / ".pr-cost-enabled").touch()
@@ -28700,12 +28699,12 @@ class TestPrCostExportOptIn:
     def test_config_dir_unresolvable_exits_1_with_its_own_diagnostic(
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
-        """_config.config_enabled("pr_cost_recording", ...) returning None --
-        distinct from a resolved account simply not being opted in. Not
-        reachable through account_config_dir itself (root.parent is always a
-        concrete Path, per this call site's own comment), so this forces the
-        condition directly through _config.config_enabled rather than
-        through any real config-dir input. Mirrors
+        """Tests _config.config_enabled("pr_cost_recording", ...) returning
+        None, distinct from a resolved account simply not being opted in.
+        This is not reachable through account_config_dir itself, since
+        root.parent is always a concrete Path (per this call site's own
+        comment). The test therefore forces the condition directly through
+        _config.config_enabled. Mirrors
         TestPrCostRecordingConfigDirUnresolvable's identical coverage of
         --record's own sibling branch."""
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -28728,12 +28727,11 @@ class TestPrCostExportOptIn:
 
 
 class TestPrCostExportConfigSchemaErrors:
-    """_pr_cost_export_rows's own copy of --record's config-schema error
-    handling around _config.config_enabled("pr_cost_recording", ...) --
-    forces each branch directly, mirroring TestPrCostRecordingKeyError's
-    forcing technique. Covers only this export-path copy of the branches;
-    --record's own identical-shaped branches are a separate, pre-existing
-    coverage gap."""
+    """Tests _pr_cost_export_rows's own copy of --record's config-schema
+    error handling around _config.config_enabled. Forces each branch
+    directly, mirroring TestPrCostRecordingKeyError's forcing technique.
+    Covers only this export-path copy of the branches -- --record's own
+    identical-shaped branches are a separate, pre-existing coverage gap."""
 
     def test_config_schema_empty_error_exits_1_naming_the_account(
         self, tmp_path, fake_projects, monkeypatch, capsys,
@@ -28818,10 +28816,11 @@ class TestPrCostExportEmptyLedger:
     def test_header_only_ledger_contributes_zero_rows_and_is_excluded_from_corpus_identities(
         self, tmp_path, monkeypatch,
     ):
-        """A ledger that parses to zero data rows (header-only -- opted in,
-        but no PR ever captured) must still count toward opted_in, unlike
-        the no-sentinel skip TestPrCostExportOptIn covers above, but must
-        contribute no row and no corpus_identities entry of its own."""
+        """A ledger that parses to zero data rows (header-only: opted in,
+        but no PR ever captured -- distinct from the no-sentinel skip
+        TestPrCostExportOptIn covers above) must still count toward
+        opted_in. It must contribute no row and no corpus_identities entry
+        of its own."""
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
@@ -28868,8 +28867,11 @@ class TestPrCostExportEmptyLedger:
     ):
         """Distinct from the header-only case above: here the sentinel is
         present but pr-cost-ledger.tsv was never created (no --record has
-        ever run for this account). Must still count toward opted_in,
-        contribute no row, and contribute no corpus_identities entry."""
+        ever run for this account). Must still:
+        - count toward opted_in
+        - contribute no row
+        - contribute no corpus_identities entry
+        """
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()  # opted in, but no ledger file at all
@@ -28915,11 +28917,11 @@ class TestPrCostExportLegacyHeader:
     def test_legacy_header_host_backfill_tokenizes_identically_to_a_recorded_github_com(self):
         """A ledger's legacy-header rows all predate GHE support, so a
         backfilled host="github.com" is a validated historical fact, not a
-        guess -- it must tokenize identically to a genuinely recorded
-        github.com. One ledger file carries exactly one header format, so
-        this can't be shown by comparing two accounts (their tokens are
-        account-namespaced and never equal) -- called directly instead,
-        twice with the same ordinal and host_map."""
+        guess. It must therefore tokenize identically to a genuinely
+        recorded github.com. One ledger file carries exactly one header
+        format, so this can't be shown by comparing two accounts (their
+        tokens are account-namespaced and never equal). Called directly
+        instead, twice with the same ordinal and host_map."""
         legacy_text = _mod._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n"
         legacy_row = _mod._parse_pr_cost_ledger_file_text(legacy_text)[0]
         current_row = _sample_pr_cost_row(host="github.com")
@@ -29030,7 +29032,7 @@ class TestPrCostExportProvenanceLine:
         key, so a pre-migration legacy-labeled capture and a later
         --record --force --pr N recapture of the identical (host, repo,
         pr_number) under a new hex machine identity do not collapse into
-        one row -- both survive as independent rows, and only the
+        one row. Both survive as independent rows, and only the
         legacy-shaped one is flagged."""
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
@@ -29055,12 +29057,12 @@ class TestPrCostExportProvenanceLine:
         self, tmp_path, monkeypatch,
     ):
         """machine_map is a fresh dict scoped to one _pr_cost_export_rows
-        call, keyed by (ordinal, raw value) -- two accounts whose ledgers
+        call, keyed by (ordinal, raw value), so two accounts whose ledgers
         each record the identical raw machine value must not collapse into
-        one shared token. Each keeps its own account-K ordinal prefix,
-        mirroring TestPrCostExportLegacyHeader's identical-host-tokenizes-
-        identically proof but for the opposite claim: same raw value,
-        different accounts, different tokens."""
+        one shared token. Each keeps its own account-K ordinal prefix.
+        Mirrors TestPrCostExportLegacyHeader's identical-host-tokenizes-
+        identically proof, but for the opposite claim (same raw value,
+        different accounts, different tokens)."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         acct_a, acct_b = roots[0].parent, roots[1].parent
         (acct_a / ".pr-cost-enabled").touch()
@@ -29090,9 +29092,9 @@ class TestPrCostExportProvenanceLine:
         """A contributor isolating a smoke test by setting only
         CLAUDE_CONFIG_DIR (no real ~/.claude/transcript-config-dirs to
         isolate TRANSCRIPT_CONFIG_DIRS_FILE from) produces a fully synthetic
-        export just like the seam-file override every other test in this
-        class relies on -- corpus_override must still flag it, or this shape
-        is indistinguishable from a real production export."""
+        export, just like the seam-file override every other test in this
+        class relies on. corpus_override must still flag it -- otherwise
+        this shape is indistinguishable from a real production export."""
         monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
         # Keeps declared_transcript_roots' fallback off this machine's real file.
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -29109,12 +29111,13 @@ class TestPrCostExportProvenanceLine:
     def test_corpus_override_false_from_claude_config_dir_alone_with_real_roots_file_present(
         self, tmp_path, fake_projects, monkeypatch,
     ):
-        """The real multi-account scenario this check must not regress: a
-        real non-personal-account run legitimately sets only CLAUDE_CONFIG_DIR
-        while ~/.claude/transcript-config-dirs (resolved against $HOME, not
-        CLAUDE_CONFIG_DIR) exists and declares the account roster. This case
-        must stay corpus_override=0 because a real declared-roots file makes
-        it a legitimate multi-account run, not a synthetic-corpus one."""
+        """~/.claude/transcript-config-dirs resolves against $HOME, never
+        CLAUDE_CONFIG_DIR. The real multi-account scenario this check must
+        not regress: a real non-personal-account run legitimately sets only
+        CLAUDE_CONFIG_DIR while that real roots file still exists and
+        declares the account roster. This case must stay
+        corpus_override=0, because a real declared-roots file makes it a
+        legitimate multi-account run, not a synthetic-corpus one."""
         monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -29177,11 +29180,11 @@ class TestPrCostExportProvenanceLine:
         self, tmp_path, fake_projects, monkeypatch,
     ):
         """corpus= is built from each account's raw_rows[0] alone (the
-        ledger's first line), which append-only writes never move or
-        rewrite -- so a later --force correction or a second captured PR
+        ledger's first line). Append-only writes never move or rewrite that
+        line, so a later --force correction or a second captured PR
         appended to the same ledger must leave the digest unchanged. The
         same-account-set test above only proves stability when row count
-        itself never changes; this proves the first-row-never-moves
+        itself never changes. This proves the first-row-never-moves
         invariant docs/pr-cost.md asserts."""
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
@@ -29304,8 +29307,8 @@ class TestPrCostExportRefusals:
         self, tmp_path, monkeypatch, capsys,
     ):
         """account-1's ledger is valid and already collected in-memory when
-        account-2's own ledger fails to parse -- the failure must still name
-        account-2 (not account-1), and --out must not exist, proving
+        account-2's own ledger fails to parse. The failure must still name
+        account-2, not account-1. --out must not exist, proving
         account-1's already-collected rows are discarded rather than
         partially written."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
@@ -29404,8 +29407,12 @@ class TestPrCostExportRefusals:
         self, tmp_path, fake_projects, monkeypatch, capsys,
     ):
         """A permission-denied ledger file raises OSError from read_text(),
-        distinct from the _PrCostLedgerParseError paths covered above --
-        this must exit 1, name the account, and disclose no path either."""
+        distinct from the _PrCostLedgerParseError paths covered above. This
+        must:
+        - exit 1
+        - name the account
+        - disclose no path either
+        """
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
@@ -29508,8 +29515,10 @@ class TestPrCostExportPublishBackstop:
     ):
         """os.link raising a generic OSError (e.g. EXDEV, a permission
         failure) at publish time is distinct from the FileExistsError branch
-        covered above -- must still clean up the temp file and never leave
-        --out created."""
+        covered above. It must still:
+        - clean up the temp file
+        - never leave --out created
+        """
         _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
@@ -29535,9 +29544,11 @@ class TestPrCostExportWriteOSError:
     ):
         """The write-time OSError (f.write raising into the same-directory
         temp file, before --out itself is ever touched) is distinct from the
-        publish-time OSError TestPrCostExportPublishBackstop above covers --
-        it must clean up the temp file rather than leave a truncated one
-        behind, and must never create --out at all."""
+        publish-time OSError TestPrCostExportPublishBackstop above covers.
+        It must:
+        - clean up the temp file rather than leave a truncated one behind
+        - never create --out at all
+        """
         _enable_pr_cost(tmp_path)
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
