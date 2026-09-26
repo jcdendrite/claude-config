@@ -8554,7 +8554,7 @@ def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_L
     module itself formatted), never raw external text, so this should never
     fire in practice; it exists as a last-resort guard against writing a
     corrupt row rather than as an expected code path. `columns` defaults to
-    the ledger's own column tuple; pr-cost-export passes its own wider tuple
+    the ledger's own column tuple. pr-cost-export passes its own wider tuple
     to reuse this same tab/newline guard and bool/float rendering."""
     cells: list[str] = []
     for col in columns:
@@ -9432,8 +9432,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 # resolved home-rooted path in output -- same discipline as
                 # the single-account refusal message below. Worded
                 # generically ("not opted in"), not as a missing-sentinel-
-                # file claim -- same rationale as pr-cost-export's identical
-                # message, since an explicit pr_cost_recording = false in
+                # file claim. Same rationale as pr-cost-export's identical
+                # message: an explicit pr_cost_recording = false in
                 # claude-config.toml reaches this branch with no sentinel
                 # file involved at all.
                 print(
@@ -9686,9 +9686,9 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
     """One (row, correction_count) pair per distinct (host, repo, pr_number,
     machine) key in `rows`, keeping only the current (latest by
     captured_at) row for each key -- the append-only ledger's full history
-    collapsed to current state. Must run before tokenization (pr_number must
-    stay a typed int) and before date-truncation (same-day ties need
-    full-precision captured_at). correction_count is the number of other
+    collapsed to current state. Must run before tokenization: pr_number must
+    stay a typed int. Must run before date-truncation: same-day ties need
+    full-precision captured_at. correction_count is the number of other
     rows sharing that key (total captures minus one).
     """
     groups: dict[tuple[str, str, int, str], list[dict]] = {}

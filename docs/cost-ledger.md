@@ -62,11 +62,15 @@ an unset override on a later invocation silently falls back to the default
 path instead of erroring.
 
 The `machine` cell is a generated identity, persisted once per config
-directory at `<config-dir>/machine-id` — created on first use, `0600`,
-and deliberately never resolved through `COST_LEDGER_PATH`. Deleting the
-file mints a new identity, under which existing rows read as a different
-machine. See `docs/pr-cost.md`'s "Machine identity" section for the full
-contract — `pr-cost` shares the same one.
+directory at `<config-dir>/machine-id`:
+
+- Created on first use.
+- Permissions `0600`.
+- Deliberately never resolved through `COST_LEDGER_PATH`.
+
+Deleting the file mints a new identity, under which existing rows read as
+a different machine. See `docs/pr-cost.md`'s "Machine identity" section
+for the full contract — `pr-cost` shares the same one.
 
 `--record` unions multiple accounts (declared via
 `~/.claude/transcript-config-dirs`) into a single row as usual, unless doing
