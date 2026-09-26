@@ -6,6 +6,28 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The eight Bash-holding reviewer personas (`ciso-reviewer` and the seven `staff-*`) now follow a shared `## Scratch execution` section, and `deny-reviewer-tree-mutation.sh` denial text is rewritten to match.** Refs GH-1099. Consumer-visible changes:
+  - Personas confirm a claim by tracing the code first and run something only when tracing cannot settle it. They:
+    - work in one `mktemp -d /tmp/<name>.XXXXXX` directory
+    - never overwrite an existing path
+    - never create a link
+    - copy only with plain `cp <file> <new-name>`
+    - run no program that writes through the home directory
+
+    A check the rules forbid is recorded in the findings instead of run.
+  - The old instruction to copy a file into `/tmp` and mutate the copy is gone from the personas and the denial text.
+  - `staff-sdet` no longer runs the test suite, and `staff-platform-engineer` no longer runs a linter, when the run would need a tree copy or a virtual environment. Each records the check in its findings instead.
+  - Scratch directories the personas create under `/tmp` are never cleaned up, so they accumulate.
+  - `ciso-reviewer` now traces exploitability and never carries out the attack, including an attempt to evade a hook or gate that governs it. Probing a scratch copy of a gate is tracing.
+  - The hook's denial reason now tells the reviewer to:
+    - treat a denial as final
+    - use Read, Grep, or Glob for a read the hook misjudges
+    - not retry any other denied action through a script, another command form, or another tool
+    - spell a `/tmp` path out literally
+
+    The hook's allow and deny logic is unchanged. Its `/tmp` link gap stays open and is tracked on GH-1103.
+  - `claude-hook-review` (2.4.1) now hands `staff-platform-engineer` and `ciso-reviewer` the hook path and its diff as two artifacts, and says so when the diff is unavailable.
+- **The shipped `settings.json` now carries a `permissions.ask` entry, `Edit(//**/.claude/settings*.json)`.** Claude Code asks before an Edit of a `.claude/settings*.json` file even when `ask-review-permissions.sh` is unwired or fails open. Config directories whose path has no `.claude/` segment are not covered. It reaches consumers on `git pull` with no `install.sh` run. The hook stays.
 - **`claude/.claude/CLAUDE.md` widens three rules and merges two.** Consumer-visible changes:
   - The verify rule now reads "Never assume how code or technology works … or what the environment, stack, or project conventions are", so it fires on any unchecked belief and not only when the agent feels uncertain. The separate "Before assuming anything about the environment" bullet is merged into it.
   - The main session's walk-through rule now also applies before committing to a solution, recommendation, or finding, not only before writing code.
@@ -49,7 +71,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The plugin's deny text for a killed structural validator changes from `validator timed out after 10s` to `validator killed (exit N) by the 10s cap or a signal`.
 - **A `timeout` that rejects `-k` makes every deny, require, block, and guard gate hook deny every call to a tool that a gate matches, not only `git commit`.** Those tools are Bash, Edit/Write/MultiEdit, Read, Agent/Task, and ExitPlanMode. `_lib_jq` fails, and each of those hooks fails closed on it.
   - Informational and advisory hooks fail open by design, so they degrade silently, including:
-    - `ask-review-permissions.sh` and `ask-new-dependency-disclosure.sh` let `settings.json` edits and dependency-manifest edits proceed with no ask prompt.
+    - `ask-review-permissions.sh` and `ask-new-dependency-disclosure.sh` let `settings.json` edits and dependency-manifest edits proceed with no ask prompt. (Edit of `.claude/settings*.json` still asks through the `permissions.ask` entry.)
     - `redact-credential-values.sh` (PostToolUse) emits nothing and logs nothing, so credential values stop being redacted from tool output. WebFetch and Grep have no PreToolUse gate, so those calls still run, and they are the channels where the failure surfaces nowhere.
     - `record-session-end.sh` writes no session record, so a clean exit reads as a possible crash.
     - `restore-authorization-boundary-on-compact.sh` skips the post-compaction restatement.

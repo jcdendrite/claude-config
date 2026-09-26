@@ -122,6 +122,14 @@
 #   that reading it terminates. This guarantee holds only when timeout(1)
 #   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
 #   present" fallback caveat in _lib.sh, which still applies here.
+# - The Slack-channel shape accepts digits, `s`, then end of line or any
+#   non-name character (`#<n>s`, `#<n>s.`), because the quote-stripped
+#   copy cannot tell it from a possessive issue reference.
+# - Under a non-C collation locale, a digit-led name whose first non-digit
+#   collates between `r` and `t` also passes the Slack-channel shape.
+# - A possessive issue reference still denies when the quote-strip joins a
+#   name character onto its `s`, such as an escape like `\n` or a hyphen
+#   or underscore continuation.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
