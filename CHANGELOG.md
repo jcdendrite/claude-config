@@ -58,7 +58,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
   `marker.sh write skill-review`'s hash computation now runs under the shared 5s cap plus 2s grace: a slow `git diff` aborts the write with exit 2 and no marker written, instead of hanging.
 
-  Rollback is forward-only (4.0.1 or later): `require-plugin-version-bump.sh` denies a plain revert of the plugin half. **Migration:** run `claude plugin update skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code). The stowed `marker.sh` and the plugin update independently, so `docs/hooks.md` § "Gate deadlock recovery" has the recipe for a skew-wedged commit. The stowed half updates on `git pull` with no re-install.
+  - Rollback is forward-only (4.0.1 or later) — `require-plugin-version-bump.sh` denies a plain revert of the plugin half.
+  - **Migration:** run `claude plugin update skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code).
+  - The stowed `marker.sh` and the plugin update independently. See `docs/hooks.md` § "Gate deadlock recovery" for the recipe when they skew.
+  - The stowed half updates on `git pull` with no re-install.
 - **`_lib_gate_diff_base`'s anchor check now reads the fully-qualified `refs/remotes/origin/<default>`, which changes the stowed code-review and plan-review gates too.** It reaches every caller of `_lib_gate_diff_base`:
   - the stowed code-review and plan-review gates
   - `check-claude-md-length.sh` and `check-skill-length.sh` (through `_lib_staged_length_gate`)
