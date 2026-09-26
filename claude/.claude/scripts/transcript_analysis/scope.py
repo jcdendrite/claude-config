@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import argparse
 import errno
+import fnmatch
 import hashlib
 import os
 import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
@@ -28,7 +30,7 @@ from _config_dir import (
     declared_roots_file_state,
     declared_transcript_roots,
 )
-from transcript_analysis.corpus import _parse_ts, iter_sessions, read_session_file
+from transcript_analysis.corpus import _parse_ts, _read_session_file_partitioned, iter_sessions
 
 
 def __getattr__(name: str) -> Path:
@@ -190,7 +192,9 @@ def _repo_scoped_project_slugs(command_label: str = "skill-invocation") -> list[
     return [_path_to_project_slug(p) for p in worktree_paths]
 
 
-def _dedup_new_project_dirs(candidates: Iterable[Path], visited_dirs: set[Path]) -> Iterator[Path]:
+def _dedup_new_project_dirs(
+    candidates: Iterable[Path], visited_dirs: set[Path], *, scan_gaps: Counter[str] | None = None,
+) -> Iterator[Path]:
     """Yield each directory in `candidates` at most once, keyed on resolved
     real path, recording it into `visited_dirs` (mutated in place) as it's
     yielded.
@@ -203,11 +207,40 @@ def _dedup_new_project_dirs(candidates: Iterable[Path], visited_dirs: set[Path])
     root) so a project dir aliased, by symlink, to one already yielded from a
     prior root is caught too — not just two roots resolving to the same
     directory.
+
+    `is_dir()` raises OSError on a symlink whose target (or an ancestor of
+    it) is unreadable; `resolve()` raises RuntimeError on a symlink loop,
+    but its own non-strict path-walking swallows an unreadable-ancestor
+    OSError rather than raising it. Either exception is a scan gap
+    (`scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1` when `scan_gaps` is given),
+    not a silently-excluded candidate, since the entry is neither missing
+    nor a genuine non-directory. `resolve()` runs before `is_dir()` here
+    specifically so a symlink-loop `RuntimeError` is caught before it can
+    reach `is_dir()`: `Path.is_dir()` calls `stat()` internally and treats
+    `ELOOP` as one of its own ignored errnos, so calling it first on a loop
+    would return `False` (a silent "not a directory") rather than raising.
+    A resolvable symlink through an unreadable ancestor (`resolve()` itself
+    only reads link targets, so it can succeed there) still needs its own
+    `is_dir()` guard, since that is where the ancestor's permission denial
+    actually surfaces. `_scan_root_transcripts` passes no `scan_gaps` (its
+    own diagnostic path outside the pooled fail-closed scan), so such a
+    candidate there is still silently skipped, unchanged from before.
     """
     for candidate in candidates:
-        if not candidate.is_dir():
+        try:
+            resolved_dir = candidate.resolve()
+        except (OSError, RuntimeError):
+            if scan_gaps is not None:
+                scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
             continue
-        resolved_dir = candidate.resolve()
+        try:
+            is_dir = resolved_dir.is_dir()
+        except (OSError, RuntimeError):
+            if scan_gaps is not None:
+                scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
+            continue
+        if not is_dir:
+            continue
         if resolved_dir in visited_dirs:
             continue
         visited_dirs.add(resolved_dir)
@@ -237,8 +270,68 @@ def _redaction_ordinals(roots: Sequence[Path]) -> dict[Path, int]:
     return {resolved_root: ordinal for ordinal, resolved_root in enumerate(resolved, start=1)}
 
 
+# Level tags for the scan-gap counter (_list_dir_recording_gaps,
+# _iter_project_dir_sessions, _iter_scoped_sessions' own root-level except).
+# A key never holds a path or an account ordinal, so the counter itself is
+# not a per-account dimension.
+_SCAN_GAP_ROOT = "root"
+_SCAN_GAP_PROJECT_DIR = "project-dir"
+_SCAN_GAP_SESSION_FILE = "session-file"
+
+
+def _list_dir_recording_gaps(
+    directory: Path, scan_gaps: Counter[str] | None, level: str,
+) -> list[Path]:
+    """Lists with iterdir, not glob: Path.glob returns no matches for an
+    unreadable directory instead of raising.
+
+    A missing path or a non-directory is an empty scope, not a gap.
+    """
+    try:
+        return sorted(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError:
+        if scan_gaps is not None:
+            scan_gaps[level] += 1
+        return []
+
+
+def _failed_transcript_read_is_gap(jsonl: Path) -> bool:
+    """A transcript that failed to read is a gap only while it is still a
+    regular file. A missing path or a non-regular file is an empty scope,
+    as a missing directory is. A failing stat counts as a gap.
+    """
+    try:
+        return jsonl.is_file()
+    except OSError:
+        return True
+
+
+def _iter_project_dir_sessions(
+    project_dirs: Iterable[Path], include_subagents: bool, scan_gaps: Counter[str] | None,
+) -> Iterator[tuple[Path, list[dict]]]:
+    """Shared inner generator for both multi-root iterators
+    (_iter_scoped_sessions, _iter_glob_scoped_sessions): lists each project
+    directory, reads every *.jsonl entry, and yields non-empty results.
+    """
+    for project_dir in project_dirs:
+        for jsonl in _list_dir_recording_gaps(project_dir, scan_gaps, _SCAN_GAP_PROJECT_DIR):
+            if not fnmatch.fnmatchcase(jsonl.name, "*.jsonl"):
+                continue
+            groups = _read_session_file_partitioned(jsonl, include_subagents)
+            if not groups:
+                if scan_gaps is not None and _failed_transcript_read_is_gap(jsonl):
+                    scan_gaps[_SCAN_GAP_SESSION_FILE] += 1
+                continue
+            records = [rec for group in groups for rec in group]
+            if records:
+                yield jsonl, records
+
+
 def _iter_scoped_sessions(
-    slugs: list[str], include_subagents: bool, roots: Sequence[Path] | None = None
+    slugs: list[str], include_subagents: bool, roots: Sequence[Path] | None = None,
+    *, scan_gaps: Counter[str] | None = None,
 ):
     """Yield sessions from an explicit set of exact project-dir slugs.
 
@@ -282,6 +375,8 @@ def _iter_scoped_sessions(
         try:
             candidates = [p for p in sorted(root.iterdir()) if p.name in wanted]
         except OSError as exc:
+            if scan_gaps is not None:
+                scan_gaps[_SCAN_GAP_ROOT] += 1
             root_label = f"account-{ordinals[root.resolve()]}" if multi_root else "the scope root"
             print(
                 f"_iter_scoped_sessions: cannot scan {root_label}"
@@ -289,15 +384,14 @@ def _iter_scoped_sessions(
                 file=sys.stderr,
             )
             continue
-        for project_dir in _dedup_new_project_dirs(candidates, visited_dirs):
-            for jsonl in sorted(project_dir.glob("*.jsonl")):
-                records = read_session_file(jsonl, include_subagents)
-                if records:
-                    yield jsonl, records
+        yield from _iter_project_dir_sessions(
+            _dedup_new_project_dirs(candidates, visited_dirs, scan_gaps=scan_gaps), include_subagents, scan_gaps,
+        )
 
 
 def _iter_glob_scoped_sessions(
-    roots: Sequence[Path], projects_glob: str, include_subagents: bool
+    roots: Sequence[Path], projects_glob: str, include_subagents: bool,
+    *, scan_gaps: Counter[str] | None = None,
 ) -> Iterator[tuple[Path, list[dict]]]:
     """Chain iter_sessions' glob match across more than one root.
 
@@ -308,6 +402,10 @@ def _iter_glob_scoped_sessions(
     covers a --config-dir root nested inside another root's tree, not just
     two roots that resolve to the same directory (already deduped earlier at
     the CLI boundary).
+
+    projects_glob must name one directory level, since each root entry's
+    name is matched against it with fnmatch; the CLI enforces this through
+    _single_level_projects_glob.
     """
     visited_dirs: set[Path] = set()
     multi_root = len(roots) > 1
@@ -322,11 +420,11 @@ def _iter_glob_scoped_sessions(
             # that separately) -- an unconditional raw config-dir path here
             # would leak account/client identity a redacted run must not print.
             print(f"scanning root {ordinals[root.resolve()]}/{len(roots)}...", file=sys.stderr)
-        for project_dir in _dedup_new_project_dirs(sorted(root.glob(projects_glob)), visited_dirs):
-            for jsonl in sorted(project_dir.glob("*.jsonl")):
-                records = read_session_file(jsonl, include_subagents)
-                if records:
-                    yield jsonl, records
+        entries = _list_dir_recording_gaps(root, scan_gaps, _SCAN_GAP_ROOT)
+        candidates = [p for p in entries if fnmatch.fnmatchcase(p.name, projects_glob)]
+        yield from _iter_project_dir_sessions(
+            _dedup_new_project_dirs(candidates, visited_dirs, scan_gaps=scan_gaps), include_subagents, scan_gaps,
+        )
 
 
 def resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
@@ -371,6 +469,8 @@ def _resolve_project_scope(
     subcommand: str,
     include_subagents: bool = False,
     roots: Sequence[Path] | None = None,
+    *,
+    scan_gaps: Counter[str] | None = None,
 ) -> tuple[Iterator[tuple[Path, list[dict]]], str]:
     """Resolve --projects/--this-repo into a fresh session iterator and a scope label.
 
@@ -423,6 +523,11 @@ def _resolve_project_scope(
     checking every root in `roots` rather than PROJECTS_DIR alone is a
     robustness improvement against a future precedence change, not a fix for
     a divergence reachable today.
+
+    `scan_gaps`, when given, records one level tag per unreadable directory
+    or transcript the returned iterator skips. The single-root glob branch
+    cannot record gaps, so it raises ValueError rather than ignore the
+    counter.
     """
     if roots is None:
         roots = (_projects_dir(),)
@@ -442,13 +547,20 @@ def _resolve_project_scope(
             )
             sys.exit(1)
         return (
-            _iter_scoped_sessions(slugs, include_subagents, roots=roots),
+            _iter_scoped_sessions(slugs, include_subagents, roots=roots, scan_gaps=scan_gaps),
             f"this repo ({len(slugs)} project dirs)",
         )
+    # Assumes args.projects passed through argparse type=_single_level_projects_glob; a hand-built args bypasses this check.
     glob = getattr(args, "projects", None) or "*"
     if len(roots) == 1:
+        if scan_gaps is not None:
+            raise ValueError(
+                "_resolve_project_scope: scan_gaps is not supported on the single-root glob"
+                " branch -- corpus.iter_sessions has no per-directory listing to record"
+                " gaps against"
+            )
         return iter_sessions(roots[0], glob, include_subagents=include_subagents), glob
-    return _iter_glob_scoped_sessions(roots, glob, include_subagents), glob
+    return _iter_glob_scoped_sessions(roots, glob, include_subagents, scan_gaps=scan_gaps), glob
 
 
 def _root_count_desc(roots: Sequence[Path]) -> str:
@@ -703,6 +815,20 @@ def _root_index_for_path(jsonl: Path, resolved_roots: Sequence[Path]) -> int:
 
 def _projects_glob(args: argparse.Namespace) -> str:
     return getattr(args, "projects", None) or "*"
+
+
+def _single_level_projects_glob(value: str) -> str:
+    """argparse type for --projects. The multi-root scan matches the value
+    against one directory name with fnmatch. A value containing '/' or
+    '**', or equal to '.' or '..', would silently match nothing there or
+    match something else, so it is rejected. An empty value passes, since
+    no consumer of --projects hands it to a matcher.
+    """
+    if "/" in value or "**" in value or value in (".", ".."):
+        raise argparse.ArgumentTypeError(
+            "must match one project-directory name: no '/' or '**', and not '.' or '..'"
+        )
+    return value
 
 
 def _branch_filter(args: argparse.Namespace) -> set[str] | None:

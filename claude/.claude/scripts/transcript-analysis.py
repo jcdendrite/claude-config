@@ -233,6 +233,7 @@ from transcript_analysis.scope import (
     _resolved_scope_header,
     _root_index_for_path,
     _scan_root_transcripts,
+    _single_level_projects_glob,
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
 from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots
@@ -6850,7 +6851,7 @@ def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
     machine-wide glob default ("*") so no existing invocation's behavior changes.
     """
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--projects", default="*", metavar="GLOB")
+    group.add_argument("--projects", default="*", type=_single_level_projects_glob, metavar="GLOB")
     group.add_argument(
         "--this-repo", action="store_true",
         help="Scope to this repo's own worktrees only (see docs/transcript-analysis.md).",
@@ -6894,7 +6895,7 @@ def build_parser() -> argparse.ArgumentParser:
         "user-input",
         help="All fresh user prompts per session, classified as initial / followup / explicit-correction.",
     )
-    p_user_input.add_argument("--projects", default="*", metavar="GLOB")
+    p_user_input.add_argument("--projects", default="*", type=_single_level_projects_glob, metavar="GLOB")
     p_user_input.add_argument("--branches", metavar="B1,B2,...")
     p_user_input.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
     p_user_input.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
@@ -7079,7 +7080,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
     p_skill_inv_scope.add_argument(
-        "--projects", default=None, metavar="GLOB",
+        "--projects", default=None, type=_single_level_projects_glob, metavar="GLOB",
         help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
              "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
     )

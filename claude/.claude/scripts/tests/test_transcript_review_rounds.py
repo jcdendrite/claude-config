@@ -8,7 +8,8 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
-from transcript_analysis import corpus, render, review_rounds, scope
+from helpers import REPO_ROOT, heading_texts, normalize_heading
+from transcript_analysis import corpus, pricing, render, review_rounds, scope
 
 from .conftest import (
     _agent_use,
@@ -1357,12 +1358,15 @@ class TestBootstrapShareIntervals:
         (0.975*60=58.5), a case that genuinely discriminates Python's
         round-half-to-even from round-half-up: 58 is even and 59 is odd, so
         round-half-to-even picks 58, while round-half-up would pick 59.
-        B=9 above never reaches a tie at all. lo's own computation at this
-        B (round(0.025*60)) isn't an exact tie -- floating-point error in
-        `tail = (1 - _CI_LEVEL) / 2` pushes it just past 1.5 -- so only hi
-        is asserted here. Production B varies per stat since a
-        zero-denominator resample is dropped before indexing, so this
-        boundary is reachable in practice."""
+        B=9 above never reaches a tie at all.
+
+        lo's own computation at this B (round(0.025*60)) isn't an exact
+        tie. Floating-point error in `tail = (1 - _CI_LEVEL) / 2` pushes it
+        just past 1.5, so only hi is asserted here.
+
+        Production B varies per stat because a zero-denominator draw is
+        dropped before indexing, so this boundary is reachable in
+        practice."""
         sample = [float(i) for i in range(61)]
         lo, hi = review_rounds._resample_percentile(sample)
         assert hi == 58.0
@@ -1384,6 +1388,32 @@ class TestBootstrapShareIntervals:
         assert share_of_sums != mean_of_shares
         assert round(point, 1) == share_of_sums
         assert lo <= point <= hi
+
+    def test_bootstrap_share_intervals_with_partial_zero_denominator_draws(self):
+        """Adds two zero-branch_dollars branches to the asymmetric
+        two-branch fixture. A draw with an all-zero branch_dollars
+        denominator has probability (2/4)**4 = 1/16, well above the 2.5%
+        lower tail, so it reliably occurs and drops that draw's
+        spend_inside share rather than counting it as 0.0. This confirms a
+        share still gets a CI from fewer than _BOOTSTRAP_RESAMPLES values.
+        gap_unpriced's denominator is round_count, nonzero on every branch
+        here, so it never drops a draw and still gets a CI too.
+        """
+        zero_branch = review_rounds._PooledBranchTotals(
+            round_dollars=0.0, agent_dollars=0.0, branch_dollars=0.0,
+            skill_round_counts={"code-review": 0, "plan-review": 0, "ready-for-review": 1},
+            skill_round_dollars={"code-review": 0.0, "plan-review": 0.0, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+        )
+        per_branch = _asymmetric_two_branch_pooled_totals() + [zero_branch, zero_branch]
+        intervals = review_rounds._bootstrap_share_intervals(per_branch)
+
+        point, lo, hi = intervals["spend_inside"]
+        assert lo is not None
+        assert 50.0 <= lo <= point <= hi <= 60.0
+
+        _, gap_lo, _ = intervals["gap_unpriced"]
+        assert gap_lo is not None
 
     def test_fmt_share_with_ci_renders_numeric_and_both_degenerate_forms(self):
         """Numeric form, plus both degenerate parentheticals -- the "95% CI"
@@ -1598,10 +1628,9 @@ class TestCmdReviewRoundCostPooled:
 
     def test_no_branch_name_leak(self, tmp_path, monkeypatch, capsys):
         """A distinctively-named fixture branch does not appear in pooled
-        output -- presence in the --this-repo-disclosed render (proving the
-        fixture really contains it) and absence from the pooled render are
-        asserted separately, matching the existing --this-repo-disclosed/
-        redacted pairing convention used elsewhere in this file (e.g.
+        output. Asserts presence in the disclosed render and absence from
+        the pooled render separately. Matches the existing disclosed/
+        redacted pairing convention (see
         TestCmdReviewRoundCost.test_branch_label_raw_under_this_repo_and_redacted_otherwise_multi_root)."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
 
@@ -1638,29 +1667,35 @@ class TestCmdReviewRoundCostPooled:
         that corpus and docs/*.md's parametrize list, so only this test
         catches a stale heading here.
         """
-        repo_root = Path(__file__).resolve().parents[4]
-        doc_lines = (repo_root / "docs" / "private-project-redaction.md").read_text().splitlines()
-        doc_headings: set[str] = set()
-        in_fence = False
-        for line in doc_lines:
-            if line.startswith("```"):
-                in_fence = not in_fence
-                continue
-            if in_fence:
-                continue
-            match = re.match(r"^#{1,6}\s+(.+)$", line)
-            if match:
-                doc_headings.add(match.group(1).strip())
+        doc_headings = heading_texts(
+            (REPO_ROOT / "docs" / "private-project-redaction.md").read_text()
+        )
         for pointer in (
             review_rounds._POOLED_PUBLICATION_POINTER,
             review_rounds._POOLED_REFUSAL_DOC_POINTER,
         ):
             cited = re.search(r'§\s+"([^"\n]+)"', pointer)
             assert cited, f"{pointer!r} does not cite a heading in the § \"...\" form"
-            assert cited.group(1) in doc_headings, (
+            assert normalize_heading(cited.group(1)) in doc_headings, (
                 f"{pointer!r} cites heading {cited.group(1)!r}, which does not "
                 "exist in docs/private-project-redaction.md"
             )
+
+    def test_heading_texts_excludes_headings_inside_a_fenced_code_block(self):
+        """A stale citation could otherwise coincidentally string-match a
+        fenced shell comment or sample-output line and pass despite citing
+        nothing real -- the exact regression this helper's fence tracking
+        exists to prevent, in the doc-pointer test directly above."""
+        markdown = (
+            "# Real heading\n"
+            "\n"
+            "```bash\n"
+            "# Not a heading, just a fenced comment\n"
+            "```\n"
+            "\n"
+            "## Another real heading\n"
+        )
+        assert heading_texts(markdown) == {"Real heading", "Another real heading"}
 
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -1708,9 +1743,14 @@ class TestCmdReviewRoundCostPooled:
         assert exc.value.code == 2
         assert "--branches" in capsys.readouterr().err
 
-    def test_refuses_non_default_projects_glob(self, fake_projects, capsys):
+    @pytest.mark.parametrize("projects", ["feat-*", ""], ids=["named-glob", "empty-string"])
+    def test_refuses_non_default_projects_glob(self, projects, fake_projects, capsys):
+        """The empty string is included because _single_level_projects_glob
+        admits it, so this check, not argparse, refuses it under --pooled.
+        On this single-root fixture the root-count refusal also exits 2, so
+        the message assertion, not the exit code, pins this check."""
         with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, projects="feat-*"))
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, projects=projects))
         assert exc.value.code == 2
         assert "--projects" in capsys.readouterr().err
 
@@ -1794,7 +1834,7 @@ class TestCmdReviewRoundCostPooled:
         roots = _two_declared_roots(tmp_path, monkeypatch)
         args = _review_round_cost_args(pooled=True, branches="feat")
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, roots, "*", [], {})
+            review_rounds._render_pooled_block(args, roots, "*", [], {}, scan_gaps=Counter())
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_none_roots_still_refuses(self):
@@ -1805,7 +1845,7 @@ class TestCmdReviewRoundCostPooled:
         silently skip it the way the layer-1 sentinel does."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, None, "*", [], {})
+            review_rounds._render_pooled_block(args, None, "*", [], {}, scan_gaps=Counter())
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_empty_roots_still_refuses(self):
@@ -1814,7 +1854,7 @@ class TestCmdReviewRoundCostPooled:
         alongside it."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, [], "*", [], {})
+            review_rounds._render_pooled_block(args, [], "*", [], {}, scan_gaps=Counter())
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_single_root_still_refuses(self):
@@ -1825,18 +1865,19 @@ class TestCmdReviewRoundCostPooled:
         fabricated path stands in for a real declared root."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, [Path("/fake/root")], "*", [], {})
+            review_rounds._render_pooled_block(args, [Path("/fake/root")], "*", [], {}, scan_gaps=Counter())
         assert exc.value.code == 2
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_refuses_unreadable_scan_root_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
         """A resolved root whose projects/ directory exists but can't be
-        listed (locked permissions) must refuse before any print, distinct
-        from the fail-open declared-root-file-entry case covered by the
+        listed (locked permissions) must refuse, distinct from the
+        fail-open declared-root-file-entry case covered by the
         stderr-diagnostic tests below: here the account's data provably
-        exists and would silently drop out of the pool. No session content
-        is written -- the pooled refusal checks exit(2) before any scan
-        happens, so a bare projects/ directory is all this test needs."""
+        exists and would silently drop out of the pool. The traversal's
+        own root-level gap record triggers the refusal after the full
+        scan. No session content is written, so the readable roots' own
+        scan is empty and contributes no digit either."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         os.chmod(roots[1], 0o000)
         try:
@@ -1854,9 +1895,9 @@ class TestCmdReviewRoundCostPooled:
     def test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
         """Same refusal as above, but for the active profile's own
         PROJECTS_DIR (roots[0]) going unreadable, not a declared secondary
-        root (roots[1]) -- _pooled_scope_refusal's unreadable-root clause
-        loops over every resolved root uniformly via any(...), so the
-        active profile's own root must trigger it too."""
+        root (roots[1]) -- the traversal's root-level listing runs
+        uniformly over every resolved root, so the active profile's own
+        root must record a gap too."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         os.chmod(roots[0], 0o000)
         try:
@@ -1870,26 +1911,25 @@ class TestCmdReviewRoundCostPooled:
         assert not any(c.isdigit() for c in err)
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_render_pooled_block_called_directly_refuses_unreadable_scan_root(self, tmp_path, monkeypatch):
-        """Defense-in-depth, layer 2, for the unreadable-root clause: this
-        probe re-runs after a scan, catching a root that became unreadable
-        mid-scan and stayed that way."""
-        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        os.chmod(roots[1], 0o000)
-        try:
-            with pytest.raises(SystemExit) as exc:
-                review_rounds._render_pooled_block(_review_round_cost_args(pooled=True), roots, "*", [], {})
-        finally:
-            os.chmod(roots[1], 0o755)
+    def test_render_pooled_block_called_directly_refuses_on_a_nonempty_scan_gaps_counter(self, tmp_path, monkeypatch):
+        """Defense-in-depth, layer 2, for the scan-gap clause. A direct
+        caller that already holds a non-empty scan_gaps counter (e.g. one
+        it built itself, or reused from a prior scan) must still refuse.
+        No chmod needed, since the clause reads only the counter."""
+        roots = [tmp_path / "acct-a" / "projects", tmp_path / "acct-b" / "projects"]
+        args = _review_round_cost_args(pooled=True)
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(
+                args, roots, "*", [], {}, scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1}),
+            )
         assert exc.value.code == 2
 
-    def test_missing_active_profile_projects_dir_is_not_refused_as_unreadable(self, tmp_path, monkeypatch):
+    def test_missing_active_profile_projects_dir_is_not_refused_as_a_scan_gap(self, tmp_path, monkeypatch, capsys):
         """An active profile whose projects/ directory doesn't exist yet
-        (never populated) is the empty-scope case, not a permission
-        failure -- the new clause's os.path.isdir guard must not treat it
-        as an unreadable root. Two other valid, readable declared roots
-        keep the run poolable."""
+        (never populated) is the empty-scope case, not a scan gap -- the
+        traversal's own missing-path handling must not record it. Two
+        other valid, readable declared roots keep the run poolable, so the
+        end-to-end run must render without raising."""
         acct_a = tmp_path / "acct-a"  # never created: PROJECTS_DIR doesn't exist
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
@@ -1900,10 +1940,220 @@ class TestCmdReviewRoundCostPooled:
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{acct_b}\n{acct_c}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-        args = _review_round_cost_args(pooled=True)
 
-        roots = scope.resolve_scan_roots(args)
-        assert review_rounds._pooled_scope_refusal(args, roots=roots) is None
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))  # raises SystemExit on failure
+        out = capsys.readouterr().out
+        assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_on_unreadable_project_dir_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """roots[1] keeps its existing readable project dir (still
+        contributing a branch), plus a second, unreadable one -- the
+        refusal can only come from the scan-gap clause, not the
+        root-count clause, since both roots resolve and one of them
+        still contributes."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        sealed_proj = roots[1] / "-home-user-repo-b-sealed"
+        sealed_proj.mkdir(parents=True)
+        _write_jsonl(sealed_proj / "sess-sealed.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-sealed", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s5", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-sealed", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        os.chmod(sealed_proj, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(sealed_proj, 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert not any(c.isdigit() for c in err)
+        assert str(sealed_proj) not in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_on_unreadable_transcript_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """Same shape as the project-dir case above, one level down: a
+        transcript, not a project directory, goes unreadable inside
+        roots[1]'s existing readable project."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        sealed_jsonl = roots[1] / "-home-user-repo-b" / "sess-b1.jsonl"
+        os.chmod(sealed_jsonl, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(sealed_jsonl, 0o644)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert not any(c.isdigit() for c in err)
+        assert str(sealed_jsonl) not in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_on_symlinked_project_dir_with_unreadable_target_via_cmd_review_round_cost(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A project-dir entry that is a symlink resolving through a sealed
+        ancestor directory makes candidate.is_dir() raise PermissionError (an
+        OSError), not return False -- _dedup_new_project_dirs must catch it
+        as a scan gap instead of letting it propagate uncaught."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        sealed_target_parent = tmp_path / "sealed-target-parent"
+        (sealed_target_parent / "child").mkdir(parents=True)
+        (roots[1] / "-home-user-repo-b-linked").symlink_to(sealed_target_parent / "child")
+        os.chmod(sealed_target_parent, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(sealed_target_parent, 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "Traceback" not in err
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert not any(c.isdigit() for c in err)
+        assert str(sealed_target_parent) not in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_refuses_on_unreadable_subagents_dir_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes subagent_dir.is_dir() raise PermissionError (an
+        OSError) -- corpus._index_subagent_dispatches must catch it as a
+        scan gap instead of letting it propagate uncaught."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        proj_b = roots[1] / "-home-user-repo-b"
+        session_dir = proj_b / "sess-b1"  # paired with the existing sess-b1.jsonl
+        session_dir.mkdir()
+        (session_dir / "subagents").mkdir()
+        os.chmod(session_dir, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(session_dir, 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "Traceback" not in err
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert not any(c.isdigit() for c in err)
+        assert str(session_dir) not in err
+
+    def test_refuses_on_non_utf8_transcript_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """A transcript file containing non-UTF-8 bytes raises
+        UnicodeDecodeError while iterating lines -- corpus._parse_jsonl_records
+        must catch it as a read failure, same as an OSError-unreadable
+        transcript, so scope.py's own gap-vs-empty-scope check still counts
+        it as a scan gap instead of crashing the scan."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        bad_jsonl = roots[1] / "-home-user-repo-b" / "sess-non-utf8.jsonl"
+        bad_jsonl.write_bytes(b"\xff\xfe not valid utf-8\n")
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "Traceback" not in err
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert not any(c.isdigit() for c in err)
+        assert str(bad_jsonl) not in err
+
+    def test_pooled_clean_scan_with_harmless_entries_does_not_refuse(self, tmp_path, monkeypatch, capsys):
+        """A stray non-project file, a readable-empty transcript, and a
+        directory named *.jsonl are all an empty scope, not a gap, so a
+        clean scan must not trip the scan-gap clause. Adding them must not
+        change the rendered output."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        first_out, first_err = capsys.readouterr()
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in first_err
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in first_err
+
+        (roots[1] / ".DS_Store").write_text("")
+        proj_b = roots[1] / "-home-user-repo-b"
+        (proj_b / "empty.jsonl").write_text("")
+        (proj_b / "stray.jsonl").mkdir()
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        second_out, second_err = capsys.readouterr()
+        assert second_out == first_out
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in second_err
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in second_err
+
+    def test_pooled_backstop_catches_an_unanticipated_exception_without_leaking_its_message(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """An exception the scan-gap accounting doesn't anticipate (not an
+        OSError/RuntimeError from a read failure) must still be caught by
+        cmd_review_round_cost's own try/except backstop and rendered as the
+        generic _POOLED_SCAN_ABORTED_MESSAGE -- never as a raw traceback, and
+        never with the caught exception's own str() (which could carry a
+        filesystem path)."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        marker = "synthetic-marker-3f9a2b"
+
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
+        assert "Traceback" not in out
+        assert "Traceback" not in err
+        assert marker not in out
+        assert marker not in err
+
+    def test_pooled_backstop_covers_resolve_scan_roots_failure(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Pins the specific try/except widening that moved the boundary
+        to also enclose scope.resolve_scan_roots(...): an unanticipated
+        exception raised there -- not inside compute_review_round_costs --
+        must still be caught by the same backstop and rendered as the
+        generic _POOLED_SCAN_ABORTED_MESSAGE. A regression that narrowed
+        the try: block back to start just after resolve_scan_roots would
+        let this exception propagate uncaught instead."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        marker = "synthetic-marker-7c1d4e"
+
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(scope, "resolve_scan_roots", _raise)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
+        assert "Traceback" not in out
+        assert "Traceback" not in err
+        assert marker not in out
+        assert marker not in err
+
+    def test_pooled_backstop_does_not_engage_on_the_non_pooled_path(self, tmp_path, monkeypatch):
+        """Paired with the pooled case above: the same unanticipated
+        exception under pooled=False must propagate unmodified, confirming
+        the widened try/except backstop only swallows it when pooled is
+        True."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        marker = "synthetic-marker-3f9a2b"
+
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
+        with pytest.raises(RuntimeError, match=marker):
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=False))
 
     def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
         """Two real `python3` subprocesses, not two in-process calls, since
@@ -1993,10 +2243,12 @@ class TestCmdReviewRoundCostPooled:
         }
         args = _review_round_cost_args(pooled=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         forward_out = capsys.readouterr().out
 
-        review_rounds._render_pooled_block(args, roots, "*", list(reversed(rounds)), branch_totals)
+        review_rounds._render_pooled_block(
+            args, roots, "*", list(reversed(rounds)), branch_totals, scan_gaps=Counter(),
+        )
         reversed_out = capsys.readouterr().out
 
         assert forward_out == reversed_out
@@ -2074,7 +2326,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = {(0, "feat-a"): 0.80, (1, "feat-b"): 0.20}
         args = _review_round_cost_args(pooled=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         out = capsys.readouterr().out
 
         # Sums both of feat-a's code-review rounds ($0.20 + $0.60 = $0.80,
@@ -2195,7 +2447,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = {(0, "feat-a1"): 0.20, (0, "feat-a2"): 0.20}
         args = _review_round_cost_args(pooled=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals)
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -2260,18 +2512,20 @@ class TestCmdReviewRoundCostPooled:
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         err = capsys.readouterr().err
         assert not any(c.isdigit() for c in err)
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in err
 
     def test_pooled_run_with_unreadable_declared_root_entry_prints_no_digit_to_stderr(
         self, tmp_path, monkeypatch, capsys,
     ):
         """declared_transcript_roots()'s own "declared root N unreadable"
         warning fires inside scope.resolve_scan_roots(), before either
-        --pooled refusal call runs, and is root-count-revealing the same
-        way "scanning root N/M..." is -- both need the same filter. Still-
-        poolable case: two valid roots plus two invalid declared-roots-file
-        entries (directories with no projects/ subdirectory), so the
-        replacement notice's own per-call dedup is exercised, not just its
-        digit-free wording.
+        --pooled refusal call runs. It is root-count-revealing the same way
+        "scanning root N/M..." is, so both need the same filter.
+
+        Still-poolable case: two valid roots plus two invalid declared-
+        roots-file entries (directories with no projects/ subdirectory).
+        The replacement notice's own per-call dedup is exercised this way,
+        not just its digit-free wording.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         bare_dir_1 = tmp_path / "bare-account-1"
@@ -2286,15 +2540,16 @@ class TestCmdReviewRoundCostPooled:
         err = capsys.readouterr().err
         assert not any(c.isdigit() for c in err)
         assert err.count(review_rounds._DECLARED_ROOT_SKIPPED_NOTICE) == 1
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in err
 
-    def test_pooled_stderr_filter_passes_through_a_genuine_diagnostic(self, capsys):
-        """The filter is selective, not a blanket stderr suppression: a
-        non-"scanning root" diagnostic still reaches stderr, while a
-        "scanning root N/M..." line does not. The injected diagnostic is a
-        representative unsafe-shaped string, not one --pooled's real call
-        graph can actually emit today: only _iter_scoped_sessions emits it,
-        and the pooled path always resolves through
-        _iter_glob_scoped_sessions instead.
+    def test_pooled_stderr_filter_withholds_an_unrecognized_diagnostic(self, capsys):
+        """The filter fails closed: a non-"scanning root" diagnostic is
+        withheld behind _POOLED_STDERR_WITHHELD_NOTICE instead of reaching
+        stderr raw, while a "scanning root N/M..." line is still dropped
+        entirely. The injected diagnostic is a representative unsafe-shaped
+        string, not one --pooled's real call graph can actually emit today:
+        only _iter_scoped_sessions emits it, and the pooled path always
+        resolves through _iter_glob_scoped_sessions instead.
         """
         def fake_session_iter():
             print("scanning root 1/2...", file=sys.stderr)
@@ -2308,12 +2563,14 @@ class TestCmdReviewRoundCostPooled:
         review_rounds._pooled_compute_review_round_costs(fake_session_iter())
         err = capsys.readouterr().err
         assert "scanning root 1/2..." not in err
-        assert "cannot scan account-1" in err
+        assert "cannot scan account-1" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
 
-    def test_pooled_stderr_filter_reemits_buffered_lines_when_wrapped_call_raises(
+    def test_pooled_stderr_filter_withholds_buffered_lines_when_wrapped_call_raises(
         self, monkeypatch, capsys,
     ):
-        """A diagnostic buffered before the wrapped call raises still reaches stderr."""
+        """A diagnostic buffered before the wrapped call raises is withheld
+        behind the notice too, not reemitted raw."""
         def fake_compute(*args, **kwargs):
             print("cannot scan account-9 (Permission denied) — skipping", file=sys.stderr)
             raise RuntimeError("boom")
@@ -2322,4 +2579,50 @@ class TestCmdReviewRoundCostPooled:
         with pytest.raises(RuntimeError):
             review_rounds._pooled_compute_review_round_costs()
         err = capsys.readouterr().err
-        assert "cannot scan account-9" in err
+        assert "cannot scan account-9" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+
+    def test_pooled_stderr_filter_withholds_a_pricing_non_contiguous_merge_notice(
+        self, monkeypatch, capsys,
+    ):
+        """pricing.dedup_turns_by_request_id's own NOTICE line
+        (pricing._log_non_contiguous_merge_decision) is reachable under
+        --pooled through the filtered compute call, and it names a raw
+        requestId. It matches none of the known diagnostic shapes, so it
+        must be withheld like any other unrecognized line. This is a real
+        production print reachable under --pooled today, not a
+        source-scanned hypothetical.
+        """
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
+        review_rounds._pooled_filtered_stderr_call(
+            pricing._log_non_contiguous_merge_decision, "<placeholder-request-id>", 2, merged=True,
+        )
+        err = capsys.readouterr().err
+        assert "<placeholder-request-id>" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+
+    def test_withheld_diagnostic_reaches_stderr_on_a_non_pooled_rerun(self, tmp_path, monkeypatch, capsys):
+        """A diagnostic --pooled withholds still reaches an operator who
+        reruns without --pooled. One monkeypatch on
+        review_rounds.compute_review_round_costs reaches both the pooled
+        and non-pooled call sites, since each looks the function up as a
+        module global at call time.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        real_compute = review_rounds.compute_review_round_costs
+
+        def wrapped_compute(*args, **kwargs):
+            print("<placeholder-diagnostic>", file=sys.stderr)
+            return real_compute(*args, **kwargs)
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", wrapped_compute)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        pooled_err = capsys.readouterr().err
+        assert "<placeholder-diagnostic>" not in pooled_err
+        assert pooled_err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        non_pooled_err = capsys.readouterr().err
+        assert "<placeholder-diagnostic>" in non_pooled_err
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in non_pooled_err

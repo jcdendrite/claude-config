@@ -19,7 +19,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ## Scoping to this repo: `--this-repo`
 
-Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine. On every subcommand that accepts `--this-repo`, `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2.
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
@@ -1177,9 +1177,10 @@ Unpriced turns inside round windows: 0
 - the top-level `--config-dir` -- collapses the pool to one named account
 - `--this-repo` -- not implemented as a pooled scope (a product decision, not a policy bar)
 - exactly one resolved scan root -- a single-account figure is a per-account figure; the refusal names `~/.claude/transcript-config-dirs`
-- a resolved scan root that exists but cannot be read -- that account would silently drop out of the pool; the refusal names neither the root nor a count
+- a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool; checked only after the full scan, and the refusal names neither the path nor a count
+- an unexpected error interrupts the corpus scan -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it; rerun without `--pooled` to see the underlying error, then retry `--pooled` once it's resolved
 
-The block never emits a dollar amount, a raw count, or a per-account/per-project/per-branch split. Each figure is a share of list-price compute. Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you.
+The block never emits a dollar amount, a raw count, or a per-account/per-project/per-branch split. Each figure is a share of list-price compute. Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you. Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run):
 ```

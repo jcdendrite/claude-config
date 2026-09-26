@@ -191,14 +191,7 @@ gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
 `transcript-analysis.py review-round-cost --pooled` is a worked
-instrument for this section. It refuses every scope-narrowing flag and
-requires two or more resolved scan roots that actually contribute a
-branch to the pool. Short of that floor, it prints the same "too few
-branches" wording instead of a real percentage. Its output is
-dimensionless shares with bootstrap CIs only — never a
-dollar amount, raw count, or resolved root count. It prints a pointer
-to this section, since nothing in the command checks that a figure was
-ever proposed or approved.
+instrument for this section. `docs/transcript-analysis.md` § "review-round-cost" is the canonical home for its refusal list, contributing-account floor, and output grammar.
 
 An authorization covers the figure, the command, and the artifact it
 named. The following each count as a fresh ask:

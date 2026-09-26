@@ -22,11 +22,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import os
 import random
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -195,6 +194,8 @@ def _price_dispatch(
     tool_use_id: str,
     dispatch_index: dict[str, tuple[Path, str | None]],
     visited: set[str],
+    *,
+    scan_gaps: Counter[str] | None = None,
 ) -> tuple[float, int, int, int]:
     """Price one subagent dispatch and recurse into every Agent/Task spawn
     inside its own transcript.
@@ -213,6 +214,11 @@ def _price_dispatch(
     pricing.py). This matches _compute_pr_cost_branch_totals's own
     dedup-then-price sequence, so these dollars are derived the same way
     cost's and pr-cost's are.
+
+    `scan_gaps`, when given, is threaded into corpus._index_subagent_dispatches
+    and into this function's own recursive self-call, so a gap several
+    dispatches deep is still recorded against the same counter the caller's
+    root-level scan uses.
 
     Returns (dollars, unpriced_turns, dangling, resolved_dispatches).
     dangling counts both a dispatch_index lookup miss and an
@@ -233,7 +239,7 @@ def _price_dispatch(
     if records is None:
         return 0.0, 0, 1, 0
     records = pricing.dedup_turns_by_request_id(records)
-    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path)
+    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path, scan_gaps=scan_gaps)
 
     dollars = 0.0
     unpriced_turns = 0
@@ -258,7 +264,9 @@ def _price_dispatch(
             nested_tool_use_id = block.get("id") or ""
             if not nested_tool_use_id:
                 continue
-            n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(nested_tool_use_id, nested_index, visited)
+            n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(
+                nested_tool_use_id, nested_index, visited, scan_gaps=scan_gaps,
+            )
             dollars += n_dollars
             unpriced_turns += n_unpriced
             dangling += n_dangling
@@ -275,6 +283,7 @@ def compute_review_round_costs(
     since_ts: float | None = None,
     until_ts: float | None = None,
     resolved_roots: Sequence[Path] | None = None,
+    scan_gaps: Counter[str] | None = None,
 ) -> dict:
     """Single pass over session_iter, main-thread only.
 
@@ -319,6 +328,12 @@ def compute_review_round_costs(
     and sort_key. sort_key is (opening-timestamp-or-+inf, session path
     string, opening record index) — the ordering rule sessions written in
     reverse file-path order need.
+
+    `scan_gaps`, when given, is threaded into every
+    corpus._index_subagent_dispatches call and every _price_dispatch call
+    this function makes, so a subagent-side gap (an unreadable subagents/
+    directory, anywhere in the recursive dispatch tree) is recorded against
+    the same counter the caller's own project-dir scan uses.
     """
     multi_root = bool(resolved_roots) and len(resolved_roots) > 1
     all_rounds: list[dict] = []
@@ -329,7 +344,7 @@ def compute_review_round_costs(
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
         windows = detect_round_windows(records)
         record_branches = _session_record_branches(records, windows)
-        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl, scan_gaps=scan_gaps)
         visited: set[str] = set()
 
         round_entries: list[dict] = [
@@ -373,7 +388,9 @@ def compute_review_round_costs(
                 tool_use_id = block.get("id") or ""
                 if not tool_use_id:
                     continue
-                dollars, unpriced, dangling, resolved = _price_dispatch(tool_use_id, dispatch_index, visited)
+                dollars, unpriced, dangling, resolved = _price_dispatch(
+                    tool_use_id, dispatch_index, visited, scan_gaps=scan_gaps,
+                )
                 branch_totals[(root_idx, record_branches[idx])] += dollars
                 if round_entry is not None:
                     round_entry["agent_dollars"] += dollars
@@ -485,6 +502,31 @@ _POOLED_REFUSAL_DOC_POINTER = (
     ' See docs/private-project-redaction.md § "The owner can authorize one figure, case by case".'
 )
 
+# The message's diagnosis and "restore read access" advice hold because a
+# gap is recorded only when an existing directory or regular file fails to
+# read (scope.py's _list_dir_recording_gaps/_failed_transcript_read_is_gap).
+# A missing path, a stray non-directory, and a non-regular *.jsonl never
+# reach it. A non-permission OSError on an existing path (e.g. EIO) still
+# does. There, the advice and the find hint don't apply, but the refusal
+# still correctly identifies a partial scan.
+_POOLED_SCAN_GAP_REFUSAL = (
+    "review-round-cost --pooled refuses a partial scan: a resolved scan root, or a directory"
+    " or transcript under one, exists but could not be read, so part of the corpus would"
+    " silently drop out of the pooled figure. Check each account's projects/ directory for a"
+    " directory or .jsonl transcript you cannot read (with GNU find:"
+    " `find <projects-dir> ! -readable`), then restore read access, or remove that account from"
+    f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
+)
+
+# Defense-in-depth backstop for cmd_review_round_cost's pooled scan-and-render sequence,
+# printed only when an exception the scan-gap accounting above doesn't anticipate escapes it.
+# Never interpolates the caught exception's str(), which may embed a raw filesystem path.
+_POOLED_SCAN_ABORTED_MESSAGE = (
+    "review-round-cost --pooled refuses a partial scan: an unexpected error interrupted the"
+    " corpus scan, so part of the corpus may have silently dropped out of the pooled figure."
+    " Rerun without --pooled to see the underlying error, then retry --pooled once it's resolved."
+)
+
 
 class _PooledBranchTotals(NamedTuple):
     """One branch's totals, or (via _pooled_branch_aggregates) the
@@ -519,16 +561,20 @@ _POOLED_STAT_KEYS: tuple[str, ...] = (
 )
 
 
-def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> str | None:
+def _pooled_scope_refusal(
+    args: argparse.Namespace,
+    *,
+    roots: Sequence[Path] | None = None,
+    scan_gaps: Counter[str] | None = None,
+) -> str | None:
     """The first applicable --pooled refusal message, or None once every
     check passes -- evaluated in the table order documented in
     docs/transcript-analysis.md's Pooled mode subsection.
 
-    roots=None only defers the root-count and unreadable-root checks; it
-    does not fail open. Only cmd_review_round_cost's pre-resolution call may
-    rely on that deferral, since it runs before resolve_scan_roots and so
-    genuinely has no roots yet. Every other caller must pass an
-    already-resolved list, even an empty one.
+    roots=None defers the root-count check. scan_gaps=None defers the
+    scan-gap check. Only cmd_review_round_cost's own calls may rely on
+    either deferral, since both precede the scan. Every other caller must
+    pass a resolved list and a counter.
     """
     if getattr(args, "branches", None):
         return (
@@ -566,16 +612,8 @@ def _pooled_scope_refusal(args: argparse.Namespace, roots: Sequence[Path] | None
             " single-account figure is a per-account figure. Declare another account in"
             f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
         )
-    if roots is not None and any(
-        os.path.isdir(root) and not os.access(root, os.R_OK | os.X_OK) for root in roots
-    ):
-        return (
-            "review-round-cost --pooled refuses an unreadable scan root: an account's projects/"
-            " directory exists but cannot be listed, so that account would silently drop out of"
-            " the pooled figure. Restore read access to that account's projects/ directory, or"
-            " (if it's a declared entry, not the active profile) remove it from"
-            f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
-        )
+    if scan_gaps:
+        return _POOLED_SCAN_GAP_REFUSAL + _POOLED_REFUSAL_DOC_POINTER
     return None
 
 
@@ -711,6 +749,8 @@ def _render_pooled_block(
     scope_label: str,
     rounds: list[dict],
     branch_totals: dict[tuple[int | None, str], float],
+    *,
+    scan_gaps: Counter[str],
 ) -> None:
     """--pooled's entire render path: shares and 95% confidence intervals
     only, never a dollar amount, a raw count, or a per-account/per-project/
@@ -723,8 +763,11 @@ def _render_pooled_block(
     enforcement a direct caller ever sees. Passes `roots or []`, never
     `roots` bare. This makes a caller that passes None or an empty
     sequence fail the root-count floor instead of silently skipping it.
+
+    scan_gaps fills only as the session iterator is consumed, so this
+    function's refusal call is the only point the scan-gap clause can fire.
     """
-    refusal = _pooled_scope_refusal(args, roots=roots or [])
+    refusal = _pooled_scope_refusal(args, roots=roots or [], scan_gaps=scan_gaps)
     if refusal is not None:
         print(refusal, file=sys.stderr)
         sys.exit(2)
@@ -807,16 +850,21 @@ _DECLARED_ROOT_SKIPPED_NOTICE = (
     " skipped (not a directory, no projects/ subdirectory, or unreadable); any account they name is"
     " not in this pool."
 )
-# This is a denylist of currently-known account-revealing diagnostic shapes,
-# not an allowlist -- a new diagnostic added anywhere in this call chain
-# (scope.py, corpus.py, pricing.py) that discloses per-account info would
-# pass through unfiltered by default. Each pattern maps to its replacement.
-# A None replacement drops every matching line entirely. A string replacement
+# Known diagnostic shapes and their replacements. Any stderr line matching
+# none of them is withheld behind _POOLED_STDERR_WITHHELD_NOTICE. A None
+# replacement drops every matching line entirely. A string replacement
 # prints once per call, in place of every matching line however many there
 # are.
 _POOLED_STDERR_DIAGNOSTIC_RES: tuple[tuple[re.Pattern[str], str | None], ...] = (
     (_SCANNING_ROOT_DIAGNOSTIC_RE, None),
     (_DECLARED_ROOT_DIAGNOSTIC_RE, _DECLARED_ROOT_SKIPPED_NOTICE),
+)
+# Withheld in place of any stderr line matching none of the known shapes
+# above, since an unrecognized line has not been checked for per-account
+# content.
+_POOLED_STDERR_WITHHELD_NOTICE = (
+    "review-round-cost --pooled: one or more diagnostics were withheld; rerun"
+    " without --pooled to read them before citing any figure."
 )
 
 
@@ -825,8 +873,8 @@ def _pooled_filtered_stderr_call(fn, *args, **kwargs):
     (_POOLED_STDERR_DIAGNOSTIC_RES) filtered out of what it prints to
     stderr. A string replacement prints once per call, however many lines
     matched it. A None replacement drops every matching line entirely.
-    Every other stderr line -- an OSError diagnostic, a warning -- passes
-    through unchanged, including one printed before fn raises.
+    Any other stderr line is withheld behind _POOLED_STDERR_WITHHELD_NOTICE
+    instead of printed raw, including one printed before fn raises.
     """
     captured = io.StringIO()
     try:
@@ -843,7 +891,9 @@ def _pooled_filtered_stderr_call(fn, *args, **kwargs):
                         print(replacement, file=sys.stderr)
                     break
             else:
-                print(line, file=sys.stderr)
+                if _POOLED_STDERR_WITHHELD_NOTICE not in printed_notices:
+                    printed_notices.add(_POOLED_STDERR_WITHHELD_NOTICE)
+                    print(_POOLED_STDERR_WITHHELD_NOTICE, file=sys.stderr)
     return result
 
 
@@ -895,73 +945,96 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     above this line describes the non-pooled path only.
     """
     pooled = bool(getattr(args, "pooled", False))
-    if pooled:
-        # Layer 1: before resolve_scan_roots, so a refused run never scans
-        # the corpus at all. roots=None skips the root-count clause,
-        # re-checked below once roots are known.
-        refusal = _pooled_scope_refusal(args)
-        if refusal is not None:
-            print(refusal, file=sys.stderr)
-            sys.exit(2)
+    # Backstop for the whole pooled scan-and-render pipeline: everything from
+    # here down, including resolve_scan_roots (and its transitive
+    # declared_roots_matching/.resolve() calls in _config_dir.py, outside
+    # this module) and both refusal layers, runs inside this try, so a
+    # --pooled run never lets an unanticipated exception escape uncaught and
+    # print a raw, account-identifying traceback. See the except clause
+    # below for how a deliberate refusal and a non-pooled run are each handled.
+    try:
+        if pooled:
+            # Layer 1: before resolve_scan_roots, so a refused run never scans
+            # the corpus at all. roots=None skips the root-count clause,
+            # re-checked below once roots are known.
+            refusal = _pooled_scope_refusal(args)
+            if refusal is not None:
+                print(refusal, file=sys.stderr)
+                sys.exit(2)
 
-    this_repo = bool(getattr(args, "this_repo", False))
-    branches_arg: str | None = getattr(args, "branches", None) or None
-    branch_filter = {b for b in branches_arg.split(",") if b} if branches_arg else None
-    skill_arg: str | None = getattr(args, "skill", None) or None
-    skill_filter = {skill_arg} if skill_arg else None
-    since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
+        this_repo = bool(getattr(args, "this_repo", False))
+        branches_arg: str | None = getattr(args, "branches", None) or None
+        branch_filter = {b for b in branches_arg.split(",") if b} if branches_arg else None
+        skill_arg: str | None = getattr(args, "skill", None) or None
+        skill_filter = {skill_arg} if skill_arg else None
+        since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
-    # Also routed through the diagnostic filter on both the poolable and
-    # single-root-refusal paths: declared_transcript_roots()'s own "declared
-    # root N unreadable" warning is root-count-revealing too.
-    roots = (
-        _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
-        if pooled
-        else scope.resolve_scan_roots(args)
-    )
-    multi_root = len(roots) > 1
+        # Also routed through the diagnostic filter on both the poolable and
+        # single-root-refusal paths: declared_transcript_roots()'s own "declared
+        # root N unreadable" warning is root-count-revealing too.
+        roots = (
+            _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
+            if pooled
+            else scope.resolve_scan_roots(args)
+        )
+        multi_root = len(roots) > 1
 
-    if pooled:
-        # Layer 1's mirror, with roots now in hand: must return before any
-        # print side effect below, including the banner-suppression and
-        # header-suppression branches this same `pooled` flag now gates.
-        refusal = _pooled_scope_refusal(args, roots=roots)
-        if refusal is not None:
-            print(refusal, file=sys.stderr)
-            sys.exit(2)
+        if pooled:
+            # Layer 1's mirror, with roots now in hand: must return before any
+            # print side effect below, including the banner-suppression and
+            # header-suppression branches this same `pooled` flag now gates.
+            refusal = _pooled_scope_refusal(args, roots=roots)
+            if refusal is not None:
+                print(refusal, file=sys.stderr)
+                sys.exit(2)
 
-    if multi_root and not pooled:
-        print(scope._DO_NOT_PUBLISH_BANNER)
-        print(scope._DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+        if multi_root and not pooled:
+            print(scope._DO_NOT_PUBLISH_BANNER)
+            print(scope._DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
-    session_iter, scope_label = scope._resolve_project_scope(args, "review-round-cost", roots=roots)
-    if not pooled:
-        # --pooled prints its own header (_pooled_resolved_scope_header)
-        # instead, which never discloses the resolved root count. This
-        # unconditional call is skipped so the root-count-bearing header
-        # does not also print, a second time, ahead of it.
-        scope.print_resolved_scope("review-round-cost", scope_label, roots)
+        # Only --pooled records scan gaps: every other caller keeps the pre-
+        # existing silent-skip behavior (scope._resolve_project_scope's
+        # scan_gaps=None default).
+        scan_gaps: Counter[str] | None = Counter() if pooled else None
+        session_iter, scope_label = scope._resolve_project_scope(
+            args, "review-round-cost", roots=roots, scan_gaps=scan_gaps,
+        )
+        if not pooled:
+            # --pooled prints its own header (_pooled_resolved_scope_header)
+            # instead, which never discloses the resolved root count. This
+            # unconditional call is skipped so the root-count-bearing header
+            # does not also print, a second time, ahead of it.
+            scope.print_resolved_scope("review-round-cost", scope_label, roots)
 
-    resolved_roots = [root.resolve() for root in roots] if multi_root else None
-    # --pooled routes through the diagnostic-filtering wrapper: scope's own
-    # "scanning root N/M..." print would otherwise disclose the resolved
-    # root count on stderr. Every other path calls compute_review_round_costs
-    # directly, with stderr unchanged.
-    compute = _pooled_compute_review_round_costs if pooled else compute_review_round_costs
-    data = compute(
-        session_iter,
-        skill_filter=skill_filter,
-        branch_filter=branch_filter,
-        since_ts=since_ts,
-        until_ts=until_ts,
-        resolved_roots=resolved_roots,
-    )
-    rounds = data["rounds"]
-    branch_totals = data["branch_totals"]
+        resolved_roots = [root.resolve() for root in roots] if multi_root else None
+        # --pooled routes through the diagnostic-filtering wrapper: scope's own
+        # "scanning root N/M..." print would otherwise disclose the resolved
+        # root count on stderr. Every other path calls compute_review_round_costs
+        # directly, with stderr unchanged.
+        compute = _pooled_compute_review_round_costs if pooled else compute_review_round_costs
+        data = compute(
+            session_iter,
+            skill_filter=skill_filter,
+            branch_filter=branch_filter,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            resolved_roots=resolved_roots,
+            scan_gaps=scan_gaps,
+        )
+        rounds = data["rounds"]
+        branch_totals = data["branch_totals"]
 
-    if pooled:
-        _render_pooled_block(args, roots, scope_label, rounds, branch_totals)
-        return
+        if pooled:
+            _render_pooled_block(args, roots, scope_label, rounds, branch_totals, scan_gaps=scan_gaps)
+            return
+    except Exception:
+        # sys.exit from a deliberate refusal (_pooled_scope_refusal and friends) raises
+        # BaseException, so this except Exception clause never catches it.
+        # A non-pooled run re-raises whatever exception does land here, unchanged.
+        if not pooled:
+            raise
+        print(_POOLED_SCAN_ABORTED_MESSAGE, file=sys.stderr)
+        sys.exit(2)
 
     if not rounds:
         print("\nNo review rounds found in scope.")

@@ -85,6 +85,47 @@ def extract_skill_command(skill_path: Path, fixture_id: str) -> str:
     return matches[0].group("body").strip()
 
 
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s+.+$")
+_HEADING_STRIP_CHARS_RE = re.compile(r"[`*_]")
+
+
+def normalize_heading(text: str) -> str:
+    """Normalize a heading for citation comparison.
+
+    Strips leading/trailing `#`, strips every backtick/`*`/`_` character
+    anywhere in the text (so a heading containing inline code or emphasis is
+    citable in plain text), collapses whitespace runs, then strips the ends.
+    Both sides of a comparison run through this before the exact-equality
+    check, so `### Debug-investigation probe → \\`general-purpose\\` or
+    \\`Explore\\`` is citable as "Debug-investigation probe → general-purpose
+    or Explore".
+    """
+    text = text.strip("#")
+    text = _HEADING_STRIP_CHARS_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def heading_texts(markdown_text: str) -> set[str]:
+    """Every normalized ATX heading in a markdown document.
+
+    Skips lines inside a fenced code block (toggled on each ``` line) -- a
+    fenced shell comment or sample-output line can otherwise coincidentally
+    match the heading regex despite citing nothing real.
+    """
+    headings: set[str] = set()
+    in_fence = False
+    for line in markdown_text.split("\n"):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if _HEADING_LINE_RE.match(line):
+            headings.add(normalize_heading(line))
+    return headings
+
+
 def _build_subprocess_env(
     home: Path | None,
     extra_env: dict | None,
