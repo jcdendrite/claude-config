@@ -3719,8 +3719,8 @@ class TestReviewTrace:
 
     def test_slash_invocation_appears_in_output(self):
         """A /slash-invoked review skill (`<command-name>` tag on a user
-        record, no Skill tool_use block) produces a 'skill' event, matching
-        review-round-cost's own detection of the same shape."""
+        record, no Skill tool_use block) produces a 'skill' event. This
+        matches review-round-cost's own detection of the same shape."""
         records = [
             _user_msg("<command-name>/code-review</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
