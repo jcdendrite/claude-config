@@ -48,9 +48,14 @@ def _thousands_grouped(digits):
 
 
 CARD_VALID_THOUSANDS = _thousands_grouped(CARD_VALID)  # GH-1108: thousands-grouped form of CARD_VALID
-CARD_13_THOUSANDS = _thousands_grouped("4222222222222")  # thousands-grouped form of the :669 13-digit literal
-CARD_19_THOUSANDS = _thousands_grouped("1111111111111111113")  # thousands-grouped form of the :676 19-digit literal
-SSN_LAST_GROUP_THOUSANDS = _thousands_grouped(SSN)  # thousands-grouped form of SSN, last group only (row 13)
+# Thousands-grouped form of the 13-digit literal in test_luhn_valid_13_digit_card_denied.
+CARD_13_THOUSANDS = _thousands_grouped("4222222222222")
+# Thousands-grouped form of the 19-digit literal in test_luhn_valid_19_digit_card_denied.
+CARD_19_THOUSANDS = _thousands_grouped("1111111111111111113")
+# Thousands-grouped form of SSN, last group only. The SSN's first two groups are always
+# below 1000, so the last group alone is the only thousands spelling that strips to the
+# SSN shape.
+SSN_LAST_GROUP_THOUSANDS = _thousands_grouped(SSN)
 
 
 def _stage(repo, name, content):
@@ -769,18 +774,19 @@ class TestDenyPiiInCommits:
     def test_apostrophe_thousands_card_length_and_line_boundaries_allowed(
         self, isolated_home, git_repo, pii_patterns, row
     ):
-        """GH-1108: the mask must cover both ends of the credit-card length
-        window (CARD_13_THOUSANDS and CARD_19_THOUSANDS), two distinct
-        thousands numerals on one line separated by a single space (pins
-        that the mask's two global passes catch a numeral whose leading
-        bound character the previous match on the same line consumed --
-        one pass alone would leave the second numeral unmasked), and a
-        numeral that is the entire content of a -F file with nothing
-        before or after it (the mask's `^`/`$` line-edge boundary
-        alternative, which no other row in this file reaches -- every
-        other append site's content is prefixed by something, be it git's
-        diff marker, `git commit`, or an existing -F fixture's own leading
-        text)."""
+        """GH-1108: the mask must cover both ends of the credit-card length window and the
+        two-numerals-on-one-line and file-content-exact boundary shapes.
+          - card-13 / card-19: CARD_13_THOUSANDS and CARD_19_THOUSANDS cover both ends of
+            the credit-card length window.
+          - both-on-one-line: two distinct thousands numerals on one line separated by a
+            single space pins that the mask's two global passes catch a numeral whose
+            leading bound character the previous match on the same line consumed -- one
+            pass alone would leave the second numeral unmasked.
+          - file-content-exact: a numeral that is the entire content of a -F file with
+            nothing before or after it exercises the mask's `^`/`$` line-edge boundary
+            alternative, which no other row in this file reaches -- every other append
+            site's content is prefixed by something, be it git's diff marker, `git
+            commit`, or an existing -F fixture's own leading text."""
         pii_patterns("# no user patterns\n")
         if row == "card-13":
             _stage(git_repo, "f.txt", f"card {CARD_13_THOUSANDS}\n")
@@ -808,10 +814,10 @@ class TestDenyPiiInCommits:
     ):
         """GH-1108: an SSN whose last group is spelled as an
         apostrophe-grouped thousands numeral (`N'NNN` -- the only thousands
-        spelling that strips to the SSN shape, since the first two groups
-        are below 1000, row 13 of the plan) is not a real SSN and must be
-        allowed at the staged-diff and HEAD-diff append sites, mirroring
-        the card case's append-site coverage."""
+        spelling that strips to the SSN shape, since the SSN's first two
+        groups are always below 1000) is not a real SSN and must be allowed
+        at the staged-diff and HEAD-diff append sites, mirroring the card
+        case's append-site coverage."""
         pii_patterns("# no user patterns\n")
         line = f"ref {SSN_LAST_GROUP_THOUSANDS}\n"
         if append_site == "staged-diff":
@@ -857,24 +863,25 @@ class TestDenyPiiInCommits:
         untouched and the pre-existing deny behavior must be unchanged --
         these rows pass identically before and after the fix.
           - apostrophe-every-four-digits: not a thousands grouping at all.
-          - four-digit-leading-group / four-digit-trailing-group: the
-            explicit non-digit/non-joining bound the mask requires on each
-            side (row 15 of the plan) is a digit, not a valid boundary.
+          - four-digit-leading-group / four-digit-trailing-group: the mask
+            requires a non-digit, non-joining-character bound on each side,
+            and here that bound is a digit, not a valid boundary.
           - quote-split-first-digit / backslash-split-first-digit /
             dollar-quote-split-first-digit / quote-split-last-digit: a
-            joining character (`"`, `\\`, or `$'`) sits directly between a
-            lone digit and the grouped numeral, so the boundary the mask
-            needs is itself a joining character, not a true bound (rows 11
-            and 24).
+            joining character -- a quote, backslash, or dollar-quote --
+            sits directly between a lone digit and the grouped numeral, so
+            the boundary the mask needs is itself a joining character, not
+            a true bound.
           - double-quote-splice-in-message: an ordinary double-quote
-            splice with no apostrophe anywhere to mask (row 16) -- the
-            existing quote-splice deny is untouched by this change.
+            splice with no apostrophe to mask -- the existing quote-splice
+            deny is untouched by this change.
           - raw-half-match-alongside-thousands-copy: a contiguous,
             unmasked copy of the card elsewhere in the same file still
             matches on the raw half regardless of a masked copy nearby.
           - ssn-non-thousands-join: `NN'N-NN-NNNN` strips back to an
             ordinary `NNN-NN-NNNN` SSN shape; it was never a thousands
-            numeral for the mask to recognize (row 13)."""
+            numeral for the mask to recognize, since the SSN's first two
+            groups are always below 1000."""
         pii_patterns("# no user patterns\n")
         command = "git commit -m wip"
         if row == "apostrophe-every-four-digits":
@@ -924,14 +931,15 @@ class TestDenyPiiInCommits:
         """GH-1108: a card value written with the bash `'\\''` idiom inside
         a single-quoted -m has no bare apostrophe left in the raw command
         text (the idiom replaces each `'` with a four-character escape
-        sequence), so the mask cannot recognize it as a thousands numeral
-        -- it still joins into a contiguous Luhn-valid run once
-        _lib_strip_shell_quotes simulates the shell's own quote removal,
-        and must still deny. A genuine, maskable copy of the same value
-        present elsewhere in the commit -- staged in a file, or in a
-        second double-quoted -m on the same command line -- must not vouch
-        for the spliced copy: masking is judged per occurrence (row 23 of
-        the plan)."""
+        sequence), so the mask cannot recognize it as a thousands numeral.
+        It still joins into a contiguous Luhn-valid run once
+        _lib_strip_shell_quotes simulates the shell's own quote removal, and
+        must still deny. A genuine, maskable copy of the same value present
+        elsewhere in the commit -- staged in a file, or in a second
+        double-quoted -m on the same command line -- must not vouch for the
+        spliced copy: masking is judged per occurrence, so a genuine copy of
+        the value elsewhere in the commit does not change this occurrence's
+        verdict."""
         pii_patterns("# no user patterns\n")
         idiom_value = CARD_VALID_THOUSANDS.replace("'", "'\\''")
         command = f"git commit -m 'card {idiom_value}'"
@@ -952,7 +960,7 @@ class TestDenyPiiInCommits:
         own `'\\''`-idiom-spliced copy in the commit message. A splice
         spelled any other way than the idiom still denies at each
         occurrence, whatever copies of the value exist elsewhere in the
-        commit (row 23)."""
+        commit: masking is judged per occurrence, not per value."""
         pii_patterns("# no user patterns\n")
         _stage(git_repo, "f.txt", f"ref {SSN_LAST_GROUP_THOUSANDS}\n")
         idiom_value = SSN_LAST_GROUP_THOUSANDS.replace("'", "'\\''")
@@ -994,8 +1002,8 @@ class TestDenyPiiInCommits:
         this hook containing the interval quantifier `{1,3}` (_lib.sh has
         no such token), so a shim that fails only on an argument
         containing that token isolates the mask's own SSN_CC_MASKED_EXIT
-        check from every other sed call site in the hook, and otherwise
-        execs the real sed."""
+        check from every other sed call site in the hook. The shim
+        otherwise execs the real sed."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
         pii_patterns("# no user patterns\n")
@@ -1025,13 +1033,13 @@ class TestDenyPiiInCommits:
 
     def test_ssn_cc_strip_sed_shim_failure_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
         """GH-1108: fail-closed pin for the SSN/credit-card union's own
-        strip call, isolated from the mask's own sed call above -- the
-        shim exits 1 only when its stdin already carries the masked shape
-        (`<marker> <marker>`, the numeral replaced by a space), which only
-        the strip-of-already-masked-text call ever sees; the mask's own
-        call sees the pre-mask `<marker>N'NNN<marker>` and passes through
-        untouched, and every other _lib_strip_shell_quotes call site in
-        the hook sees neither shape in its own stdin."""
+        strip call, isolated from the mask's own sed call above. The shim
+        exits 1 only when its stdin already carries the masked shape
+        (`<marker> <marker>`, the numeral replaced by a space). Only the
+        strip-of-already-masked-text call ever sees that shape: the mask's
+        own call sees the pre-mask `<marker>N'NNN<marker>` and passes
+        through untouched, and every other _lib_strip_shell_quotes call
+        site in the hook sees neither shape in its own stdin."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
         pii_patterns("# no user patterns\n")

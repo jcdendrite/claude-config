@@ -484,12 +484,12 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
 fi
 
 # Raw+stripped union that the credential-value and user-pattern scans read instead of raw
-# $SCAN_TARGET alone. A quote-adjacent digit run (e.g. `x"4111111111111111"`)
-# loses the `\b` word boundary the SSN/credit-card regexes below need once
-# quotes are stripped, so only the raw copy still matches it -- same fix
-# shape as deny-private-project-refs.sh's SCAN_TARGET_BOTH. Checked and
-# fail-closed on a strip failure, matching deny-invisible-commit-content.sh's
-# own COMMAND_UNQUOTED computation.
+# $SCAN_TARGET alone. A quote-adjacent credential-shaped token (e.g. `x"ghp_..."`)
+# loses the `\b` word boundary those scans need once quotes are stripped, so
+# only the raw copy still matches it -- same fix shape as
+# deny-private-project-refs.sh's SCAN_TARGET_BOTH. Checked and fail-closed on
+# a strip failure, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
 SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
 SCAN_TARGET_UNQUOTED_EXIT=$?
 if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
@@ -519,7 +519,8 @@ luhn_valid() {
 
 # Prints $1 with each apostrophe-grouped thousands numeral replaced by a space, unless stripping quotes would join its digits to another digit.
 # The substitution runs twice because one global pass skips a numeral whose leading bound character the previous match consumed.
-# This expression must stay backreference-free: sed's runtime here is linear in input only without one, and a superlinear runtime reopens the fail-open timeout gap at :154-160.
+# This expression must stay backreference-free — sed's runtime here is linear in input only without one.
+# A superlinear runtime here would reopen the fail-open timeout gap this hook's Known-gaps section already accepts as a residual risk.
 mask_thousands_numerals() {
   local expr=$'s/(^|[^0-9\'"\\$])([\'"\\$]*)[0-9]{1,3}(\'[0-9]{3})+([\'"\\$]*)([^0-9\'"\\$]|$)/\\1\\2 \\4\\5/g'
   printf '%s' "$1" | sed -E -e "$expr" -e "$expr"
@@ -554,6 +555,10 @@ if [ "$PII_ARMED" -eq 1 ]; then
     emit_deny "Commit — could not quote-strip the SSN/credit-card scan target (exit ${SSN_CC_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
     exit 0
   fi
+  # Keeps the raw $SCAN_TARGET copy alongside the masked+stripped one for the same
+  # reason SCAN_TARGET_BOTH does above. A quote-adjacent digit run (e.g.
+  # `x"4111111111111111"`) loses the `\b` word boundary the SSN/credit-card
+  # regexes below need once quotes are stripped, so only the raw copy still matches it.
   SSN_CC_SCAN_TARGET=$(printf '%s\n%s' "$SCAN_TARGET" "$SSN_CC_UNQUOTED")
 
   if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SSN_CC_SCAN_TARGET"; then
