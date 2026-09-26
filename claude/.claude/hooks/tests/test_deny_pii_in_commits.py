@@ -812,12 +812,9 @@ class TestDenyPiiInCommits:
     def test_apostrophe_thousands_ssn_last_group_allowed(
         self, isolated_home, git_repo, pii_patterns, append_site
     ):
-        """GH-1108: an SSN whose last group is spelled as an
-        apostrophe-grouped thousands numeral (`N'NNN` -- the only thousands
-        spelling that strips to the SSN shape, since the SSN's first two
-        groups are always below 1000) is not a real SSN and must be allowed
-        at the staged-diff and HEAD-diff append sites, mirroring the card
-        case's append-site coverage."""
+        """GH-1108: an SSN whose last group is written as an apostrophe-grouped
+        thousands numeral (SSN_LAST_GROUP_THOUSANDS) is not a real SSN. It must be
+        allowed at the staged-diff and HEAD-diff append sites."""
         pii_patterns("# no user patterns\n")
         line = f"ref {SSN_LAST_GROUP_THOUSANDS}\n"
         if append_site == "staged-diff":
@@ -880,8 +877,7 @@ class TestDenyPiiInCommits:
             matches on the raw half regardless of a masked copy nearby.
           - ssn-non-thousands-join: `NN'N-NN-NNNN` strips back to an
             ordinary `NNN-NN-NNNN` SSN shape; it was never a thousands
-            numeral for the mask to recognize, since the SSN's first two
-            groups are always below 1000."""
+            numeral for the mask to recognize."""
         pii_patterns("# no user patterns\n")
         command = "git commit -m wip"
         if row == "apostrophe-every-four-digits":
