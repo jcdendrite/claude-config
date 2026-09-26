@@ -3,9 +3,9 @@
 plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
 test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
-test_context_composition.py, test_transcript_denials.py, and
-test_transcript_review_trace.py (see the extraction rationale on
-_write_jsonl below).
+test_context_composition.py, test_transcript_denials.py,
+test_transcript_review_trace.py, and test_transcript_read_scope.py (see the
+extraction rationale on _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -333,6 +333,10 @@ def _bash_use(tool_id: str, command: str) -> dict:
 
 def _tool_result(tool_id: str, text: str) -> dict:
     return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
+
+
+def _compact_boundary_rec() -> dict:
+    return {"type": "system", "subtype": "compact_boundary"}
 
 
 def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
