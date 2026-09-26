@@ -6,11 +6,11 @@ import os
 import shutil
 import subprocess
 import tempfile
-import textwrap
 from pathlib import Path
 
 import pytest
 from helpers import (
+    _FORCED_FALLBACK_REALPATH_SHIM,
     HOOKS_DIR,
     bash_input,
     edit_input,
@@ -23,27 +23,22 @@ from helpers import (
 
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
 
-# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
-# through to the manual ancestor-walk fallback) by shadowing `realpath` on
-# PATH -- same shim test_lib.py's TestLibRealpathM uses for the same
-# purpose. A non-`-m` invocation still execs the real binary, so the
-# fallback loop's own `realpath --` lookups keep working.
-_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
-    #!/bin/bash
-    if [ "$1" = "-m" ]; then
-      echo "realpath: illegal option -- m" >&2
-      exit 1
-    fi
-    exec /bin/realpath "$@"
-""")
+
+def _filesystem_is_case_sensitive() -> bool:
+    """Probes the filesystem backing the default temp dir for case sensitivity.
+    A `pytest.mark.skipif` condition is evaluated at collection time, before any
+    `tmp_path` fixture exists, so this probes via `tempfile` instead."""
+    with tempfile.TemporaryDirectory() as probe_dir:
+        (Path(probe_dir) / "case-probe").touch()
+        return not (Path(probe_dir) / "CASE-PROBE").exists()
 
 
 def _forced_fallback_path_env(tmp_path: Path) -> str:
-    """Build a PATH whose `realpath` is the forced-fallback shim above,
-    ahead of /usr/bin:/bin. The shim dir is placed first specifically to
-    exclude any `grealpath` the host might also have on a wider PATH --
-    `command -v grealpath` succeeding would skip the fallback branch this
-    exists to force."""
+    """Build a PATH whose `realpath` is the forced-fallback shim
+    (`helpers._FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The
+    shim dir is placed first specifically to exclude any `grealpath` the
+    host might also have on a wider PATH -- `command -v grealpath`
+    succeeding would skip the fallback branch this exists to force."""
     shim_dir = tmp_path / "realpath_shim"
     shim_dir.mkdir(exist_ok=True)
     shim = shim_dir / "realpath"
@@ -324,6 +319,42 @@ class TestAskReviewPermissions:
         # kernel resolves it identically, so the symlink still lands at the real
         # location config_dir_real names.
         Path(file_path_raw).symlink_to(config_dir_real / "does-not-exist")
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(file_path_raw),
+                extra_env={
+                    "CLAUDE_CONFIG_DIR": config_dir_raw,
+                    "PATH": _forced_fallback_path_env(tmp_path),
+                },
+            )
+            == "ask"
+        )
+
+    @pytest.mark.skipif(
+        not _filesystem_is_case_sensitive(),
+        reason="dangling_config_dir's 'WORK' would collide with config_dir_real's "
+        "'work' as the same filesystem entry on a case-insensitive filesystem "
+        "(default macOS APFS/HFS+), making the symlink_to() below raise FileExistsError.",
+    )
+    def test_partial_config_dir_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks(self, tmp_path):
+        """Symmetric to test_partial_realpath_failure_falls_back_to_raw_vs_raw_and_still_asks,
+        forcing the failure on the CONFIG_DIR side instead of the FILE_PATH side. The
+        file path's own ancestor carries a "/./" segment so its successfully-normalized
+        form textually diverges from its raw form, which is what makes the
+        both-succeed guard's raw-vs-raw fallback (rather than a
+        normalized-FILE-vs-raw-CONFIG_DIR mix) load-bearing for the match."""
+        config_dir_real = tmp_path / "claude-accounts" / "work"
+        config_dir_real.mkdir(parents=True)
+        file_path_raw = f"{config_dir_real.parent}/./work/settings.json"
+        config_dir_raw = f"{config_dir_real.parent}/./WORK"
+        # dangling: _lib_realpath_m fails on CLAUDE_CONFIG_DIR only. `WORK` is a
+        # distinct filesystem entry from `work` on a case-sensitive filesystem, so
+        # the dangling symlink never touches config_dir_real; the hook's own
+        # case-fold (tr) is what makes the raw match still fire despite the case
+        # difference between the two.
+        dangling_config_dir = config_dir_real.parent / "WORK"
+        dangling_config_dir.symlink_to(config_dir_real.parent / "does-not-exist")
         assert (
             run_hook(
                 REVIEW_PERMS_HOOK,

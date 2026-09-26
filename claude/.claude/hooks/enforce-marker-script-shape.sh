@@ -86,6 +86,10 @@
 #     agents including `code-writer` routinely run under those modes. For
 #     that mode, this gap is a live, unmitigated path to forging a
 #     `/code-review` or `/plan-review` completion marker.
+#   - `_lib_realpath_m`'s fallback loop wraps its `test -e`/`test -L` calls in
+#     `_lib_capped` (external subprocess + timeout), which widens — in degree,
+#     not in kind — the check-then-use race already inherent between this
+#     hook's `_marker_shape_match` resolution and a target's next use.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed

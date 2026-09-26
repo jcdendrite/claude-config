@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import textwrap
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -1726,6 +1727,25 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# -- Forced-fallback realpath shim -------------------------------------------
+#
+# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
+# through to the manual ancestor-walk fallback) by shadowing `realpath` on
+# PATH. A non-`-m` invocation still execs the real binary, so the fallback
+# loop's own `realpath --` lookups keep working. Shared by test_lib.py's
+# TestLibRealpathM and test_ask_review_permissions.py, both of which force
+# the same fast-path failure for the same reason.
+
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
 
 
 # -- Scaled timeout(1) shim for cap-boundary tests ---------------------------

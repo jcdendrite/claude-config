@@ -44,16 +44,15 @@ if printf '%s\n' "$FOLDED_RAW_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; 
   MATCHED=1
 fi
 
-# Cheap prefilter before paying for realpath: neither remaining arm can ever match
-# unless the path looks like a settings file, so every other edit exits here
-# instead of spawning realpath subprocesses on every Edit/Write/MultiEdit in every session.
+# Cheap prefilter: skip realpath unless the path already looks like a settings file, to avoid a subprocess spawn on every edit.
 if [ "$MATCHED" -eq 0 ]; then
   case "$FOLDED_RAW_PATH" in
     *settings*.json)
-      # Normalize `.`/`..`/duplicate slashes before matching, so an aliased path still
-      # asks (gap (h)). Compared alongside the raw path above, not in place of it, so
-      # resolving a symlinked `.claude` ancestor to its real target can't make that
-      # match stop firing. Falls back to the raw path on normalization failure.
+      # Normalize `.`/`..`/duplicate slashes before matching:
+      # - normalizes so an aliased path still asks (gap (h))
+      # - compared alongside the raw path, not instead of it, so a symlinked
+      #   `.claude` ancestor can't be resolved away to defeat the match
+      # - falls back to the raw path on normalization failure
       FILE_NORMALIZE_OK=1
       NORMALIZED_PATH=$(_lib_realpath_m "$FILE_PATH" 2>/dev/null) || { NORMALIZED_PATH="$FILE_PATH"; FILE_NORMALIZE_OK=0; }
       FOLDED_NORMALIZED_PATH=$(printf '%s' "$NORMALIZED_PATH" | tr '[:upper:]' '[:lower:]')
@@ -79,9 +78,9 @@ if [ "$MATCHED" -eq 0 ]; then
             COMPARE_PATH="$FOLDED_RAW_PATH"
             COMPARE_CONFIG_DIR="$CONFIG_DIR"
           fi
-          # DEFER: `\ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
-          # are session-level trusted config rather than attacker-controlled input. `[` is covered,
-          # not deferred — see test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
+          # Known limitation: `\ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
+          # are session-level trusted config rather than attacker-controlled input. `[` is covered
+          # — see test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
           # shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
           FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[.[\*^$()+?{|]/\\&/g')
           if printf '%s\n' "$COMPARE_PATH" | grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$"; then

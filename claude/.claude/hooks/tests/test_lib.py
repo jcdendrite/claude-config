@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    _FORCED_FALLBACK_REALPATH_SHIM,
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
     _make_git_exiting_with_status,
@@ -3211,16 +3212,10 @@ def test_gh_help_root_no_value_placeholder_flags_stay_within_help_and_version() 
 # the real system realpath otherwise) plus /usr/bin:/bin only, deliberately
 # excluding /usr/local/bin, where this dev machine's Homebrew `grealpath`
 # actually lives. Without this, `command -v grealpath` would still find it
-# and the fallback branch under test would never run.
-
-_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
-    #!/bin/bash
-    if [ "$1" = "-m" ]; then
-      echo "realpath: illegal option -- m" >&2
-      exit 1
-    fi
-    exec /bin/realpath "$@"
-""")
+# and the fallback branch under test would never run. The shim itself is
+# `helpers._FORCED_FALLBACK_REALPATH_SHIM`, shared with
+# test_ask_review_permissions.py, which forces the same fast-path failure
+# for the same reason.
 
 
 def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path | None = None) -> subprocess.CompletedProcess:
@@ -3326,14 +3321,16 @@ class TestLibRealpathM:
         assert "//" not in resolved
 
     def test_forced_fallback_dirname_hang_capped_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for the `_lib_capped` wrap around the fallback
-        loop's `dirname` call. Before the fix, its exit status went
-        unchecked, so a cap-firing timeout (empty stdout, nonzero exit) was
-        read as success: `current` became "", the loop's `/`/`.` termination
-        guard never matched it, and the next iteration's `test -e "."`
-        (GNU dirname's empty-input return value) resolved to the hook
-        process's own CWD with exit 0 -- a corrupted result indistinguishable
-        from success to callers that only guard against nonzero exit. Same
+        """Regression test: an unchecked cap-timeout on the fallback loop's
+        `dirname` call must not corrupt the walk into resolving to the hook
+        process's own CWD. `_lib.sh` wraps the call in `_lib_capped`
+        precisely so a cap-firing timeout (empty stdout, nonzero exit)
+        returns nonzero instead of being read as success -- an unchecked
+        exit would let `current` become "", which the loop's `/`/`.`
+        termination guard never matches, so the next iteration's
+        `test -e "."` (GNU dirname's empty-input return value) resolves to
+        the CWD with exit 0, a corrupted result indistinguishable from
+        success to callers that only guard against nonzero exit. Same
         PATH-stub technique as
         test_active_bypass_marker_live_find_hang_capped_withholds_bypass: the
         stub sleeps past the cap, then -- only if not killed -- execs the
@@ -3453,12 +3450,13 @@ class TestLibRealpathM:
         assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
 
     def test_forced_fallback_test_e_hang_capped_fails_closed(self, tmp_path: Path) -> None:
-        """Regression test for the ambiguous-status branch at `_lib.sh`'s
-        `elif [ "$test_e_status" -ne 1 ]; then return 1` -- without it, a
-        cap-fired `test -e` (nonzero, but not the clean "does not exist" 1)
-        fell through to the decomposition logic below and was misread as
-        "does not exist". The ambiguous component is a real, existing
-        directory one level up from the nonexistent leaf, mirroring
+        """Regression test: a cap-fired `test -e` (nonzero, but not the
+        clean "does not exist" 1) must not be misread as "does not exist"
+        and fall through to the decomposition logic below. `_lib.sh`'s
+        `elif [ "$test_e_status" -ne 1 ]; then return 1` branch exists
+        precisely to catch that ambiguous status and fail closed instead.
+        The ambiguous component is a real, existing directory one level up
+        from the nonexistent leaf, mirroring
         test_forced_fallback_dot_branch_dirname_hang_capped_fails_closed's
         directory-walk setup. Unlike the basename/dirname stubs above,
         `test -e`/`test -L` omit `--` (the loop's own comment in _lib.sh
@@ -3540,17 +3538,23 @@ class TestLibRealpathM:
         assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
 
     def test_bare_invocation_under_set_e_reaches_caller_line_after_call(self, tmp_path: Path) -> None:
-        """Regression test for invocation-style safety: `_lib_realpath_m`
-        must not abort its caller under `set -e` when invoked as a bare
-        statement, not wrapped in `$(...)` or an `if`. A bare invocation
-        runs the function in the caller's own shell, so any bare (non-`if`,
-        non-`$(...)`) command inside it that returns nonzero would also
-        abort the caller. Unlike `_run_realpath_m`'s `set -uo pipefail`
-        (no `-e`), this test sources `_lib.sh` under `set -e` itself so a
-        regression is actually exercised. The target is a normal
-        nonexistent leaf directly under an existing directory, so the
-        fallback loop's first `test -e` legitimately returns its ordinary
-        false status -- the cap-timeout/ambiguous case is already covered by
+        """Regression test scoped to the success path: a bare invocation of
+        `_lib_realpath_m` (not wrapped in `$(...)` or an `if`) must not let
+        the function's internal loop -- which runs as bare statements in
+        the caller's own shell -- spuriously trip the caller's `set -e` on
+        a resolution that ultimately succeeds. This does not make a bare
+        invocation safe in general: a call whose resolution legitimately
+        fails (nonzero return) still aborts the caller under `set -e`, by
+        design. Every current caller (ask-review-permissions.sh,
+        enforce-marker-script-shape.sh, require-memory-skill.sh,
+        require-plan-review.sh) already guards its invocation with
+        `$(...)`, `if`, or `||`, and must continue to. Unlike
+        `_run_realpath_m`'s `set -uo pipefail` (no `-e`), this test sources
+        `_lib.sh` under `set -e` itself so a regression is actually
+        exercised. The target is a normal nonexistent leaf directly under
+        an existing directory, so the fallback loop's first `test -e`
+        legitimately returns its ordinary false status -- the cap-timeout/
+        ambiguous case is already covered by
         test_forced_fallback_test_e_hang_capped_fails_closed and
         test_forced_fallback_test_l_hang_capped_fails_closed."""
         shim_dir = tmp_path / "realpath_shim"
