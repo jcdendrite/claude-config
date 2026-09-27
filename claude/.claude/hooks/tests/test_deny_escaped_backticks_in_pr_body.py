@@ -7,15 +7,22 @@ on pseudo-file paths and unreadable body-source files.
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 
+import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_cap_engaged,
     bash_input,
     build_path_without,
     run_hook,
     run_hook_reason,
 )
+
+from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
 
@@ -62,6 +69,99 @@ class TestDenyEscapedBackticksInPrBody:
     def test_missing_body_file_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /nonexistent/path.md"
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+
+    def test_body_file_device_file_is_denied_not_hung(self, tmp_path):
+        """`--body-file /dev/zero` must deny without `cat` ever touching it:
+        /dev/zero passes the `[ -r ]` readability check but is not a regular
+        file, so the `[ -f ]` guard rejects it before the capped read. A `cat`
+        shim records any invocation on the device and never reads it, so
+        removing the guard fails the test (rather than hanging or being masked
+        by the cat-kill deny)."""
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        invocation_log = tmp_path / "cat-on-device.log"
+        fake_cat = stub_dir / "cat"
+        fake_cat.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = /dev/zero ]; then\n'
+            f"  echo invoked >> {shlex.quote(str(invocation_log))}\n"
+            "  exit 0\n"
+            "fi\n"
+            f'exec {real_cat} "$@"\n'
+        )
+        fake_cat.chmod(0o755)
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        cmd = "gh pr create --body-file /dev/zero"
+        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env) == "deny"
+        assert not invocation_log.exists(), "cat was invoked on the non-regular body source"
+
+    def _clean_body_file_and_command(self, tmp_path):
+        body_file = tmp_path / "body.md"
+        body_file.write_text("clean body, no escapes\n")
+        return body_file, f"gh pr create --body-file {body_file}"
+
+    @pytest.mark.timing
+    def test_body_file_cat_timeout_is_denied_fail_closed(self, tmp_path):
+        """A `cat` of the body file killed by the 5s cap (exit 124) denies
+        rather than allowing on unscanned content."""
+        body_file, cmd = self._clean_body_file_and_command(tmp_path)
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body_file))} ]')
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
+            reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env)
+        assert reason is not None and "killed (exit 124)" in reason, reason
+
+    @pytest.mark.timing
+    def test_body_file_cat_sigterm_immune_kill_is_denied(self, tmp_path):
+        """A `cat` that ignores SIGTERM is SIGKILLed by the cap's `-k` grace
+        (exit 137, not 124); that status denies too."""
+        body_file, cmd = self._clean_body_file_and_command(tmp_path)
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not _real_timeout_is_gnu_coreutils():
+            pytest.skip("scaled sub-second -k grace is truncated to 0 by a non-GNU timeout, so SIGKILL never fires")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(
+            stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body_file))} ]', sigterm_immune=True
+        )
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env)
+        assert reason is not None and "killed (exit 137)" in reason, reason
+
+    def test_body_file_cat_nonzero_exit_is_denied(self, tmp_path):
+        """A `cat` of the body file that exits 1 (a read error after the
+        readability check) denies rather than allowing on empty content."""
+        body_file, cmd = self._clean_body_file_and_command(tmp_path)
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(
+            stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(body_file))} ]', exit_status=1
+        )
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env)
+        assert reason is not None and "(exit 1)" in reason, reason
+        assert "killed" not in reason, reason
 
     def test_chained_command_with_escaped_backtick_is_denied(self):
         cmd = r"git status && gh pr edit 1 --body 'foo \`bar\`'"

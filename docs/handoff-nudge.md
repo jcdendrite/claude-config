@@ -94,12 +94,13 @@ Refusing is a first-class outcome — a confident number for the wrong session i
 
 ## Log location
 
-The hook appends one line per significant event to `<config-dir>/.handoff-nudge.log`. Two line types appear:
+The hook appends one line per significant event to `<config-dir>/.handoff-nudge.log`. A third line type is appended by a separate script the handoff skill invokes, never the hook itself. Three line types appear:
 
 | Line prefix | Meaning |
 |---|---|
 | `nudged session=<id> est=<n> model=<id> window=<n> event=<PostToolBatch\|Stop> ignored=<n> skills=<label,label\|-> [action=block]` | Threshold crossed — first fire or a later re-arm, advisory or hard block alike; nudge emitted. `ignored=` is the ignored-re-arm count at fire time (0 on a first fire). `skills=` names the active-bypass skill markers live at fire time, comma-joined, or `-` when none are live. `action=block` is present only on a hard-block fire; an advisory fire carries no `action` field |
 | `schema-drift session=<id> event=<PostToolBatch\|Stop>` | Usage block was found but all four token fields were 0 or null, suggesting the transcript schema changed; see [Known limitations](#known-limitations) |
+| `handoff session=<id>` | A handoff file was written and verified this session. Appended by `handoff-record-conversion.sh`, which the handoff skill invokes right after that verification — never by this hook. Pairs with a session's own `nudged` lines for a nudge→handoff conversion reading (`transcript-analysis.py rearm-backtest`'s own conversion section) |
 
 The log is append-only and not rotated automatically. Trim it periodically if disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge.log"`.
 

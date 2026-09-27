@@ -13,9 +13,19 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py`, `reviewer_yield.py`, and `review_rounds.py` are the only modules the shim
-imports back into (not just from) — cost-ledger and review-trace still call their public functions
-from the shim until those phases migrate too.
+package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`, and
+`read_scope.py` are the only modules the shim imports back into (not just from). Cost-ledger still
+calls `review_trace.py`'s `compute_deny_summary_data` from the shim. The CLI's own `build_parser()`
+still wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the
+`cli.py` phase migrates both. Two still-unmigrated friction/command-shape helpers likewise call
+`denials.py`'s `hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
+`build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
+The still-unmigrated context-composition code separately reads `read_scope.py`'s
+`_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
+`review_trace.py` also imports `reviewer_yield.py`, for its own reviewer-spawn detection
+(`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
+skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
+package's first two imports from one command-group module into another.
 
 ## The package
 
@@ -28,6 +38,10 @@ join, reused recursively by `review_rounds.py`'s nested-dispatch descent since t
 `jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR` layout resolves identically for a subagent's own
 transcript file). No dependency on scope resolution, redaction, or pricing — every other module
 (and the shim) builds on this one.
+
+Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
+as the single source of truth for two consumers: the shim's own mutating-git classifier, and
+`author_outcome.py`'s clean-marker-write matcher (`_is_clean_marker_write`).
 
 ### `scope.py`
 
@@ -89,8 +103,9 @@ verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit 
 (`compute_reviewer_yield_data`). Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `compute_reviewer_yield_data` is the one
 public name here, reached from the still-unmigrated cost-ledger code in the shim;
-`_is_reviewer_subagent_type` is also reached bare from still-unmigrated review-trace code — see
-the exception noted above.
+`_is_reviewer_subagent_type` is read by `review_trace.py`, via
+`reviewer_yield._is_reviewer_subagent_type` (attribute access) — no longer reached bare from the
+shim, since review-trace's own detection moved into the package.
 
 ### `review_rounds.py`
 
@@ -105,13 +120,84 @@ and `scope` all by module (attribute access), matching `cost.py`'s convention �
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent, and every record inside that round's window is attributed to it, never
 `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
-never needs. `REVIEW_SKILLS` and `compute_review_round_counts` are the two public names here;
-`REVIEW_SKILLS` is also back-imported by the still-unmigrated `cmd_judgment_pair` in the shim for
-its own `--skills` default — a second entry in the one-directional exception noted above.
-`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than moving into
-the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type disclosure
-allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the package may
-not import back from the shim.
+never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, and `detect_round_windows` are the
+public names here. `REVIEW_SKILLS` is back-imported by the still-unmigrated `cmd_judgment_pair` in
+the shim for its own `--skills` default, one instance of the one-directional exception noted
+above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both back-imported by
+the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
+membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
+skill name before `_round_skill_name` normalizes it.
+`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than
+moving into the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type
+disclosure allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the
+package may not import back from the shim. `detect_round_windows` is public (no leading
+underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
+window's own `open_idx`/`skill`.
+
+### `author_outcome.py`
+
+The author-outcome command family: `cmd_author_outcome` and every helper used only by it —
+for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
+that judged its diff (`compute_author_outcomes`), by completion-index ordering against
+`review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
+session's own review-narrative-ledger files directly. `_ledger_files_for_session` locates every
+file matching a session-id glob under `<config_dir_root>/review-narrative-ledger/`, and
+`_read_ledger_row_entries_for_session` reads and merges all of them, sorted by `event_time`. See
+`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the merge behavior
+and the residual gaps it still leaves. Ledger rows are
+matched to a round by exact `round`-field equality against that round's own 1-indexed position in
+the transcript's round-open sequence. The transcript is still the sole source for round-open
+positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
+fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
+
+See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
+docstrings for the append-lock mechanism `review-ledger.sh`'s schema-v2
+write depends on.
+
+Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
+(attribute access), matching `review_rounds.py`'s own convention. See
+`docs/transcript-analysis.md`'s author-outcome section for the full failure definition, output
+shape, and documented scope gaps.
+
+### `denials.py`
+
+Hook-denial detection and classification, with no dependency on any `cmd_*` function: the shared
+`hook_denial_key` predicate covering both transcript shapes (a legacy `attachment` record and a
+current-format `is_error` `tool_result`), the label/cause/command-shape classifiers
+(`_denial_hook_label`, `_denial_cause_kind`, `_denial_command_shape`), and `toolDenialKind`
+non-gate-friction classification (`_is_nongate_friction_kind`, `_friction_kind_label`). A leaf:
+imports `corpus` and `render` by module (attribute access), matching `cost.py`'s convention —
+`corpus._parse_ts` for the module-level `_TOOL_DENIAL_KIND_REGIME_START_TS` constant,
+`render._content_text` for `hook_denial_key`'s current-shape decode. `hook_denial_key` and
+`_drop_denial_command_flag_values` are the two names reached bare from still-unmigrated
+friction/command-shape helpers in the shim — see the exception noted above.
+
+### `review_trace.py`
+
+The review-trace command family: `cmd_review_trace` and every helper used only by it —
+`--deny-summary`'s grouped denial/friction accumulation and report (`compute_deny_summary_data`,
+promoted from a shim-private `_compute_deny_summary_data`), and the per-session event-timeline
+detector both the default output and `--deny-summary` share (`_review_trace_session_events`).
+Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, and `scope` all by module
+(attribute access), matching `cost.py`'s convention; calls `reviewer_yield._is_reviewer_subagent_type`
+for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
+`review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see that module's own
+section above for why these are the package's first cross-command-group imports.
+`_review_trace_session_events` re-expresses its own `_normalize_skill_name` (the emitted display
+label's lighter directory-only strip) locally rather than back-importing the shim's copy — the same
+re-expression pattern `review_rounds.py` uses for `_is_fresh_user_prompt` and `_SLASH_COMMAND_RE`.
+`cmd_review_trace`, `REVIEW_TRACE_SKILLS`, and
+`compute_deny_summary_data` are the three public names here, reached from the still-unmigrated
+`build_parser()`/cost-ledger code in the shim — see the exception noted above.
+
+### `read_scope.py`
+
+The read-scope command family: `cmd_read_scope` and every helper used only by it — the Read-call
+census by cohort and scope (`_scan_read_scope_session`), repeat-whole-file-read detection, and
+per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render`, and `scope` all
+by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` and
+`_READ_SCOPE_CHARS_PER_TOKEN` are the two names reached bare from the shim — see the exception
+noted above.
 
 ## Sibling scripts
 
@@ -125,11 +211,20 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised only
 through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which
-calls into the shim. `cost.py`'s own tests live in `tests/test_transcript_cost.py`, the first
-per-command-group test file the decomposition has produced; it loads its own independent copy of
+calls into the shim. Every other package module has its own per-command-group (or, for `denials.py`,
+per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py`'s in
+`tests/test_transcript_denials.py`, `review_trace.py`'s in
+`tests/test_transcript_review_trace.py`, and `read_scope.py`'s in
+`tests/test_transcript_read_scope.py`. Each loads its own independent copy of
 `transcript-analysis.py` via the same `spec_from_file_location` boilerplate
-`test_transcript_analysis.py` uses, rather than importing that file's `_mod`. `tests/conftest.py`
-carries the shared fixtures that reach across the shim/package boundary and across both test files
-(`fake_projects`, `fake_config_dir_factory`, `_table_cols`, `cost_ledger_file`); see its own
-docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's still-independent
-`config_dir` binding.
+`test_transcript_analysis.py` uses, rather than importing that file's `_mod`. Each reaches a moved
+module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_denial_key`,
+`_mod.review_trace.cmd_review_trace`) — the same channel the shim-reimport exception above relies
+on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
+boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
+`cost_ledger_file`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`, `_compact_boundary_rec`);
+see its own docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's
+still-independent `config_dir` binding. `author_outcome.py`'s own tests live in
+`tests/test_author_outcome.py`: most exercise the package module directly
+(`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
+shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.

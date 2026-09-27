@@ -6,6 +6,7 @@
       "Bash(~/.claude/scripts/marker.sh write plan-review)",
       "Bash(~/.claude/scripts/marker.sh write ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh write cumulative-review)",
+      "Bash(~/.claude/scripts/marker.sh write verification)",
       "Bash(~/.claude/scripts/marker.sh activate plan-review)",
       "Bash(~/.claude/scripts/marker.sh activate ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh activate respond-pr)",
@@ -19,6 +20,7 @@
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
       "Bash(~/.claude/scripts/marker.sh check code-review)",
+      "Bash(~/.claude/scripts/marker.sh check verification)",
       "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
@@ -35,7 +37,8 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
       "Bash(cleanup-merged-branches --all-projects --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
-      "Bash(cleanup-idle-open-pr-worktrees)"
+      "Bash(cleanup-idle-open-pr-worktrees)",
+      "Edit(//**/.claude/settings*.json)"
     ],
     "deny": [
       "Bash(sudo *)",
@@ -97,6 +100,7 @@
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
+    "memory-store-audit": "name-only",
     "measure-check-output": "name-only",
     "review-loop-cost-audit": "name-only",
     "loop": "name-only",
@@ -146,6 +150,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/set-session-title-from-branch.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-memory-store-audit.sh",
+            "timeout": 10
           }
         ]
       },

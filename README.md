@@ -161,7 +161,7 @@ flowchart LR
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
-| `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
+| `require-skill-review.sh` | `git commit` — see [`docs/hooks.md`](docs/hooks.md)'s `require-skill-review.sh` bullet for the exact (base-relative) trigger | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
 | `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
@@ -171,7 +171,7 @@ flowchart LR
 | `deny-network-installs.sh` | `Bash` command that installs a named package (including `uv add`), uses `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` with an explicit `-y`/`--yes`, uses `pnpm`/`yarn dlx` unconditionally, or hands fetched content to a shell/interpreter | No clear — no bypass valve; run the specific command outside Claude via the `!` shell escape |
 | `ask-new-dependency-disclosure.sh` | — (PreToolUse `Edit`/`Write`/`MultiEdit` to `package.json`, informational) | Asks, naming each `name@constraint` pair, when the edit adds a dependency not already declared; see [`docs/security-hardening.md`](docs/security-hardening.md) |
 | `redact-credential-values.sh` | — (PostToolUse `Bash`/`Read`/`WebFetch`/`Grep`/`Task`, informational) | Redacts a credential-shaped value in the tool result via `updatedToolOutput`; see [`docs/hooks.md`](docs/hooks.md) |
-| `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — copy the file to `/tmp` and mutate the copy there |
+| `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — confirm by reading and tracing; a persona's scratch work follows its `## Scratch execution` section |
 | `require-architect-consult.sh` | Reviewer-persona `Agent`/`Task` spawn when a branch is entering its third distinct reviewed state | A `plan-architect MODE=consult` dispatch (self-initiated or gate-prescribed), which `log-reviewer-round.sh` records as a per-branch latch; or `<config-dir>/.round-consult-gate-disabled` |
 | `deny-no-op-dispatch.sh` | `Agent`/`Task` spawn whose prompt is under 600 characters and matches a closed no-work idiom list | No clear — state the dispatch's actual work in the prompt, or end the turn without a tool call |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
@@ -180,6 +180,7 @@ flowchart LR
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
 | `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
+| `nudge-memory-store-audit.sh` | — (SessionStart, advisory) | Nudges an audit of the machine's auto-memory stores once their total size passes a count-scaled threshold; see [docs/memory-audit-nudge.md](docs/memory-audit-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 | `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |

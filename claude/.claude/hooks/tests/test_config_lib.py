@@ -89,7 +89,7 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     needs only _config.sh's own functions, matching
     test_config_parser_parity.py's TestMissingSchemaFile isolation
     technique. Used for schema shapes (e.g. a key with no legacy-polarity
-    value) that none of today's other real 16 keys carry.
+    value) that none of today's other real keys carry.
     test_selection_tracking is the one real key with that shape. It is
     exercised directly against the real schema by TestConfigScaffold."""
     return subprocess.run(

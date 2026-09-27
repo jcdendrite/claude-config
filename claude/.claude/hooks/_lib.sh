@@ -4,8 +4,11 @@
 # byte-identical output on both the read side (hooks) and the write side
 # (marker.sh). Source it; do not invoke it directly.
 # Hooks source this via `${0%/*}`, not `$(dirname "$0")`, to skip a subshell
-# fork and `dirname` exec per invocation. It also fails closed rather than
-# open on the one reachable divergent `$0` shape: a bare filename.
+# fork and `dirname` exec per invocation. For hook-class: gate consumers
+# (which define emit_deny before sourcing), this also fails closed rather
+# than open on the one reachable divergent `$0` shape: a bare filename.
+# Other hook classes intentionally stay fail-open on a missing _lib.sh
+# regardless of this substitution.
 
 # _config.sh defines _lib_config_dir (config-dir resolution) and the
 # _config_*/config-key primitives every hook needs — sourced here, via
@@ -54,6 +57,11 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+# Emits a stderr note every time the uncapped fallback fires, so a caller
+# that doesn't redirect stderr can tell the cap silently didn't apply rather
+# than reading a clean exit as capped. Many current hook callers under
+# claude/.claude/hooks/*.sh redirect stderr to /dev/null, so this note is
+# unobservable from those.
 #
 # Bound:
 #  - `-k 2` escalates to SIGKILL 2s after the SIGTERM, so under GNU timeout
@@ -121,8 +129,23 @@ _lib_capped_for() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout -k 2 "$seconds" "$@"
   else
+    printf '_lib_capped_for: neither timeout nor gtimeout is on PATH -- running %s uncapped\n' "$1" >&2
     "$@"
   fi
+}
+
+# _lib_status_consistent_with_cap_kill STATUS
+# Returns 0 when STATUS is one a _lib_capped_for cap kill produces (124, 137,
+# 143), else 1. Prints nothing and returns only 0 or 1, including for an empty,
+# absent, or non-numeric STATUS.
+# Classifies only: each caller owns the disposition (discard, deny, or skip).
+# 137 and 143 also occur as a child's own signal-death status; see
+# _lib_capped_for's "Exit statuses" bullets.
+# A caller under `set -e` must call it in a conditional context, since a bare
+# call that returns 1 aborts the script.
+_lib_status_consistent_with_cap_kill() {
+  case "${1-}" in 124|137|143) return 0 ;; esac
+  return 1
 }
 
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist.
@@ -784,6 +807,60 @@ _lib_cumulative_diff_hash() {
   _lib_hash_diff_text "$diff_output"
 }
 
+# _lib_head_tree_hash CAP_MODE REPO_ROOT
+# Prints `git rev-parse HEAD^{tree}` for REPO_ROOT, mirroring
+# _hash_staged_diff's mode-argument shape in marker.sh. CAP_MODE is "capped"
+# to run the git call through _lib_capped's 5s timeout, or "uncapped" to run
+# it directly.
+# Check git's exit status, not stdout emptiness: an unborn HEAD exits 128 but
+# still echoes the literal string "HEAD^{tree}", which an emptiness-only
+# check would misread as a real hash.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the tree hash.
+#   - exit 1, empty stdout: not inside a git repository, no commit exists yet
+#     (no HEAD), git is absent, or the call timed out.
+_lib_head_tree_hash() {
+  local cap_mode="$1" repo_root="$2"
+  local hash git_exit
+  case "$cap_mode" in
+    capped) hash=$(_lib_capped git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    uncapped) hash=$(git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    *)
+      printf '_lib_head_tree_hash: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
+      return 2
+      ;;
+  esac
+  [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1
+  printf '%s' "$hash"
+}
+
+# _lib_verification_cache_sentinel_present REPO_ROOT
+# Reports whether REPO_ROOT has opted into the `verification` cache: whether
+# .claude/ready-for-review-verification-cache-optin is committed at the tip
+# of origin/<default-branch>, resolved via _lib_default_branch_from_origin_head.
+# Never the working tree -- a working-tree read would let the branch under
+# review opt itself in (docs/design-decisions/ready-for-review-verification-cache.md).
+# `cat-file -e` confirms an object exists at that path, not its type. A tree
+# (directory) committed there therefore reads as present identically to a
+# blob. This is deliberate: either shape is a commit by whoever controls the
+# default branch.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the sentinel path exists at origin/<default-branch>.
+#   - exit 1: origin/HEAD is unset, dangling, or the path is absent there.
+_lib_verification_cache_sentinel_present() {
+  local repo_root="$1"
+  local default_branch
+  default_branch=$(_lib_default_branch_from_origin_head "$repo_root") || return 1
+  # This normalizes to exit 1 rather than git's own raw status. `cat-file -e`
+  # exits 128 (a fatal revision-parse error), not 1, when the ref resolves
+  # but the path inside its tree does not -- the common "not opted in" case
+  # this helper's two-outcome contract must still cover cleanly.
+  if _lib_capped git -C "$repo_root" cat-file -e "origin/$default_branch:.claude/ready-for-review-verification-cache-optin" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # _lib_default_branch_from_origin_head REPO_ROOT
 # Resolve REPO_ROOT's default branch from the local symbolic ref
 # refs/remotes/origin/HEAD alone, verifying the target actually resolves to
@@ -957,7 +1034,7 @@ _lib_gate_diff_base() {
   local default_branch anchor_reached=1
   default_branch=$(_lib_default_branch_or_guess "$repo_root")
   if [ -n "$default_branch" ] \
-    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "origin/$default_branch" >/dev/null 2>&1
+    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "refs/remotes/origin/$default_branch" >/dev/null 2>&1
   then
     anchor_reached=0
   elif _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" HEAD >/dev/null 2>&1; then
@@ -1005,6 +1082,48 @@ _lib_gate_diff_base() {
   printf '%s' "$tree_oid"
 }
 
+# _lib_skill_review_diff_base REPO_ROOT
+# Returns the same tri-state contract as _lib_gate_diff_base, except mid-revert
+# returns 1, empty stdout, in place of the synthesized tree.
+# A revert's synthesized tree is HEAD minus a reviewed patch, so its removals
+# were reviewed nowhere.
+# A pre-sample reading no in-progress state returns 1 directly, without
+# calling _lib_gate_diff_base, the same answer _lib_gate_diff_base itself
+# gives on the same resolved gitdir.
+# The state is sampled once before and once after the _lib_gate_diff_base
+# call, not only after, because both reads hit the same mutable gitdir.
+_lib_skill_review_diff_base() {
+  [ "$#" -eq 1 ] || return 2
+  local repo_root="$1"
+
+  local gitdir
+  gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || return 2
+  [ -n "$gitdir" ] || return 2
+
+  local pre_state pre_status
+  pre_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  pre_status=$?
+  # Unreachable: gitdir is verified non-empty above, and _lib_git_inprogress_state
+  # returns 2 on a passed-in GITDIR only when it is empty.
+  [ "$pre_status" -eq 2 ] && return 2
+  [ "$pre_status" -eq 1 ] && return 1
+  [ "$pre_state" = revert ] && return 1
+
+  local base base_status
+  base=$(_lib_gate_diff_base "$repo_root")
+  base_status=$?
+  [ "$base_status" -eq 0 ] || return "$base_status"
+
+  local post_state post_status
+  post_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  post_status=$?
+  # Unreachable: same gitdir, already verified non-empty above.
+  [ "$post_status" -eq 2 ] && return 2
+  [ "$post_status" -eq 0 ] && [ "$post_state" = revert ] && return 1
+
+  printf '%s' "$base"
+}
+
 # _lib_staged_diff_hash REPO_ROOT BASE [PATHSPEC...]
 # Shared body behind every content-addressed marker preimage and round-state
 # value in this file and in scripts/marker.sh: sha256 of `git diff --cached`,
@@ -1034,9 +1153,9 @@ _lib_gate_diff_base() {
 # relative to the caller's cwd -- every current call site already validates
 # REPO_ROOT, but this is a shared primitive future callers may not.
 # A no-op GIT_EXTERNAL_DIFF/diff.external driver makes a genuinely-staged
-# change hash as empty here, an accepted, untested residual mirroring
-# marker.sh's own documented posture for the identical risk on
-# _hash_staged_diff.
+# change hash as empty here, an accepted residual pinned by
+# test_git_external_diff_noop_misclassifies_staged_skill_content_as_empty
+# in test_marker_script.py.
 _lib_staged_diff_hash() {
   [ "$#" -ge 2 ] || return 1
   local repo_root="$1" base="$2"
@@ -2783,7 +2902,7 @@ _lib_resolve_repo_root() {
   printf '%s' "$root"
 }
 
-# _lib_append_line_locked TARGET_FILE LOCK_FILE LINE RETRIES
+# _lib_append_line_locked TARGET_FILE LOCK_FILE LINE [RETRIES]
 # Generic noclobber-lock + PID-liveness-eviction + single-EXIT-trap append
 # primitive, shared by every caller that needs this correctness-sensitive
 # concurrency algorithm instead of duplicating it per script.
@@ -2799,9 +2918,11 @@ _lib_resolve_repo_root() {
 #   rather than blocking. A duplicate line from a lost race is a
 #   low-consequence outcome (an inflated count, or a resumed step
 #   re-recorded), not data loss.
-# - RETRIES is caller-supplied so each caller's own constant (e.g.
-#   review-ledger.sh's _LEDGER_LOCK_RETRIES) stays visible at its own call
-#   site rather than buried in this shared function.
+# - RETRIES is caller-supplied so a caller's own constant (e.g.
+#   log-reviewer-round.sh's _ROUND_STATE_LOCK_RETRIES or
+#   orchestrator-checkpoint.sh's _CHECKPOINT_LOCK_RETRIES) stays visible at
+#   its own call site rather than buried in this shared function, but
+#   defaults to _LIB_APPEND_LOCK_RETRIES when omitted.
 #
 # CALLER CONTRACT: this function sets the global $_LIB_APPEND_LOCK_PATH
 # (deliberately not `local`, since the EXIT trap it installs evaluates that
@@ -2815,7 +2936,7 @@ _lib_resolve_repo_root() {
 # - After: silently discards this function's trap in turn, leaking the lock
 #   file.
 _lib_append_line_locked() {
-  local target_file="$1" line="$3" retries="$4"
+  local target_file="$1" line="$3" retries="${4:-$_LIB_APPEND_LOCK_RETRIES}"
   _LIB_APPEND_LOCK_PATH="$2"
   local attempt=0 stored_pid
   while [ "$attempt" -lt "$retries" ]; do
@@ -2845,17 +2966,20 @@ _lib_append_line_locked() {
   printf '%s\n' "$line" >> "$target_file"
 }
 
-# _lib_sweep_stale_files DIR DRY_RUN REPORT
+# _lib_sweep_stale_files DIR DRY_RUN REPORT [WINDOW_DAYS]
 # Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
-# *.lock file under DIR older than 30 days by mtime, across every repo-hash —
-# extracted from review-ledger.sh's original _sweep_stale_ledger_files so
-# orchestrator-checkpoint.sh can share it. Mirrors
-# nudge-handoff-near-context-cap.sh's directory-wide `find ... -mtime +30
-# -delete` sweep of .handoff-nudge-fired.d. REPORT=1 prints per-file and
+# *.lock file under DIR older than WINDOW_DAYS (default 30) by mtime, across
+# every repo-hash — extracted from review-ledger.sh's original
+# _sweep_stale_ledger_files so orchestrator-checkpoint.sh can share it.
+# Mirrors nudge-handoff-near-context-cap.sh's directory-wide `find ... -mtime
+# +30 -delete` sweep of .handoff-nudge-fired.d. REPORT=1 prints per-file and
 # summary lines (an explicit clear-stale-style invocation); REPORT=0 is
-# silent (a best-effort sweep run alongside an ordinary append).
+# silent (a best-effort sweep run alongside an ordinary append). WINDOW_DAYS
+# lets review-ledger.sh's clear-stale pass its dynamic, settings-derived
+# window (_ledger_sweep_window_days) instead of the fixed default; every
+# best-effort append caller omits it and gets the floor.
 _lib_sweep_stale_files() {
-  local dir="$1" dry_run="$2" report="$3"
+  local dir="$1" dry_run="$2" report="$3" window_days="${4:-30}"
   [ -d "$dir" ] || return 0
   local evicted=0 entry
   while IFS= read -r -d '' entry; do
@@ -2866,7 +2990,7 @@ _lib_sweep_stale_files() {
       rm -f "$entry" 2>/dev/null
       [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
     fi
-  done < <(find "$dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime +30 -print0 2>/dev/null)
+  done < <(find "$dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime "+$window_days" -print0 2>/dev/null)
   if [ "$report" -eq 1 ]; then
     if [ "$dry_run" -eq 1 ]; then
       printf 'clear-stale: would evict %d file(s)\n' "$evicted"
@@ -3339,8 +3463,10 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
 
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
-# - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue
-#   #421) doesn't false-positive.
+# - Excludes a tail that is all digits, or digits followed by one `s` and
+#   then a non-name character or end of line, so a plain GitHub issue
+#   reference (e.g. issue #421) still passes once quote-stripping deletes a
+#   possessive's apostrophe.
 # - The `#` must be reachable from a valid start position, across a run
 #   that excludes parens, braces, and whitespace.
 #   - Valid start positions: line start, whitespace, a close-paren, a
@@ -3400,7 +3526,7 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   the outer run does, so a `{` there blocks reachability just like it
 #   does in the outer run. Same content-blindness root cause as the
 #   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#([a-z_-]|[0-9]+(s[a-z0-9_-]|[a-rt-z_-]))'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
@@ -3811,6 +3937,222 @@ _lib_round_consult_gate_disabled() {
     1) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Shared bounded-retry count for _lib_acquire_append_lock below, used by
+# review-ledger.sh's JSON-dedup append path (_lib_append_json_line_locked)
+# and as _lib_append_line_locked's own default when its caller omits
+# RETRIES. Small and fixed: this runs synchronously inside a hook or CLI
+# script, so the worst-case added latency is bounded retries * the sleep
+# below.
+_LIB_APPEND_LOCK_RETRIES=5
+
+# _lib_acquire_append_lock LOCK_FILE
+# Shared lock-acquisition/dead-holder-eviction/retry logic behind
+# _lib_append_line_locked and _lib_append_json_line_locked below.
+# Acquires via the same noclobber idiom as _lib_worktree_collision_guard.
+# Evicts a dead lock holder via the same PID-liveness check as
+# _lib_active_bypass_marker_live.
+# Sets a bare `trap ... EXIT` to release the lock, which per this repo's
+# shell-script-conventions rule silently clobbers any other EXIT trap
+# already registered in the calling process -- a future caller sharing
+# either primitive must ensure no other EXIT trap is active in the same
+# process.
+# This primitive must be called at most once per process: a second call's
+# EXIT trap replaces rather than stacks on the first, orphaning the first
+# call's lock file until the process exits.
+# Always returns rather than blocking indefinitely: after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
+# the caller proceeds unlocked, trading a low-consequence duplicate line
+# for never blocking.
+# _lib_append_json_line_locked discards this return status via `|| true`,
+# so a lock-contention race is not currently logged by that caller.
+# A matching projection is still a genuine duplicate regardless of lock
+# state: losing the lock only risks a false negative (missing a concurrent
+# duplicate), never a false positive.
+# Dead-holder eviction matters more at log-reviewer-round.sh's call site
+# than at review-ledger.sh's, since a PostToolUse hook is more exposed to
+# being killed mid-lock by the harness's own hook timeout than a
+# skill-invoked CLI script is.
+_lib_acquire_append_lock() {
+  # Deliberately not `local`: the EXIT trap below evaluates this lazily at
+  # script-exit time, after this function has already returned, and any
+  # `local` binding of the same name would be out of scope by then.
+  _LIB_APPEND_LOCK_PATH="$1"
+  local attempt=0 stored_pid
+  while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
+    if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
+      trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
+      return 0
+    fi
+    stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
+      # Dead holder: evict now and retry acquisition on the very next
+      # iteration, with no sleep -- this is what makes eviction prompt
+      # rather than waiting out the remaining retries.
+      rm -f "$_LIB_APPEND_LOCK_PATH" 2>/dev/null
+      attempt=$((attempt + 1))
+      continue
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+  printf '_lib_acquire_append_lock: exhausted %d retries acquiring %s -- proceeding unlocked\n' \
+    "$_LIB_APPEND_LOCK_RETRIES" "$_LIB_APPEND_LOCK_PATH" >&2
+  return 1
+}
+
+# _lib_append_json_line_locked FILE LOCK_FILE LINE DEDUP_KEY_JQ_FILTER
+# Sibling to _lib_append_line_locked: same noclobber-lock/PID-eviction
+# algorithm, but this one delegates lock acquisition to _lib_acquire_append_lock
+# (a fixed _LIB_APPEND_LOCK_RETRIES retry count, not caller-supplied) and dedups
+# via DEDUP_KEY_JQ_FILTER instead of a whole-line match.
+# DEDUP_KEY_JQ_FILTER is caller-supplied (e.g. '{round, finding,
+# disposition}') and must never be hardcoded here.
+# DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
+# bypassing the --arg/--argjson data/code separation this file uses for
+# every other jq input. It MUST therefore be a static, developer-authored
+# jq literal, never derived from session- or user-controlled data. This is
+# enforced by this contract, the runtime shape check below, and
+# review-ledger.sh's own TestReviewLedgerDedupFilterIsStaticLiteral
+# regression test in test_review_ledger_script.py. A future caller of this
+# primitive must add its own equivalent test -- this docstring does not
+# inherit one for it.
+# A duplicate is a no-op but still touches FILE's mtime, per
+# _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
+# above.
+# Whole-line dedup doesn't work for this schema: event_time is captured
+# fresh on every append attempt, so two calls carrying identical business
+# fields would never match byte-for-byte. This is why the check below
+# projects through DEDUP_KEY_JQ_FILTER instead of taking
+# _lib_append_line_locked's whole-line match.
+# The dedup check below re-reads and re-parses the whole FILE on every call
+# (O(file size) per append). FILE is scoped per session -- review-ledger.sh
+# builds it as $REPO_HASH.$SESSION_ID.jsonl -- so this scan's cost grows
+# with every finding appended across all of that session's review rounds.
+# review-ledger.sh's per-append call to _lib_sweep_stale_files (with the
+# fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
+# footprint by evicting whole stale files. It never touches this file while
+# the session that owns it is still live, so it puts no cap on FILE's own
+# growth.
+_lib_append_json_line_locked() {
+  local file="$1" line="$3" dedup_filter="$4"
+  # Requires a brace-delimited, comma-separated identifier list -- rejects
+  # a bare builtin like `env`, and rejects `{}`/`{ }` since jq projects it
+  # to a constant, which would falsely dedup every future append.
+  # Not a full grammar check: a shape-legal but syntactically invalid
+  # literal (e.g. `{round,,disposition}`) still reaches jq and fails open
+  # via the dup_check_exit branch below.
+  # A single-field filter naming a field absent from every record (e.g. a
+  # typo) is shape-valid too and reproduces the same false-dedup failure --
+  # undetectable here, since telling it apart from a real field requires
+  # schema knowledge this guard doesn't have.
+  # Any shape-invalid filter fails open (unconditional append) rather than
+  # exiting, matching every other failure path in this function: missing
+  # jq, a shape-legal-but-invalid filter, or a lock-acquisition failure.
+  # `exit` would collide with _lib_emit_deny's own exit-2 harness
+  # convention the first time a PreToolUse/PostToolUse hook caller reuses
+  # this primitive.
+  local dedup_filter_shape_valid=1
+  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]] \
+      || [[ ! "$dedup_filter" =~ [A-Za-z0-9_] ]]; then
+    dedup_filter_shape_valid=0
+    printf '_lib_append_json_line_locked: DEDUP_KEY_JQ_FILTER %q is not a brace-delimited, comma-separated list of identifiers (a jq object-projection literal) -- proceeding with unconditional append\n' \
+      "$dedup_filter" >&2
+  fi
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
+  if [ "$dedup_filter_shape_valid" = 1 ] && [ -f "$file" ] && [ -s "$file" ]; then
+    local dup_check_program is_duplicate
+    # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is
+    # jq's own --argjson-bound variable, meant to expand inside the jq
+    # program this builds, not in this bash string.
+    # -R/inputs/fromjson? reads FILE one raw line at a time rather than
+    # --slurpfile parsing it as one JSON array, so one malformed line (a
+    # partial write from a crash) is skipped instead of failing the whole
+    # file's parse and silently disabling dedup for every future append.
+    dup_check_program=$(printf '($candidate | %s) as $key | any(inputs | fromjson?; (. | %s) == $key)' \
+      "$dedup_filter" "$dedup_filter")
+    local dup_check_exit
+    is_duplicate=$(_lib_jq -R -n --argjson candidate "$line" \
+      "$dup_check_program" -- "$file" 2>/dev/null)
+    dup_check_exit=$?
+    if [ "$is_duplicate" = "true" ]; then
+      touch -- "$file" 2>/dev/null
+      return 0
+    fi
+    # A non-zero exit, or output other than the two expected literals, means
+    # the dedup check itself failed rather than genuinely resolving "not a
+    # duplicate". Causes: a missing jq, the _lib_jq 5s timeout firing, or a
+    # malformed DEDUP_KEY_JQ_FILTER. This line is the stderr signal that
+    # distinguishes that failure case. The fallback itself (append anyway)
+    # is unchanged either way.
+    if [ "$dup_check_exit" -ne 0 ] || [ "$is_duplicate" != "false" ]; then
+      printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
+    fi
+  fi
+  printf '%s\n' "$line" >> "$file"
+}
+
+# Floor for _ledger_sweep_window_days below: the ledger must never sweep
+# more aggressively than the transcript retention it depends on (GH-973).
+# review-ledger.sh's own clear-stale subcommand, via _ledger_sweep_window_days
+# below, is the only production reader of cleanupPeriodDays.
+# author_outcome.py's _LEDGER_SWEEP_FLOOR_DAYS duplicates this floor
+# constant, with no corresponding helper function on the Python side to
+# cross-reference.
+_LEDGER_SWEEP_FLOOR_DAYS=30
+
+# _ledger_sweep_window_days SETTINGS_FILE
+# Prints the ledger's sweep window in days: Claude Code's own
+# cleanupPeriodDays setting read from SETTINGS_FILE, floored at
+# _LEDGER_SWEEP_FLOOR_DAYS above.
+# Single SETTINGS_FILE read -- deliberately skips Claude Code's full
+# settings-precedence resolution (project-local overrides, enterprise-
+# managed settings, CLI flag overrides), which this retention-floor
+# purpose doesn't need.
+# Falls back to _LEDGER_SWEEP_FLOOR_DAYS when:
+# - SETTINGS_FILE is missing or unreadable
+# - cleanupPeriodDays is absent
+# - its value isn't a bare non-negative integer, or has more digits than
+#   the case pattern below accepts
+# jq's `select(type == "number")` passes a fractional value like 45.5 (or
+# a whole-number float like 90.0, which jq prints as "90.0", not "90")
+# through unchanged; the digit-only case pattern below then rejects it as
+# non-integer rather than truncating it. This is deliberate.
+#
+# Side effects: each fallback branch above prints a diagnostic to stderr
+# naming why it floored, matching _lib_capped_for's stderr-diagnostic
+# pattern above.
+_ledger_sweep_window_days() {
+  local settings_file="$1"
+  local cleanup_period_days
+  cleanup_period_days=$(_lib_jq -r '(.cleanupPeriodDays // empty) | select(type == "number")' "$settings_file" 2>/dev/null)
+  case "$cleanup_period_days" in
+    ''|*[!0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, or non-numeric -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
+    # 9+ digits (>=100 million days): far beyond any realistic retention
+    # window, but an all-digit value this large can exceed bash's signed-
+    # integer range and make the `-lt` comparison below error instead of
+    # comparing -- floor here rather than depend on that comparison's
+    # behavior on an out-of-range operand.
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, implausibly large -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
+  esac
+  if [ "$cleanup_period_days" -lt "$_LEDGER_SWEEP_FLOOR_DAYS" ]; then
+    printf '_ledger_sweep_window_days: configured value %s is below the %s-day floor, using the floor instead\n' \
+      "$cleanup_period_days" "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+    printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
+  else
+    printf '%s' "$cleanup_period_days"
+  fi
 }
 
 # _lib_resume_context_tmpdir_root

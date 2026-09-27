@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
 pr-link is the only subcommand that touches the network (via gh).
-judgment-pair --out writes a file; all other subcommands are read-only.
+Every subcommand is read-only except an explicit write flag: judgment-pair
+--out, pr-cost --record, and pr-cost-export --out each write a file.
 """
 
 import argparse
@@ -10,14 +11,13 @@ import contextlib
 import errno
 import fcntl
 import fnmatch
-import hashlib  # noqa: F401 -- read only via _mod.hashlib from test files
+import hashlib
 import json
 import math
 import os
 import random
 import re
-import shlex
-import socket
+import secrets
 import stat
 import statistics
 import subprocess
@@ -31,13 +31,25 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import _config
-from _config_dir import config_dir
+from _config_dir import config_dir, declared_roots_file_is_overridden
 
-# corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
-# test files (unit-testing a private helper, or patching module-owned state like
-# scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
-# scope.PROJECTS_DIR.
-from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
+# corpus/cost/denials/pricing/read_scope/redaction/render/review_trace/reviewer_yield are read
+# only via _mod.<module> from test files (unit-testing a private helper, or patching module-owned
+# state like scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads
+# bare, as scope.PROJECTS_DIR.
+from transcript_analysis import (  # noqa: F401
+    corpus,
+    cost,
+    denials,
+    pricing,
+    read_scope,
+    redaction,
+    render,
+    review_trace,
+    reviewer_yield,
+    scope,
+)
+from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _index_subagent_dispatches,
@@ -67,6 +79,13 @@ from transcript_analysis.cost import (
     cmd_cost_trend,
 )
 from transcript_analysis.cost import compute_cost_trend_data as _compute_cost_trend_data
+from transcript_analysis.denials import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   hook_denial_key                       -> _friction_denial_events
+    #   _drop_denial_command_flag_values      -> _command_segment_is_mutating_git
+    _drop_denial_command_flag_values,
+    hook_denial_key,
+)
 from transcript_analysis.pricing import (
     _CACHE_READ_MULTIPLIER,
     _CACHE_WRITE_1H_MULTIPLIER,
@@ -93,6 +112,13 @@ from transcript_analysis.pricing import (
     _warn_if_subagent_format_drift,
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
+from transcript_analysis.read_scope import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   _READ_SCOPE_CHARS_PER_TOKEN -> _classify_content_item
+    #   cmd_read_scope              -> p_read_scope.set_defaults
+    _READ_SCOPE_CHARS_PER_TOKEN,
+    cmd_read_scope,
+)
 from transcript_analysis.redaction import (
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
     _assign_root_scoped_redact_label,
@@ -129,6 +155,13 @@ from transcript_analysis.review_rounds import (
     cmd_review_round_cost,
     compute_review_round_counts,
 )
+from transcript_analysis.review_trace import (
+    # Both names below are read bare by this file's own still-monolithic
+    # build_parser (the review-trace subcommand's set_defaults).
+    REVIEW_TRACE_SKILLS,
+    cmd_review_trace,
+)
+from transcript_analysis.review_trace import compute_deny_summary_data as _compute_deny_summary_data
 from transcript_analysis.reviewer_yield import (
     # The six names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
@@ -136,7 +169,6 @@ from transcript_analysis.reviewer_yield import (
     # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
     # Also read bare by this file's own still-monolithic code:
     #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
-    #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
     #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
@@ -147,7 +179,7 @@ from transcript_analysis.reviewer_yield import (
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
     _index_session_edits,  # noqa: F401
-    _is_reviewer_subagent_type,
+    _is_reviewer_subagent_type,  # noqa: F401
     _normalize_cited_path,  # noqa: F401
     _reviewer_yield_cited_keys,  # noqa: F401
     cmd_reviewer_yield,
@@ -1008,21 +1040,6 @@ _MCP_TOOL_BUCKET_LABEL = "mcp__*"
 # no "model" key at all (no explicit model was requested).
 _UNREQUESTED_MODEL_LABEL = "(none)"
 
-# Skills counted as review invocations in review-trace.
-REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
-    {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
-)
-
-# A plan-architect Agent/Task dispatch whose prompt's first line is anything
-# other than this literal is a consult. This re-expresses
-# log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
-# see docs/design-decisions.md §48 for the cross-runtime duplication rationale.
-_ARCHITECT_CONSULT_SUBAGENT_TYPE = "plan-architect"
-_ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
-
-# Shared by review-trace's two zero-match termini (default timeline and
-# --deny-summary) so both read identically under the scope header.
-_REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
 
 # Skills that open a judgment span in audit-routing: any turn within an active span
 # (from skill invocation until the next user turn) is classified as `judgment`, not
@@ -1032,1077 +1049,6 @@ AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
     "code-review", "plan-review", "ready-for-review", "skill-review",
     "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
 })
-
-# Shared bound for every hook-name/label capture below (detection and
-# extraction alike): a name-shaped character class (word chars, spaces, '.',
-# '-') capped at this many characters, matching every hook's own static
-# "<name> hook/gate" wording — never an unbounded `.+?`, which would echo
-# arbitrary denial-message text (a dynamic file path, say) into
-# --deny-summary's output if a future hook ever interpolated one into this
-# span.
-_DENIAL_HOOK_NAME_MAX_CHARS = 40
-
-# Current-format transcripts record a hook denial as an is_error tool_result,
-# distinguishable from an ordinary tool error only by the deny message text —
-# hook_denial_key deliberately does not read the parent user record's
-# toolDenialKind field, a separate friction-class axis classified by
-# _is_nongate_friction_kind below. These patterns match the Claude Code
-# hook-denial idiom ("Blocked by <hook>", "blocked by <X> gate", "… invocation
-# denied", "<name> gate: …" / "<name> hook: …" — a hook stating its own label
-# directly, e.g. "Skill length gate: ..."). Detection is therefore best-effort
-# in both directions: an atypically worded hook denial is missed, and an
-# ordinary tool error whose text happens to contain the idiom is a false
-# positive. review-trace is a candidate locator, not an exact counter —
-# callers treat denial counts as approximate. Legacy transcripts additionally
-# carry an explicit
-# hook_blocking_error attachment record, matched separately and exactly.
-_HOOK_DENIAL_SIGNATURE = re.compile(
-    r"blocked by .{0,80}?\b(?:hook|gate)\b"
-    r"|invocation denied\b"
-    rf"|[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}\s+(?:hook|gate):",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _normalize_blocking_error(raw) -> dict | str:
-    """Normalize blockingError — may arrive as a dict or a JSON-stringified dict."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return raw
-        if isinstance(parsed, dict):
-            return parsed
-        return raw
-    return raw if raw is not None else {}
-
-
-def hook_denial_key(item: dict) -> tuple[str, dict | str] | None:
-    """Return (tool_use_id, extra) if `item` is a hook denial, else None.
-
-    Detects both denial shapes: a legacy `attachment` record (`item["type"] ==
-    "attachment"` with a nested `hook_blocking_error`), or a current-format
-    `tool_result` block (`item["type"] == "tool_result"`) carrying `is_error`
-    and text matching _HOOK_DENIAL_SIGNATURE. An empty string is a valid
-    tool_use_id — a denial whose transcript recorded no tool_use_id; only
-    None means "not a denial". `extra` is the already-fetched data this
-    predicate needed internally to classify the item — the `attachment`
-    dict for the legacy shape, the decoded content text for the tool_result
-    shape — returned so callers building an event/message don't re-fetch or
-    re-decode it. Callers own the seen-id dedup set and the event/message
-    construction; this predicate only classifies.
-    """
-    item_type = item.get("type")
-    if item_type == "attachment":
-        att = item.get("attachment") or {}
-        if att.get("type") != "hook_blocking_error":
-            return None
-        return att.get("toolUseID") or "", att
-    if item_type == "tool_result":
-        if not item.get("is_error"):
-            return None
-        message = _content_text(item.get("content"))
-        if not _HOOK_DENIAL_SIGNATURE.search(message):
-            return None
-        return item.get("tool_use_id") or "", message
-    return None
-
-
-# Extracts the hook/gate name from a denial message's own "blocked by <name>
-# hook/gate" wording — every hook's emit_deny call already writes this shape
-# (e.g. "Blocked by code-review gate: ..."), so the name is read off the
-# denial text itself rather than an invented category label.
-_DENIAL_HOOK_NAME_RE = re.compile(
-    rf"blocked by (?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate)\b", re.IGNORECASE
-)
-
-# Two wordings hooks emit that the "blocked by <name> hook/gate" idiom above
-# doesn't cover: enforce-marker-script-shape.sh's path-traversal and
-# shape-mismatch denials name their own script directly ("marker.sh
-# invocation denied ..."), and several hooks state their own label as the
-# message's own prefix rather than via "blocked by" (e.g. check-skill-length.sh's
-# "Skill length gate: ..."). Both inherit the same bounded character class and
-# _DENIAL_HOOK_NAME_MAX_CHARS cap as the pattern above.
-_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE = re.compile(
-    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+invocation denied\b", re.IGNORECASE
-)
-_DENIAL_HOOK_NAME_COLON_RE = re.compile(
-    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
-)
-
-# The hand-maintained set of prose labels hooks/*.sh actually emits. Every
-# gate hook declares its label once as DENY_GATE_LABEL, read by both the
-# bootstrap emit_deny stub and _lib_emit_deny; this set mirrors that
-# declaration. A captured name is trusted only if it's a member of this set;
-# anything else falls to _DENY_SUMMARY_UNMATCHED_HOOK rather than being
-# echoed verbatim. Examples of "anything else": a coincidental match, an
-# unanticipated wording, an unbounded interpolated value that survived the
-# character-class bound. Regression coverage: TestDenialHookLabelEnumeration
-# in test_transcript_analysis.py drives each hook's real deny-path wording
-# and asserts the label it produces is a member here, so a hook's wording
-# change or a new hook shows up as a test failure rather than a silently
-# stale set.
-_DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
-    # "blocked by <name> hook/gate" — one entry per hooks/*.sh DENY_GATE_LABEL.
-    "gh-pr-merge",  # block-gh-pr-merge.sh
-    "CLAUDE.md length",  # check-claude-md-length.sh
-    "skill length",  # check-skill-length.sh
-    "credential-path Bash",  # deny-credential-bash-reads.sh
-    "credential-file read",  # deny-credential-file-reads.sh
-    "data-file read",  # deny-data-file-reads.sh
-    "env-read",  # deny-env-reads.sh
-    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh
-    "network-install",  # deny-network-installs.sh
-    "PII commit",  # deny-pii-in-commits.sh
-    "redaction",  # deny-private-project-refs.sh
-    "repo-relocation",  # deny-repo-relocation.sh
-    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh
-    "marker-script-shape",  # enforce-marker-script-shape.sh
-    "settings session-keys",  # guard-settings-session-keys.sh
-    "code-review",  # require-code-review.sh
-    "memory-skill",  # require-memory-skill.sh
-    "plan-review",  # require-plan-review.sh
-    "ready-for-review",  # require-ready-for-review.sh
-    "respond-pr",  # require-respond-pr.sh
-    "routing-read",  # require-routing-read.sh
-    "stow-reminder",  # require-stow-reminder.sh
-    "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
-    "architect-consult",  # require-architect-consult.sh
-    "invisible-commit-content",  # deny-invisible-commit-content.sh
-    "no-op-dispatch",  # deny-no-op-dispatch.sh
-    # Legacy-only: no active hook emits this wording. Each member is kept
-    # permanently so an older recorded transcript still classifies.
-    "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
-    "AGENTS.md length",  # check-claude-md-length.sh's "CLAUDE.md/AGENTS.md length gate:" wording, kept for legacy transcripts
-    "Skill length",  # check-skill-length.sh's "Skill length gate:" wording, kept for legacy transcripts
-    "ai-instruction-and-memory-files",  # require-memory-skill.sh's behavioral-deny wording, kept for legacy transcripts
-    "plan-review routing",  # require-routing-read.sh's behavioral-deny wording, kept for legacy transcripts
-})
-
-# --deny-summary's unmatched-hook-name bucket: a denial matched by
-# _HOOK_DENIAL_SIGNATURE (e.g. via the "invocation denied" alternative, which
-# names no hook) but from which no enumerated hook/gate name can be extracted.
-_DENY_SUMMARY_UNMATCHED_HOOK = "unmatched"
-
-# --deny-summary's attempted-command-shape classifier: an allowlist, not a
-# free-text sanitizer. A command failing to normalize into one of the
-# multiplexer shapes below falls into "other".
-_DENY_SUMMARY_OTHER_COMMAND_SHAPE = "other"
-
-# Strips a leading NAME=VALUE environment-assignment prefix (one such prefix
-# is observed in the corpus, wrapping a marker.sh invocation with a live
-# per-machine token) before any other normalization runs, so that token never
-# reaches printed output.
-_DENIAL_COMMAND_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+")
-
-# The multiplexer commands the corpus is dominated by — only these get a
-# command+subcommand shape; every other command shape, including an empty
-# command, falls to "other". "marker.sh" is matched post-basename, since the
-# real invocation is always a tilde or absolute script path.
-_DENIAL_COMMAND_MULTIPLEXERS: frozenset[str] = frozenset({"git", "gh", "marker.sh"})
-
-# Per-multiplexer closed allowlist of real subcommands --deny-summary trusts
-# in the printed "<multiplexer> <subcommand>" shape — same discipline as
-# _DENIAL_HOOK_LABELS: a candidate subcommand token that isn't a member (a
-# credential-shaped string, a path, an unenumerated wording) falls to "other"
-# rather than being echoed verbatim. Sourced from the corpus's observed
-# denied invocations plus _LIB_READONLY_GIT_SUBCMDS in hooks/_lib.sh for the
-# git read-only entries; new entries are added deliberately, not accreted.
-_DENIAL_COMMAND_SUBCOMMANDS: dict[str, frozenset[str]] = {
-    "git": frozenset({
-        "add", "checkout", "commit", "config", "diff", "fetch", "init", "log",
-        "merge", "pull", "push", "restore", "rev-parse", "show", "status",
-        "symbolic-ref",
-    }),
-    "gh": frozenset({"api", "auth", "issue", "pr"}),
-    "marker.sh": frozenset({"activate", "clear-stale", "deactivate", "status", "write"}),
-}
-
-# Second layer beyond the allowlist above, matching _DENIAL_HOOK_NAME_MAX_CHARS's
-# defense-in-depth pattern: bounds a future malformed allowlist entry rather
-# than serving as the primary defense, which is allowlist membership itself.
-_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS = 20
-_DENIAL_COMMAND_SUBCOMMAND_RE = re.compile(rf"^[\w-]{{1,{_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS}}}$")
-
-# git flags that take their value as the following token — dropping (not
-# skipping) both the flag and its value keeps the value from being misread
-# as the subcommand, e.g. "git -C <path> commit" would otherwise leave
-# <path> at index 1 once "-C" alone is skipped, so a naive scan reads <path>
-# as the subcommand instead of "commit" at index 2. -C is
-# require-worktree-for-git-writes.sh's own resolution mechanism for a
-# compliant worktree write, so it's the dominant separate-token form in the
-# worktree-enforcement denial category.
-_DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE: frozenset[str] = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
-
-# git flags whose value is glued to the flag by "=" — the value already
-# lives inside this one token, so nothing further needs dropping.
-_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES: tuple[str, ...] = ("--git-dir=", "--work-tree=")
-
-
-def _drop_denial_command_flag_values(tokens: list[str]) -> list[str]:
-    """Drop (not skip) the values of git's value-taking repo-selection flags.
-
-    A separate-token flag (-C, -c, --git-dir, --work-tree) consumes itself
-    and the token after it; an =-attached flag (--git-dir=<path>,
-    --work-tree=<path>) consumes only itself, since its value is already
-    inside that token. Skipping a flag without dropping its value would
-    leave the value in place to be misread as the subcommand.
-    """
-    kept: list[str] = []
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token in _DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE:
-            i += 2  # drop the flag token and its value token
-            continue
-        if token.startswith(_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES):
-            i += 1  # value is glued to this token; nothing further to drop
-            continue
-        kept.append(token)
-        i += 1
-    return kept
-
-# Extraction patterns tried in order against a current-shape denial message;
-# the first to yield a name in _DENIAL_HOOK_LABELS wins.
-_DENIAL_HOOK_NAME_PATTERNS: tuple[re.Pattern, ...] = (
-    _DENIAL_HOOK_NAME_RE,
-    _DENIAL_HOOK_NAME_INVOCATION_DENIED_RE,
-    _DENIAL_HOOK_NAME_COLON_RE,
-)
-
-
-def _denial_hook_label(hook_name: str, message: str) -> str:
-    """Return the originating hook/gate name for one denial event.
-
-    Legacy-shape denials carry the name directly (hook_name, from the
-    attachment record's hookName field); current-shape denials carry no
-    structured hook identity, so the name is extracted from the denial
-    message text via each pattern in _DENIAL_HOOK_NAME_PATTERNS in turn.
-    Either source is trusted only if the candidate is a member of
-    _DENIAL_HOOK_LABELS — an unenumerated hookName (legacy transcripts predate
-    this bound entirely) or an unenumerated extracted candidate both fall to
-    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim.
-    """
-    candidate = (hook_name or "").strip()
-    if candidate:
-        return candidate if candidate in _DENIAL_HOOK_LABELS else _DENY_SUMMARY_UNMATCHED_HOOK
-    for pattern in _DENIAL_HOOK_NAME_PATTERNS:
-        m = pattern.search(message)
-        if m is None:
-            continue
-        name = m.group("name").strip().removeprefix("the ")
-        if name in _DENIAL_HOOK_LABELS:
-            return name
-    return _DENY_SUMMARY_UNMATCHED_HOOK
-
-
-def _denial_cause_kind(message: str) -> str:
-    """Return one denial's infra-failure family, or the behavioral fallback.
-
-    Sibling of _denial_hook_label: same substring-cascade mechanism over the
-    message text only, never given hook_name. The cause axis is orthogonal
-    to the hook axis, so a denial carries exactly one value from each.
-    Classification matches a body fragment rather than a full sentence,
-    because the surrounding wording differs per hook. A hook that echoes
-    agent-controlled command or path text into its deny body can produce a
-    false infra classification, so counts are approximate in the same sense
-    _HOOK_DENIAL_SIGNATURE already documents.
-    """
-    lowered = message.lower()
-    for marker, kind in _DENIAL_CAUSE_MARKERS:
-        if marker in lowered:
-            return kind
-    return _DENIAL_CAUSE_BEHAVIORAL
-
-
-def _denial_command_shape(command: str) -> str:
-    """Classify a denied Bash command's shape for --deny-summary.
-
-    Normalizes before matching, in order: strips a leading NAME=VALUE
-    environment assignment, basenames the first token (an absolute script
-    path is a home-rooted path, one of this repo's six always-on structural
-    redaction detectors), and drops the values of git's repo-selection flags
-    (see _drop_denial_command_flag_values). Only a multiplexer command
-    (_DENIAL_COMMAND_MULTIPLEXERS) gets a command+subcommand shape, and only
-    when the candidate subcommand token doesn't itself look like a flag — an
-    unenumerated flag (one _drop_denial_command_flag_values doesn't know
-    about) is left in place rather than dropped, so this guards it from
-    being read as, and printed as, the subcommand — and is itself a member of
-    that multiplexer's _DENIAL_COMMAND_SUBCOMMANDS allowlist, so an
-    unenumerated non-flag token (a credential-shaped string, a raw control
-    byte) falls to "other" instead of being echoed verbatim. Anything else,
-    including an empty command, falls to "other". Nothing past the
-    subcommand token is ever printed, so an argument value — a commit
-    message, a path, a control character — never survives to stdout.
-    """
-    stripped = _DENIAL_COMMAND_ENV_PREFIX_RE.sub("", command)
-    try:
-        tokens = shlex.split(stripped)
-    except ValueError:
-        tokens = stripped.split()
-    if not tokens:
-        return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
-    tokens[0] = os.path.basename(tokens[0])
-    tokens = _drop_denial_command_flag_values(tokens)
-    if len(tokens) > 1 and tokens[0] in _DENIAL_COMMAND_MULTIPLEXERS and not tokens[1].startswith("-"):
-        subcommand = tokens[1]
-        allowed_subcommands = _DENIAL_COMMAND_SUBCOMMANDS.get(tokens[0], frozenset())
-        if subcommand in allowed_subcommands and _DENIAL_COMMAND_SUBCOMMAND_RE.match(subcommand):
-            return f"{tokens[0]} {subcommand}"
-    return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
-
-
-# toolDenialKind's gate-axis value — a permission-layer denial (hook denial or
-# allowlist miss), already covered by hook_denial_key's message-signature
-# match. The four other values (user-rejected, automode-blocked,
-# automode-unavailable, interrupted) are friction, not a gate denial.
-_GATE_TOOL_DENIAL_KIND = "permission-rule"
-
-# The date toolDenialKind first appears in the corpus (the corpus itself
-# starts 2026-06-24), determined by a corpus scan rather than a documented
-# Claude Code rollout date — a user/tool_result record timestamped before
-# this date structurally cannot carry the field, so --deny-summary's
-# friction-kind breakdown must not read a pre-regime record's absent kind as
-# zero friction.
-_TOOL_DENIAL_KIND_REGIME_START = "2026-07-20"
-_TOOL_DENIAL_KIND_REGIME_START_TS = _parse_ts(f"{_TOOL_DENIAL_KIND_REGIME_START}T00:00:00Z")
-
-
-def _is_nongate_friction_kind(tool_denial_kind: str, already_gate_denied: bool) -> bool:
-    """True if a user record's toolDenialKind marks non-gate friction.
-
-    A falsy toolDenialKind means the field is absent from this record — not
-    friction. already_gate_denied guards against double-classifying a block
-    hook_denial_key already matched via the message-text signature, so a
-    record can never produce both a denial event and a friction event.
-    """
-    if already_gate_denied or not tool_denial_kind:
-        return False
-    return tool_denial_kind != _GATE_TOOL_DENIAL_KIND
-
-
-# --deny-summary's/review-trace's printed friction_kind vocabulary — closed,
-# so a future harness-added toolDenialKind value prints as _FRICTION_KIND_OTHER
-# rather than echoing the raw field verbatim.
-_FRICTION_KINDS: frozenset[str] = frozenset({
-    "user-rejected",
-    "automode-blocked",
-    "automode-unavailable",
-    "interrupted",
-})
-_FRICTION_KIND_OTHER = "other-kind"
-
-
-def _friction_kind_label(tool_denial_kind: str) -> str:
-    """Map a friction event's toolDenialKind to its printed label."""
-    return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
-
-
-# --deny-summary's/review-trace's denial-cause vocabulary — closed, the same
-# shape as _FRICTION_KINDS above. Its tuple order fixes _print_deny_summary's
-# printed column order for the hook/gate x cause table.
-_DENIAL_CAUSE_BEHAVIORAL = "behavioral"
-_DENIAL_CAUSE_KINDS: tuple[str, ...] = (
-    _DENIAL_CAUSE_BEHAVIORAL, "lib-source", "input-parse", "helper-proc", "deny-encode",
-)
-
-# Ordered (marker, kind) cascade tried against the message in turn; the
-# first match wins. deny-encode is checked first because a jq outage also
-# fails the input parse and would otherwise be reported as the wrong cause.
-_DENIAL_CAUSE_MARKERS: tuple[tuple[str, str], ...] = (
-    ("could not encode its deny reason", "deny-encode"),
-    ("could not source _lib.sh", "lib-source"),
-    ("could not parse tool-input json", "input-parse"),
-    ("failing closed", "helper-proc"),
-)
-
-
-def _print_deny_summary(
-    hook_counts: dict[str, int],
-    command_shape_counts: dict[str, int],
-    hook_shape_counts: Counter[tuple[str, str]],
-    hook_cause_counts: Counter[tuple[str, str]],
-    friction_counts: dict[str, int],
-    pre_regime_tool_result_count: int,
-    corpus_min_ts: float | None,
-    corpus_max_ts: float | None,
-) -> None:
-    """Print --deny-summary's grouped denial-count tables plus the friction breakout.
-
-    hook_shape_counts cross-tabs the hook/gate axis against the command-shape
-    axis — the two marginal tables alone can't say which hook denied which
-    command shape, which is the whole point of the census this feeds.
-    hook_cause_counts cross-tabs the same hook/gate axis against the
-    orthogonal denial-cause axis (_DENIAL_CAUSE_KINDS).
-    """
-    if corpus_min_ts is not None and corpus_max_ts is not None:
-        print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
-
-    total = sum(hook_counts.values())
-    print(f"\n## Denials by hook/gate ({total} total)\n")
-    print(f"{'Hook/gate':<40} {'Count':>6}")
-    print("-" * 47)
-    for label, count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<40} {count:>6}")
-
-    print(f"\n## Denials by attempted command shape ({total} total)\n")
-    print(f"{'Shape':<16} {'Count':>6}")
-    print("-" * 23)
-    for label, count in sorted(command_shape_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<16} {count:>6}")
-
-    # Column set is the observed shapes only (already restricted to A3's
-    # classifier output plus "other"), not a fixed enumeration — the
-    # multiplexer+subcommand shape space is open-ended by construction.
-    # Skipped entirely (rather than rendering a header-only, zero-row table)
-    # when scope has zero denials — a friction-only report has nothing to
-    # cross-tab.
-    if hook_counts or command_shape_counts:
-        shapes = sorted(command_shape_counts.keys())
-        hooks = sorted(hook_counts.keys())
-        col_width = max((len(s) for s in shapes), default=5) + 2
-        # Rows/header are indented two spaces — unlike the marginal tables above,
-        # deliberately, so a hook-label row here never collides with a
-        # column-0 row-label match against the hook/gate marginal table.
-        print(f"\n## Denials by hook/gate x command shape ({total} total)\n")
-        header = f"  {'Hook':<40}" + "".join(
-            f"{_sanitize_table_cell(shape):>{col_width}}" for shape in shapes
-        )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for hook in hooks:
-            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
-                f"{hook_shape_counts.get((hook, shape), 0):>{col_width}}" for shape in shapes
-            )
-            print(row)
-
-    # Column set is the fixed _DENIAL_CAUSE_KINDS enumeration rather than
-    # sorted-observed — a zero in the lib-source column is itself the
-    # signal, so a fixed column set keeps two runs comparable. Row order
-    # matches the hook/gate marginal table above.
-    if hook_counts:
-        cause_col_width = max((len(k) for k in _DENIAL_CAUSE_KINDS), default=5) + 2
-        print(f"\n## Denials by hook/gate x cause ({total} total)\n")
-        header = f"  {'Hook':<40}" + "".join(
-            f"{_sanitize_table_cell(kind):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
-        )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for hook, _count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
-                f"{hook_cause_counts.get((hook, kind), 0):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
-            )
-            print(row)
-
-    friction_total = sum(friction_counts.values())
-    print(f"\n## Friction events by kind ({friction_total} total)\n")
-    print(f"{'Kind':<24} {'Count':>6}")
-    print("-" * 31)
-    for label, count in sorted(friction_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<24} {count:>6}")
-    print(
-        f"\n{pre_regime_tool_result_count} errored, non-gate tool result(s) predate the"
-        f" per-record denial-kind field's introduction ({_TOOL_DENIAL_KIND_REGIME_START})"
-        " and are excluded from the breakdown above — kind is structurally unmeasurable"
-        " before that date, not zero."
-    )
-
-
-def _is_architect_consult_dispatch(tool_input: dict) -> bool:
-    """True for a plan-architect Agent/Task dispatch whose prompt is a
-    consult rather than a MODE=plan-sections call — fail-safe toward
-    consult, so a missing `prompt` key or an empty first line both classify
-    as a consult. See docs/design-decisions.md §48 for why this duplicates
-    log-reviewer-round.sh's _maybe_write_consult_latch instead of sharing it."""
-    prompt = tool_input.get("prompt") or ""
-    first_line = prompt.split("\n", 1)[0]
-    return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
-
-
-def _group_start_indices(groups: list[list[dict]]) -> frozenset[int]:
-    """0-based positions in the flattened record list where a new source
-    group (the main transcript, or one subagent file) begins.
-
-    Matches read_session_file's own flatten order — the main transcript's
-    records first, then each subagent file's in filename-sorted order — so a
-    caller that already has the flat, session_iter-yielded records can align
-    this function's output against them by plain list index. See
-    _review_trace_session_events's group_boundaries parameter for why the
-    boundary matters."""
-    starts = []
-    cursor = 0
-    for group in groups:
-        starts.append(cursor)
-        cursor += len(group)
-    return frozenset(starts)
-
-
-def _review_trace_session_events(
-    records: list[dict],
-    since_ts: float | None,
-    until_epoch: float | None,
-    branch_filter: set[str] | None,
-    skill_filter: str | None = None,
-    group_boundaries: frozenset[int] | None = None,
-) -> tuple[list[dict], dict[str, str], int]:
-    """Detect cmd_review_trace's five per-session event kinds (skill, denial,
-    friction, reviewer-spawn, architect-consult) from one session's records.
-
-    Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
-    so the denial/friction detection and dedup rules exist in one place rather
-    than two copies kept in sync by hand. The third return value, a count of
-    errored tool results predating toolDenialKind's introduction, is always
-    computed (cheap) even though only --deny-summary reports it — see
-    _print_deny_summary's own explanation of what it means.
-
-    records may interleave main-thread and subagent (isSidechain) records
-    when the caller resolved scope with include_subagents=True. Detection
-    runs over those records merged into one chronological stream, sorted on
-    a three-part key: effective_ts (the record's own _parse_ts result,
-    forward-filled from the immediately preceding record when unparseable,
-    or float("-inf") at the start of a group), thread_rank (0 for a
-    main-thread record, 1 for a sidechain one), and pre_sort_index (the
-    record's original position, the final tie-break). group_boundaries (the
-    0-based records indices where a new source file starts, from
-    _group_start_indices; None from a caller that hasn't partitioned the
-    corpus read, meaning the whole list is treated as one group) resets
-    effective_ts's forward-fill at each boundary. See
-    docs/design-decisions.md §58 for why the sort key and the per-group
-    reset are shaped this way.
-
-    effective_ts governs ordering only — the --since/--until filter below
-    still tests each record's own, unfilled _parse_ts result. Each event
-    dict carries this same pre_sort_index as line_no, plus a thread field
-    ("main" or "sidechain"): the main transcript's own 1-based file line for
-    thread=main, a merged-stream offset indexing no file for thread=sidechain
-    (see docs/design-decisions.md §58 for why).
-    """
-    events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
-    # Tracks tool_use_ids already emitted as a denial. A legacy denial
-    # appears as both an attachment record and an is_error tool_result
-    # sharing one tool_use_id; this set collapses the pair to one event.
-    seen_denial_ids: set[str] = set()
-
-    # Friction events dedup against their own set, never seen_denial_ids
-    # above — sharing it would let a friction event suppress a later
-    # legitimate denial sharing a tool_use_id.
-    seen_friction_ids: set[str] = set()
-
-    # tool_use_id -> attempted command, for --deny-summary's by-command-shape
-    # grouping. Indexed from every assistant tool_use block, main-thread or
-    # sidechain — this loop carries no isSidechain guard of its own, so a
-    # denial raised inside a subagent's own transcript still resolves to the
-    # command that triggered it. Independent of the --since/--until window,
-    # since a denial's own event already applies it.
-    tool_use_commands: dict[str, str] = {}
-
-    # Carry-forward trackers, updated on every main-thread record, never a
-    # sidechain one. Detection itself no longer gates on isSidechain, but a
-    # sidechain event still inherits whatever branch/model was live on the
-    # dispatching main-thread record, not its own. Applied before the date
-    # filter below, so the branch/model attributed to an event is whatever a
-    # prior main-thread record last set, including one outside the
-    # --since/--until window.
-    last_branch = ""
-    last_model = ""
-    pre_regime_tool_result_count = 0
-
-    # Merge main-thread and subagent records into one chronological stream
-    # before detection (see the docstring's three-part key) — sorting
-    # instead of leaving records in main-then-subagent concatenation order is
-    # what lets the carry-forward trackers above see a sidechain event's
-    # dispatching record before the event itself, rather than after every
-    # main-thread record has already run.
-    merged: list[tuple[float, int, int, dict]] = []
-    prev_effective_ts = float("-inf")
-    for index, rec in enumerate(records):
-        if group_boundaries is not None and index in group_boundaries:
-            prev_effective_ts = float("-inf")
-        ts = _parse_ts(rec.get("timestamp"))
-        effective_ts = prev_effective_ts if ts is None else ts
-        prev_effective_ts = effective_ts
-        thread_rank = 1 if bool(rec.get("isSidechain")) else 0
-        merged.append((effective_ts, thread_rank, index + 1, rec))
-    merged.sort(key=lambda item: item[:3])
-
-    for _effective_ts, _thread_rank, line_no, rec in merged:
-        thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
-
-        if not bool(rec.get("isSidechain")):
-            b = rec.get("gitBranch") or ""
-            if b:
-                last_branch = b
-            if rec.get("type") == "assistant":
-                m = (rec.get("message") or {}).get("model") or ""
-                if m:
-                    last_model = m
-
-        if rec.get("type") == "assistant":
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                tid = block.get("id")
-                if tid:
-                    tool_use_commands[tid] = (block.get("input") or {}).get("command", "")
-
-        rec_ts_str: str | None = rec.get("timestamp")
-        rec_ts: float | None = _parse_ts(rec_ts_str)
-
-        # Apply date filter: records with no parseable timestamp are excluded when
-        # a date boundary is active.
-        if (since_ts is not None or until_epoch is not None):
-            if rec_ts is None:
-                continue
-            if since_ts is not None and rec_ts < since_ts:
-                continue
-            if until_epoch is not None and rec_ts >= until_epoch:
-                continue
-
-        rec_type = rec.get("type", "")
-        evt_branch = last_branch or "?"
-        evt_model = _fam(last_model) if last_model else "?"
-
-        # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
-        # Both are assistant tool_use blocks, main-thread or sidechain; a
-        # single pass over content dispatches on tool name to avoid
-        # iterating the list twice.
-        if rec_type == "assistant":
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                block_name = block.get("name")
-                if block_name == "Skill":
-                    skill_name = (block.get("input") or {}).get("skill") or ""
-                    if skill_name not in REVIEW_TRACE_SKILLS:
-                        continue
-                    if skill_filter and skill_name != skill_filter:
-                        continue
-                    events.append({
-                        "kind": "skill",
-                        "skill": skill_name,
-                        "ts": rec_ts_str,
-                        "line_no": line_no,
-                        "branch": evt_branch,
-                        "model": evt_model,
-                        "thread": thread,
-                    })
-                elif block_name in ("Agent", "Task"):
-                    tool_input = block.get("input") or {}
-                    stype = tool_input.get("subagent_type") or ""
-                    if _is_reviewer_subagent_type(stype):
-                        events.append({
-                            "kind": "reviewer-spawn",
-                            "subagent_type": stype,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-                    elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
-                        # A consult dispatch was initiated -- no dependence on
-                        # a tool_result, unlike log-reviewer-round.sh's
-                        # PostToolUse latch. The prompt itself never lands on
-                        # the event dict, only this classification result.
-                        events.append({
-                            "kind": "architect-consult",
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-
-        # --- Signal 2a: hook denials, legacy shape (attachment record) ---
-        if rec_type == "attachment":
-            denial = hook_denial_key(rec)
-            if denial is None:
-                continue
-            tool_use_id, att = denial
-            if tool_use_id and tool_use_id in seen_denial_ids:
-                continue
-            raw_error = att.get("blockingError")
-            normalized = _normalize_blocking_error(raw_error)
-            hook_name = att.get("hookName") or ""
-            if isinstance(normalized, dict):
-                # Real transcripts nest the human-readable text in a "blockingError"
-                # key alongside a "command" key; fall back to "message" then repr.
-                message = (
-                    normalized.get("blockingError")
-                    or normalized.get("message")
-                    or str(normalized)
-                )
-            else:
-                message = str(normalized) if normalized else ""
-            if tool_use_id:
-                seen_denial_ids.add(tool_use_id)
-            events.append({
-                "kind": "denial",
-                "hook_name": hook_name,
-                "tool_use_id": tool_use_id,
-                "message": message,
-                "ts": rec_ts_str,
-                "line_no": line_no,
-                "branch": evt_branch,
-                "model": evt_model,
-                "thread": thread,
-            })
-
-        # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
-        # Claude Code stopped emitting the hook_blocking_error attachment
-        # record; current transcripts surface a denial only as an is_error
-        # tool_result, identified by the hook-denial message signature.
-        #
-        # --- Signal 2c: non-gate friction, current shape (toolDenialKind) ---
-        # toolDenialKind lives on this same `user` record, not on the
-        # tool_result block — read once, but classification below still
-        # requires the individual block's own is_error, since a parallel
-        # tool call can carry an unrelated successful block alongside it.
-        if rec_type == "user":
-            tool_denial_kind = rec.get("toolDenialKind") or ""
-            # A falsy tool_denial_kind this far before the regime start
-            # means the field structurally could not exist yet, not that
-            # this record measured zero friction. Scoped to the same
-            # is_error-and-non-gate-signature population
-            # _is_nongate_friction_kind would classify below, so the
-            # count reflects records that could plausibly have been
-            # friction, not every tool_result in the era (which would
-            # count ordinary successful tool calls too) — tallied
-            # separately and reported apart from the friction-kind
-            # breakdown.
-            pre_regime = (
-                not tool_denial_kind
-                and rec_ts is not None
-                and _TOOL_DENIAL_KIND_REGIME_START_TS is not None
-                and rec_ts < _TOOL_DENIAL_KIND_REGIME_START_TS
-                and (not branch_filter or evt_branch in branch_filter)
-            )
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                denial = hook_denial_key(block)
-                already_gate_denied = denial is not None
-                if denial is not None:
-                    tool_use_id, message = denial
-                    if not (tool_use_id and tool_use_id in seen_denial_ids):
-                        if tool_use_id:
-                            seen_denial_ids.add(tool_use_id)
-                        events.append({
-                            "kind": "denial",
-                            "hook_name": "",
-                            "tool_use_id": tool_use_id,
-                            "message": message,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-
-                if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
-                    friction_tool_use_id = block.get("tool_use_id") or ""
-                    if not (friction_tool_use_id and friction_tool_use_id in seen_friction_ids):
-                        if friction_tool_use_id:
-                            seen_friction_ids.add(friction_tool_use_id)
-                        events.append({
-                            "kind": "friction",
-                            "friction_kind": tool_denial_kind,
-                            "tool_use_id": friction_tool_use_id,
-                            "message": _content_text(block.get("content")),
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-                elif pre_regime and not already_gate_denied and block.get("is_error"):
-                    pre_regime_tool_result_count += 1
-
-    # Branch filtering happens after dedup (seen_denial_ids was populated
-    # above over every event, unconditionally) so a duplicate-id denial on
-    # a differently-branched record is suppressed, not re-emitted as a
-    # distinct in-scope event.
-    if branch_filter:
-        events = [e for e in events if e["branch"] in branch_filter]
-
-    return events, tool_use_commands, pre_regime_tool_result_count
-
-
-def _fresh_records_and_group_boundaries(
-    jsonl: Path, records: list[dict], *, include_subagents: bool,
-) -> tuple[list[dict], frozenset[int] | None]:
-    """Re-read jsonl as one _read_session_file_partitioned call, so the
-    records and group_boundaries handed to _review_trace_session_events
-    always come from the same snapshot of the file -- pairing session_iter's
-    own records (an earlier read) with an independently re-read
-    group_boundaries would let the two desync whenever the file grows in
-    between (e.g. review-trace scanning its own in-progress session).
-    include_subagents is a required keyword argument, not a default, so a
-    future caller must state its own session_iter's scope explicitly rather
-    than silently inheriting whatever this function's last caller needed.
-
-    Falls back to the given records with no group boundaries when jsonl is
-    unreadable right now, rather than discarding a session's already-observed
-    events. Two cases trigger the fallback: the file was deleted mid-scan, or
-    the path is a synthetic one used in a test. Shared by
-    _compute_deny_summary_data and cmd_review_trace, this function's two
-    identically-shaped callers.
-    """
-    groups = _read_session_file_partitioned(jsonl, include_subagents=include_subagents)
-    if not groups:
-        return records, None
-    return [rec for group in groups for rec in group], _group_start_indices(groups)
-
-
-def _compute_deny_summary_data(
-    session_iter,
-    since_ts: float | None = None,
-    until_ts: float | None = None,
-    branch_filter: set[str] | None = None,
-    deny_only: bool = False,
-) -> dict:
-    """Corpus-wide --deny-summary accumulation, extracted so cost-ledger's
-    per-week denial count and cmd_review_trace's own report share one pass
-    over session_iter instead of two implementations kept in sync by hand.
-
-    since_ts/until_ts are explicit epoch-second boundaries (until_ts
-    exclusive, the same convention as cmd_review_trace's own until_epoch)
-    rather than the CLI's date-string args, so a caller can pass exact week
-    boundaries the CLI itself has no flag to reach.
-    """
-    hook_counts: dict[str, int] = defaultdict(int)
-    command_shape_counts: dict[str, int] = defaultdict(int)
-    hook_shape_counts: Counter[tuple[str, str]] = Counter()
-    # No separate corpus-wide cause accumulator — the per-cause total is a
-    # column sum of this cross-tab, and _DENIAL_CAUSE_KINDS is closed so
-    # every column always prints.
-    hook_cause_counts: Counter[tuple[str, str]] = Counter()
-    friction_counts: dict[str, int] = defaultdict(int)
-    corpus_min_ts: float | None = None
-    corpus_max_ts: float | None = None
-    pre_regime_tool_result_count = 0
-    any_session_matched = False
-
-    for jsonl, records in session_iter:
-        # Both of this function's callers resolve scope with
-        # include_subagents=True -- see _fresh_records_and_group_boundaries
-        # for why records and group_boundaries must come from one read.
-        records, group_boundaries = _fresh_records_and_group_boundaries(
-            jsonl, records, include_subagents=True,
-        )
-        events, tool_use_commands, session_pre_regime = _review_trace_session_events(
-            records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
-        )
-        if not events:
-            continue
-        any_session_matched = True
-        pre_regime_tool_result_count += session_pre_regime
-
-        # Corpus window reads the full branch-filtered per-session events list
-        # before the deny_only skip below, same as the friction tally below —
-        # so the reported window matches whatever --branches/--since/--until
-        # actually put in scope, not the pre-branch-filter raw record range.
-        for evt in events:
-            evt_ts = _parse_ts(evt.get("ts"))
-            if evt_ts is None:
-                continue
-            if corpus_min_ts is None or evt_ts < corpus_min_ts:
-                corpus_min_ts = evt_ts
-            if corpus_max_ts is None or evt_ts > corpus_max_ts:
-                corpus_max_ts = evt_ts
-
-        has_denial = any(e["kind"] == "denial" for e in events)
-
-        # Friction tally reads the full per-session events list before the
-        # deny_only skip below, so a friction-only session (has_denial False)
-        # still contributes when --deny-only and --deny-summary run together.
-        # deny_only's own session-selection stays denial-kind-only, unchanged.
-        for evt in events:
-            if evt["kind"] == "friction":
-                friction_counts[_friction_kind_label(evt["friction_kind"])] += 1
-
-        if deny_only and not has_denial:
-            continue
-
-        for evt in events:
-            if evt["kind"] != "denial":
-                continue
-            hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
-            command = tool_use_commands.get(evt["tool_use_id"], "")
-            command_shape = _denial_command_shape(command)
-            cause_kind = _denial_cause_kind(evt["message"])
-            hook_counts[hook_label] += 1
-            command_shape_counts[command_shape] += 1
-            hook_shape_counts[(hook_label, command_shape)] += 1
-            hook_cause_counts[(hook_label, cause_kind)] += 1
-
-    return {
-        "hook_counts": hook_counts,
-        "command_shape_counts": command_shape_counts,
-        "hook_shape_counts": hook_shape_counts,
-        "hook_cause_counts": hook_cause_counts,
-        "friction_counts": friction_counts,
-        "corpus_min_ts": corpus_min_ts,
-        "corpus_max_ts": corpus_max_ts,
-        "pre_regime_tool_result_count": pre_regime_tool_result_count,
-        "any_session_matched": any_session_matched,
-    }
-
-
-def cmd_review_trace(args: argparse.Namespace) -> None:
-    """Emit an ordered review-event timeline per session.
-
-    Scans both the main thread and every dispatched subagent's own
-    transcript file (include_subagents=True), merged into one chronological
-    stream by _review_trace_session_events. Five event types are detected
-    per session, on either thread:
-    - skill: a Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
-    - denial: a hook-blocking denial in either transcript shape — a legacy
-      `attachment` record (type==hook_blocking_error) or a current-format
-      `tool_result` block with is_error and a hook-denial message signature.
-      A denial recorded as both shapes is collapsed to one event by tool_use_id.
-    - friction: a current-format `user` record whose own toolDenialKind field
-      marks non-gate friction (user-rejected, automode-blocked,
-      automode-unavailable, interrupted) — see _is_nongate_friction_kind.
-      Deduped by tool_use_id in its own set, independent of denial dedup.
-    - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
-      _is_reviewer_subagent_type
-    - architect-consult: Agent/Task spawn where subagent_type is
-      plan-architect and the prompt's first line is not the literal
-      MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
-      consult dispatch was initiated, not that it completed — including one
-      dispatched from inside a subagent.
-
-    denial and friction are deliberately separate event kinds: has_denial,
-    denials=N, and --deny-only's session-selection all stay denial-kind-only,
-    so a non-gate toolDenialKind value never broadens what those three
-    surfaces report — only the default timeline and --deny-summary's own
-    friction breakout render friction events.
-
-    Branch and model are resolved per event from the record that produced it,
-    not from the session's first record: each is the last non-empty value
-    carried forward up to that point, so a session that moves from one branch
-    (or model) to another attributes each event correctly instead of labelling
-    every event with whatever the session started on. An event whose branch or
-    model cannot be resolved renders '?'. --branches filters the emitted event
-    list by this per-event value, not by a single session-wide branch. A
-    sidechain event's thread field prints as `thread=sidechain` in the
-    timeline; a main-thread event's `thread=main` is the default and stays
-    unprinted. A sidechain event's line_no is a merged-stream offset, not a
-    real file line (see _review_trace_session_events's docstring), so it
-    prints as `line   n/a` instead of a numeral.
-
-    --deny-summary delegates its entire accumulation to
-    _compute_deny_summary_data instead of running its own pass over
-    session_iter, so the corpus-wide grouped-count report and cost-ledger's
-    per-week denial count can never drift apart.
-    """
-    branch_filter = _branch_filter(args)
-    deny_only: bool = bool(getattr(args, "deny_only", False))
-    deny_summary: bool = bool(getattr(args, "deny_summary", False))
-    skill_filter: str | None = getattr(args, "skill", None) or None
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
-
-    since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
-
-    if deny_summary:
-        # Ahead of the scan, matching the default arm below: a crash partway
-        # through the corpus still leaves the scanned scope on stdout.
-        _print_resolved_scope("review-trace", scope_label, roots)
-        data = _compute_deny_summary_data(
-            session_iter, since_ts=since_ts, until_ts=until_epoch,
-            branch_filter=branch_filter, deny_only=deny_only,
-        )
-        if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
-            _print_deny_summary(
-                data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
-                data["hook_cause_counts"], data["friction_counts"], data["pre_regime_tool_result_count"],
-                data["corpus_min_ts"], data["corpus_max_ts"],
-            )
-        elif data["any_session_matched"]:
-            # Sessions matched but none carried a denial — distinct from the
-            # scope matching no sessions at all, which the else covers.
-            print("\nNo denials found in scope.")
-        else:
-            print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
-        return
-
-    # Printed before the scan, not on the first emitted block: a run matching
-    # no session must still state the corpus it read, or a wrongly-scoped scan
-    # is indistinguishable from a correctly-scoped empty one.
-    _print_resolved_scope("review-trace", scope_label, roots)
-    emitted_any_session = False
-
-    for jsonl, records in session_iter:
-        # session_iter is resolved with include_subagents=True above -- see
-        # _fresh_records_and_group_boundaries for why records and
-        # group_boundaries must come from one read at the same scope.
-        records, group_boundaries = _fresh_records_and_group_boundaries(
-            jsonl, records, include_subagents=True,
-        )
-        events, tool_use_commands, _pre_regime = _review_trace_session_events(
-            records, since_ts, until_epoch, branch_filter,
-            skill_filter=skill_filter, group_boundaries=group_boundaries,
-        )
-        if not events:
-            continue
-
-        has_denial = any(e["kind"] == "denial" for e in events)
-        if deny_only and not has_denial:
-            continue
-
-        skill_count = sum(1 for e in events if e["kind"] == "skill")
-        denial_count = sum(1 for e in events if e["kind"] == "denial")
-        spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
-        consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
-        branches_seen = ",".join(sorted({e["branch"] for e in events}))
-        models_seen = ",".join(sorted({e["model"] for e in events}))
-
-        emitted_any_session = True
-
-        print(f"\n### {jsonl}")
-        print(
-            f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
-            f"  denials={denial_count}  reviewer-spawns={spawn_count}"
-            f"  architect-consults={consult_count}"
-        )
-        for evt in events:
-            ts_label = evt.get("ts") or "?"
-            # line_no is a real, seekable main-transcript line only for a
-            # thread=main event; for thread=sidechain it's a merged-stream
-            # offset indexing no file (see _review_trace_session_events's
-            # docstring), so it prints as n/a rather than under the same
-            # "line" label as a real one.
-            lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
-            kind = evt["kind"]
-            thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
-            suffix = f"  (branch={evt['branch']} model={evt['model']}{thread_suffix})"
-            if kind == "skill":
-                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
-            elif kind == "denial":
-                hook = evt['hook_name']
-                uid = evt['tool_use_id']
-                msg = evt['message']
-                cause = _denial_cause_kind(msg)
-                print(
-                    f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
-                    f"  id={uid}  msg={msg!r}{suffix}"
-                )
-            elif kind == "friction":
-                fkind = _friction_kind_label(evt['friction_kind'])
-                uid = evt['tool_use_id']
-                msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
-            elif kind == "reviewer-spawn":
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
-            elif kind == "architect-consult":
-                print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
-
-    if not emitted_any_session:
-        print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
 
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
@@ -3034,6 +1980,9 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     roots = [config_dir() / "projects"]
 
     session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    # Fully materialized (unlike every other cmd_* here, which streams one session at a
+    # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
+    # session history, small enough to hold in memory at once.
     sessions = list(session_iter)
 
     round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
@@ -4409,575 +3358,6 @@ def _print_edit_format_report(stats: dict, per_account: dict[int, dict] | None) 
             print(
                 f"  {account_label:10} calls={a_edit_n:6,}  unread={unread:4,}  "
                 f"not_found={not_found:4,}  multi={multi:3,}  addressable={_pct_of(addressable, a_edit_n)}"
-            )
-
-
-# ~4 chars/token, the same rough English/code estimate _EDIT_FORMAT_CHARS_PER_TOKEN
-# uses. A deliberate second pin rather than a shared constant: recalibrating one
-# report's published figures must not silently move the other's.
-_READ_SCOPE_CHARS_PER_TOKEN = 4
-
-# Tools that answer "which part of this file do I need" before a targeted Read.
-# Their mean result size prices the locate step a narrow-read discipline adds.
-_READ_SCOPE_LOCATE_TOOLS = frozenset({"Grep", "Glob"})
-
-_READ_SCOPE_COHORT_TARGETED = "targeted"
-_READ_SCOPE_COHORT_WHOLE_FILE = "whole_file"
-_READ_SCOPE_COHORT_PAGES = "pages"
-_READ_SCOPE_COHORT_UNPARSED = "unparsed_input"
-
-_READ_SCOPE_SCOPE_MAIN = "main"
-_READ_SCOPE_SCOPE_SUBAGENT = "subagent"
-
-# Result-size histogram buckets, in estimated tokens (chars // 4) — a call's
-# result text length, not its input. The 2,000-token boundary lines up with
-# the gross-ceiling threshold the case study's ceiling arithmetic uses.
-_READ_SCOPE_SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
-    (500, "0-499"),
-    (2000, "500-1999"),
-    (5000, "2000-4999"),
-    (15000, "5000-14999"),
-)
-_READ_SCOPE_SIZE_OVERFLOW_LABEL = "15000+"
-
-
-def _read_scope_size_bucket(tokens: int) -> str:
-    for upper_bound, label in _READ_SCOPE_SIZE_BUCKETS:
-        if tokens < upper_bound:
-            return label
-    return _READ_SCOPE_SIZE_OVERFLOW_LABEL
-
-
-def _classify_read_call(tool_input: dict) -> str:
-    """Classify one Read tool_use's input by scope shape.
-
-    A missing file_path (e.g. only __unparsedToolInput, or an empty input) is
-    unparsed_input regardless of any other field: its scope is unknowable, and
-    filing it as whole-file would inflate the cohort every published share is
-    stated against. pages is checked before offset/limit since a PDF page-range
-    read scopes via a different mechanism entirely, not layered on offset/limit.
-    offset and limit are each checked with `is not None`, never truthiness --
-    offset=0 is a valid first-line read and is falsy in Python.
-    """
-    if not tool_input.get("file_path"):
-        return _READ_SCOPE_COHORT_UNPARSED
-    if tool_input.get("pages") is not None:
-        return _READ_SCOPE_COHORT_PAGES
-    if tool_input.get("offset") is not None or tool_input.get("limit") is not None:
-        return _READ_SCOPE_COHORT_TARGETED
-    return _READ_SCOPE_COHORT_WHOLE_FILE
-
-
-def _new_read_scope_stats() -> dict:
-    return {
-        "read_total": 0,
-        "offset_n": 0,  # Read calls carrying offset (is not None)
-        "limit_n": 0,  # Read calls carrying limit (is not None)
-        "both_n": 0,  # Read calls carrying both offset and limit
-        "cohort_n": Counter(),  # cohort label -> Read call count
-        "unpaired": 0,  # Read tool_use with no matching tool_result in this session
-        "error_result": 0,  # is_error tool_result for a Read call
-        "non_text_result": 0,  # non-string tool_result content for a Read call (e.g. an image block)
-        "cohort_scope_count": Counter(),  # (cohort, scope) -> result count reaching the histogram
-        "cohort_scope_tokens": Counter(),  # (cohort, scope) -> est. token sum
-        "size_hist": Counter(),  # (cohort, scope, bucket label) -> count
-        # Same key -> summed est. tokens. Counts alone cannot answer "what share
-        # of whole-file-read tokens sits above N", which is what any ceiling
-        # estimate and the case study's revisit trigger are both stated against.
-        "size_hist_tokens": Counter(),
-        "read_result_tokens_total": 0,  # every Read tool_result's est. tokens, any cohort/error/text shape
-        "all_tool_result_tokens_total": 0,  # every tool_result's est. tokens, any tool -- cross-check denominator
-        # Locate-step sizing: a targeted read has to be located first, so any
-        # saving quoted against whole-file reads is gross until this is netted.
-        "locate_call_n": 0,
-        "locate_result_tokens_total": 0,
-        "repeat_whole_file_reads": 0,  # whole-file re-reads of a path within the same source-file/sessionId partition
-        "repeat_whole_file_tokens": 0,
-        "repeat_whole_file_output_log_reads": 0,  # sub-count of the above whose path ends .output/.log
-        "growth_tokens": 0,  # prompt-token growth, per "Computing the denominator"
-        "growth_unparseable_ts_excluded": 0,  # growth deltas dropped: --since active, owning turn's ts didn't parse
-    }
-
-
-def _merge_read_scope_stats(dst: dict, src: dict) -> None:
-    dst["read_total"] += src["read_total"]
-    dst["offset_n"] += src["offset_n"]
-    dst["limit_n"] += src["limit_n"]
-    dst["both_n"] += src["both_n"]
-    dst["cohort_n"].update(src["cohort_n"])
-    dst["unpaired"] += src["unpaired"]
-    dst["error_result"] += src["error_result"]
-    dst["non_text_result"] += src["non_text_result"]
-    dst["cohort_scope_count"].update(src["cohort_scope_count"])
-    dst["cohort_scope_tokens"].update(src["cohort_scope_tokens"])
-    dst["size_hist"].update(src["size_hist"])
-    dst["size_hist_tokens"].update(src["size_hist_tokens"])
-    dst["read_result_tokens_total"] += src["read_result_tokens_total"]
-    dst["all_tool_result_tokens_total"] += src["all_tool_result_tokens_total"]
-    dst["locate_call_n"] += src["locate_call_n"]
-    dst["locate_result_tokens_total"] += src["locate_result_tokens_total"]
-    dst["repeat_whole_file_reads"] += src["repeat_whole_file_reads"]
-    dst["repeat_whole_file_tokens"] += src["repeat_whole_file_tokens"]
-    dst["repeat_whole_file_output_log_reads"] += src["repeat_whole_file_output_log_reads"]
-    dst["growth_tokens"] += src["growth_tokens"]
-    dst["growth_unparseable_ts_excluded"] += src["growth_unparseable_ts_excluded"]
-
-
-def _read_scope_growth_for_group(group: list[dict], since_ts: float | None) -> tuple[int, int]:
-    """Sum of positive prompt-token growth deltas within one source-file group
-    (one _read_session_file_partitioned entry: the main transcript or one
-    subagent file).
-
-    Keys the delta chain by each assistant record's own sessionId rather than
-    picking one reference id for the whole group: a subagent transcript file
-    is named by its own agent id, but its records carry the *parent*
-    session's sessionId, so neither the file's own stem nor a first-seen-in-
-    iteration guess is a valid "this group's session" ground truth. Keying by
-    sessionId means an interleaved foreign-session record simply forms its
-    own chain and contributes its own real growth, instead of being dropped
-    or corrupting a neighbouring session's delta. A record with no sessionId
-    at all folds into the ""-keyed chain -- neither excluded nor treated as
-    its own session, preserving this function's long-standing leniency for
-    absent ids. Resets the whole per-session map at each compact_boundary
-    record, since a compaction boundary applies to the file, not to one
-    session. The first turn of every resulting per-session sequence has no
-    predecessor and so contributes nothing. A turn with absent or malformed
-    usage is skipped without breaking its session's chain for the turn after
-    it. A shrinking context contributes nothing (never negative). Every
-    chain is built over every record regardless of --since; --since filters
-    only the completed deltas, by the later (owning) turn's own timestamp --
-    fail-closed: a delta whose owning turn's timestamp doesn't parse is
-    excluded rather than included, and counted in the returned exclusion
-    total so the report's own growth figure stays auditable against
-    --since's promise.
-
-    Returns (growth_tokens, deltas_excluded_for_unparseable_timestamp).
-    """
-    prev_context_by_session: dict[str, int] = {}
-    total = 0
-    unparseable_ts_excluded = 0
-
-    for rec in group:
-        rec_type = rec.get("type")
-        if rec_type == "system" and rec.get("subtype") == "compact_boundary":
-            # Resets every session's chain, not just the compacted one: a
-            # compact_boundary record carries no sessionId, so which session it
-            # belongs to is not recoverable from the data. Costs one real delta
-            # for any other session mid-chain in the same file. Inert on every
-            # transcript shape seen so far -- a main file's records all carry
-            # its own session id, a subagent file's all carry its parent's --
-            # so a file holding two live chains does not currently arise.
-            prev_context_by_session.clear()
-            continue
-        if rec_type != "assistant":
-            continue
-
-        usage = (rec.get("message") or {}).get("usage")
-        if not usage:
-            continue
-
-        session_key = rec.get("sessionId") or ""
-        context_at_turn = _context_at_turn(usage)
-        prev_context = prev_context_by_session.get(session_key)
-        if prev_context is not None:
-            delta = context_at_turn - prev_context
-            if delta > 0:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if since_ts is not None and rec_ts is None:
-                    unparseable_ts_excluded += 1
-                elif since_ts is None or rec_ts >= since_ts:
-                    total += delta
-        prev_context_by_session[session_key] = context_at_turn
-
-    return total, unparseable_ts_excluded
-
-
-def _read_scope_repeat_whole_file_reads(groups: list[list[dict]]) -> tuple[int, int, int]:
-    """Repeat whole-file-read detection, scoped to the same partition the
-    growth chain uses (per source-file group, and per sessionId within a
-    group) rather than to the whole flattened session.
-
-    A parent transcript and its subagent are separate context windows: a
-    subagent re-reading a file its parent already read is not a redundant
-    read, it's the only way that subagent can see the file at all. Scoping
-    to the flattened session would count every such cross-file read as a
-    repeat, inflating the figure with reads that were never avoidable.
-
-    Pairs each group's own Read tool_use/tool_result independently (a Read's
-    result always lives in the same source file as its call), since this
-    detection needs its own per-partition token histories and cannot reuse
-    the flat pass's already-merged read_calls table. Returns
-    (repeat_reads, repeat_tokens, repeat_output_log_reads) — pure aggregates;
-    no file path is retained past this function.
-    """
-    # (group_index, sessionId-or-"") -> file_path -> [est_tokens, ...] in read order
-    sizes_by_partition: dict[tuple[int, str], dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
-
-    for group_idx, group in enumerate(groups):
-        read_calls: dict[str, dict] = {}  # tool_use_id -> {"file_path", "partition_key"}
-        for rec in group:
-            msg = rec.get("message") or {}
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            session_id = rec.get("sessionId") or ""
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type == "tool_use":
-                    if block.get("name") != "Read":
-                        continue
-                    tool_input = block.get("input") or {}
-                    if _classify_read_call(tool_input) != _READ_SCOPE_COHORT_WHOLE_FILE:
-                        continue
-                    read_calls[block.get("id")] = {
-                        "file_path": tool_input.get("file_path") or "",
-                        "partition_key": (group_idx, session_id),
-                    }
-                elif block_type == "tool_result":
-                    owner = read_calls.pop(block.get("tool_use_id"), None)
-                    if owner is None or block.get("is_error"):
-                        continue
-                    result_content = block.get("content")
-                    if not isinstance(result_content, str):
-                        continue
-                    tokens = len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN
-                    sizes_by_partition[owner["partition_key"]][owner["file_path"]].append(tokens)
-
-    repeat_reads = 0
-    repeat_tokens = 0
-    repeat_output_log_reads = 0
-    for by_path in sizes_by_partition.values():
-        for file_path, sizes in by_path.items():
-            if len(sizes) < 2:
-                continue
-            repeats = sizes[1:]
-            repeat_reads += len(repeats)
-            repeat_tokens += sum(repeats)
-            if file_path.endswith((".output", ".log")):
-                repeat_output_log_reads += len(repeats)
-
-    return repeat_reads, repeat_tokens, repeat_output_log_reads
-
-
-def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], since_ts: float | None) -> dict:
-    """One session's Read-call census, single pass over the flattened record
-    order, plus per-group prompt-token growth and repeat-whole-file-read
-    detection.
-
-    `records` is the main thread + merged subagent files in flat, file-
-    concatenation order (per read_session_file) — everything here except
-    growth and repeat-whole-file-read detection runs over it, since
-    isSidechain is all that scope (main vs subagent) bucketing needs.
-    `groups` is the same session's records kept separate per source file
-    (per _read_session_file_partitioned) — growth and repeat-whole-file-read
-    detection both need the file (and, within a file, sessionId) boundary
-    the flat order discards; see _read_scope_growth_for_group and
-    _read_scope_repeat_whole_file_reads.
-
-    Every returned figure is a pure aggregate (counts and token sums) — no
-    file path, filename, path fragment, or session identifier is retained
-    past this function or printed by any caller.
-    """
-    stats = _new_read_scope_stats()
-
-    read_calls: dict[str, dict] = {}  # tool_use_id -> {"cohort", "scope", "file_path"}
-    locate_calls: set[str] = set()  # tool_use_ids of Grep/Glob calls, for locate-step sizing
-    matched: set[str] = set()
-
-    for rec in records:
-        msg = rec.get("message") or {}
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        is_subagent = bool(rec.get("isSidechain"))
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type == "tool_use":
-                tool_name = block.get("name")
-                if tool_name in _READ_SCOPE_LOCATE_TOOLS:
-                    # A targeted read has to be located first. Sizing that step
-                    # is what lets a saving be quoted net rather than gross.
-                    locate_calls.add(block.get("id"))
-                    stats["locate_call_n"] += 1
-                    continue
-                if tool_name != "Read":
-                    continue
-                tool_id = block.get("id")
-                tool_input = block.get("input") or {}
-                has_offset = tool_input.get("offset") is not None
-                has_limit = tool_input.get("limit") is not None
-                if has_offset:
-                    stats["offset_n"] += 1
-                if has_limit:
-                    stats["limit_n"] += 1
-                if has_offset and has_limit:
-                    stats["both_n"] += 1
-                cohort = _classify_read_call(tool_input)
-                stats["read_total"] += 1
-                stats["cohort_n"][cohort] += 1
-                read_calls[tool_id] = {
-                    "cohort": cohort,
-                    "scope": _READ_SCOPE_SCOPE_SUBAGENT if is_subagent else _READ_SCOPE_SCOPE_MAIN,
-                    "file_path": tool_input.get("file_path") or "",
-                }
-            elif block_type == "tool_result":
-                tool_use_id = block.get("tool_use_id")
-                result_content = block.get("content")
-                is_error = bool(block.get("is_error"))
-                result_tokens = (
-                    len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN if isinstance(result_content, str) else 0
-                )
-                # Cross-check denominator: every tool's own result, Read or not.
-                stats["all_tool_result_tokens_total"] += result_tokens
-                if tool_use_id in locate_calls:
-                    stats["locate_result_tokens_total"] += result_tokens
-
-                owner = read_calls.get(tool_use_id)
-                if owner is None:
-                    continue
-                matched.add(tool_use_id)
-                stats["read_result_tokens_total"] += result_tokens
-
-                if is_error:
-                    stats["error_result"] += 1
-                    continue
-                if not isinstance(result_content, str):
-                    stats["non_text_result"] += 1
-                    continue
-
-                cohort = owner["cohort"]
-                if cohort not in (_READ_SCOPE_COHORT_TARGETED, _READ_SCOPE_COHORT_WHOLE_FILE):
-                    continue
-                thread_scope = owner["scope"]
-                stats["cohort_scope_count"][(cohort, thread_scope)] += 1
-                stats["cohort_scope_tokens"][(cohort, thread_scope)] += result_tokens
-                size_bucket = _read_scope_size_bucket(result_tokens)
-                stats["size_hist"][(cohort, thread_scope, size_bucket)] += 1
-                stats["size_hist_tokens"][(cohort, thread_scope, size_bucket)] += result_tokens
-
-    stats["unpaired"] = len(read_calls) - len(matched)
-
-    (
-        stats["repeat_whole_file_reads"],
-        stats["repeat_whole_file_tokens"],
-        stats["repeat_whole_file_output_log_reads"],
-    ) = _read_scope_repeat_whole_file_reads(groups)
-
-    for group in groups:
-        growth, unparseable_ts_excluded = _read_scope_growth_for_group(group, since_ts)
-        stats["growth_tokens"] += growth
-        stats["growth_unparseable_ts_excluded"] += unparseable_ts_excluded
-
-    return stats
-
-
-def cmd_read_scope(args: argparse.Namespace) -> None:
-    """CLI entry point for the read-scope subcommand.
-
-    Root resolution happens here, mirroring cmd_edit_format, so --config-dir
-    validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="read-scope")
-    _read_scope_report(args, roots)
-
-
-def _read_scope_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Single-pass Read-call scope census: offset/limit/pages classification
-    against the full call count, result-token distribution by targeted/
-    whole-file cohort and main/subagent scope, repeat-whole-file-read
-    aggregates, and per-file-and-sessionId-partitioned prompt-token growth.
-    One reproducible scan producing every figure the case study cites.
-
-    roots is None for every direct caller other than cmd_read_scope (this
-    module's own tests included) — mirrors edit-format's own contract,
-    including the absence of the per-account breakdown below.
-
-    This report's own content never varies with `redact`: like edit-format,
-    it carries no project name, session ID, file path, or path fragment —
-    the repeat-whole-file-read aggregates are pure counts and token sums, and
-    per-account rows use account-N labels. --no-redact is still accepted and
-    still enforces the same multi-root refusal and DO NOT PUBLISH banner, for
-    CLI parity.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "read-scope: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "read-scope")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(args, "read-scope", include_subagents=True, roots=roots)
-    _print_resolved_scope("read-scope", scope_label, scan_roots)
-
-    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
-
-    stats = _new_read_scope_stats()
-    per_account: list[dict] = [_new_read_scope_stats() for _ in scan_roots] if multi_root else []
-
-    for jsonl, records in session_iter:
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # which has no variant that also exposes the per-file boundary the
-        # growth chain and repeat-whole-file-read detection need.
-        groups = _read_session_file_partitioned(jsonl, include_subagents=True)
-        session_stats = _scan_read_scope_session(records, groups, since_ts)
-        _merge_read_scope_stats(stats, session_stats)
-        if multi_root:
-            idx = _root_index_for_path(jsonl, resolved_scan_roots)
-            _merge_read_scope_stats(per_account[idx], session_stats)
-
-    _print_read_scope_report(stats, per_account if multi_root else None, since_label)
-
-
-def _read_scope_cohort_bucket_token_total(stats: dict, cohort: str) -> int:
-    """Sum of `cohort`'s size_hist_tokens across both main and subagent scope
-    -- the shared denominator each size-histogram bucket line's percentage
-    divides by, so a subagent-dominated cohort's tokens aren't hidden behind
-    the printing scope's own, smaller total."""
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    return sum(
-        stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-        for label in bucket_labels
-    )
-
-
-def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_label: str) -> None:
-    read_total = stats["read_total"]
-    cohort_n = stats["cohort_n"]
-    targeted_n = cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-    whole_file_n = cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-    pages_n = cohort_n.get(_READ_SCOPE_COHORT_PAGES, 0)
-    unparsed_n = cohort_n.get(_READ_SCOPE_COHORT_UNPARSED, 0)
-
-    print("\n## Read-call census\n")
-    print(f"Read calls: {read_total:,}")
-    print(f"  offset present: {stats['offset_n']:,}")
-    print(f"  limit present:  {stats['limit_n']:,}")
-    print(f"  both present:   {stats['both_n']:,}")
-    # Cohort shares divide by the full Read call census, never targeted +
-    # whole_file — pages/unparsed_input calls are real Read calls that would
-    # otherwise silently vanish from the arithmetic.
-    print(f"\ntargeted    {targeted_n:,}  ({_pct_of(targeted_n, read_total)} of Read calls)")
-    print(f"whole_file  {whole_file_n:,}  ({_pct_of(whole_file_n, read_total)} of Read calls)")
-    print(f"\npages (Read calls scoping a PDF via `pages` rather than offset/limit): {pages_n:,}")
-    print(
-        "unparsed_input (Read tool_use whose input carried no file_path, e.g. only"
-        f" __unparsedToolInput -- scope unknowable): {unparsed_n:,}"
-    )
-    print(f"unpaired (Read tool_use with no matching tool_result found in this session): {stats['unpaired']:,}")
-    print(f"error_result (is_error tool_result for a Read call, excluded from the size histogram): {stats['error_result']:,}")
-    print(
-        "non_text_result (non-string tool_result content for a Read call, e.g. an image"
-        f" block, excluded from the size histogram): {stats['non_text_result']:,}"
-    )
-
-    print("\n## Result token distribution by cohort x scope\n")
-    cpt = _READ_SCOPE_CHARS_PER_TOKEN
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            tokens = stats["cohort_scope_tokens"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label:12} {thread_scope:9} count={count:8,}  tokens=~{tokens:12,}")
-
-    whole_file_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    targeted_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_TARGETED, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    result_tokens_total = whole_file_tokens + targeted_tokens
-    print(f"\nwhole_file share of targeted+whole_file result tokens: {_pct_of(whole_file_tokens, result_tokens_total)}")
-    subagent_whole_file_tokens = stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, _READ_SCOPE_SCOPE_SUBAGENT), 0)
-    print(f"whole_file tokens inside subagents: {_pct_of(subagent_whole_file_tokens, whole_file_tokens)}")
-
-    print("\nsize histogram (est. tokens):\n")
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        cohort_tokens = _read_scope_cohort_bucket_token_total(stats, cohort)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            cohort_scope_count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label} / {thread_scope}:")
-            for label in bucket_labels:
-                count = stats["size_hist"].get((cohort, thread_scope, label), 0)
-                tokens = stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-                print(
-                    f"    {label:10} {count:6,}  ({_pct_of(count, cohort_scope_count)})"
-                    f"  ~{tokens:11,} tok  ({_pct_of(tokens, cohort_tokens)} of {cohort_label} tokens)"
-                )
-
-    print(
-        "\n## Repeat whole-file reads (same path read whole-file more than once in the same"
-        " source file / sessionId -- a subagent re-reading what its parent already read is a"
-        " separate context window, not a repeat)\n"
-    )
-    print(f"repeat reads: {stats['repeat_whole_file_reads']:,}  (~{stats['repeat_whole_file_tokens']:,} tok)")
-    print(f"  of which .output/.log suffixed: {stats['repeat_whole_file_output_log_reads']:,}")
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Prompt-token growth ({title_since})\n")
-    growth_tokens = stats["growth_tokens"]
-    print(f"prompt-token growth: {growth_tokens:,}")
-    print(
-        "growth deltas excluded (--since active, owning turn's timestamp unparseable):"
-        f" {stats['growth_unparseable_ts_excluded']:,}"
-    )
-    print(f"Read-result tokens as share of prompt-token growth: {_pct_of(stats['read_result_tokens_total'], growth_tokens)}")
-    print(
-        "Read-result tokens as share of total tool-result tokens (self-consistent"
-        f" cross-check, both ~{cpt} chars/tok): "
-        f"{_pct_of(stats['read_result_tokens_total'], stats['all_tool_result_tokens_total'])}"
-    )
-    locate_n = stats["locate_call_n"]
-    locate_mean = stats["locate_result_tokens_total"] // locate_n if locate_n else 0
-    print(
-        f"\nlocate-step cost (Grep/Glob calls, the step a targeted read adds): {locate_n:,} calls, "
-        f"~{stats['locate_result_tokens_total']:,} tok, mean ~{locate_mean:,} tok/call -- "
-        f"any saving quoted against whole-file reads is gross until this is netted against it"
-    )
-
-    if per_account is not None:
-        print("\n## Per-account breakdown\n")
-        for idx, account_stats in enumerate(per_account):
-            account_label = f"account-{idx + 1}"
-            a_read_total = account_stats["read_total"]
-            if a_read_total == 0:
-                print(f"  {account_label:10} no Read calls")
-                continue
-            a_cohort_n = account_stats["cohort_n"]
-            a_targeted = a_cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-            a_whole_file = a_cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-            print(
-                f"  {account_label:10} calls={a_read_total:6,}  "
-                f"targeted={_pct_of(a_targeted, a_read_total):>6}  whole_file={_pct_of(a_whole_file, a_read_total):>6}"
             )
 
 
@@ -7144,10 +5524,12 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
         "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
         "if negative) against this origin's own traffic. The main row reads\n"
-        "zero because this corpus was captured while main traffic was on the\n"
-        "1h tier -- promptCacheTtl is unset for main (see\n"
-        "docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a\n"
-        "corpus captured today still shows the 1h tier here. The per-root\n"
+        "zero only when every root's main traffic sits on the vendor's own\n"
+        "default tier: one hour under a Claude subscription within plan usage,\n"
+        "five minutes otherwise. promptCacheTtl is unset for main (see\n"
+        "docs/design-decisions/main-bucket-prompt-cache-ttl-stays-unset.md). A\n"
+        "corpus mixing billing regimes, or forcing a tier via an env var, will\n"
+        "not read zero here. The per-root\n"
         "--ttl-verdict gate below, not this pooled, threshold-independent\n"
         "row, is what actually decides a tier change.\n"
     )
@@ -7402,6 +5784,130 @@ def _cost_ledger_path() -> Path:
             raise ValueError(f"COST_LEDGER_PATH must be an absolute path, got: {override!r}")
         return path
     return config_dir() / "cost-ledger.md"
+
+
+_MACHINE_IDENTITY_FILENAME = "machine-id"
+# Deliberately narrower than _MACHINE_LABEL_RE, since secrets.token_hex(4)
+# can only produce exactly eight lowercase hex characters. A hand-written
+# value that is well-formed under the wider regex (e.g. "acme1") is refused
+# here rather than silently adopted.
+#
+# \Z (not $), matching _MACHINE_LABEL_RE's own anchor, so a trailing newline
+# doesn't slip past it.
+_MACHINE_IDENTITY_RE = re.compile(r"^[0-9a-f]{8}\Z")
+
+
+def _machine_identity_path(config_dir_override: Path | None = None) -> Path:
+    """Path to the generated, per-config-dir machine identity file.
+    Mirrors _pr_cost_ledger_path's own override-parameter shape. Resolved
+    through the module-global config_dir binding only, deliberately never
+    through COST_LEDGER_PATH/PR_COST_LEDGER_PATH. Either override may point
+    at a shared or synced location distinct from this machine's own config
+    directory, so an identity resolved there would be shared by every
+    machine writing to it."""
+    return (config_dir_override or config_dir()) / _MACHINE_IDENTITY_FILENAME
+
+
+def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label: str) -> str:
+    """Read and validate an already-existing machine identity file, exiting
+    1 unless its content matches _MACHINE_IDENTITY_RE exactly. Refuses on:
+
+    - a missing file, including a dangling symlink
+    - an unreadable file
+    - an empty file
+    - hand-written content that doesn't match the regex
+
+    Never echoes the resolved path, matching this module's other
+    home-rooted-path redaction discipline. `location_label` names the
+    identity file's location in the refusal message instead. Deleting the
+    file mints a new identity, under which existing rows read as a
+    different machine. The refusal message states that instead of
+    auto-healing the file."""
+    try:
+        # errors="replace" (not read_text()'s strict decode), so non-UTF-8
+        # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
+        # rather than raising UnicodeDecodeError uncaught.
+        # Assumes path is a regular file or a symlink to one. A FIFO would
+        # block indefinitely here. This is accepted, because triggering it
+        # needs a planted special file in a config dir the attacker already
+        # writes to.
+        raw = path.read_bytes()
+    except OSError:
+        raw = None
+    stripped = raw.decode("utf-8", errors="replace").strip() if raw is not None else None
+    if stripped is None or not _MACHINE_IDENTITY_RE.match(stripped):
+        print(
+            f"{subcommand}: {location_label} does not hold a well-formed"
+            " machine identity -- delete it to mint a new one (existing rows will then read as a"
+            " different machine)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return stripped
+
+
+def _resolve_machine_identity(
+    subcommand: str, config_dir_override: Path | None = None, location_label: str | None = None
+) -> str:
+    """Generates and persists a per-config-dir identity via
+    secrets.token_hex(4) on first use, publishing it through mkstemp+os.link
+    so a losing racer adopts the winner's value instead of a torn write
+    (see docs/pr-cost.md's "Machine identity").
+    """
+    path = _machine_identity_path(config_dir_override)
+    if location_label is None:
+        location_label = f"~/.claude/{_MACHINE_IDENTITY_FILENAME}"
+    if path.exists():
+        return _read_machine_identity_or_refuse(subcommand, path, location_label)
+
+    # 8 lowercase hex chars is a 32-bit collision budget (see docs/pr-cost.md's
+    # "Refusals" section for the cloud-sync-duplication collision discussion).
+    token = secrets.token_hex(4)
+    tmp_name: str | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{_MACHINE_IDENTITY_FILENAME}.")
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return _read_machine_identity_or_refuse(subcommand, path, location_label)
+    except OSError:
+        # Not exc's str(): a real mkstemp/os.link failure embeds the full
+        # temp-file path via exc.filename/filename2, which sits inside
+        # this machine's own config dir.
+        print(
+            f"{subcommand}: could not create the machine identity file ({location_label})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    finally:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+    return token
+
+
+def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
+    """Print a one-time stderr notice when `rows` is non-empty and none of
+    them carries `identity`. This is the expected split the first --record
+    run under a freshly generated identity produces, since a generated
+    identity is never adopted from an existing row. Fires at most once per
+    ledger per --record run: once a row carrying `identity` lands, the
+    guard no longer applies.
+    """
+    if not rows:
+        return
+    if any(row["machine"] == identity for row in rows):
+        return
+    print(
+        f"{subcommand}: this machine's generated identity ({identity}) carries no rows yet, but"
+        f" {len(rows)} existing row(s) do under a different machine value -- the next captured row"
+        " for any PR/week already captured under that other value is expected to produce a second"
+        " row, which is safe to sum (see docs/pr-cost.md). Rule out a synced or dotfile-tracked"
+        " config directory before treating this as the ordinary upgrade case.",
+        file=sys.stderr,
+    )
 
 
 def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledger") -> bool:
@@ -7865,16 +6371,16 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     """
     record: bool = bool(getattr(args, "record", False))
     force: bool = bool(getattr(args, "force", False))
-    machine_label: str | None = getattr(args, "machine_label", None) or None
     note: str = getattr(args, "note", None) or ""
 
     try:
         ledger_path = _cost_ledger_path()
-    except ValueError as exc:
-        # COST_LEDGER_PATH is new, operator-set, and easy to mistype relative
-        # -- route it through this module's standard stderr+exit convention
-        # rather than letting a raw traceback reach the terminal.
-        print(f"cost-ledger: {exc}", file=sys.stderr)
+    except ValueError:
+        # Not str(exc): _cost_ledger_path's own message embeds
+        # COST_LEDGER_PATH's raw value, which can carry a home-rooted
+        # engagement path. Same discipline as pr-cost-export's identical
+        # catch.
+        print("cost-ledger: COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
         sys.exit(1)
 
     if roots is None:
@@ -7968,12 +6474,6 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
 
-    if not machine_label:
-        print("cost-ledger: --record requires --machine-label", file=sys.stderr)
-        sys.exit(1)
-    if not _MACHINE_LABEL_RE.match(machine_label):
-        print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
     if len(roots) > 1 and _ledger_path_is_git_tracked(ledger_path):
         # --record writes to a single resolved ledger path; unioning multiple
         # declared accounts into that one write only risks silently
@@ -7990,18 +6490,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(2)
-    # Rejection names the rule, never the compared hostname value -- echoing
-    # it would persist recon-value data into the session transcript, the same
-    # discipline deny-private-project-refs.sh applies to its own matches.
-    # Covers the POSIX hostname only, not macOS's separate ComputerName
-    # (`scutil --get ComputerName`) -- see docs/cost-ledger.md.
-    if machine_label.lower() == socket.gethostname().lower():
-        print(
-            "cost-ledger: --machine-label must not equal this machine's hostname"
-            " -- publishing a hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+
+    # Resolved only after the sentinel and git-tracked checks above, so a
+    # run never creates a machine-id file inside a config dir whose owner
+    # never opted in to --record.
+    # See pr-cost's equivalent call for the same ordering.
+    machine = _resolve_machine_identity("cost-ledger")
+
     note_violation = _cost_ledger_note_violation(note)
     if note_violation is not None:
         print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
@@ -8059,7 +6554,9 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     opus_share = _pct_value(week_data["opus"], week_data["total"])
 
     deny_data = _compute_deny_summary_data(deny_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
-    denials = sum(deny_data["hook_counts"].values())
+    # Shadows the module-level `denials` import (transcript_analysis.denials) -- this
+    # function needs no denials.<name> access, only the count computed above.
+    denials = sum(deny_data["hook_counts"].values())  # noqa: F811
 
     reviewer_data = _compute_reviewer_yield_data(reviewer_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
     reviewer_gap_pp = _reviewer_gap_pp(reviewer_data["agg2"])
@@ -8067,7 +6564,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     new_row = {
         "week": week_str,
-        "machine": machine_label,
+        "machine": machine,
         "rates": _PRICING_FETCH_DATE.isoformat(),
         "usd": week_data["total"],
         "context_pct": context_share,
@@ -8095,6 +6592,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
                 print(f"cost-ledger: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            _warn_machine_identity_absent_from_ledger("cost-ledger", machine, existing_rows)
+
             try:
                 new_rows = _upsert_cost_ledger_row(existing_rows, new_row, force)
             except ValueError as exc:
@@ -8109,7 +6608,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
-    print(f"cost-ledger: recorded {week_str} / {machine_label}")
+    print(f"cost-ledger: recorded {week_str} / {machine}")
 
 
 # ---------------------------------------------------------------------------
@@ -8298,7 +6797,9 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     """Validate and coerce one already-split, already-tab-separated data
     row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
     the offending line on any field that doesn't match its column's
-    contract."""
+    contract. Never embeds a cell's raw value in this message, since
+    pr-cost-export echoes it to stderr where another account's concurrent
+    session may be watching."""
     if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
         raise _PrCostLedgerParseError(
             f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
@@ -8306,21 +6807,15 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
 
     if not row["host"] or row["host"] != row["host"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
-            " this diagnostic since the ledger's host column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed host value (must be lowercase)")
     if not row["repo"] or row["repo"] != row["repo"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
-            " this diagnostic since the ledger's repo column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed repo value (must be lowercase owner/name)")
     try:
         row["pr_number"] = int(row["pr_number"])
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number {row['pr_number']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number") from None
     if not _MACHINE_LABEL_RE.match(row["machine"]):
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label {row['machine']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label")
     for required_col in ("head_branch", "merged_at", "captured_at"):
         if not row[required_col]:
             raise _PrCostLedgerParseError(f"line {line_no}: {required_col} must not be empty")
@@ -8330,35 +6825,33 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
         try:
             datetime.fromisoformat(row[ts_col].replace("Z", "+00:00"))
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col} {row[ts_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col}") from None
     try:
         datetime.strptime(row["rate_stamp"], "%Y-%m-%d")
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp {row['rate_stamp']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp") from None
     if row["join_confidence"] not in _PR_COST_JOIN_CONFIDENCE_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence {row['join_confidence']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence")
     if row["status"] not in _PR_COST_STATUS_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown status {row['status']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown status")
 
     for float_col in _PR_COST_FLOAT_COLUMNS:
         try:
             row[float_col] = float(row[float_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col} {row[float_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col}") from None
         if math.isnan(row[float_col]) or math.isinf(row[float_col]):
-            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col} {row[float_col]!r}")
+            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col}")
 
     for int_col in _PR_COST_INT_COLUMNS:
         try:
             row[int_col] = int(row[int_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col} {row[int_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col}") from None
 
     for bool_col in _PR_COST_BOOL_COLUMNS:
         if row[bool_col] not in ("true", "false"):
-            raise _PrCostLedgerParseError(
-                f"line {line_no}: malformed {bool_col} {row[bool_col]!r} (expected true/false)"
-            )
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {bool_col} (expected true/false)")
         row[bool_col] = row[bool_col] == "true"
 
     return row
@@ -8404,7 +6897,7 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     return rows
 
 
-def _format_pr_cost_ledger_row(row: dict) -> str:
+def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_LEDGER_COLUMNS) -> str:
     """Render one row dict as its tab-separated line -- the exact inverse of
     _parse_pr_cost_ledger_row_cells. Refuses (raises _PrCostLedgerParseError)
     to render any cell containing a tab or newline, which would corrupt the
@@ -8412,9 +6905,11 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
     program-generated (a redacted placeholder, or an ISO8601 timestamp this
     module itself formatted), never raw external text, so this should never
     fire in practice; it exists as a last-resort guard against writing a
-    corrupt row rather than as an expected code path."""
+    corrupt row rather than as an expected code path. `columns` defaults to
+    the ledger's own column tuple. pr-cost-export passes its own wider tuple
+    to reuse this same tab/newline guard and bool/float rendering."""
     cells: list[str] = []
-    for col in _PR_COST_LEDGER_COLUMNS:
+    for col in columns:
         value = row[col]
         if col in _PR_COST_BOOL_COLUMNS:
             cell = "true" if value else "false"
@@ -8423,9 +6918,7 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
         else:
             cell = str(value)
         if "\t" in cell or "\n" in cell or "\r" in cell:
-            raise _PrCostLedgerParseError(
-                f"column {col!r} value {cell!r} contains a tab or newline -- refusing to write a corrupt row"
-            )
+            raise _PrCostLedgerParseError(f"column {col!r} contains a tab or newline -- refusing to write a corrupt row")
         cells.append(cell)
     return "\t".join(cells)
 
@@ -8453,7 +6946,8 @@ def _latest_pr_cost_row(
     ]
     if not matches:
         return None
-    return max(matches, key=lambda r: r["captured_at"])
+    # Last appended wins on an equal captured_at (the index tiebreaks max()).
+    return max(enumerate(matches), key=lambda p: (p[1]["captured_at"], p[0]))[1]
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
@@ -9148,20 +7642,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     if force and target_pr is None:
         print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
         sys.exit(1)
-    if record and not machine_label:
-        print("pr-cost: --record requires --machine-label", file=sys.stderr)
+    # Precedes the format check below, because --record's machine identity
+    # is generated, never operator-supplied. Firing first avoids giving a
+    # malformed --machine-label a fix-the-format message that would invite
+    # retrying with --record still set.
+    if record and machine_label is not None:
+        print(
+            "pr-cost: --machine-label is not accepted with --record -- machine identity is"
+            " generated and persisted automatically; see docs/pr-cost.md. --machine-label still"
+            " narrows read mode's uncaptured-PR listing to one machine",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if machine_label is not None and not _MACHINE_LABEL_RE.match(machine_label):
         print(f"pr-cost: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
-    if record and machine_label.lower() == socket.gethostname().lower():
-        # Rejection names the rule, never the compared hostname -- same
-        # discipline as cost-ledger's own equivalent check.
-        print(
-            "pr-cost: --machine-label must not equal this machine's hostname -- publishing a"
-            " hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
     corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
@@ -9197,19 +7691,22 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
         try:
             ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError as exc:
-            print(f"pr-cost: {exc}", file=sys.stderr)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as pr-cost-export's identical
+            # catch.
+            print(f"pr-cost: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
             sys.exit(1)
 
-        existing_rows: list[dict] = []
-        if ledger_path.exists():
-            try:
-                existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-            except _PrCostLedgerParseError as exc:
-                print(f"pr-cost: {exc}", file=sys.stderr)
-                sys.exit(1)
-
         if not record:
+            existing_rows: list[dict] = []
+            if ledger_path.exists():
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
             _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
             _print_pr_cost_uncaptured(
                 branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
@@ -9285,19 +7782,23 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             if all_accounts:
                 # account-N, not the resolved config dir, to avoid a
                 # resolved home-rooted path in output -- same discipline as
-                # the single-account refusal message below.
+                # the single-account refusal message below. Worded
+                # generically ("not opted in"), not as a missing-sentinel-
+                # file claim. Same rationale as pr-cost-export's identical
+                # message: an explicit pr_cost_recording = false in
+                # claude-config.toml reaches this branch with no sentinel
+                # file involved at all.
                 print(
-                    f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                    f"pr-cost: account-{ordinal} is not opted in (pr_cost_recording) --"
                     " skipped, see docs/pr-cost.md",
                     file=sys.stderr,
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not the resolved config dir, to
-            # avoid a resolved home-rooted path in output -- same discipline
-            # as cost-ledger's equivalent message above.
+            # Worded generically for the same reason as the all_accounts
+            # branch above.
             print(
-                "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
+                "pr-cost: --record is not opted in (pr_cost_recording) --"
                 " see docs/pr-cost.md",
                 file=sys.stderr,
             )
@@ -9321,6 +7822,42 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 file=sys.stderr,
             )
             sys.exit(2)
+
+        # Resolved only after the opt-in gate and the git-tracked refusal
+        # above, so a run never creates a machine-id file for an account
+        # that never opted in to --record.
+        # The refusal message names the account as account-N, not a resolved
+        # path, because --all-accounts means account_config_dir isn't the
+        # default ~/.claude the un-labeled convention would otherwise imply.
+        machine_identity = _resolve_machine_identity(
+            "pr-cost",
+            config_dir_override=account_config_dir,
+            location_label=f"account-{ordinal}" if all_accounts else None,
+        )
+
+        # Read under this account's own write lock, immediately before the
+        # warn call — matching _cost_ledger_report's own read-under-lock
+        # symmetry. A read taken outside any lock could warn from a state a
+        # concurrent writer has already superseded.
+        # Known, accepted residual: the ledger write happens in a later,
+        # separate per-branch lock, so a concurrent writer landing between
+        # this lock's release and that lock's acquire still sees a stale
+        # advisory warning.
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        with open(lock_path, "w") as lock_f:
+            _acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except FileNotFoundError:
+                    existing_rows = []
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                _warn_machine_identity_absent_from_ledger("pr-cost", machine_identity, existing_rows)
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
         if target_pr is not None:
             pr_by_number = {pr["number"]: pr for pr in merged_prs}
@@ -9394,11 +7931,11 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         sys.exit(1)
 
                     already = _latest_pr_cost_row(
-                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
+                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
                     )
                     if already is not None and not force:
                         print(
-                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
+                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_identity} is already"
                             " captured -- pass --force (with --pr) to append a correcting row",
                             file=sys.stderr,
                         )
@@ -9438,7 +7975,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     new_row = _new_pr_cost_row(
                         host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
                         enrichment=enrichment, join_confidence=join_confidence, status=row_status,
-                        machine=machine_label, captured_at=captured_at,
+                        machine=machine_identity, captured_at=captured_at,
                         supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
@@ -9456,7 +7993,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
             existing_rows = updated_rows
             account_recorded_a_row = True
-            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
+            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_identity}")
 
         if account_recorded_a_row:
             recorded += 1  # counts accounts that wrote a row, not total rows written
@@ -9472,6 +8009,399 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
+
+
+# _PR_COST_LEDGER_COLUMNS with a leading account column.
+# head_branch is renamed head_branch_label: a stored label is per-run, not a
+# stable branch identity, so re-tokenizing it needs a name that makes that
+# visible.
+# supersedes is replaced by correction_count: supersedes is a dangling
+# pointer into a row the export no longer carries, so a derived count stands
+# in for it instead.
+_PR_COST_EXPORT_COLUMNS: tuple[str, ...] = ("account", *(
+    {"head_branch": "head_branch_label", "supersedes": "correction_count"}.get(col, col)
+    for col in _PR_COST_LEDGER_COLUMNS
+))
+_PR_COST_EXPORT_HEADER_LINE = "\t".join(_PR_COST_EXPORT_COLUMNS)
+
+
+def _pr_cost_export_date_only(value: str) -> str:
+    """Date portion of an already-validated ISO8601 timestamp
+    (YYYY-MM-DDTHH:MM:SS[Z|+HH:MM]). Validated by
+    _parse_pr_cost_ledger_row_cells before this is ever called. Applies to
+    merged_at/captured_at only. rate_stamp is already date-only and never
+    passed through this."""
+    return value.split("T", 1)[0]
+
+
+def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, int]]:
+    """One (row, correction_count) pair per distinct (host, repo, pr_number,
+    machine) key in `rows`, keeping only the current (latest by
+    captured_at) row for each key -- the append-only ledger's full history
+    collapsed to current state. Must run before tokenization: pr_number must
+    stay a typed int. Must run before date-truncation: same-day ties need
+    full-precision captured_at. correction_count is the number of other
+    rows sharing that key (total captures minus one).
+    """
+    groups: dict[tuple[str, str, int, str], list[dict]] = {}
+    for row in rows:
+        key = (row["host"], row["repo"], row["pr_number"], row["machine"])
+        groups.setdefault(key, []).append(row)
+    collapsed: list[tuple[dict, int]] = []
+    for (host, repo, pr_number, machine), group in groups.items():
+        latest = _latest_pr_cost_row(group, host, repo, pr_number, machine)
+        collapsed.append((latest, len(group) - 1))
+    return collapsed
+
+
+def _redact_pr_cost_row_for_export(
+    row: dict, ordinal: int, correction_count: int,
+    host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict, machine_map: dict,
+) -> dict:
+    """One collapsed ledger row rendered into _PR_COST_EXPORT_COLUMNS' own
+    shape:
+
+    - host/repo/pr_number/head_branch/machine are tokenized through five
+      separate per-kind maps.
+    - merged_at/captured_at are truncated to a date.
+    - supersedes is replaced by the caller-computed correction_count.
+
+    `row["head_branch"]` is re-tokenized here even though it already holds
+    a redacted placeholder from the write path. That placeholder was
+    assigned under whichever run's own ordinal scheme recorded it, so
+    passing it through as-is would put two disagreeing account-K numberings
+    in one row.
+
+    `machine` is tokenized uniformly, whether it holds a tool-generated hex
+    identity or a legacy operator-chosen `--machine-label` value -- both are
+    potentially identifying, so neither passes through raw.
+    """
+    exported = dict(row)
+    exported["account"] = f"account-{ordinal}"
+    exported["host"] = _assign_root_scoped_redact_label("host", ordinal, row["host"], host_map)
+    exported["repo"] = _assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+    exported["pr_number"] = _assign_root_scoped_redact_label("pr", ordinal, str(row["pr_number"]), pr_map)
+    exported["head_branch_label"] = _assign_root_scoped_redact_label(
+        "branch", ordinal, row["head_branch"], branch_map
+    )
+    exported["machine"] = _assign_root_scoped_redact_label("machine", ordinal, row["machine"], machine_map)
+    exported["merged_at"] = _pr_cost_export_date_only(row["merged_at"])
+    exported["captured_at"] = _pr_cost_export_date_only(row["captured_at"])
+    exported["correction_count"] = correction_count
+    del exported["head_branch"]
+    del exported["supersedes"]
+    return exported
+
+
+def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, list[str]]:
+    """Read every resolved root's own pr-cost ledger. Returns
+    (formatted_rows, declared, opted_in, skipped_not_opted_in,
+    legacy_header_accounts, legacy_machine_value_rows, corpus_identities),
+    fully materialized, with no filesystem writes of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for account
+    iteration order and corpus_identities' construction.
+    """
+    ordinals = _redaction_ordinals(roots)
+    root_by_resolved = {root.resolve(): root for root in roots}
+    declared = len(roots)
+    opted_in = skipped_not_opted_in = legacy_header_accounts = legacy_machine_value_rows = 0
+    formatted_rows: list[str] = []
+    corpus_identities: list[str] = []
+    host_map: dict[tuple[int, str], str] = {}
+    repo_map: dict[tuple[int, str], str] = {}
+    pr_map: dict[tuple[int, str], str] = {}
+    branch_map: dict[tuple[int, str], str] = {}
+    machine_map: dict[tuple[int, str], str] = {}
+
+    for resolved_root in sorted(ordinals):
+        ordinal = ordinals[resolved_root]
+        account_config_dir = root_by_resolved[resolved_root].parent
+
+        # Same call, and the same error handling, as --record's own opt-in
+        # gate above (see _config.py's _location_value for how
+        # claude-config.toml and the legacy sentinel resolve against
+        # each other).
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except _config.ConfigSchemaEmptyError:
+            print(
+                f"pr-cost-export: account-{ordinal}: config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            print(
+                f"pr-cost-export: account-{ordinal}: pr_cost_recording's config-keys.psv row is"
+                " truncated (partial stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except KeyError as exc:
+            if _config.schema():
+                print(f"pr-cost-export: account-{ordinal}: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"pr-cost-export: account-{ordinal}: could not read config-keys.psv (partial"
+                " stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always concrete here (root.parent), so
+            # this is not expected to be reachable in practice -- see
+            # --record's identical branch above for why it's still handled
+            # explicitly rather than left to fail silently.
+            print(
+                f"pr-cost-export: account-{ordinal}'s config directory could not be resolved --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            # account-N, not account_config_dir, to avoid a resolved
+            # home-rooted path in output -- same discipline as pr-cost's own
+            # --all-accounts skip message.
+            # Worded generically for the same reason as pr-cost's
+            # --all-accounts skip message above.
+            print(
+                f"pr-cost-export: account-{ordinal} is not opted in (pr_cost_recording) --"
+                " skipped, see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            skipped_not_opted_in += 1
+            continue
+        opted_in += 1
+
+        try:
+            ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as this function's other
+            # account-N-only diagnostics above.
+            print(
+                f"pr-cost-export: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not ledger_path.exists():
+            continue
+
+        try:
+            ledger_text = ledger_path.read_text()
+        except OSError:
+            print(f"pr-cost-export: account-{ordinal}: ledger file could not be read", file=sys.stderr)
+            sys.exit(1)
+        # splitlines(), not split("\n", 1), so a CRLF-terminated first line is
+        # recognized the same way _parse_pr_cost_ledger_file_text's own
+        # canonical line-1 comparison recognizes it.
+        ledger_lines = ledger_text.splitlines()
+        if ledger_lines and ledger_lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+            legacy_header_accounts += 1
+        try:
+            raw_rows = _parse_pr_cost_ledger_file_text(ledger_text)
+        except _PrCostLedgerParseError as exc:
+            print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not raw_rows:
+            continue
+
+        # Threaded through this same per-account loop rather than re-read from
+        # each ledger a second time, to avoid double I/O and a result that
+        # could disagree with the rows actually exported.
+        corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
+        for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
+            # Runs post-collapse, so a same-key multi-capture correction under
+            # one legacy machine value is counted once here, not once per raw capture.
+            if not _MACHINE_IDENTITY_RE.match(row["machine"]):
+                legacy_machine_value_rows += 1
+            exported = _redact_pr_cost_row_for_export(
+                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map, machine_map
+            )
+            try:
+                formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
+            except _PrCostLedgerParseError as exc:
+                print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+    return (
+        formatted_rows, declared, opted_in, skipped_not_opted_in,
+        legacy_header_accounts, legacy_machine_value_rows, corpus_identities,
+    )
+
+
+def _pr_cost_export_provenance_line(
+    *, exported_at: datetime, declared: int, opted_in: int, skipped_not_opted_in: int,
+    legacy_header_accounts: int, legacy_machine_value_rows: int, corpus_identities: Sequence[str],
+    corpus_override: bool,
+) -> str:
+    """Builds the provenance line. corpus= is a same-corpus indicator only,
+    never a security boundary -- see docs/pr-cost.md's "Redacted
+    cross-account export" section for its construction, for what
+    corpus_override=1 means, and for what legacy_machine_value_rows flags.
+    """
+    digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
+    exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        "# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this"
+        f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
+        f" skipped_not_opted_in={skipped_not_opted_in} legacy_header_accounts={legacy_header_accounts}"
+        f" legacy_machine_value_rows={legacy_machine_value_rows}"
+        f" corpus={digest} corpus_override={int(corpus_override)}"
+    )
+
+
+def cmd_pr_cost_export(args: argparse.Namespace) -> None:
+    """CLI entry point for the pr-cost-export subcommand -- a pure local
+    file transform over every declared account's own pr-cost ledger, making
+    no `gh` call and scanning no transcript corpus of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for the full
+    grain and redaction contract.
+    """
+    out = getattr(args, "out", None)
+    if not out:
+        print(
+            "pr-cost-export: --out PATH is required -- this subcommand never writes to stdout,"
+            " since stdout inside a Claude Code session is captured into that session's own"
+            " transcript",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Resolved (following any symlink at --out itself) so the git-tree check
+    # below sees where the path really points.
+    # For a dangling symlink, resolve() still reports that the target
+    # doesn't exist.
+    # This resolved path is never echoed to a diagnostic, since it can embed
+    # a home-rooted engagement directory -- see _config_dir.py's own "the
+    # path identifies an engagement" discipline.
+    # Only the operator's own literal `out` string is echoed below.
+    resolved_out = Path(out).resolve()
+    # lexists() here buys nothing over exists(), since resolve() above
+    # already followed every symlink. This check is therefore a UX-only
+    # fast path that fails fast on the common case. The actual symlink
+    # defense is below, at the unresolved open_path + os.link publish step.
+    # That step raises FileExistsError on an existing destination rather
+    # than dereferencing it.
+    if os.path.lexists(str(resolved_out)):
+        print(
+            f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # resolved_out is re-resolved a second, independent time at the terminal
+    # os.open call below (open_path). A symlink retargeted between these two
+    # checks is a known, accepted TOCTOU window for this tool's
+    # single-operator threat model, not one this check closes.
+    if _ledger_path_is_git_tracked(resolved_out, "pr-cost-export"):
+        print(
+            f"pr-cost-export: --out {out!r} is inside a git working tree -- this repo (and every"
+            " repo this subcommand might be run from) is potentially public; write outside any"
+            " git working tree",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    roots = _resolve_cost_roots(args, "pr-cost-export")
+    if len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+        # Mirrors pr-cost's own --all-accounts + PR_COST_LEDGER_PATH refusal:
+        # with it set, every account would resolve to the same forced file,
+        # exporting one ledger's rows once per account under a different
+        # account token.
+        print(
+            "pr-cost-export: PR_COST_LEDGER_PATH is refused when more than one root resolves --"
+            " unset PR_COST_LEDGER_PATH (each account then defaults to its own ledger path), or"
+            " scope to a single profile (drop --config-dir)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # No _resolve_project_scope call here to derive a scope_label from --
+    # this subcommand has no --this-repo/--projects flags.
+    # "*" is the same literal every other subcommand's scope_label defaults
+    # to absent those flags, so it is the accurate, unscoped label for every
+    # declared account's ledger.
+    _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
+
+    (
+        formatted_rows, declared, opted_in, skipped_not_opted_in, legacy_header_accounts,
+        legacy_machine_value_rows, corpus_identities,
+    ) = _pr_cost_export_rows(roots)
+
+    provenance_line = _pr_cost_export_provenance_line(
+        exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
+        skipped_not_opted_in=skipped_not_opted_in, legacy_header_accounts=legacy_header_accounts,
+        legacy_machine_value_rows=legacy_machine_value_rows, corpus_identities=corpus_identities,
+        corpus_override=declared_roots_file_is_overridden(),
+    )
+    file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
+
+    # The final path component is left exactly as named, unlike resolved_out
+    # above, so the publish step's own symlink refusal (below) actually
+    # fires instead of silently following the link to wherever it points.
+    # The parent is still resolved, so a symlinked parent directory lands
+    # inside the same target the git-tree check above already validated.
+    open_path = Path(out).parent.resolve() / Path(out).name
+
+    # Materialized into a same-directory temp file first, then published into
+    # --out via a hard link, so a mid-write crash never leaves a truncated,
+    # non-empty file stuck at the operator-named path with no sign it's crash
+    # debris. Same mkstemp+os.link idiom as _resolve_machine_identity's own
+    # publish step.
+    #
+    # `mkstemp` creates the temp file `0600`, and `os.link`'s new name shares
+    # that same inode's mode. `--out` therefore ends up `0600` with no
+    # separate `chmod` needed.
+    tmp_name: str | None = None
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(open_path.parent), prefix=".pr-cost-export-", suffix=".tmp")
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(file_text)
+    except OSError:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+        print(
+            f"pr-cost-export: --out {out!r} could not be written -- pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        try:
+            os.link(tmp_name, open_path)
+        except FileExistsError:
+            print(
+                f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        except OSError:
+            # Not over-specified to "parent directory missing or
+            # unwritable": os.link can also fail this way on EXDEV (--out on
+            # a different filesystem than the temp file) or ENOSPC.
+            print(
+                f"pr-cost-export: --out {out!r} could not be published; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+
+    print(
+        f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"
+        f" account(s) to {out}"
+    )
+    print(
+        "pr-cost-export: inspect this file outside a Claude Code session (e.g. in a separate"
+        " terminal) -- reading it back with the Read tool, or catting it in-session, copies its"
+        " rows into that session's own transcript. See CLAUDE.md and docs/pr-cost.md before"
+        " publishing anything derived from it.",
+        file=sys.stderr,
+    )
 
 
 def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
@@ -9654,9 +8584,9 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
     memory. Returns [] when the file is absent or unreadable -- shared by
     _print_nudge_log_diagnostic and _parse_nudge_log_entries so both read
     ~/.claude/.handoff-nudge.log the same bounded way."""
-    if not log_path.exists():
-        return []
     try:
+        if not log_path.exists():
+            return []
         if log_path.stat().st_size > _NUDGE_LOG_MAX_READ:
             raw = log_path.read_bytes()[-_NUDGE_LOG_MAX_READ:]
             return raw.decode(errors="ignore").splitlines()
@@ -10200,33 +9130,6 @@ _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 
 
-# Shell operators that chain multiple invocations into one Bash command --
-# splitting on these keeps a mutating git call from hiding in a later segment
-# of e.g. "cd worktree && git commit -m wip".
-_TURN_SHAPE_SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
-
-
-def _split_command_tokens_on_shell_operators(tokens: list[str]) -> list[list[str]]:
-    """Split a shlex-tokenized command into segments at &&, ||, ;, and | operators.
-
-    A quoted operator (e.g. a commit message containing "&&") survives as
-    part of its enclosing token from shlex.split and is never treated as a
-    separator here, since it can't equal one of these bare operator tokens.
-    """
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in _TURN_SHAPE_SHELL_OPERATOR_TOKENS:
-            if current:
-                segments.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
 # A single env-var-assignment token, e.g. "FOO=bar" -- the per-token form of
 # _DENIAL_COMMAND_ENV_PREFIX_RE's leading-assignment character classes, applied
 # per shell-operator segment (not just once at the start of the whole
@@ -10260,13 +9163,9 @@ def _bash_command_is_mutating_git(command: str) -> bool:
     """Return True iff any &&/;/|/||-chained segment of `command` invokes a
     mutating git subcommand (see _command_segment_is_mutating_git).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
     return any(
         _command_segment_is_mutating_git(segment)
-        for segment in _split_command_tokens_on_shell_operators(tokens)
+        for segment in corpus.split_command_segments(command)
     )
 
 
@@ -10703,7 +9602,9 @@ def _friction_struggle_turn_events(records: list[dict]) -> int:
 
 def _friction_signals(records: list[dict]) -> dict[str, int]:
     """Return the per-signal friction breakdown plus the all-1-weighted composite."""
-    denials = _friction_denial_events(records)
+    # Shadows the module-level `denials` import (transcript_analysis.denials) -- this
+    # function needs no denials.<name> access, only the count computed below.
+    denials = _friction_denial_events(records)  # noqa: F811
     failed_test_runs = _friction_failed_test_run_events(records)
     struggle_turns = _friction_struggle_turn_events(records)
     composite = (
@@ -11335,6 +10236,121 @@ def _operator_response_lag_from_log(
     return lags, excluded
 
 
+def _nudge_conversion_from_log(
+    session_traces: dict[str, list[int]], log_entries_by_root: dict[Path, list[dict]]
+) -> dict:
+    """Classify each fired, in-scope session into one of four nudge-to-handoff
+    conversion buckets, per the frozen classification in
+    .claude/plans/handoff-nudge-deep-tail-lever.md.
+
+    A session enters the classified population when it appears on at least
+    one `nudged` log line AND has a surviving in-scope trace in
+    session_traces -- the same population _operator_response_lag_from_log
+    joins against. A nudged session with no in-scope trace is excluded and
+    counted under "dropped" rather than guessed at (mirroring
+    _operator_response_lag_from_log's own excluded_count). A `handoff` line
+    for a session that never appears on a `nudged` line at all is outside
+    this population and is neither classified nor counted -- this measures
+    "did a nudged session convert," not "how many handoffs ran."
+
+    log_entries_by_root groups _parse_nudge_log_entries' own per-root output
+    -- a session's own nudged/handoff lines always land in one root's log,
+    since the same account writes both. Neither line type carries a
+    timestamp, so each root's own file order is the only chronological
+    signal available. No cross-root merge is needed as a result.
+
+    Buckets (mutually exclusive, decided by the first `handoff` line reached
+    and whether any `action=block` line precedes it):
+    - voluntary: a handoff line exists, no block precedes it
+    - forced: a handoff line exists, at least one block precedes it
+    - blocked_no_handoff: at least one block line, no handoff line
+    - no_compliance: neither a block nor a handoff line
+
+    Returns a dict with:
+    - "voluntary", "forced", "blocked_no_handoff", "no_compliance": the four
+      bucket counts above
+    - "dropped": nudged sessions with no surviving in-scope trace, excluded
+      rather than guessed at (see above)
+    - "join_validity": voluntary + forced, the count of fired, in-scope
+      sessions whose handoff line's session id actually matched a nudged
+      session id
+    - "ignored_values": the `ignored=` value on the last nudged line
+      preceding the handoff line, one per voluntary session where that line
+      carries the field
+    - "no_ignored_field": voluntary sessions whose preceding nudged line
+      carries no ignored= field -- counted separately and never defaulted to
+      0, which would bias the distribution toward "complied immediately"
+
+    A future nudge tier adding a third `action=` value must update this
+    function's own `action == "block"` check (below) alongside
+    _operator_response_lag_from_log's.
+    """
+    # A session id repeated across roots (stale symlink, merged log, PID
+    # reuse) is not handled -- entries land in root-scan order.
+    # Ordering is approximate because neither line type carries a
+    # timestamp.
+    per_session: dict[str, list[dict]] = defaultdict(list)
+    for entries in log_entries_by_root.values():
+        for entry in entries:
+            if entry.get("kind") not in ("nudged", "handoff"):
+                continue
+            session = entry.get("session")
+            if session:
+                per_session[session].append(entry)
+
+    voluntary = forced = blocked_no_handoff = no_compliance = 0
+    dropped = no_ignored_field = 0
+    ignored_values: list[int] = []
+
+    for session, entries in per_session.items():
+        if not any(e["kind"] == "nudged" for e in entries):
+            continue
+        if session not in session_traces:
+            dropped += 1
+            continue
+
+        handoff_index = next((i for i, e in enumerate(entries) if e["kind"] == "handoff"), None)
+        block_index = next(
+            (i for i, e in enumerate(entries) if e["kind"] == "nudged" and e.get("action") == "block"),
+            None,
+        )
+
+        if handoff_index is None:
+            if block_index is not None:
+                blocked_no_handoff += 1
+            else:
+                no_compliance += 1
+            continue
+
+        if block_index is not None and block_index < handoff_index:
+            forced += 1
+            continue
+
+        voluntary += 1
+        last_nudged = next(
+            (e for e in reversed(entries[:handoff_index]) if e["kind"] == "nudged"), None
+        )
+        if last_nudged is not None and "ignored" in last_nudged:
+            ignored_values.append(last_nudged["ignored"])
+        else:
+            no_ignored_field += 1
+
+    return {
+        "voluntary": voluntary,
+        "forced": forced,
+        "blocked_no_handoff": blocked_no_handoff,
+        "no_compliance": no_compliance,
+        "dropped": dropped,
+        # Definitional sum of the two buckets above, not an independent join
+        # re-check: the classification loop's own per-session bucket
+        # assignment already requires a shared session id before either
+        # bucket increments.
+        "join_validity": voluntary + forced,
+        "ignored_values": ignored_values,
+        "no_ignored_field": no_ignored_field,
+    }
+
+
 def _simulate_rearm_spacing(
     main_thread_turns: Sequence[tuple[int, int, float]],
     boundaries: Sequence[int],
@@ -11453,6 +10469,49 @@ def _session_matches_rearm_scope(
     )
 
 
+def _rearm_backtest_log_size_lines(
+    per_root_sizes: Sequence[tuple[Path, int | None]],
+    *,
+    multi_root: bool,
+    redact: bool,
+    redact_ordinals: dict[Path, int],
+) -> list[str]:
+    """Render the nudge-log byte-size disclosure line(s) for
+    _rearm_backtest_report from each root's already-resolved byte size
+    (None means unreadable). Multi-root scope pools every root into one
+    aggregate line: a per-root byte count is itself a per-account figure,
+    which docs/private-project-redaction.md's Account-cardinality bar
+    prohibits. Single-root scope prints that root's own account-N-labeled
+    (or raw path under --no-redact) line directly.
+
+    Pure over already-resolved sizes so it's unit-testable without a
+    filesystem.
+    """
+    if multi_root:
+        total_bytes = sum(size for _root, size in per_root_sizes if size is not None)
+        # Boolean-only, never a count: same cardinality-leak concern as above.
+        any_truncated = any(
+            size is not None and size > _NUDGE_LOG_MAX_READ for _root, size in per_root_sizes
+        )
+        any_unreadable = any(size is None for _root, size in per_root_sizes)
+        note = ""
+        if any_truncated:
+            note += " (some roots truncated -- oldest lines dropped)"
+        if any_unreadable:
+            note += " (some roots unreadable)"
+        return [f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}"]
+
+    # multi_root=False implies exactly one entry: the sole caller derives
+    # multi_root from the same scan_roots that produced per_root_sizes.
+    root, size = per_root_sizes[0]
+    log_path = root.parent / ".handoff-nudge.log"
+    root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
+    if size is None:
+        return [f"  {root_label} nudge log: unreadable"]
+    truncated_note = " [truncated -- oldest lines dropped]" if size > _NUDGE_LOG_MAX_READ else ""
+    return [f"  {root_label} nudge log: {size:,} bytes{truncated_note}"]
+
+
 def cmd_rearm_backtest(args: argparse.Namespace) -> None:
     """CLI entry point for the rearm-backtest subcommand.
 
@@ -11549,15 +10608,31 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    try:
-        config_directory = config_dir()
-    except ValueError as exc:
-        # Mirrors _cost_ledger_path's callers' own stderr+exit convention.
-        # The rest of this report can't locate the recorded corpus it
-        # backtests against without a resolved config dir.
-        print(f"rearm-backtest: {exc}", file=sys.stderr)
-        sys.exit(1)
-    log_entries = _parse_nudge_log_entries(config_directory / ".handoff-nudge.log")
+    # scan_roots is already resolved (with its own exit(2) handling) via
+    # _resolve_cost_roots, so no config_dir() call is needed here. Per-root
+    # join avoids biasing lag/conversion toward one account while
+    # session_traces spans every root.
+    log_entries_by_root: dict[Path, list[dict]] = {}
+    per_root_sizes: list[tuple[Path, int | None]] = []
+    for root in scan_roots:
+        log_path = root.parent / ".handoff-nudge.log"
+        log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
+        # This duplicates _read_bounded_log_lines' own exists/stat/read guard
+        # rather than reusing it. The two stay in sync only because both
+        # currently catch plain OSError -- re-check both sites together if
+        # either's caught exception type narrows.
+        try:
+            log_size = log_path.stat().st_size if log_path.exists() else 0
+        except OSError:
+            per_root_sizes.append((root, None))
+            continue
+        per_root_sizes.append((root, log_size))
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    for line in _rearm_backtest_log_size_lines(
+        per_root_sizes, multi_root=multi_root, redact=redact, redact_ordinals=redact_ordinals
+    ):
+        print(line)
+    log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)
@@ -11625,6 +10700,55 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
                 f"{spacing:>10,} {compliance_label:>12} {total:>14,.2f} {delta:>+10,.2f}"
                 f" {c_bar:>10,.0f} {delta_c_bar:>+12,.0f}"
             )
+
+    conversion = _nudge_conversion_from_log(session_traces, log_entries_by_root)
+    fired = (
+        conversion["voluntary"] + conversion["forced"]
+        + conversion["blocked_no_handoff"] + conversion["no_compliance"]
+    )
+    print(f"\n## Nudge->handoff conversion ({title_since}, generated {today.isoformat()})\n")
+    print(f"Fired sessions in scope: {fired:,} ({conversion['dropped']:,} dropped -- no in-scope trace)")
+
+    bucket_header = f"{'Bucket':<24} {'Count':>8} {'Rate':>8}"
+    print(f"\n{bucket_header}")
+    print("-" * len(bucket_header))
+    for label, key in (
+        ("voluntary", "voluntary"),
+        ("forced", "forced"),
+        ("blocked-no-handoff", "blocked_no_handoff"),
+        ("no-compliance-observed", "no_compliance"),
+    ):
+        count = conversion[key]
+        print(f"{label:<24} {count:>8,} {_pct_of(count, fired):>8}")
+
+    converted = conversion["voluntary"] + conversion["forced"]
+    block_reach = conversion["forced"] + conversion["blocked_no_handoff"]
+    print(
+        f"\nConversion rate (voluntary + forced / fired): {_pct_of(converted, fired)}"
+        f" ({converted:,}/{fired:,})"
+    )
+    print(
+        f"Block-reach rate (forced + blocked-no-handoff / fired): {_pct_of(block_reach, fired)}"
+        f" ({block_reach:,}/{fired:,})"
+    )
+    print(
+        "Join validity (fired sessions with a matching handoff line):"
+        f" {conversion['join_validity']:,}"
+    )
+
+    ignored_values = conversion["ignored_values"]
+    if ignored_values:
+        median_ignored = statistics.median(ignored_values)
+        print(
+            f"Re-arms tolerated at voluntary compliance: median ignored={median_ignored:,.0f}"
+            f" across {len(ignored_values):,} voluntary session(s)"
+            f" ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
+    else:
+        print(
+            "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
+            f" present ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
 
 
 # --- plan-boundary: continue-vs-switch-vs-handoff repricing at the plan boundary ---
@@ -11979,25 +11103,13 @@ _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
 _HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
 
 
-def _handoff_signal_shlex_segments(command: str) -> list[list[str]]:
-    """Tokenize a Bash command and split it on shell operators, reusing
-    _split_command_tokens_on_shell_operators so a chained invocation (`cd x
-    && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`) is still
-    detected in its own segment."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    return _split_command_tokens_on_shell_operators(tokens)
-
-
 def _handoff_signal_bash_check_call(block: dict) -> bool:
     """True iff `block` is a Bash tool_use invoking
     nudge-handoff-near-context-cap.sh --check, in any &&/;/|-chained segment."""
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return False
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if segment and os.path.basename(segment[0]) == _HANDOFF_SIGNAL_HOOK_BASENAME and "--check" in segment[1:]:
             return True
     return False
@@ -12011,7 +11123,7 @@ def _handoff_signal_marker_transition(block: dict) -> str | None:
     if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
         return None
     command = (block.get("input") or {}).get("command", "") or ""
-    for segment in _handoff_signal_shlex_segments(command):
+    for segment in corpus.split_command_segments(command):
         if len(segment) < 3 or os.path.basename(segment[0]) != "marker.sh":
             continue
         if segment[1] in ("activate", "deactivate") and segment[2] == "ready-for-review":
@@ -13251,11 +12363,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled and --machine-label.",
-    )
-    p_cost_ledger.add_argument(
-        "--machine-label", metavar="LABEL",
-        help="Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this machine's hostname.",
+        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -13295,7 +12403,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled and --machine-label.",
+        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",
@@ -13304,8 +12412,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_cost.add_argument(
         "--machine-label", metavar="LABEL",
         help=(
-            "Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this"
-            " machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine."
+            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
+            " (exit 1) together with --record -- machine identity is generated and persisted"
+            " automatically there; see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(
@@ -13334,6 +12443,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_pr_cost.set_defaults(func=cmd_pr_cost)
+
+    p_pr_cost_export = sub.add_parser(
+        "pr-cost-export",
+        help=(
+            "Export every declared account's current pr-cost ledger rows -- redacted,"
+            " collapsed to one row per PR -- to a single operator-named TSV. Never writes to"
+            " stdout. Makes no gh call and scans no transcript corpus. See docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--out", metavar="PATH",
+        help=(
+            "Required: destination TSV path, refused if it already exists (never"
+            " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
+            " captured into that session's own transcript."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help="Additional Claude Code config directory to scan (repeatable).",
+    )
+    p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)
 
     p_spend_over_threshold = sub.add_parser(
         "spend-over-threshold",
@@ -13385,6 +12516,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    p_author_outcome = sub.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
+            " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
+            " round/dispatch structure and each session's own review-narrative-ledger file for"
+            " disposition. Corpus-wide, no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)
+
     p_cost_counts = sub.add_parser(
         "cost-counts",
         help=(
@@ -13432,9 +12583,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-redact", action="store_true",
         help=(
             "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
+            " --no-redact has no effect on most of its content, but at single-root scope it"
+            " prints the literal .handoff-nudge.log path (instead of an account-N label) in the"
+            " per-root log-size line. It still prints the DO NOT PUBLISH banner and enforces the"
+            " same multi-root refusal as cost, for CLI parity. Refused when --config-dir puts"
+            " more than one root in scope."
         ),
     )
     p_rearm_backtest.add_argument(

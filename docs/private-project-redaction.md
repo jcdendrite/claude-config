@@ -64,7 +64,7 @@ definitions.
 | Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
 | Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
 | Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` — for `.internal`/`.corp`/`.lan`/`.intranet`/`.private`, also an FQDN shape like `host[.]corp[.]example[.]com` where the TLD word is a subdomain label, not the string end | a hostname on any other TLD, or a filename convention like `settings.local.json` (only `.local`'s boundary excludes a following dot-segment — `.local` doubles as a common per-machine-override filename convention, e.g. `[.]env[.]local`, that the other five words don't) |
-| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word written outside markdown link syntax | a plain GitHub issue reference (`#421`, all-digit); bash parameter-expansion syntax (`${var#…}`, `${var##…}`); a markdown anchor-link fragment (see below) |
+| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word written outside markdown link syntax | a plain or possessive GitHub issue reference (`#421`; the hook header's Known gaps list states the exact accepted shape); bash parameter-expansion syntax (`${var#…}`, `${var##…}`); a markdown anchor-link fragment (see below) |
 
 Every example above is deliberately non-matching — e.g. the `<username>`
 placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
@@ -199,7 +199,23 @@ named. The following each count as a fresh ask:
 
 Cite each authorized figure on its own — one citation spanning
 several figures does not establish that each was individually
-proposed and approved. Before citing an authorized figure, check
+proposed and approved.
+
+A report printed by one command invocation, shown to the owner as a
+whole and approved together, is not "several figures" in this rule's
+sense. Every value the report contains shares the same proposal and
+the same yes. Cite the whole report's approval once, beside the
+artifact that reproduces it, rather than restating each contained
+figure as its own ask. That one citation must still enumerate every
+figure category the report contains. It must also name any category
+the report printed but withheld rather than approved (e.g. a
+per-account breakdown). Enumerating keeps the check each figure still
+needs against the four bars below from silently dropping out just
+because the ask was made once — see
+[`docs/case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md)'s
+own citation for the pattern.
+
+Before citing an authorized figure, check
 whether it composes with an already-published rate or count to
 reconstruct a calendar-time series or narrow a boundary. That
 comparison source can be the grandfathered set below or an earlier

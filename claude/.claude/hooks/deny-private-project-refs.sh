@@ -48,9 +48,10 @@
 #   forms `-F` / `-T`), and `gh issue create|comment|edit --body-file
 #   <path>` (short form `-F`; gh issue has no --template/-T flag), reads
 #   the file and scans its contents. Fails closed (blocks) if the path is
-#   not readable, or if the path is a pseudo-file (`-`, `/dev/stdin`,
-#   `/dev/fd/*`, `/proc/*/fd/*`) whose contents the hook cannot
-#   statically verify.
+#   not a regular file, is not readable, or if the path is a pseudo-file
+#   (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`) whose contents the
+#   hook cannot statically verify. Requiring a regular file (not just
+#   readable) keeps a directory or FIFO from reaching the capped read below.
 # - For `git commit -F <path>` / `--file <path>`, reads the
 #   commit-message-source file and scans it under the same fail-closed
 #   posture as gh pr body-source files. `git commit -m "..." -F <path>`
@@ -65,10 +66,10 @@
 #   `-F body="..."` literal field values), reads any `--input <path>`
 #   JSON body file, AND reads any `-f key=@<path>` / `-F key=@<path>`
 #   field-value file (which gh resolves at invocation time), again
-#   fail-closed on pseudo-file or unreadable paths. Read-only `gh api`
-#   calls (default GET, no body-bearing flags) are intentionally not
-#   gated — they don't carry user-authored content into a body GitHub
-#   re-publishes.
+#   fail-closed on pseudo-file, non-regular-file, or unreadable paths.
+#   Read-only `gh api` calls (default GET, no body-bearing flags) are
+#   intentionally not gated — they don't carry user-authored content
+#   into a body GitHub re-publishes.
 #
 # Known gaps (documented, not closed by this hook):
 # - `gh pr create --fill|-f|--fill-first|--fill-verbose` sources the PR
@@ -122,6 +123,23 @@
 #   that reading it terminates. This guarantee holds only when timeout(1)
 #   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
 #   present" fallback caveat in _lib.sh, which still applies here.
+# - The pseudo-file guard (_lib_is_pseudo_file_path) matches literal
+#   spellings only (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`). Alias
+#   spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised and
+#   can evade the scan of a body/message source. Accepted debt shared with
+#   deny-pii-in-commits.sh and deny-escaped-backticks-in-pr-body.sh.
+# - When xargs fails to tokenize a command (an unbalanced quote, say),
+#   body-source paths after the unparseable token are never read.
+# - The gate's scope comes from the hook process's cwd, so a chained `cd`
+#   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
+# - The Slack-channel shape accepts digits, `s`, then end of line or any
+#   non-name character (`#<n>s`, `#<n>s.`), because the quote-stripped
+#   copy cannot tell it from a possessive issue reference.
+# - Under a non-C collation locale, a digit-led name whose first non-digit
+#   collates between `r` and `t` also passes the Slack-channel shape.
+# - A possessive issue reference still denies when the quote-strip joins a
+#   name character onto its `s`, such as an escape like `\n` or a hyphen
+#   or underscore continuation.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -401,8 +419,9 @@ OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|
 # Paths containing whitespace are not supported — xargs emits them as
 # multiple tokens; the resulting path fails the readability check below
 # and the hook fail-closes with a clear message. xargs failure is
-# suppressed; returns empty on error (fail-open for unparseable input,
-# consistent with the documented shell-expansion gap).
+# suppressed; paths before the failing token are still emitted and later
+# ones are not (fail-open for unparseable input, consistent with the
+# documented shell-expansion gap).
 extract_body_source_paths() {
   local cmd="$1"
   printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
@@ -496,6 +515,17 @@ chain_split_hint_if_chained() {
   fi
 }
 
+# Prints the status-accurate clause for a capped `cat` that ended nonzero.
+# The classification only picks the wording: every caller denies on any
+# nonzero status either way.
+capped_read_failure_clause() {
+  if _lib_status_consistent_with_cap_kill "$1"; then
+    printf 'was killed (exit %s), by the scan cap or a signal — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that' "$1"
+  else
+    printf 'could not be read (exit %s) although the readability check above passed' "$1"
+  fi
+}
+
 # Each content surface that could carry a tracker ID is appended here
 # separately so a future change won't silently drop coverage of one.
 SCAN_TARGET=""
@@ -537,12 +567,14 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
           emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${commit_msg_path}'). The redaction gate cannot statically verify what git will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not git's future stdin. Inline the message with -m or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
-        if [ ! -r "$commit_msg_path" ]; then
-          emit_deny "git commit references a message-source file at '${commit_msg_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable message file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the git commit command, inline the content with -m, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        if [ ! -f "$commit_msg_path" ] || [ ! -r "$commit_msg_path" ]; then
+          emit_deny "git commit references a message-source file at '${commit_msg_path}', but that path does not exist, is not a regular file, or is not readable from the hook. The redaction gate refuses to scan an unreadable message file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the git commit command, inline the content with -m, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
-        if ! COMMIT_MSG_CONTENT=$(_lib_capped cat "$commit_msg_path" 2>/dev/null); then
-          emit_deny "git commit -F references a message-source file at '${commit_msg_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the message with -m. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        COMMIT_MSG_CONTENT=$(_lib_capped cat "$commit_msg_path" 2>/dev/null)
+        COMMIT_MSG_STATUS=$?
+        if [ "$COMMIT_MSG_STATUS" -ne 0 ]; then
+          emit_deny "git commit -F references a message-source file at '${commit_msg_path}' that $(capped_read_failure_clause "$COMMIT_MSG_STATUS"). The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the message with -m. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
         SCAN_TARGET+=$'\n'"$COMMIT_MSG_CONTENT"
@@ -576,12 +608,14 @@ if [ "$IS_GH_PR" -eq 1 ]; then
         emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if [ ! -r "$body_source_path" ]; then
-        emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh pr command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      if [ ! -f "$body_source_path" ] || [ ! -r "$body_source_path" ]; then
+        emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist, is not a regular file, or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh pr command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if ! BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null); then
-        emit_deny "gh pr command references a body-source file at '${body_source_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null)
+      BODY_CONTENT_STATUS=$?
+      if [ "$BODY_CONTENT_STATUS" -ne 0 ]; then
+        emit_deny "gh pr command references a body-source file at '${body_source_path}' that $(capped_read_failure_clause "$BODY_CONTENT_STATUS"). The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       SCAN_TARGET+=$'\n'"$BODY_CONTENT"
@@ -609,12 +643,14 @@ if [ "$IS_GH_ISSUE" -eq 1 ]; then
         emit_deny "gh issue command passes a body-source flag pointing at a pseudo-file path ('${issue_body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if [ ! -r "$issue_body_source_path" ]; then
-        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh issue command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      if [ ! -f "$issue_body_source_path" ] || [ ! -r "$issue_body_source_path" ]; then
+        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}', but that path does not exist, is not a regular file, or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh issue command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if ! ISSUE_BODY_CONTENT=$(_lib_capped cat "$issue_body_source_path" 2>/dev/null); then
-        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      ISSUE_BODY_CONTENT=$(_lib_capped cat "$issue_body_source_path" 2>/dev/null)
+      ISSUE_BODY_STATUS=$?
+      if [ "$ISSUE_BODY_STATUS" -ne 0 ]; then
+        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}' that $(capped_read_failure_clause "$ISSUE_BODY_STATUS"). The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       SCAN_TARGET+=$'\n'"$ISSUE_BODY_CONTENT"
@@ -642,12 +678,14 @@ if [ "$IS_GH_API" -eq 1 ]; then
         emit_deny "gh api command passes --input pointing at a pseudo-file path ('${gh_api_input_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the body with -f / -F field flags or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if [ ! -r "$gh_api_input_path" ]; then
-        emit_deny "gh api command references --input file at '${gh_api_input_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable input file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the content with -f / -F field flags, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      if [ ! -f "$gh_api_input_path" ] || [ ! -r "$gh_api_input_path" ]; then
+        emit_deny "gh api command references --input file at '${gh_api_input_path}', but that path does not exist, is not a regular file, or is not readable from the hook. The redaction gate refuses to scan an unreadable input file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the content with -f / -F field flags, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if ! GH_API_INPUT_CONTENT=$(_lib_capped cat "$gh_api_input_path" 2>/dev/null); then
-        emit_deny "gh api --input references a file at '${gh_api_input_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with -f / -F field flags. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      GH_API_INPUT_CONTENT=$(_lib_capped cat "$gh_api_input_path" 2>/dev/null)
+      GH_API_INPUT_STATUS=$?
+      if [ "$GH_API_INPUT_STATUS" -ne 0 ]; then
+        emit_deny "gh api --input references a file at '${gh_api_input_path}' that $(capped_read_failure_clause "$GH_API_INPUT_STATUS"). The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with -f / -F field flags. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       SCAN_TARGET+=$'\n'"$GH_API_INPUT_CONTENT"
@@ -668,12 +706,14 @@ if [ "$IS_GH_API" -eq 1 ]; then
         emit_deny "gh api command passes a -f / -F / --field / --raw-field value of the form key=@PATH where PATH is a pseudo-file ('${gh_api_field_at_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the value or use a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if [ ! -r "$gh_api_field_at_path" ]; then
-        emit_deny "gh api command references a -f / -F field-value file at '${gh_api_field_at_path}' (key=@PATH form), but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable field-value file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the value, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      if [ ! -f "$gh_api_field_at_path" ] || [ ! -r "$gh_api_field_at_path" ]; then
+        emit_deny "gh api command references a -f / -F field-value file at '${gh_api_field_at_path}' (key=@PATH form), but that path does not exist, is not a regular file, or is not readable from the hook. The redaction gate refuses to scan an unreadable field-value file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the value, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      if ! GH_API_FIELD_AT_CONTENT=$(_lib_capped cat "$gh_api_field_at_path" 2>/dev/null); then
-        emit_deny "gh api -f / -F / --field / --raw-field references a field-value file (key=@PATH form) at '${gh_api_field_at_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the value. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+      GH_API_FIELD_AT_CONTENT=$(_lib_capped cat "$gh_api_field_at_path" 2>/dev/null)
+      GH_API_FIELD_AT_STATUS=$?
+      if [ "$GH_API_FIELD_AT_STATUS" -ne 0 ]; then
+        emit_deny "gh api -f / -F / --field / --raw-field references a field-value file (key=@PATH form) at '${gh_api_field_at_path}' that $(capped_read_failure_clause "$GH_API_FIELD_AT_STATUS"). The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the value. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
       SCAN_TARGET+=$'\n'"$GH_API_FIELD_AT_CONTENT"

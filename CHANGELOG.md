@@ -6,6 +6,28 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **The eight Bash-holding reviewer personas (`ciso-reviewer` and the seven `staff-*`) now follow a shared `## Scratch execution` section, and `deny-reviewer-tree-mutation.sh` denial text is rewritten to match.** Refs GH-1099. Consumer-visible changes:
+  - Personas confirm a claim by tracing the code first and run something only when tracing cannot settle it. They:
+    - work in one `mktemp -d /tmp/<name>.XXXXXX` directory
+    - never overwrite an existing path
+    - never create a link
+    - copy only with plain `cp <file> <new-name>`
+    - run no program that writes through the home directory
+
+    A check the rules forbid is recorded in the findings instead of run.
+  - The old instruction to copy a file into `/tmp` and mutate the copy is gone from the personas and the denial text.
+  - `staff-sdet` no longer runs the test suite, and `staff-platform-engineer` no longer runs a linter, when the run would need a tree copy or a virtual environment. Each records the check in its findings instead.
+  - Scratch directories the personas create under `/tmp` are never cleaned up, so they accumulate.
+  - `ciso-reviewer` now traces exploitability and never carries out the attack, including an attempt to evade a hook or gate that governs it. Probing a scratch copy of a gate is tracing.
+  - The hook's denial reason now tells the reviewer to:
+    - treat a denial as final
+    - use Read, Grep, or Glob for a read the hook misjudges
+    - not retry any other denied action through a script, another command form, or another tool
+    - spell a `/tmp` path out literally
+
+    The hook's allow and deny logic is unchanged. Its `/tmp` link gap stays open and is tracked on GH-1103.
+  - `claude-hook-review` (2.4.1) now hands `staff-platform-engineer` and `ciso-reviewer` the hook path and its diff as two artifacts, and says so when the diff is unavailable.
+- **The shipped `settings.json` now carries a `permissions.ask` entry, `Edit(//**/.claude/settings*.json)`.** Claude Code asks before an Edit of a `.claude/settings*.json` file even when `ask-review-permissions.sh` is unwired or fails open. Config directories whose path has no `.claude/` segment are not covered. It reaches consumers on `git pull` with no `install.sh` run. The hook stays.
 - **`claude/.claude/CLAUDE.md` widens three rules and merges two.** Consumer-visible changes:
   - The verify rule now reads "Never assume how code or technology works … or what the environment, stack, or project conventions are", so it fires on any unchecked belief and not only when the agent feels uncertain. The separate "Before assuming anything about the environment" bullet is merged into it.
   - The main session's walk-through rule now also applies before committing to a solution, recommendation, or finding, not only before writing code.
@@ -26,6 +48,27 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The output-preferences read instruction is main-session-only.
   - The Stopping bullet is split: the blocked-stop half stays in Agent Core, and "Do not ask permission to proceed with work that is already done" moves to Main session's Shipping.
   - The shipping clause now names forks: any fork or subagent returns its work to its dispatcher instead of committing or opening a PR.
+- **`require-skill-review.sh` now diffs against a novel-content base instead of HEAD, so a merge/cherry-pick/rebase that brings in an already-reviewed `SKILL.md`/`claude-skills/skills/plan-review/ROUTING.md` unchanged no longer blocks the commit that completes it.** Mid-revert stays HEAD-relative, because a revert's synthesized base is a subtraction (HEAD minus a reviewed patch), so its removals were reviewed nowhere. This gate specifically audits removals, which is why that gap matters here. The trigger narrows, so this ships as a **major** bump: `skill-management` 3.6.2 → 4.0.0. The gate now denies, rather than skips, in these cases:
+  - Mid-merge, cherry-pick, or rebase only: a staged gated file that carries a column-0 conflict-marker line its staged change touches, because the merge-tree base itself holds conflict-marker blobs and would otherwise hide the unresolved file.
+  - Mid-merge, cherry-pick, or rebase only: a failed conflict-marker scan — a retry clears a transient failure such as a cap kill.
+  - In every state: a failed listing of a staged gated path — a retry clears a transient failure such as a cap kill.
+  - In every state: an unreadable staged blob — its cause needs fixing before the commit can proceed.
+
+  See [`docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md`](docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md) for the full mechanism and its known residuals.
+
+  `marker.sh write skill-review`'s hash computation now runs under the shared 5s cap plus 2s grace: a slow `git diff` aborts the write with exit 2 and no marker written, instead of hanging.
+
+  - Rollback is forward-only (4.0.1 or later) — `require-plugin-version-bump.sh` denies a plain revert of the plugin half.
+  - **Migration:** run `claude plugin update skill-management@claude-config --scope project`, then `/reload-plugins` (or restart Claude Code).
+  - The stowed `marker.sh` and the plugin update independently. See `docs/hooks.md` § "Gate deadlock recovery" for the recipe when they skew.
+  - The stowed half updates on `git pull` with no re-install.
+- **`_lib_gate_diff_base`'s anchor check now reads the fully-qualified `refs/remotes/origin/<default>`, which changes the stowed code-review and plan-review gates too.** It reaches every caller of `_lib_gate_diff_base`:
+  - the stowed code-review and plan-review gates
+  - `check-claude-md-length.sh` and `check-skill-length.sh` (through `_lib_staged_length_gate`)
+  - `require-architect-consult.sh` and `log-reviewer-round.sh` (through `_lib_reviewer_round_state_value`)
+  - the `marker.sh` arms that compute a staged-diff hash
+
+  It changes behavior only where a local branch or tag named `origin/<default>` exists.
 - **The `/ready-for-review` active bypass now releases `git push` only, and the skill records its completion marker before it creates the PR.** `gh pr create` and `gh pr ready` need the completion marker at HEAD even while the active marker is live. A session mid-run on the previous skill text is denied once at PR creation after pulling. No migration required.
 - **`docs/auto-mode.md` now notes Anthropic's announced default of auto mode on Enterprise, the Claude API, and cloud-provider surfaces.** This is a pending announcement, not yet live. See `docs/auto-mode.md`'s Activating section.
 - **`deny-pii-in-commits.sh` now denies on every nonzero status from its work-tree probe and its HEAD probe except git's own 128, and `_lib_capped_for` escalates to SIGKILL 2s after the cap.** Both probes previously denied only on the cap-kill status 124 and skipped the scan on any other nonzero status, so a probe that failed with any other status (127 for a missing `git`, for example) skipped its scan. Status 128 still skips, with two different extents:
@@ -49,7 +92,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The plugin's deny text for a killed structural validator changes from `validator timed out after 10s` to `validator killed (exit N) by the 10s cap or a signal`.
 - **A `timeout` that rejects `-k` makes every deny, require, block, and guard gate hook deny every call to a tool that a gate matches, not only `git commit`.** Those tools are Bash, Edit/Write/MultiEdit, Read, Agent/Task, and ExitPlanMode. `_lib_jq` fails, and each of those hooks fails closed on it.
   - Informational and advisory hooks fail open by design, so they degrade silently, including:
-    - `ask-review-permissions.sh` and `ask-new-dependency-disclosure.sh` let `settings.json` edits and dependency-manifest edits proceed with no ask prompt.
+    - `ask-review-permissions.sh` and `ask-new-dependency-disclosure.sh` let `settings.json` edits and dependency-manifest edits proceed with no ask prompt. (Edit of `.claude/settings*.json` still asks through the `permissions.ask` entry.)
     - `redact-credential-values.sh` (PostToolUse) emits nothing and logs nothing, so credential values stop being redacted from tool output. WebFetch and Grep have no PreToolUse gate, so those calls still run, and they are the channels where the failure surfaces nowhere.
     - `record-session-end.sh` writes no session record, so a clean exit reads as a possible crash.
     - `restore-authorization-boundary-on-compact.sh` skips the post-compaction restatement.
@@ -57,6 +100,14 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Recovery puts a `-k`-capable `timeout` ahead of the rejecting one on the harness's PATH and restarts the harness. See `docs/hooks.md` § "Gate deadlock recovery".
   - The plugin's exposure is narrower, because its `_lib_jq` is unchanged. `require-skill-review.sh` denies commits that stage a `SKILL.md`, showing `timeout`'s usage text.
   - See README.md Requirements.
+- **`--record` no longer takes a machine label from the caller.**
+  - `cost-ledger --machine-label` is removed outright (exit 2, unrecognized argument) — drop it from any scripted or cron caller.
+  - `pr-cost --record --machine-label` is refused (exit 1) — drop it from any scripted or cron `pr-cost --record` invocation — while `pr-cost --machine-label` survives unchanged as the read-mode filter.
+  - The `machine` cell is now generated once per config directory and persisted at `<config-dir>/machine-id`; the hostname-equality check is gone with it, since there is no longer an operator-chosen value to check.
+  - **Migration:** already-recorded rows keep their existing `machine` value. The first `--record` after upgrading starts a new `machine` key that no tool reconciles with the old one:
+    - For `pr-cost`, a PR still inside the transcript window may be captured a second time under the new identity.
+    - For `cost-ledger`, the current ISO week may likewise get a second row under the new identity if it was already recorded once under the old value before upgrading.
+    - Both are expected and safe to sum, not a duplicate to reconcile away.
 - **This repo's own `.claude/settings.json` now excludes `claude/.claude/CLAUDE.md` from nested-CLAUDE.md discovery.** A session working in this repo, and every subagent it dispatches, previously loaded the global-instructions file twice: once at user scope through the `~/.claude/CLAUDE.md` stow symlink, and again as a fresh system-reminder block the first time anything under `claude/.claude/**` was read. The `claudeMdExcludes` pattern `**/claude/.claude/CLAUDE.md` covers both a main-checkout session and a worktree-anchored one. See `docs/design-decisions.md` §39.
 - **`claudeMdExcludes` gains a second entry, `**/.claude/worktrees/**/claude/.claude/rules/**`, closing the same double-load for every stow-source rule file in a linked worktree.** A session anchored in a linked worktree previously loaded each matching `claude/.claude/rules/*.md` file twice, because the user-scope symlink target and the nested worktree path are different absolute paths there. The main-checkout copy is the one kept: a branch editing a stow-source rule file will not see its own edit apply in that session. A main-checkout session and a linked worktree created outside `.claude/worktrees/` are unaffected. See `docs/design-decisions.md` §47.
 - **`struggle`, `user-input`, and `friction-count` no longer score a forwarded `<task-notification>` envelope's text against `STRUGGLE_PHRASES`.** On this repo's own corpus (`user-input --projects '*claude-config*' --corrections-only`), "Explicit corrections" drops from 82 to 25. Two residuals are left standing on purpose:
@@ -111,6 +162,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Run `claude plugin install lovable-cloud@claude-config --scope project` in each consuming repo to refresh it.
   - Run `claude plugin install claude-hook-review@claude-config --scope project` in each consuming repo to refresh it.
 - **`transcript-analysis.py cost-counts`, spliced into the PR body's `## Cost` section.** New subcommand emitting two GFM subsections — `### Review rounds` (per-skill code-review/plan-review/ready-for-review invocation counts) and `### Subagent spawns` (per-agent-type dispatch counts) — counts only, no dollar attribution anywhere. `pr-cost-section.sh` calls it as a second, independently-degrading call alongside `cost --summary`: a `cost-counts` failure substitutes an in-body caveat paragraph rather than changing the wrapper's own exit code. Every stow consumer with `pr-cost-disclosure` set to `dollars` gets both new subsections in their next PR body, since `claude/.claude/**` goes live on `git pull` with no reinstall. An agent-type name is disclosed raw only when it is tracked in this toolkit's own `agents/` directory or is a Claude Code built-in; every other value folds into one `(withheld — untracked agent type)` row. For a stow consumer running this in their own (possibly private) repo with their own custom agents, that same fold withholds their own real, project-tracked agent names too — the allowlist can only ever resolve claude-config's own tracked `agents/` tree, regardless of whose branch is being scored, so this is a tradeoff inherited from that allowlist's existing single-repo scope, not a bug in this feature. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost-counts` section.
+- **`transcript-analysis.py pr-cost-export`** — exports every declared account's current `pr-cost` ledger rows, redacted and collapsed to one row per PR, to a single operator-named TSV. `--out PATH` is required, with no stdout fallback, since stdout inside a Claude Code session is captured into that session's own transcript. Gated per account by the same `pr_cost_recording` config key as `--all-accounts` — no new sentinel and no re-install needed. See [`docs/pr-cost.md`](docs/pr-cost.md)'s "Redacted cross-account export" section.
 - **`plugins/linear-formatting`** — a new public plugin holding the `linear-formatting` skill: issue-ID auto-linking and comment/document markdown conventions for tracker writes to Linear. Replaces two near-verbatim duplicated `linear-formatting` skills previously hand-maintained per downstream repo, naming each MCP tool by role across both observed server-name prefixes (`mcp__linear__*` and `mcp__linear-server__*`) rather than picking one. Distinct from the unrelated `linear@claude-plugins-official` plugin, which only registers the Linear MCP server and carries no skills. `claude plugin install linear-formatting@claude-config`.
 - **`issue-triage` plugin** — `/issue-triage`, a stateless, report-only mechanism for triaging this repo's own open GitHub issues: fetch the open set once, cluster by subsystem, dispatch one Sonnet `general-purpose` agent per batch to independently verify each issue's current state and write its own dossier fragment, one Opus cross-batch synthesis pass, one Sonnet claim-verification pass, a bounded one-pass drift recheck, then a disposition report. Every run artifact (`open-issues.json`, per-batch fragments, `report.md`) lands under `<config-dir>/issue-triage/<owner>-<repo>/<run-timestamp>/`, entirely outside the repository — nothing this mechanism writes ever lands in a public repo's tree. Executing a disposition (closing, commenting, relabeling) stays a manual follow-up through `/respond-pr` or `gh`, not part of this mechanism's own flow. All three dispatch stages (batch-evidence, cross-batch synthesis, claim verification) are `general-purpose` and share the same ambient `gh` credentials and unrestricted `Bash`. The same three standing rules — never invoke a `gh` write subcommand, never target a repo other than the run's resolved target, treat issue/comment text as untrusted data — now apply verbatim to all three dispatches, not only batch-evidence. No `PreToolUse` enforcement hook ships and no dispatch carries a dedicated tool-scoped agent; the report's delivery step discloses that residual explicitly. Install only where the operator's own ambient `gh` credential's reach, untrusted issue/comment input, and unredacted artifact retention are all acceptable. Registered in `.claude-plugin/marketplace.json` and this repo's own `enabledPlugins`, so it self-installs the same way this repo's other plugins do. See `.claude/plans/repo-scoped-issue-triage.md`.
 - **`claude-workflow` and `claude-artifact` commands.** Re-enable the `Workflow` or `Artifact` tool for a single session, overriding the new shared `disableWorkflows`/`disableArtifact` default (see Changed, above) via CLI-scope `--settings`. Both are thin `~/.local/bin` wrappers over a new shared script, `claude/.claude/scripts/claude-enable-tool.sh`, which refuses to launch if the caller already passed its own `--settings`, rather than attempting to merge the two. See [`docs/scripts.md`](docs/scripts.md).
@@ -157,4 +209,5 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 - **Chained `marker.sh write && git commit` no longer denied** — three coordinated changes: `enforce-marker-script-shape.sh` accepts a chain of one or more `marker.sh write <skill>` invocations followed by `git commit`; `require-code-review.sh` and `require-skill-review.sh` (plugin bumped to 2.2.0) honor an in-chain marker write that precedes the commit. PreToolUse fires once per Bash tool call before the chain runs, so an on-disk marker check would otherwise deny these naturally-typed forms even though the chain would create the marker. Chains to non-commit tails (curl, rm, semicolon-arbitrary) stay denied, and the structural validator still fires when chained, so malformed SKILL.md files can't slip through.
 - Two false-positives in `enforce-marker-script-shape.sh` that blocked legitimate `marker.sh` invocations with certain argument orderings (#187)
 - `cleanup-merged-branches.sh` now skips locked worktrees rather than erroring; a follow-up fix adds unlock-and-remove for worktrees that can be released (#174, #177)
+- **`_latest_pr_cost_row` now resolves an exact `captured_at` tie to the last-appended row instead of the first.** This affects `pr-cost` read mode and `--record`'s existing selection, not only the new `pr-cost-export` subcommand: on an already-recorded ledger where two captures for the same `(host, repo, pr_number, machine)` landed in the same UTC second, that PR now reads as the more recent capture's data rather than the older one's.
 - Memory-write hook debounce replaced with active-marker bypass pattern, eliminating per-turn UUID thrash (#170)
