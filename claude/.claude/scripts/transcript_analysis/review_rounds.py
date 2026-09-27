@@ -523,8 +523,8 @@ _POOLED_SCAN_GAP_REFUSAL = (
 # Never interpolates the caught exception's str(), which may embed a raw filesystem path.
 _POOLED_SCAN_ABORTED_MESSAGE = (
     "review-round-cost --pooled refuses a partial scan: an unexpected error interrupted the"
-    " corpus scan, so part of the corpus may have silently dropped out of the pooled figure."
-    " Rerun without --pooled to see the underlying error, then retry --pooled once it's resolved."
+    " corpus scan or the pooled render, so part of the corpus may have silently dropped out of"
+    " the pooled figure. Resolve the underlying problem before retrying --pooled."
 )
 
 

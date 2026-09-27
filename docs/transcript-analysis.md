@@ -1177,8 +1177,8 @@ Unpriced turns inside round windows: 0
 - the top-level `--config-dir` -- collapses the pool to one named account
 - `--this-repo` -- not implemented as a pooled scope (a product decision, not a policy bar)
 - exactly one resolved scan root -- a single-account figure is a per-account figure; the refusal names `~/.claude/transcript-config-dirs`
-- a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool; checked only after the full scan, and the refusal names neither the path nor a count
-- an unexpected error interrupts the corpus scan -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it; rerun without `--pooled` to see the underlying error, then retry `--pooled` once it's resolved
+- a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool. Checked only after the full scan. The refusal names neither the path nor a count
+- an unexpected error interrupts the corpus scan or the pooled render -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it. Resolve the underlying problem before retrying `--pooled`
 
 The block never emits a dollar amount, a raw count, or a per-account/per-project/per-branch split. Each figure is a share of list-price compute. Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you. Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
 

@@ -37,15 +37,15 @@ def _index_subagent_dispatches(
     subagent transcript, to descend into a dispatch's own further spawns.
 
     Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
-    files present but unusable -- invalid JSON, valid JSON missing a
-    string-typed toolUseId, or valid JSON whose "model" key is present but
-    not a string -- distinct from a dispatch with no meta.json at all (the
-    caller's own, separately-documented exclusion path). meta.json is
-    written by Claude Code's own harness, not by this repo, so its "model"
-    and "toolUseId" fields are external input: a non-string value for either
-    (a future harness change, or a corrupted file) is excluded here rather
-    than reaching a caller that would use it as a dict key and crash with an
-    uncaught TypeError.
+    files present but unusable -- unreadable or non-UTF-8 bytes, invalid
+    JSON, valid JSON missing a string-typed toolUseId, or valid JSON whose
+    "model" key is present but not a string -- distinct from a dispatch with
+    no meta.json at all (the caller's own, separately-documented exclusion
+    path). meta.json is written by Claude Code's own harness, not by this
+    repo, so its "model" and "toolUseId" fields are external input: a
+    non-string value for either (a future harness change, or a corrupted
+    file) is excluded here rather than reaching a caller that would use it
+    as a dict key and crash with an uncaught TypeError.
 
     `scan_gaps`, when given, records one `_GAP_LEVEL_SUBAGENT_DIR` tag when
     `subagent_dir`'s own `is_dir()` check raises OSError (e.g. an unreadable
@@ -64,8 +64,8 @@ def _index_subagent_dispatches(
         return index, meta_read_errors
     for meta_path in sorted(subagent_dir.glob("*.meta.json")):
         try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             meta_read_errors += 1
             continue
         tool_use_id = meta.get("toolUseId")

@@ -5538,6 +5538,23 @@ class TestScanReadScopeSession:
         assert meta_read_errors == 0
         assert scan_gaps == Counter({_mod.corpus._GAP_LEVEL_SUBAGENT_DIR: 1})
 
+    def test_index_subagent_dispatches_counts_non_utf8_meta_as_read_error(self, fake_projects):
+        """A meta.json containing non-UTF-8 bytes must be counted under
+        meta_read_errors, identical to an invalid-JSON or unreadable
+        meta.json -- corpus._index_subagent_dispatches must not raise
+        UnicodeDecodeError uncaught and abort the whole run. Mirrors
+        test_parse_jsonl_records_returns_none_on_invalid_utf8's fixture for
+        the sibling function below."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {}
+        assert meta_read_errors == 1
+
     def test_parse_jsonl_records_returns_none_on_invalid_utf8(self, tmp_path):
         """A UnicodeDecodeError from a non-UTF-8 byte sequence is a read
         failure here too, not a crash -- corpus._parse_jsonl_records must
