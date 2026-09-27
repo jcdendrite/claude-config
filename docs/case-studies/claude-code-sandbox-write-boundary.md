@@ -280,7 +280,7 @@ couldn't be misfiled as a sandbox block:
   system` — structurally distinct from both references above by the absence
   of `tool_result_meta`.
 
-Step 0 found a structured field that made this distinction mechanical:
+A structured field made this distinction mechanical:
 `tool_result_meta[].non_execution_kind` (value `"permission-rule"`) appears
 on a `tool_result` only when the tool call never executed at all — a hook
 denial or a permission-flow denial, both REF-HOOK and REF-PERM's shape — and
@@ -293,11 +293,15 @@ verdict signal; the REF-HOOK/REF-PERM/PC1 text shapes were the fallback.
 **Command-shape caveat.** A Bash command containing a heredoc or a compound
 `&&`/`||` conditional the shell parser "can't trace" silently falls back to
 the regular, non-sandboxed permission flow instead of running sandboxed.
-This caused three harness confounds — T3's original heredoc attempt, W1's
-original attempt (compounded by the Write tool's own not-yet-read guard),
-and E1's original compound-conditional attempt — each resolved with exactly
-one rerun using a simpler, traceable command shape, per the spike's one-rerun
-budget. This is itself a finding: not every command shape submitted to a
+This caused three harness confounds, each resolved with exactly one rerun
+using a simpler, traceable command shape, per the spike's one-rerun budget:
+
+- T3's original heredoc attempt.
+- W1's original attempt, compounded by the Write tool's own not-yet-read
+  guard.
+- E1's original compound-conditional attempt.
+
+This is itself a finding: not every command shape submitted to a
 sandboxed session is actually sandbox-eligible, and a future trial written
 in an untraceable shape will silently test the wrong thing.
 
@@ -337,8 +341,8 @@ HEAD`), C9 (`gh api rate_limit --jq .rate.limit`, success/failure recorded
 only — the numeric value is a per-account API-usage figure and is never
 recorded, per this repo's redaction rule).
 
-**CLI and settings deviations from the plan's assumptions, confirmed at Step
-0.** The dispatchable subagent tool name in `--allowedTools` / the session's
+**CLI and settings deviations from the plan's assumptions.** The
+dispatchable subagent tool name in `--allowedTools` / the session's
 tool list is `Task`, not `Agent`. `--allowedTools ""` does not disable
 tools — a separate `--tools` flag does. `--permission-prompts none` was
 necessary on every run for deterministic behavior with no approval surface.
