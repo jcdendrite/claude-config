@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
 pr-link is the only subcommand that touches the network (via gh).
-judgment-pair --out writes a file; all other subcommands are read-only.
+Every subcommand is read-only except an explicit write flag: judgment-pair
+--out, pr-cost --record, and pr-cost-export --out each write a file.
 """
 
 import argparse
@@ -10,14 +11,14 @@ import contextlib
 import errno
 import fcntl
 import fnmatch
-import hashlib  # noqa: F401 -- read only via _mod.hashlib from test files
+import hashlib
 import json
 import math
 import os
 import random
 import re
+import secrets
 import shlex
-import socket
 import stat
 import statistics
 import subprocess
@@ -31,10 +32,10 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import _config
-from _config_dir import config_dir
+from _config_dir import config_dir, declared_roots_file_is_overridden
 
-# corpus/cost/denials/pricing/redaction/render/review_trace/reviewer_yield are read only via
-# _mod.<module> from test files (unit-testing a private helper, or patching module-owned
+# corpus/cost/denials/pricing/read_scope/redaction/render/review_trace/reviewer_yield are read
+# only via _mod.<module> from test files (unit-testing a private helper, or patching module-owned
 # state like scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads
 # bare, as scope.PROJECTS_DIR.
 from transcript_analysis import (  # noqa: F401
@@ -42,6 +43,7 @@ from transcript_analysis import (  # noqa: F401
     cost,
     denials,
     pricing,
+    read_scope,
     redaction,
     render,
     review_trace,
@@ -110,6 +112,13 @@ from transcript_analysis.pricing import (
     _warn_if_subagent_format_drift,
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
+from transcript_analysis.read_scope import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   _READ_SCOPE_CHARS_PER_TOKEN -> _classify_content_item
+    #   cmd_read_scope              -> p_read_scope.set_defaults
+    _READ_SCOPE_CHARS_PER_TOKEN,
+    cmd_read_scope,
+)
 from transcript_analysis.redaction import (
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
     _assign_root_scoped_redact_label,
@@ -3349,575 +3358,6 @@ def _print_edit_format_report(stats: dict, per_account: dict[int, dict] | None) 
             )
 
 
-# ~4 chars/token, the same rough English/code estimate _EDIT_FORMAT_CHARS_PER_TOKEN
-# uses. A deliberate second pin rather than a shared constant: recalibrating one
-# report's published figures must not silently move the other's.
-_READ_SCOPE_CHARS_PER_TOKEN = 4
-
-# Tools that answer "which part of this file do I need" before a targeted Read.
-# Their mean result size prices the locate step a narrow-read discipline adds.
-_READ_SCOPE_LOCATE_TOOLS = frozenset({"Grep", "Glob"})
-
-_READ_SCOPE_COHORT_TARGETED = "targeted"
-_READ_SCOPE_COHORT_WHOLE_FILE = "whole_file"
-_READ_SCOPE_COHORT_PAGES = "pages"
-_READ_SCOPE_COHORT_UNPARSED = "unparsed_input"
-
-_READ_SCOPE_SCOPE_MAIN = "main"
-_READ_SCOPE_SCOPE_SUBAGENT = "subagent"
-
-# Result-size histogram buckets, in estimated tokens (chars // 4) — a call's
-# result text length, not its input. The 2,000-token boundary lines up with
-# the gross-ceiling threshold the case study's ceiling arithmetic uses.
-_READ_SCOPE_SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
-    (500, "0-499"),
-    (2000, "500-1999"),
-    (5000, "2000-4999"),
-    (15000, "5000-14999"),
-)
-_READ_SCOPE_SIZE_OVERFLOW_LABEL = "15000+"
-
-
-def _read_scope_size_bucket(tokens: int) -> str:
-    for upper_bound, label in _READ_SCOPE_SIZE_BUCKETS:
-        if tokens < upper_bound:
-            return label
-    return _READ_SCOPE_SIZE_OVERFLOW_LABEL
-
-
-def _classify_read_call(tool_input: dict) -> str:
-    """Classify one Read tool_use's input by scope shape.
-
-    A missing file_path (e.g. only __unparsedToolInput, or an empty input) is
-    unparsed_input regardless of any other field: its scope is unknowable, and
-    filing it as whole-file would inflate the cohort every published share is
-    stated against. pages is checked before offset/limit since a PDF page-range
-    read scopes via a different mechanism entirely, not layered on offset/limit.
-    offset and limit are each checked with `is not None`, never truthiness --
-    offset=0 is a valid first-line read and is falsy in Python.
-    """
-    if not tool_input.get("file_path"):
-        return _READ_SCOPE_COHORT_UNPARSED
-    if tool_input.get("pages") is not None:
-        return _READ_SCOPE_COHORT_PAGES
-    if tool_input.get("offset") is not None or tool_input.get("limit") is not None:
-        return _READ_SCOPE_COHORT_TARGETED
-    return _READ_SCOPE_COHORT_WHOLE_FILE
-
-
-def _new_read_scope_stats() -> dict:
-    return {
-        "read_total": 0,
-        "offset_n": 0,  # Read calls carrying offset (is not None)
-        "limit_n": 0,  # Read calls carrying limit (is not None)
-        "both_n": 0,  # Read calls carrying both offset and limit
-        "cohort_n": Counter(),  # cohort label -> Read call count
-        "unpaired": 0,  # Read tool_use with no matching tool_result in this session
-        "error_result": 0,  # is_error tool_result for a Read call
-        "non_text_result": 0,  # non-string tool_result content for a Read call (e.g. an image block)
-        "cohort_scope_count": Counter(),  # (cohort, scope) -> result count reaching the histogram
-        "cohort_scope_tokens": Counter(),  # (cohort, scope) -> est. token sum
-        "size_hist": Counter(),  # (cohort, scope, bucket label) -> count
-        # Same key -> summed est. tokens. Counts alone cannot answer "what share
-        # of whole-file-read tokens sits above N", which is what any ceiling
-        # estimate and the case study's revisit trigger are both stated against.
-        "size_hist_tokens": Counter(),
-        "read_result_tokens_total": 0,  # every Read tool_result's est. tokens, any cohort/error/text shape
-        "all_tool_result_tokens_total": 0,  # every tool_result's est. tokens, any tool -- cross-check denominator
-        # Locate-step sizing: a targeted read has to be located first, so any
-        # saving quoted against whole-file reads is gross until this is netted.
-        "locate_call_n": 0,
-        "locate_result_tokens_total": 0,
-        "repeat_whole_file_reads": 0,  # whole-file re-reads of a path within the same source-file/sessionId partition
-        "repeat_whole_file_tokens": 0,
-        "repeat_whole_file_output_log_reads": 0,  # sub-count of the above whose path ends .output/.log
-        "growth_tokens": 0,  # prompt-token growth, per "Computing the denominator"
-        "growth_unparseable_ts_excluded": 0,  # growth deltas dropped: --since active, owning turn's ts didn't parse
-    }
-
-
-def _merge_read_scope_stats(dst: dict, src: dict) -> None:
-    dst["read_total"] += src["read_total"]
-    dst["offset_n"] += src["offset_n"]
-    dst["limit_n"] += src["limit_n"]
-    dst["both_n"] += src["both_n"]
-    dst["cohort_n"].update(src["cohort_n"])
-    dst["unpaired"] += src["unpaired"]
-    dst["error_result"] += src["error_result"]
-    dst["non_text_result"] += src["non_text_result"]
-    dst["cohort_scope_count"].update(src["cohort_scope_count"])
-    dst["cohort_scope_tokens"].update(src["cohort_scope_tokens"])
-    dst["size_hist"].update(src["size_hist"])
-    dst["size_hist_tokens"].update(src["size_hist_tokens"])
-    dst["read_result_tokens_total"] += src["read_result_tokens_total"]
-    dst["all_tool_result_tokens_total"] += src["all_tool_result_tokens_total"]
-    dst["locate_call_n"] += src["locate_call_n"]
-    dst["locate_result_tokens_total"] += src["locate_result_tokens_total"]
-    dst["repeat_whole_file_reads"] += src["repeat_whole_file_reads"]
-    dst["repeat_whole_file_tokens"] += src["repeat_whole_file_tokens"]
-    dst["repeat_whole_file_output_log_reads"] += src["repeat_whole_file_output_log_reads"]
-    dst["growth_tokens"] += src["growth_tokens"]
-    dst["growth_unparseable_ts_excluded"] += src["growth_unparseable_ts_excluded"]
-
-
-def _read_scope_growth_for_group(group: list[dict], since_ts: float | None) -> tuple[int, int]:
-    """Sum of positive prompt-token growth deltas within one source-file group
-    (one _read_session_file_partitioned entry: the main transcript or one
-    subagent file).
-
-    Keys the delta chain by each assistant record's own sessionId rather than
-    picking one reference id for the whole group: a subagent transcript file
-    is named by its own agent id, but its records carry the *parent*
-    session's sessionId, so neither the file's own stem nor a first-seen-in-
-    iteration guess is a valid "this group's session" ground truth. Keying by
-    sessionId means an interleaved foreign-session record simply forms its
-    own chain and contributes its own real growth, instead of being dropped
-    or corrupting a neighbouring session's delta. A record with no sessionId
-    at all folds into the ""-keyed chain -- neither excluded nor treated as
-    its own session, preserving this function's long-standing leniency for
-    absent ids. Resets the whole per-session map at each compact_boundary
-    record, since a compaction boundary applies to the file, not to one
-    session. The first turn of every resulting per-session sequence has no
-    predecessor and so contributes nothing. A turn with absent or malformed
-    usage is skipped without breaking its session's chain for the turn after
-    it. A shrinking context contributes nothing (never negative). Every
-    chain is built over every record regardless of --since; --since filters
-    only the completed deltas, by the later (owning) turn's own timestamp --
-    fail-closed: a delta whose owning turn's timestamp doesn't parse is
-    excluded rather than included, and counted in the returned exclusion
-    total so the report's own growth figure stays auditable against
-    --since's promise.
-
-    Returns (growth_tokens, deltas_excluded_for_unparseable_timestamp).
-    """
-    prev_context_by_session: dict[str, int] = {}
-    total = 0
-    unparseable_ts_excluded = 0
-
-    for rec in group:
-        rec_type = rec.get("type")
-        if rec_type == "system" and rec.get("subtype") == "compact_boundary":
-            # Resets every session's chain, not just the compacted one: a
-            # compact_boundary record carries no sessionId, so which session it
-            # belongs to is not recoverable from the data. Costs one real delta
-            # for any other session mid-chain in the same file. Inert on every
-            # transcript shape seen so far -- a main file's records all carry
-            # its own session id, a subagent file's all carry its parent's --
-            # so a file holding two live chains does not currently arise.
-            prev_context_by_session.clear()
-            continue
-        if rec_type != "assistant":
-            continue
-
-        usage = (rec.get("message") or {}).get("usage")
-        if not usage:
-            continue
-
-        session_key = rec.get("sessionId") or ""
-        context_at_turn = _context_at_turn(usage)
-        prev_context = prev_context_by_session.get(session_key)
-        if prev_context is not None:
-            delta = context_at_turn - prev_context
-            if delta > 0:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if since_ts is not None and rec_ts is None:
-                    unparseable_ts_excluded += 1
-                elif since_ts is None or rec_ts >= since_ts:
-                    total += delta
-        prev_context_by_session[session_key] = context_at_turn
-
-    return total, unparseable_ts_excluded
-
-
-def _read_scope_repeat_whole_file_reads(groups: list[list[dict]]) -> tuple[int, int, int]:
-    """Repeat whole-file-read detection, scoped to the same partition the
-    growth chain uses (per source-file group, and per sessionId within a
-    group) rather than to the whole flattened session.
-
-    A parent transcript and its subagent are separate context windows: a
-    subagent re-reading a file its parent already read is not a redundant
-    read, it's the only way that subagent can see the file at all. Scoping
-    to the flattened session would count every such cross-file read as a
-    repeat, inflating the figure with reads that were never avoidable.
-
-    Pairs each group's own Read tool_use/tool_result independently (a Read's
-    result always lives in the same source file as its call), since this
-    detection needs its own per-partition token histories and cannot reuse
-    the flat pass's already-merged read_calls table. Returns
-    (repeat_reads, repeat_tokens, repeat_output_log_reads) — pure aggregates;
-    no file path is retained past this function.
-    """
-    # (group_index, sessionId-or-"") -> file_path -> [est_tokens, ...] in read order
-    sizes_by_partition: dict[tuple[int, str], dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
-
-    for group_idx, group in enumerate(groups):
-        read_calls: dict[str, dict] = {}  # tool_use_id -> {"file_path", "partition_key"}
-        for rec in group:
-            msg = rec.get("message") or {}
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            session_id = rec.get("sessionId") or ""
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type == "tool_use":
-                    if block.get("name") != "Read":
-                        continue
-                    tool_input = block.get("input") or {}
-                    if _classify_read_call(tool_input) != _READ_SCOPE_COHORT_WHOLE_FILE:
-                        continue
-                    read_calls[block.get("id")] = {
-                        "file_path": tool_input.get("file_path") or "",
-                        "partition_key": (group_idx, session_id),
-                    }
-                elif block_type == "tool_result":
-                    owner = read_calls.pop(block.get("tool_use_id"), None)
-                    if owner is None or block.get("is_error"):
-                        continue
-                    result_content = block.get("content")
-                    if not isinstance(result_content, str):
-                        continue
-                    tokens = len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN
-                    sizes_by_partition[owner["partition_key"]][owner["file_path"]].append(tokens)
-
-    repeat_reads = 0
-    repeat_tokens = 0
-    repeat_output_log_reads = 0
-    for by_path in sizes_by_partition.values():
-        for file_path, sizes in by_path.items():
-            if len(sizes) < 2:
-                continue
-            repeats = sizes[1:]
-            repeat_reads += len(repeats)
-            repeat_tokens += sum(repeats)
-            if file_path.endswith((".output", ".log")):
-                repeat_output_log_reads += len(repeats)
-
-    return repeat_reads, repeat_tokens, repeat_output_log_reads
-
-
-def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], since_ts: float | None) -> dict:
-    """One session's Read-call census, single pass over the flattened record
-    order, plus per-group prompt-token growth and repeat-whole-file-read
-    detection.
-
-    `records` is the main thread + merged subagent files in flat, file-
-    concatenation order (per read_session_file) — everything here except
-    growth and repeat-whole-file-read detection runs over it, since
-    isSidechain is all that scope (main vs subagent) bucketing needs.
-    `groups` is the same session's records kept separate per source file
-    (per _read_session_file_partitioned) — growth and repeat-whole-file-read
-    detection both need the file (and, within a file, sessionId) boundary
-    the flat order discards; see _read_scope_growth_for_group and
-    _read_scope_repeat_whole_file_reads.
-
-    Every returned figure is a pure aggregate (counts and token sums) — no
-    file path, filename, path fragment, or session identifier is retained
-    past this function or printed by any caller.
-    """
-    stats = _new_read_scope_stats()
-
-    read_calls: dict[str, dict] = {}  # tool_use_id -> {"cohort", "scope", "file_path"}
-    locate_calls: set[str] = set()  # tool_use_ids of Grep/Glob calls, for locate-step sizing
-    matched: set[str] = set()
-
-    for rec in records:
-        msg = rec.get("message") or {}
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        is_subagent = bool(rec.get("isSidechain"))
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type == "tool_use":
-                tool_name = block.get("name")
-                if tool_name in _READ_SCOPE_LOCATE_TOOLS:
-                    # A targeted read has to be located first. Sizing that step
-                    # is what lets a saving be quoted net rather than gross.
-                    locate_calls.add(block.get("id"))
-                    stats["locate_call_n"] += 1
-                    continue
-                if tool_name != "Read":
-                    continue
-                tool_id = block.get("id")
-                tool_input = block.get("input") or {}
-                has_offset = tool_input.get("offset") is not None
-                has_limit = tool_input.get("limit") is not None
-                if has_offset:
-                    stats["offset_n"] += 1
-                if has_limit:
-                    stats["limit_n"] += 1
-                if has_offset and has_limit:
-                    stats["both_n"] += 1
-                cohort = _classify_read_call(tool_input)
-                stats["read_total"] += 1
-                stats["cohort_n"][cohort] += 1
-                read_calls[tool_id] = {
-                    "cohort": cohort,
-                    "scope": _READ_SCOPE_SCOPE_SUBAGENT if is_subagent else _READ_SCOPE_SCOPE_MAIN,
-                    "file_path": tool_input.get("file_path") or "",
-                }
-            elif block_type == "tool_result":
-                tool_use_id = block.get("tool_use_id")
-                result_content = block.get("content")
-                is_error = bool(block.get("is_error"))
-                result_tokens = (
-                    len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN if isinstance(result_content, str) else 0
-                )
-                # Cross-check denominator: every tool's own result, Read or not.
-                stats["all_tool_result_tokens_total"] += result_tokens
-                if tool_use_id in locate_calls:
-                    stats["locate_result_tokens_total"] += result_tokens
-
-                owner = read_calls.get(tool_use_id)
-                if owner is None:
-                    continue
-                matched.add(tool_use_id)
-                stats["read_result_tokens_total"] += result_tokens
-
-                if is_error:
-                    stats["error_result"] += 1
-                    continue
-                if not isinstance(result_content, str):
-                    stats["non_text_result"] += 1
-                    continue
-
-                cohort = owner["cohort"]
-                if cohort not in (_READ_SCOPE_COHORT_TARGETED, _READ_SCOPE_COHORT_WHOLE_FILE):
-                    continue
-                thread_scope = owner["scope"]
-                stats["cohort_scope_count"][(cohort, thread_scope)] += 1
-                stats["cohort_scope_tokens"][(cohort, thread_scope)] += result_tokens
-                size_bucket = _read_scope_size_bucket(result_tokens)
-                stats["size_hist"][(cohort, thread_scope, size_bucket)] += 1
-                stats["size_hist_tokens"][(cohort, thread_scope, size_bucket)] += result_tokens
-
-    stats["unpaired"] = len(read_calls) - len(matched)
-
-    (
-        stats["repeat_whole_file_reads"],
-        stats["repeat_whole_file_tokens"],
-        stats["repeat_whole_file_output_log_reads"],
-    ) = _read_scope_repeat_whole_file_reads(groups)
-
-    for group in groups:
-        growth, unparseable_ts_excluded = _read_scope_growth_for_group(group, since_ts)
-        stats["growth_tokens"] += growth
-        stats["growth_unparseable_ts_excluded"] += unparseable_ts_excluded
-
-    return stats
-
-
-def cmd_read_scope(args: argparse.Namespace) -> None:
-    """CLI entry point for the read-scope subcommand.
-
-    Root resolution happens here, mirroring cmd_edit_format, so --config-dir
-    validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="read-scope")
-    _read_scope_report(args, roots)
-
-
-def _read_scope_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Single-pass Read-call scope census: offset/limit/pages classification
-    against the full call count, result-token distribution by targeted/
-    whole-file cohort and main/subagent scope, repeat-whole-file-read
-    aggregates, and per-file-and-sessionId-partitioned prompt-token growth.
-    One reproducible scan producing every figure the case study cites.
-
-    roots is None for every direct caller other than cmd_read_scope (this
-    module's own tests included) — mirrors edit-format's own contract,
-    including the absence of the per-account breakdown below.
-
-    This report's own content never varies with `redact`: like edit-format,
-    it carries no project name, session ID, file path, or path fragment —
-    the repeat-whole-file-read aggregates are pure counts and token sums, and
-    per-account rows use account-N labels. --no-redact is still accepted and
-    still enforces the same multi-root refusal and DO NOT PUBLISH banner, for
-    CLI parity.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "read-scope: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "read-scope")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(args, "read-scope", include_subagents=True, roots=roots)
-    _print_resolved_scope("read-scope", scope_label, scan_roots)
-
-    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
-
-    stats = _new_read_scope_stats()
-    per_account: list[dict] = [_new_read_scope_stats() for _ in scan_roots] if multi_root else []
-
-    for jsonl, records in session_iter:
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # which has no variant that also exposes the per-file boundary the
-        # growth chain and repeat-whole-file-read detection need.
-        groups = _read_session_file_partitioned(jsonl, include_subagents=True)
-        session_stats = _scan_read_scope_session(records, groups, since_ts)
-        _merge_read_scope_stats(stats, session_stats)
-        if multi_root:
-            idx = _root_index_for_path(jsonl, resolved_scan_roots)
-            _merge_read_scope_stats(per_account[idx], session_stats)
-
-    _print_read_scope_report(stats, per_account if multi_root else None, since_label)
-
-
-def _read_scope_cohort_bucket_token_total(stats: dict, cohort: str) -> int:
-    """Sum of `cohort`'s size_hist_tokens across both main and subagent scope
-    -- the shared denominator each size-histogram bucket line's percentage
-    divides by, so a subagent-dominated cohort's tokens aren't hidden behind
-    the printing scope's own, smaller total."""
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    return sum(
-        stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-        for label in bucket_labels
-    )
-
-
-def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_label: str) -> None:
-    read_total = stats["read_total"]
-    cohort_n = stats["cohort_n"]
-    targeted_n = cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-    whole_file_n = cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-    pages_n = cohort_n.get(_READ_SCOPE_COHORT_PAGES, 0)
-    unparsed_n = cohort_n.get(_READ_SCOPE_COHORT_UNPARSED, 0)
-
-    print("\n## Read-call census\n")
-    print(f"Read calls: {read_total:,}")
-    print(f"  offset present: {stats['offset_n']:,}")
-    print(f"  limit present:  {stats['limit_n']:,}")
-    print(f"  both present:   {stats['both_n']:,}")
-    # Cohort shares divide by the full Read call census, never targeted +
-    # whole_file — pages/unparsed_input calls are real Read calls that would
-    # otherwise silently vanish from the arithmetic.
-    print(f"\ntargeted    {targeted_n:,}  ({_pct_of(targeted_n, read_total)} of Read calls)")
-    print(f"whole_file  {whole_file_n:,}  ({_pct_of(whole_file_n, read_total)} of Read calls)")
-    print(f"\npages (Read calls scoping a PDF via `pages` rather than offset/limit): {pages_n:,}")
-    print(
-        "unparsed_input (Read tool_use whose input carried no file_path, e.g. only"
-        f" __unparsedToolInput -- scope unknowable): {unparsed_n:,}"
-    )
-    print(f"unpaired (Read tool_use with no matching tool_result found in this session): {stats['unpaired']:,}")
-    print(f"error_result (is_error tool_result for a Read call, excluded from the size histogram): {stats['error_result']:,}")
-    print(
-        "non_text_result (non-string tool_result content for a Read call, e.g. an image"
-        f" block, excluded from the size histogram): {stats['non_text_result']:,}"
-    )
-
-    print("\n## Result token distribution by cohort x scope\n")
-    cpt = _READ_SCOPE_CHARS_PER_TOKEN
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            tokens = stats["cohort_scope_tokens"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label:12} {thread_scope:9} count={count:8,}  tokens=~{tokens:12,}")
-
-    whole_file_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    targeted_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_TARGETED, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    result_tokens_total = whole_file_tokens + targeted_tokens
-    print(f"\nwhole_file share of targeted+whole_file result tokens: {_pct_of(whole_file_tokens, result_tokens_total)}")
-    subagent_whole_file_tokens = stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, _READ_SCOPE_SCOPE_SUBAGENT), 0)
-    print(f"whole_file tokens inside subagents: {_pct_of(subagent_whole_file_tokens, whole_file_tokens)}")
-
-    print("\nsize histogram (est. tokens):\n")
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        cohort_tokens = _read_scope_cohort_bucket_token_total(stats, cohort)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            cohort_scope_count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label} / {thread_scope}:")
-            for label in bucket_labels:
-                count = stats["size_hist"].get((cohort, thread_scope, label), 0)
-                tokens = stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-                print(
-                    f"    {label:10} {count:6,}  ({_pct_of(count, cohort_scope_count)})"
-                    f"  ~{tokens:11,} tok  ({_pct_of(tokens, cohort_tokens)} of {cohort_label} tokens)"
-                )
-
-    print(
-        "\n## Repeat whole-file reads (same path read whole-file more than once in the same"
-        " source file / sessionId -- a subagent re-reading what its parent already read is a"
-        " separate context window, not a repeat)\n"
-    )
-    print(f"repeat reads: {stats['repeat_whole_file_reads']:,}  (~{stats['repeat_whole_file_tokens']:,} tok)")
-    print(f"  of which .output/.log suffixed: {stats['repeat_whole_file_output_log_reads']:,}")
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Prompt-token growth ({title_since})\n")
-    growth_tokens = stats["growth_tokens"]
-    print(f"prompt-token growth: {growth_tokens:,}")
-    print(
-        "growth deltas excluded (--since active, owning turn's timestamp unparseable):"
-        f" {stats['growth_unparseable_ts_excluded']:,}"
-    )
-    print(f"Read-result tokens as share of prompt-token growth: {_pct_of(stats['read_result_tokens_total'], growth_tokens)}")
-    print(
-        "Read-result tokens as share of total tool-result tokens (self-consistent"
-        f" cross-check, both ~{cpt} chars/tok): "
-        f"{_pct_of(stats['read_result_tokens_total'], stats['all_tool_result_tokens_total'])}"
-    )
-    locate_n = stats["locate_call_n"]
-    locate_mean = stats["locate_result_tokens_total"] // locate_n if locate_n else 0
-    print(
-        f"\nlocate-step cost (Grep/Glob calls, the step a targeted read adds): {locate_n:,} calls, "
-        f"~{stats['locate_result_tokens_total']:,} tok, mean ~{locate_mean:,} tok/call -- "
-        f"any saving quoted against whole-file reads is gross until this is netted against it"
-    )
-
-    if per_account is not None:
-        print("\n## Per-account breakdown\n")
-        for idx, account_stats in enumerate(per_account):
-            account_label = f"account-{idx + 1}"
-            a_read_total = account_stats["read_total"]
-            if a_read_total == 0:
-                print(f"  {account_label:10} no Read calls")
-                continue
-            a_cohort_n = account_stats["cohort_n"]
-            a_targeted = a_cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-            a_whole_file = a_cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-            print(
-                f"  {account_label:10} calls={a_read_total:6,}  "
-                f"targeted={_pct_of(a_targeted, a_read_total):>6}  whole_file={_pct_of(a_whole_file, a_read_total):>6}"
-            )
-
-
 # ---------------------------------------------------------------------------
 # instrument-authoring
 # ---------------------------------------------------------------------------
@@ -6341,6 +5781,130 @@ def _cost_ledger_path() -> Path:
     return config_dir() / "cost-ledger.md"
 
 
+_MACHINE_IDENTITY_FILENAME = "machine-id"
+# Deliberately narrower than _MACHINE_LABEL_RE, since secrets.token_hex(4)
+# can only produce exactly eight lowercase hex characters. A hand-written
+# value that is well-formed under the wider regex (e.g. "acme1") is refused
+# here rather than silently adopted.
+#
+# \Z (not $), matching _MACHINE_LABEL_RE's own anchor, so a trailing newline
+# doesn't slip past it.
+_MACHINE_IDENTITY_RE = re.compile(r"^[0-9a-f]{8}\Z")
+
+
+def _machine_identity_path(config_dir_override: Path | None = None) -> Path:
+    """Path to the generated, per-config-dir machine identity file.
+    Mirrors _pr_cost_ledger_path's own override-parameter shape. Resolved
+    through the module-global config_dir binding only, deliberately never
+    through COST_LEDGER_PATH/PR_COST_LEDGER_PATH. Either override may point
+    at a shared or synced location distinct from this machine's own config
+    directory, so an identity resolved there would be shared by every
+    machine writing to it."""
+    return (config_dir_override or config_dir()) / _MACHINE_IDENTITY_FILENAME
+
+
+def _read_machine_identity_or_refuse(subcommand: str, path: Path, location_label: str) -> str:
+    """Read and validate an already-existing machine identity file, exiting
+    1 unless its content matches _MACHINE_IDENTITY_RE exactly. Refuses on:
+
+    - a missing file, including a dangling symlink
+    - an unreadable file
+    - an empty file
+    - hand-written content that doesn't match the regex
+
+    Never echoes the resolved path, matching this module's other
+    home-rooted-path redaction discipline. `location_label` names the
+    identity file's location in the refusal message instead. Deleting the
+    file mints a new identity, under which existing rows read as a
+    different machine. The refusal message states that instead of
+    auto-healing the file."""
+    try:
+        # errors="replace" (not read_text()'s strict decode), so non-UTF-8
+        # bytes fail _MACHINE_IDENTITY_RE's match below and refuse cleanly
+        # rather than raising UnicodeDecodeError uncaught.
+        # Assumes path is a regular file or a symlink to one. A FIFO would
+        # block indefinitely here. This is accepted, because triggering it
+        # needs a planted special file in a config dir the attacker already
+        # writes to.
+        raw = path.read_bytes()
+    except OSError:
+        raw = None
+    stripped = raw.decode("utf-8", errors="replace").strip() if raw is not None else None
+    if stripped is None or not _MACHINE_IDENTITY_RE.match(stripped):
+        print(
+            f"{subcommand}: {location_label} does not hold a well-formed"
+            " machine identity -- delete it to mint a new one (existing rows will then read as a"
+            " different machine)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return stripped
+
+
+def _resolve_machine_identity(
+    subcommand: str, config_dir_override: Path | None = None, location_label: str | None = None
+) -> str:
+    """Generates and persists a per-config-dir identity via
+    secrets.token_hex(4) on first use, publishing it through mkstemp+os.link
+    so a losing racer adopts the winner's value instead of a torn write
+    (see docs/pr-cost.md's "Machine identity").
+    """
+    path = _machine_identity_path(config_dir_override)
+    if location_label is None:
+        location_label = f"~/.claude/{_MACHINE_IDENTITY_FILENAME}"
+    if path.exists():
+        return _read_machine_identity_or_refuse(subcommand, path, location_label)
+
+    # 8 lowercase hex chars is a 32-bit collision budget (see docs/pr-cost.md's
+    # "Refusals" section for the cloud-sync-duplication collision discussion).
+    token = secrets.token_hex(4)
+    tmp_name: str | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{_MACHINE_IDENTITY_FILENAME}.")
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return _read_machine_identity_or_refuse(subcommand, path, location_label)
+    except OSError:
+        # Not exc's str(): a real mkstemp/os.link failure embeds the full
+        # temp-file path via exc.filename/filename2, which sits inside
+        # this machine's own config dir.
+        print(
+            f"{subcommand}: could not create the machine identity file ({location_label})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    finally:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+    return token
+
+
+def _warn_machine_identity_absent_from_ledger(subcommand: str, identity: str, rows: Sequence[dict]) -> None:
+    """Print a one-time stderr notice when `rows` is non-empty and none of
+    them carries `identity`. This is the expected split the first --record
+    run under a freshly generated identity produces, since a generated
+    identity is never adopted from an existing row. Fires at most once per
+    ledger per --record run: once a row carrying `identity` lands, the
+    guard no longer applies.
+    """
+    if not rows:
+        return
+    if any(row["machine"] == identity for row in rows):
+        return
+    print(
+        f"{subcommand}: this machine's generated identity ({identity}) carries no rows yet, but"
+        f" {len(rows)} existing row(s) do under a different machine value -- the next captured row"
+        " for any PR/week already captured under that other value is expected to produce a second"
+        " row, which is safe to sum (see docs/pr-cost.md). Rule out a synced or dotfile-tracked"
+        " config directory before treating this as the ordinary upgrade case.",
+        file=sys.stderr,
+    )
+
+
 def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledger") -> bool:
     """Return True iff the nearest existing ancestor of ledger_path sits
     inside a git working tree -- scopes --record's multi-root refusal to
@@ -6802,16 +6366,16 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     """
     record: bool = bool(getattr(args, "record", False))
     force: bool = bool(getattr(args, "force", False))
-    machine_label: str | None = getattr(args, "machine_label", None) or None
     note: str = getattr(args, "note", None) or ""
 
     try:
         ledger_path = _cost_ledger_path()
-    except ValueError as exc:
-        # COST_LEDGER_PATH is new, operator-set, and easy to mistype relative
-        # -- route it through this module's standard stderr+exit convention
-        # rather than letting a raw traceback reach the terminal.
-        print(f"cost-ledger: {exc}", file=sys.stderr)
+    except ValueError:
+        # Not str(exc): _cost_ledger_path's own message embeds
+        # COST_LEDGER_PATH's raw value, which can carry a home-rooted
+        # engagement path. Same discipline as pr-cost-export's identical
+        # catch.
+        print("cost-ledger: COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
         sys.exit(1)
 
     if roots is None:
@@ -6905,12 +6469,6 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
 
-    if not machine_label:
-        print("cost-ledger: --record requires --machine-label", file=sys.stderr)
-        sys.exit(1)
-    if not _MACHINE_LABEL_RE.match(machine_label):
-        print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
     if len(roots) > 1 and _ledger_path_is_git_tracked(ledger_path):
         # --record writes to a single resolved ledger path; unioning multiple
         # declared accounts into that one write only risks silently
@@ -6927,18 +6485,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(2)
-    # Rejection names the rule, never the compared hostname value -- echoing
-    # it would persist recon-value data into the session transcript, the same
-    # discipline deny-private-project-refs.sh applies to its own matches.
-    # Covers the POSIX hostname only, not macOS's separate ComputerName
-    # (`scutil --get ComputerName`) -- see docs/cost-ledger.md.
-    if machine_label.lower() == socket.gethostname().lower():
-        print(
-            "cost-ledger: --machine-label must not equal this machine's hostname"
-            " -- publishing a hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+
+    # Resolved only after the sentinel and git-tracked checks above, so a
+    # run never creates a machine-id file inside a config dir whose owner
+    # never opted in to --record.
+    # See pr-cost's equivalent call for the same ordering.
+    machine = _resolve_machine_identity("cost-ledger")
+
     note_violation = _cost_ledger_note_violation(note)
     if note_violation is not None:
         print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
@@ -7006,7 +6559,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     new_row = {
         "week": week_str,
-        "machine": machine_label,
+        "machine": machine,
         "rates": _PRICING_FETCH_DATE.isoformat(),
         "usd": week_data["total"],
         "context_pct": context_share,
@@ -7034,6 +6587,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
                 print(f"cost-ledger: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            _warn_machine_identity_absent_from_ledger("cost-ledger", machine, existing_rows)
+
             try:
                 new_rows = _upsert_cost_ledger_row(existing_rows, new_row, force)
             except ValueError as exc:
@@ -7048,7 +6603,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
-    print(f"cost-ledger: recorded {week_str} / {machine_label}")
+    print(f"cost-ledger: recorded {week_str} / {machine}")
 
 
 # ---------------------------------------------------------------------------
@@ -7237,7 +6792,9 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     """Validate and coerce one already-split, already-tab-separated data
     row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
     the offending line on any field that doesn't match its column's
-    contract."""
+    contract. Never embeds a cell's raw value in this message, since
+    pr-cost-export echoes it to stderr where another account's concurrent
+    session may be watching."""
     if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
         raise _PrCostLedgerParseError(
             f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
@@ -7245,21 +6802,15 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
 
     if not row["host"] or row["host"] != row["host"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
-            " this diagnostic since the ledger's host column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed host value (must be lowercase)")
     if not row["repo"] or row["repo"] != row["repo"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
-            " this diagnostic since the ledger's repo column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed repo value (must be lowercase owner/name)")
     try:
         row["pr_number"] = int(row["pr_number"])
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number {row['pr_number']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number") from None
     if not _MACHINE_LABEL_RE.match(row["machine"]):
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label {row['machine']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label")
     for required_col in ("head_branch", "merged_at", "captured_at"):
         if not row[required_col]:
             raise _PrCostLedgerParseError(f"line {line_no}: {required_col} must not be empty")
@@ -7269,35 +6820,33 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
         try:
             datetime.fromisoformat(row[ts_col].replace("Z", "+00:00"))
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col} {row[ts_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col}") from None
     try:
         datetime.strptime(row["rate_stamp"], "%Y-%m-%d")
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp {row['rate_stamp']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp") from None
     if row["join_confidence"] not in _PR_COST_JOIN_CONFIDENCE_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence {row['join_confidence']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence")
     if row["status"] not in _PR_COST_STATUS_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown status {row['status']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown status")
 
     for float_col in _PR_COST_FLOAT_COLUMNS:
         try:
             row[float_col] = float(row[float_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col} {row[float_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col}") from None
         if math.isnan(row[float_col]) or math.isinf(row[float_col]):
-            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col} {row[float_col]!r}")
+            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col}")
 
     for int_col in _PR_COST_INT_COLUMNS:
         try:
             row[int_col] = int(row[int_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col} {row[int_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col}") from None
 
     for bool_col in _PR_COST_BOOL_COLUMNS:
         if row[bool_col] not in ("true", "false"):
-            raise _PrCostLedgerParseError(
-                f"line {line_no}: malformed {bool_col} {row[bool_col]!r} (expected true/false)"
-            )
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {bool_col} (expected true/false)")
         row[bool_col] = row[bool_col] == "true"
 
     return row
@@ -7343,7 +6892,7 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     return rows
 
 
-def _format_pr_cost_ledger_row(row: dict) -> str:
+def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_LEDGER_COLUMNS) -> str:
     """Render one row dict as its tab-separated line -- the exact inverse of
     _parse_pr_cost_ledger_row_cells. Refuses (raises _PrCostLedgerParseError)
     to render any cell containing a tab or newline, which would corrupt the
@@ -7351,9 +6900,11 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
     program-generated (a redacted placeholder, or an ISO8601 timestamp this
     module itself formatted), never raw external text, so this should never
     fire in practice; it exists as a last-resort guard against writing a
-    corrupt row rather than as an expected code path."""
+    corrupt row rather than as an expected code path. `columns` defaults to
+    the ledger's own column tuple. pr-cost-export passes its own wider tuple
+    to reuse this same tab/newline guard and bool/float rendering."""
     cells: list[str] = []
-    for col in _PR_COST_LEDGER_COLUMNS:
+    for col in columns:
         value = row[col]
         if col in _PR_COST_BOOL_COLUMNS:
             cell = "true" if value else "false"
@@ -7362,9 +6913,7 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
         else:
             cell = str(value)
         if "\t" in cell or "\n" in cell or "\r" in cell:
-            raise _PrCostLedgerParseError(
-                f"column {col!r} value {cell!r} contains a tab or newline -- refusing to write a corrupt row"
-            )
+            raise _PrCostLedgerParseError(f"column {col!r} contains a tab or newline -- refusing to write a corrupt row")
         cells.append(cell)
     return "\t".join(cells)
 
@@ -7392,7 +6941,8 @@ def _latest_pr_cost_row(
     ]
     if not matches:
         return None
-    return max(matches, key=lambda r: r["captured_at"])
+    # Last appended wins on an equal captured_at (the index tiebreaks max()).
+    return max(enumerate(matches), key=lambda p: (p[1]["captured_at"], p[0]))[1]
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
@@ -8087,20 +7637,20 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     if force and target_pr is None:
         print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
         sys.exit(1)
-    if record and not machine_label:
-        print("pr-cost: --record requires --machine-label", file=sys.stderr)
+    # Precedes the format check below, because --record's machine identity
+    # is generated, never operator-supplied. Firing first avoids giving a
+    # malformed --machine-label a fix-the-format message that would invite
+    # retrying with --record still set.
+    if record and machine_label is not None:
+        print(
+            "pr-cost: --machine-label is not accepted with --record -- machine identity is"
+            " generated and persisted automatically; see docs/pr-cost.md. --machine-label still"
+            " narrows read mode's uncaptured-PR listing to one machine",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if machine_label is not None and not _MACHINE_LABEL_RE.match(machine_label):
         print(f"pr-cost: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
-    if record and machine_label.lower() == socket.gethostname().lower():
-        # Rejection names the rule, never the compared hostname -- same
-        # discipline as cost-ledger's own equivalent check.
-        print(
-            "pr-cost: --machine-label must not equal this machine's hostname -- publishing a"
-            " hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
         sys.exit(1)
 
     corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
@@ -8136,19 +7686,22 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
 
         try:
             ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError as exc:
-            print(f"pr-cost: {exc}", file=sys.stderr)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as pr-cost-export's identical
+            # catch.
+            print(f"pr-cost: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
             sys.exit(1)
 
-        existing_rows: list[dict] = []
-        if ledger_path.exists():
-            try:
-                existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-            except _PrCostLedgerParseError as exc:
-                print(f"pr-cost: {exc}", file=sys.stderr)
-                sys.exit(1)
-
         if not record:
+            existing_rows: list[dict] = []
+            if ledger_path.exists():
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
             _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
             _print_pr_cost_uncaptured(
                 branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
@@ -8224,19 +7777,23 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             if all_accounts:
                 # account-N, not the resolved config dir, to avoid a
                 # resolved home-rooted path in output -- same discipline as
-                # the single-account refusal message below.
+                # the single-account refusal message below. Worded
+                # generically ("not opted in"), not as a missing-sentinel-
+                # file claim. Same rationale as pr-cost-export's identical
+                # message: an explicit pr_cost_recording = false in
+                # claude-config.toml reaches this branch with no sentinel
+                # file involved at all.
                 print(
-                    f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                    f"pr-cost: account-{ordinal} is not opted in (pr_cost_recording) --"
                     " skipped, see docs/pr-cost.md",
                     file=sys.stderr,
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not the resolved config dir, to
-            # avoid a resolved home-rooted path in output -- same discipline
-            # as cost-ledger's equivalent message above.
+            # Worded generically for the same reason as the all_accounts
+            # branch above.
             print(
-                "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
+                "pr-cost: --record is not opted in (pr_cost_recording) --"
                 " see docs/pr-cost.md",
                 file=sys.stderr,
             )
@@ -8260,6 +7817,42 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 file=sys.stderr,
             )
             sys.exit(2)
+
+        # Resolved only after the opt-in gate and the git-tracked refusal
+        # above, so a run never creates a machine-id file for an account
+        # that never opted in to --record.
+        # The refusal message names the account as account-N, not a resolved
+        # path, because --all-accounts means account_config_dir isn't the
+        # default ~/.claude the un-labeled convention would otherwise imply.
+        machine_identity = _resolve_machine_identity(
+            "pr-cost",
+            config_dir_override=account_config_dir,
+            location_label=f"account-{ordinal}" if all_accounts else None,
+        )
+
+        # Read under this account's own write lock, immediately before the
+        # warn call — matching _cost_ledger_report's own read-under-lock
+        # symmetry. A read taken outside any lock could warn from a state a
+        # concurrent writer has already superseded.
+        # Known, accepted residual: the ledger write happens in a later,
+        # separate per-branch lock, so a concurrent writer landing between
+        # this lock's release and that lock's acquire still sees a stale
+        # advisory warning.
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        with open(lock_path, "w") as lock_f:
+            _acquire_pr_cost_ledger_lock(lock_f)
+            try:
+                try:
+                    existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                except FileNotFoundError:
+                    existing_rows = []
+                except _PrCostLedgerParseError as exc:
+                    print(f"pr-cost: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                _warn_machine_identity_absent_from_ledger("pr-cost", machine_identity, existing_rows)
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
         if target_pr is not None:
             pr_by_number = {pr["number"]: pr for pr in merged_prs}
@@ -8333,11 +7926,11 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         sys.exit(1)
 
                     already = _latest_pr_cost_row(
-                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
+                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_identity
                     )
                     if already is not None and not force:
                         print(
-                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
+                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_identity} is already"
                             " captured -- pass --force (with --pr) to append a correcting row",
                             file=sys.stderr,
                         )
@@ -8377,7 +7970,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     new_row = _new_pr_cost_row(
                         host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
                         enrichment=enrichment, join_confidence=join_confidence, status=row_status,
-                        machine=machine_label, captured_at=captured_at,
+                        machine=machine_identity, captured_at=captured_at,
                         supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
@@ -8395,7 +7988,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
             existing_rows = updated_rows
             account_recorded_a_row = True
-            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
+            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_identity}")
 
         if account_recorded_a_row:
             recorded += 1  # counts accounts that wrote a row, not total rows written
@@ -8411,6 +8004,399 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
+
+
+# _PR_COST_LEDGER_COLUMNS with a leading account column.
+# head_branch is renamed head_branch_label: a stored label is per-run, not a
+# stable branch identity, so re-tokenizing it needs a name that makes that
+# visible.
+# supersedes is replaced by correction_count: supersedes is a dangling
+# pointer into a row the export no longer carries, so a derived count stands
+# in for it instead.
+_PR_COST_EXPORT_COLUMNS: tuple[str, ...] = ("account", *(
+    {"head_branch": "head_branch_label", "supersedes": "correction_count"}.get(col, col)
+    for col in _PR_COST_LEDGER_COLUMNS
+))
+_PR_COST_EXPORT_HEADER_LINE = "\t".join(_PR_COST_EXPORT_COLUMNS)
+
+
+def _pr_cost_export_date_only(value: str) -> str:
+    """Date portion of an already-validated ISO8601 timestamp
+    (YYYY-MM-DDTHH:MM:SS[Z|+HH:MM]). Validated by
+    _parse_pr_cost_ledger_row_cells before this is ever called. Applies to
+    merged_at/captured_at only. rate_stamp is already date-only and never
+    passed through this."""
+    return value.split("T", 1)[0]
+
+
+def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, int]]:
+    """One (row, correction_count) pair per distinct (host, repo, pr_number,
+    machine) key in `rows`, keeping only the current (latest by
+    captured_at) row for each key -- the append-only ledger's full history
+    collapsed to current state. Must run before tokenization: pr_number must
+    stay a typed int. Must run before date-truncation: same-day ties need
+    full-precision captured_at. correction_count is the number of other
+    rows sharing that key (total captures minus one).
+    """
+    groups: dict[tuple[str, str, int, str], list[dict]] = {}
+    for row in rows:
+        key = (row["host"], row["repo"], row["pr_number"], row["machine"])
+        groups.setdefault(key, []).append(row)
+    collapsed: list[tuple[dict, int]] = []
+    for (host, repo, pr_number, machine), group in groups.items():
+        latest = _latest_pr_cost_row(group, host, repo, pr_number, machine)
+        collapsed.append((latest, len(group) - 1))
+    return collapsed
+
+
+def _redact_pr_cost_row_for_export(
+    row: dict, ordinal: int, correction_count: int,
+    host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict, machine_map: dict,
+) -> dict:
+    """One collapsed ledger row rendered into _PR_COST_EXPORT_COLUMNS' own
+    shape:
+
+    - host/repo/pr_number/head_branch/machine are tokenized through five
+      separate per-kind maps.
+    - merged_at/captured_at are truncated to a date.
+    - supersedes is replaced by the caller-computed correction_count.
+
+    `row["head_branch"]` is re-tokenized here even though it already holds
+    a redacted placeholder from the write path. That placeholder was
+    assigned under whichever run's own ordinal scheme recorded it, so
+    passing it through as-is would put two disagreeing account-K numberings
+    in one row.
+
+    `machine` is tokenized uniformly, whether it holds a tool-generated hex
+    identity or a legacy operator-chosen `--machine-label` value -- both are
+    potentially identifying, so neither passes through raw.
+    """
+    exported = dict(row)
+    exported["account"] = f"account-{ordinal}"
+    exported["host"] = _assign_root_scoped_redact_label("host", ordinal, row["host"], host_map)
+    exported["repo"] = _assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+    exported["pr_number"] = _assign_root_scoped_redact_label("pr", ordinal, str(row["pr_number"]), pr_map)
+    exported["head_branch_label"] = _assign_root_scoped_redact_label(
+        "branch", ordinal, row["head_branch"], branch_map
+    )
+    exported["machine"] = _assign_root_scoped_redact_label("machine", ordinal, row["machine"], machine_map)
+    exported["merged_at"] = _pr_cost_export_date_only(row["merged_at"])
+    exported["captured_at"] = _pr_cost_export_date_only(row["captured_at"])
+    exported["correction_count"] = correction_count
+    del exported["head_branch"]
+    del exported["supersedes"]
+    return exported
+
+
+def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, int, list[str]]:
+    """Read every resolved root's own pr-cost ledger. Returns
+    (formatted_rows, declared, opted_in, skipped_not_opted_in,
+    legacy_header_accounts, legacy_machine_value_rows, corpus_identities),
+    fully materialized, with no filesystem writes of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for account
+    iteration order and corpus_identities' construction.
+    """
+    ordinals = _redaction_ordinals(roots)
+    root_by_resolved = {root.resolve(): root for root in roots}
+    declared = len(roots)
+    opted_in = skipped_not_opted_in = legacy_header_accounts = legacy_machine_value_rows = 0
+    formatted_rows: list[str] = []
+    corpus_identities: list[str] = []
+    host_map: dict[tuple[int, str], str] = {}
+    repo_map: dict[tuple[int, str], str] = {}
+    pr_map: dict[tuple[int, str], str] = {}
+    branch_map: dict[tuple[int, str], str] = {}
+    machine_map: dict[tuple[int, str], str] = {}
+
+    for resolved_root in sorted(ordinals):
+        ordinal = ordinals[resolved_root]
+        account_config_dir = root_by_resolved[resolved_root].parent
+
+        # Same call, and the same error handling, as --record's own opt-in
+        # gate above (see _config.py's _location_value for how
+        # claude-config.toml and the legacy sentinel resolve against
+        # each other).
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except _config.ConfigSchemaEmptyError:
+            print(
+                f"pr-cost-export: account-{ordinal}: config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            print(
+                f"pr-cost-export: account-{ordinal}: pr_cost_recording's config-keys.psv row is"
+                " truncated (partial stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except KeyError as exc:
+            if _config.schema():
+                print(f"pr-cost-export: account-{ordinal}: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"pr-cost-export: account-{ordinal}: could not read config-keys.psv (partial"
+                " stow-relink or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always concrete here (root.parent), so
+            # this is not expected to be reachable in practice -- see
+            # --record's identical branch above for why it's still handled
+            # explicitly rather than left to fail silently.
+            print(
+                f"pr-cost-export: account-{ordinal}'s config directory could not be resolved --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            # account-N, not account_config_dir, to avoid a resolved
+            # home-rooted path in output -- same discipline as pr-cost's own
+            # --all-accounts skip message.
+            # Worded generically for the same reason as pr-cost's
+            # --all-accounts skip message above.
+            print(
+                f"pr-cost-export: account-{ordinal} is not opted in (pr_cost_recording) --"
+                " skipped, see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            skipped_not_opted_in += 1
+            continue
+        opted_in += 1
+
+        try:
+            ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
+        except ValueError:
+            # Not str(exc): _pr_cost_ledger_path's own message embeds
+            # PR_COST_LEDGER_PATH's raw value, which can carry a home-rooted
+            # engagement path. Same discipline as this function's other
+            # account-N-only diagnostics above.
+            print(
+                f"pr-cost-export: account-{ordinal}: PR_COST_LEDGER_PATH must be an absolute path",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not ledger_path.exists():
+            continue
+
+        try:
+            ledger_text = ledger_path.read_text()
+        except OSError:
+            print(f"pr-cost-export: account-{ordinal}: ledger file could not be read", file=sys.stderr)
+            sys.exit(1)
+        # splitlines(), not split("\n", 1), so a CRLF-terminated first line is
+        # recognized the same way _parse_pr_cost_ledger_file_text's own
+        # canonical line-1 comparison recognizes it.
+        ledger_lines = ledger_text.splitlines()
+        if ledger_lines and ledger_lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+            legacy_header_accounts += 1
+        try:
+            raw_rows = _parse_pr_cost_ledger_file_text(ledger_text)
+        except _PrCostLedgerParseError as exc:
+            print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not raw_rows:
+            continue
+
+        # Threaded through this same per-account loop rather than re-read from
+        # each ledger a second time, to avoid double I/O and a result that
+        # could disagree with the rows actually exported.
+        corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
+        for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
+            # Runs post-collapse, so a same-key multi-capture correction under
+            # one legacy machine value is counted once here, not once per raw capture.
+            if not _MACHINE_IDENTITY_RE.match(row["machine"]):
+                legacy_machine_value_rows += 1
+            exported = _redact_pr_cost_row_for_export(
+                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map, machine_map
+            )
+            try:
+                formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
+            except _PrCostLedgerParseError as exc:
+                print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+    return (
+        formatted_rows, declared, opted_in, skipped_not_opted_in,
+        legacy_header_accounts, legacy_machine_value_rows, corpus_identities,
+    )
+
+
+def _pr_cost_export_provenance_line(
+    *, exported_at: datetime, declared: int, opted_in: int, skipped_not_opted_in: int,
+    legacy_header_accounts: int, legacy_machine_value_rows: int, corpus_identities: Sequence[str],
+    corpus_override: bool,
+) -> str:
+    """Builds the provenance line. corpus= is a same-corpus indicator only,
+    never a security boundary -- see docs/pr-cost.md's "Redacted
+    cross-account export" section for its construction, for what
+    corpus_override=1 means, and for what legacy_machine_value_rows flags.
+    """
+    digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
+    exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        "# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this"
+        f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
+        f" skipped_not_opted_in={skipped_not_opted_in} legacy_header_accounts={legacy_header_accounts}"
+        f" legacy_machine_value_rows={legacy_machine_value_rows}"
+        f" corpus={digest} corpus_override={int(corpus_override)}"
+    )
+
+
+def cmd_pr_cost_export(args: argparse.Namespace) -> None:
+    """CLI entry point for the pr-cost-export subcommand -- a pure local
+    file transform over every declared account's own pr-cost ledger, making
+    no `gh` call and scanning no transcript corpus of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for the full
+    grain and redaction contract.
+    """
+    out = getattr(args, "out", None)
+    if not out:
+        print(
+            "pr-cost-export: --out PATH is required -- this subcommand never writes to stdout,"
+            " since stdout inside a Claude Code session is captured into that session's own"
+            " transcript",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Resolved (following any symlink at --out itself) so the git-tree check
+    # below sees where the path really points.
+    # For a dangling symlink, resolve() still reports that the target
+    # doesn't exist.
+    # This resolved path is never echoed to a diagnostic, since it can embed
+    # a home-rooted engagement directory -- see _config_dir.py's own "the
+    # path identifies an engagement" discipline.
+    # Only the operator's own literal `out` string is echoed below.
+    resolved_out = Path(out).resolve()
+    # lexists() here buys nothing over exists(), since resolve() above
+    # already followed every symlink. This check is therefore a UX-only
+    # fast path that fails fast on the common case. The actual symlink
+    # defense is below, at the unresolved open_path + os.link publish step.
+    # That step raises FileExistsError on an existing destination rather
+    # than dereferencing it.
+    if os.path.lexists(str(resolved_out)):
+        print(
+            f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # resolved_out is re-resolved a second, independent time at the terminal
+    # os.open call below (open_path). A symlink retargeted between these two
+    # checks is a known, accepted TOCTOU window for this tool's
+    # single-operator threat model, not one this check closes.
+    if _ledger_path_is_git_tracked(resolved_out, "pr-cost-export"):
+        print(
+            f"pr-cost-export: --out {out!r} is inside a git working tree -- this repo (and every"
+            " repo this subcommand might be run from) is potentially public; write outside any"
+            " git working tree",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    roots = _resolve_cost_roots(args, "pr-cost-export")
+    if len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+        # Mirrors pr-cost's own --all-accounts + PR_COST_LEDGER_PATH refusal:
+        # with it set, every account would resolve to the same forced file,
+        # exporting one ledger's rows once per account under a different
+        # account token.
+        print(
+            "pr-cost-export: PR_COST_LEDGER_PATH is refused when more than one root resolves --"
+            " unset PR_COST_LEDGER_PATH (each account then defaults to its own ledger path), or"
+            " scope to a single profile (drop --config-dir)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # No _resolve_project_scope call here to derive a scope_label from --
+    # this subcommand has no --this-repo/--projects flags.
+    # "*" is the same literal every other subcommand's scope_label defaults
+    # to absent those flags, so it is the accurate, unscoped label for every
+    # declared account's ledger.
+    _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
+
+    (
+        formatted_rows, declared, opted_in, skipped_not_opted_in, legacy_header_accounts,
+        legacy_machine_value_rows, corpus_identities,
+    ) = _pr_cost_export_rows(roots)
+
+    provenance_line = _pr_cost_export_provenance_line(
+        exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
+        skipped_not_opted_in=skipped_not_opted_in, legacy_header_accounts=legacy_header_accounts,
+        legacy_machine_value_rows=legacy_machine_value_rows, corpus_identities=corpus_identities,
+        corpus_override=declared_roots_file_is_overridden(),
+    )
+    file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
+
+    # The final path component is left exactly as named, unlike resolved_out
+    # above, so the publish step's own symlink refusal (below) actually
+    # fires instead of silently following the link to wherever it points.
+    # The parent is still resolved, so a symlinked parent directory lands
+    # inside the same target the git-tree check above already validated.
+    open_path = Path(out).parent.resolve() / Path(out).name
+
+    # Materialized into a same-directory temp file first, then published into
+    # --out via a hard link, so a mid-write crash never leaves a truncated,
+    # non-empty file stuck at the operator-named path with no sign it's crash
+    # debris. Same mkstemp+os.link idiom as _resolve_machine_identity's own
+    # publish step.
+    #
+    # `mkstemp` creates the temp file `0600`, and `os.link`'s new name shares
+    # that same inode's mode. `--out` therefore ends up `0600` with no
+    # separate `chmod` needed.
+    tmp_name: str | None = None
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(open_path.parent), prefix=".pr-cost-export-", suffix=".tmp")
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(file_text)
+    except OSError:
+        if tmp_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+        print(
+            f"pr-cost-export: --out {out!r} could not be written -- pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        try:
+            os.link(tmp_name, open_path)
+        except FileExistsError:
+            print(
+                f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        except OSError:
+            # Not over-specified to "parent directory missing or
+            # unwritable": os.link can also fail this way on EXDEV (--out on
+            # a different filesystem than the temp file) or ENOSPC.
+            print(
+                f"pr-cost-export: --out {out!r} could not be published; pass a new path",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+
+    print(
+        f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"
+        f" account(s) to {out}"
+    )
+    print(
+        "pr-cost-export: inspect this file outside a Claude Code session (e.g. in a separate"
+        " terminal) -- reading it back with the Read tool, or catting it in-session, copies its"
+        " rows into that session's own transcript. See CLAUDE.md and docs/pr-cost.md before"
+        " publishing anything derived from it.",
+        file=sys.stderr,
+    )
 
 
 def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
@@ -12415,11 +12401,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled and --machine-label.",
-    )
-    p_cost_ledger.add_argument(
-        "--machine-label", metavar="LABEL",
-        help="Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this machine's hostname.",
+        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -12459,7 +12441,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled and --machine-label.",
+        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",
@@ -12468,8 +12450,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_cost.add_argument(
         "--machine-label", metavar="LABEL",
         help=(
-            "Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this"
-            " machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine."
+            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
+            " (exit 1) together with --record -- machine identity is generated and persisted"
+            " automatically there; see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(
@@ -12498,6 +12481,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_pr_cost.set_defaults(func=cmd_pr_cost)
+
+    p_pr_cost_export = sub.add_parser(
+        "pr-cost-export",
+        help=(
+            "Export every declared account's current pr-cost ledger rows -- redacted,"
+            " collapsed to one row per PR -- to a single operator-named TSV. Never writes to"
+            " stdout. Makes no gh call and scans no transcript corpus. See docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--out", metavar="PATH",
+        help=(
+            "Required: destination TSV path, refused if it already exists (never"
+            " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
+            " captured into that session's own transcript."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help="Additional Claude Code config directory to scan (repeatable).",
+    )
+    p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)
 
     p_spend_over_threshold = sub.add_parser(
         "spend-over-threshold",
