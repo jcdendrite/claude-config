@@ -1176,7 +1176,7 @@ Unpriced turns inside round windows: 0
 - `--since` / `--until` -- whole period only, never a time series
 - the top-level `--config-dir` -- collapses the pool to one named account
 - `--this-repo` -- not implemented as a pooled scope (a product decision, not a policy bar)
-- exactly one resolved scan root -- a single-account figure is a per-account figure; the refusal names `~/.claude/transcript-config-dirs`
+- exactly one resolved scan root -- a single-account figure is a per-account figure. The refusal names `~/.claude/transcript-config-dirs`
 - a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool. Checked only after the full scan. The refusal names neither the path nor a count
 - an unexpected error interrupts the corpus scan or the pooled render -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it. Resolve the underlying problem before retrying `--pooled`
 
