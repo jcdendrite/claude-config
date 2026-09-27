@@ -45,13 +45,10 @@ acting on any of them.
   now 9,434 lines across 26 subcommands, against 7,823 and 25 at `eb5eae2`; its
   test file is 15,360 lines, against 12,673.
 - **2026-09-27: findings 2 and 3 are Fixed**, superseding this section's own
-  "no other finding had been actioned as of `293ccf3`" claim above. Finding 2
-  is fixed: CI now runs `pytest` and `ruff` against `plugins/`. Finding 3 is
-  fixed: CI now sets `persist-credentials: false`. Both live in
-  `.github/workflows/tests.yml`, per
+  "no other finding had been actioned as of `293ccf3`" claim above, per
   `docs/reports/2026-08-22-discovery-audit/findings.md` § "Baseline reconciliation — prior report's 8 findings (27 sub-units) at `6291b343`".
-  Backlog phase 6, which findings 2 and 3 cover, landed incidentally in that
-  CI restructuring with no dedicated PR.
+  Backlog phase 6, which findings 2 and 3 cover, landed incidentally in a CI
+  workflow restructuring with no dedicated PR.
 - **Finding 7's 7c, 7e, and 7h sub-items are Fixed**, per
   `docs/reports/2026-08-22-discovery-audit/findings.md` § "Baseline reconciliation — prior report's 8 findings (27 sub-units) at `6291b343`".
 - **Finding 4's guard-message residual is Fixed**:
