@@ -968,9 +968,9 @@ class TestReviewLedgerShow:
         assert by_finding == {"from-file-a": repo_hash_a, "from-file-b": repo_hash_b}
 
     def test_show_sorts_a_row_missing_event_time_first(self, isolated_home, git_repo):
-        """A pre-existing schema-v1 row (Phase 1 predates the event_time
-        field) sorts before any row carrying a real timestamp, via the
-        `// ""` fallback -- empty string sorts before any ISO-8601 string."""
+        """A pre-existing schema-v1 row (no event_time field) sorts before
+        any row carrying a real timestamp, via the `// ""` fallback --
+        empty string sorts before any ISO-8601 string."""
         _seed_session(isolated_home, SID)
         ledger = _ledger_path(isolated_home, git_repo)
         ledger.parent.mkdir(parents=True, exist_ok=True)
