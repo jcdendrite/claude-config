@@ -79,6 +79,14 @@ exception: it's read from a local agent-definition file's own `model:` frontmatt
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
 differs from a remote model/subagent/MCP-tool-result's.
 
+Also owns the `--this-repo` subagent_type disclosure allowlist: `_BUILT_IN_AGENT_TYPES` (the
+Claude Code built-in `subagent_type` values present in every install), `_REPO_AGENT_DEFINITIONS_DIR`
+(this repo's own tracked `agents/` directory), and `_repo_tracked_agent_type_names` (the stems of
+every `agents/*.md` file that directory git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`). The
+shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
+which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
+row — see the exception noted above.
+
 ### `pricing.py`
 
 Rate tables, per-turn dollar pricing (`_price_turn`), token counts, context-window sizing, and
@@ -134,10 +142,9 @@ above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both 
 the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
 membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
 skill name before `_round_skill_name` normalizes it.
-`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than
-moving into the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type
-disclosure allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the
-package may not import back from the shim. `detect_round_windows` is public (no leading
+`cmd_cost_counts` and its subagent-spawn-count aggregator are still-unmigrated: they have not
+moved into the package alongside `compute_review_round_counts`.
+`detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
 

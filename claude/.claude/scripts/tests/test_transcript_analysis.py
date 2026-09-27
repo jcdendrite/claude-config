@@ -1794,7 +1794,7 @@ class TestRepoTrackedAgentTypeNames:
         return agents_dir
 
     def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
-        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
 
     def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
         agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
@@ -1948,7 +1948,7 @@ class TestCostCounts:
             (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
         if tracked:
             subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
         _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_this_repo_required(self, fake_projects, capsys):
@@ -2152,7 +2152,7 @@ class TestSubagentMixMultiRoot:
         subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
         (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
         subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
         _mod._repo_tracked_agent_type_names.cache_clear()
         yield
         _mod._repo_tracked_agent_type_names.cache_clear()
