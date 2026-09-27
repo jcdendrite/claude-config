@@ -12,6 +12,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     _forced_fallback_path_env,
+    _sourced_value,
     bash_input,
     edit_input,
     multiedit_input,
@@ -22,6 +23,13 @@ from helpers import (
 )
 
 REVIEW_PERMS_HOOK = HOOKS_DIR / "ask-review-permissions.sh"
+
+_REALPATH_M_FALLBACK_MAX_DEPTH = int(_sourced_value("_LIB_REALPATH_M_FALLBACK_MAX_DEPTH"))
+
+# Reads ask-review-permissions.sh's config-dir escape-class sed expression
+# out of _lib.sh at test time, rather than a hand-copied duplicate that could
+# drift from the hook's own class.
+_CONFIG_DIR_ESCAPE_SED_SCRIPT = _sourced_value("_LIB_CONFIG_DIR_ESCAPE_SED_EXPR")
 
 
 def _filesystem_is_case_sensitive() -> bool:
@@ -149,10 +157,15 @@ class TestAskReviewPermissions:
         )
 
     def test_settings_path_through_symlinked_claude_ancestor_asks(self, tmp_path):
-        """Regression control: `_lib_realpath_m` follows symlinks even under
-        `-m`, so resolving a symlinked `.claude` away would defeat a
-        normalized-only match. The raw-path check (run alongside, not
-        instead) is what still catches this case."""
+        """Regression control: this fixture's undecorated `file_path`
+        already matches the unconditional top-of-script literal check
+        (`\\.claude/settings[^/]*\\.json$`) before the case arm -- and its
+        `_lib_realpath_m` call -- is ever reached, so this pins that a
+        symlinked `.claude` ancestor doesn't defeat that pre-existing
+        literal match. It does not exercise `_lib_realpath_m` at all; see
+        test_aliased_settings_path_through_symlinked_claude_ancestor_asks
+        for the fixture shape that forces control into the case arm's
+        raw-vs-normalized comparison under symlink resolution."""
         real_target = tmp_path / "dotfiles" / "claude"
         real_target.mkdir(parents=True)
         project_dir = tmp_path / "project"
@@ -160,6 +173,51 @@ class TestAskReviewPermissions:
         (project_dir / ".claude").symlink_to(real_target, target_is_directory=True)
         file_path = project_dir / ".claude" / "settings.json"
         assert run_hook(REVIEW_PERMS_HOOK, edit_input(str(file_path))) == "ask"
+
+    def test_aliased_settings_path_through_symlinked_claude_ancestor_asks(self, tmp_path):
+        """Unlike test_settings_path_through_symlinked_claude_ancestor_asks,
+        this decorates `file_path` with a `.` segment between `.claude` and
+        `settings`, breaking the unconditional top-of-script literal check
+        and forcing control into the case arm. The symlink target is itself
+        named `.claude` (unlike that sibling test's target, named `claude`
+        with no dot) so the case arm's normalized-path match still has a
+        `.claude` segment to find after `_lib_realpath_m` both follows the
+        symlink and collapses the `.` decoration -- the only fixture shape
+        that exercises the case arm's `_lib_realpath_m` call together with
+        symlink resolution."""
+        real_target = tmp_path / "dotfiles" / ".claude"
+        real_target.mkdir(parents=True)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".claude").symlink_to(real_target, target_is_directory=True)
+        file_path = f"{project_dir}/.claude/./settings.json"
+        assert run_hook(REVIEW_PERMS_HOOK, edit_input(file_path)) == "ask"
+
+    def test_aliased_settings_path_through_symlinked_claude_ancestor_asks_under_forced_realpath_fallback(
+        self, tmp_path
+    ):
+        """Same symlinked-ancestor + `.`-decorated-leaf combination as
+        test_aliased_settings_path_through_symlinked_claude_ancestor_asks above,
+        but forces `_lib_realpath_m`'s manual fallback loop via
+        `_forced_fallback_path_env` instead of the host's native
+        `realpath -m`/`grealpath`. Pins the gap-(h) invariant on the
+        BusyBox/no-`grealpath` host class this repo documents as
+        supported, which the sibling test never exercises since it runs
+        with no PATH override."""
+        real_target = tmp_path / "dotfiles" / ".claude"
+        real_target.mkdir(parents=True)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".claude").symlink_to(real_target, target_is_directory=True)
+        file_path = f"{project_dir}/.claude/./settings.json"
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(file_path),
+                extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
+            )
+            == "ask"
+        )
 
     def test_settings_path_through_symlinked_claude_ancestor_allow_control(self, tmp_path):
         """`old-settings-archive.json` passes the `*settings*.json` prefilter
@@ -251,13 +309,17 @@ class TestAskReviewPermissions:
         self, tmp_path, config_dir_name, near_miss_dir_name
     ):
         """Extends the dot-escaping test above to the escape class's other
-        members (`s/[.[\\*^$()+?{|]/\\&/g`): `+`, `*`, `?`, `{}` interval
-        syntax, `|` alternation, and `[` bracket-expression start. Each
-        near-miss directory name is the string an unescaped interpretation
-        of the metacharacter would incorrectly match against the fixed
-        config-dir pattern. For `[`, an unescaped `[2024]` reads as an ERE
-        bracket expression matching exactly one of `0`/`2`/`4`, which is
-        what makes `work2` the near miss."""
+        members (`s/[].[\\*^$(){}+?|]/\\&/g`): `+`, `*`, `?`, `{}` interval
+        syntax, `|` alternation, and `[`/`]` bracket-expression start/end.
+        Each near-miss directory name is the string an unescaped
+        interpretation of the metacharacter would incorrectly match against
+        the fixed config-dir pattern. For `[`, an unescaped `[2024]` reads as
+        an ERE bracket expression matching exactly one of `0`/`2`/`4`, which
+        is what makes `work2` the near miss. `]` and `}` are excluded here:
+        both are ordinary (non-special) ERE characters unless preceded by an
+        unescaped `[` or `{` respectively, and this class always escapes `[`
+        and `{` too, so no input can construct a near-miss shape that
+        discriminates escaped from unescaped for either character."""
         config_dir = tmp_path / config_dir_name
         exact_match_path = config_dir / "settings.json"
         assert (
@@ -277,6 +339,22 @@ class TestAskReviewPermissions:
             )
             == "allow"
         )
+
+    def test_config_dir_escape_class_backslash_escapes_bracket_and_brace_directly(self):
+        """Pins the sed transformation's own output for `]` and `}`, not an
+        ask/allow side effect: unlike the near-miss tests above, no fixture
+        can discriminate escaped from unescaped for either character (see the
+        docstring on test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators),
+        so this asserts directly on what the mirrored sed script does to a
+        string containing each."""
+        escaped = subprocess.run(
+            ["sed", _CONFIG_DIR_ESCAPE_SED_SCRIPT],
+            input="work]2024\nwork}2024\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert escaped == "work\\]2024\nwork\\}2024\n"
 
     def test_config_dir_resolution_failure_falls_through_to_allow(self, tmp_path):
         """Pins the hook's own `CONFIG_DIR=... || CONFIG_DIR=""` fallback when
@@ -426,6 +504,29 @@ class TestAskReviewPermissions:
                 extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
             )
             == "ask"
+        )
+
+    def test_depth_cap_defeats_dot_only_alias_under_forced_realpath_fallback(self, tmp_path):
+        """Pins the disclosed residual, not a bug to fix: on a fallback-only
+        host, a `.`-decorated alias (no `..` component) whose ancestor chain
+        exceeds `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` defeats both the
+        normalized match (the fallback fails closed on the depth cap) and
+        the raw-path fallback comparison (the decoration hides the literal
+        `.claude/settings*.json` substring), so no ask fires -- the same
+        alias-blind outcome as the pre-gap-(h)-fix hook, reached through a
+        different trigger than the `../`-segment shape gap (h)'s own
+        writeup already discloses. See gap (h) in
+        docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
+        Known gaps list and the depth-cap alias gap under Open residuals."""
+        levels = "/".join(f"level{i}" for i in range(_REALPATH_M_FALLBACK_MAX_DEPTH + 6))
+        file_path = f"{tmp_path}/{levels}/.claude/./settings.json"
+        assert (
+            run_hook(
+                REVIEW_PERMS_HOOK,
+                edit_input(file_path),
+                extra_env={"PATH": _forced_fallback_path_env(tmp_path)},
+            )
+            == "allow"
         )
 
     def test_symlinked_config_json_leaf_bypasses_cheap_prefilter_stays_allowed(self, tmp_path):

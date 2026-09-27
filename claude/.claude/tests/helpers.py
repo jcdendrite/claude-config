@@ -30,6 +30,22 @@ SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
+_LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _sourced_value(var_name: str) -> str:
+    """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess
+    -- reads the shell's own definition rather than a hand-copied Python
+    literal that could drift from it."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
 # closing-fence match has to tolerate the same leading whitespace as

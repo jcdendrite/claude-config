@@ -7,7 +7,11 @@
 # - that same shape after `_lib_realpath_m` alias normalization,
 #   closing gap (h) (see
 #   docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md's
-#   Known gaps list)
+#   Known gaps list). A `_lib_realpath_m` failure -- including hitting
+#   `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` on a fallback-only host -- falls
+#   back to the raw-path match alone, so a `.`/`//`-only alias (no `..`)
+#   past that depth defeats both checks; see the same doc's Open residuals
+#   section.
 # - a settings file at the resolved config-dir root with no `.claude/`
 #   segment, closing gap (c) (same doc)
 #
@@ -78,11 +82,9 @@ if [ "$MATCHED" -eq 0 ]; then
             COMPARE_PATH="$FOLDED_RAW_PATH"
             COMPARE_CONFIG_DIR="$CONFIG_DIR"
           fi
-          # Known limitation: `\ ^ $ ( )` in this escape class remain untested, since CLAUDE_CONFIG_DIR/HOME
-          # are session-level trusted config rather than attacker-controlled input. `[` is covered
-          # — see test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
-          # shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
-          FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[.[\*^$()+?{|]/\\&/g')
+          # _LIB_CONFIG_DIR_ESCAPE_SED_EXPR (_lib.sh) documents the escape
+          # class's own coverage and known limitations.
+          FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed "$_LIB_CONFIG_DIR_ESCAPE_SED_EXPR")
           if printf '%s\n' "$COMPARE_PATH" | grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$"; then
             MATCHED=1
           fi
