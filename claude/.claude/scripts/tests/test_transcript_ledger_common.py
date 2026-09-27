@@ -520,3 +520,77 @@ class TestMachineIdentity:
         # mkstemp already created a temp file before link() raised, so the
         # finally block's cleanup is what removes it.
         assert list(cfg_dir.glob(f"{_mod.ledger_common._MACHINE_IDENTITY_FILENAME}.*")) == []
+
+
+class TestLedgerPathIsGitTracked:
+    """Direct unit-level calls to _ledger_path_is_git_tracked with a monkeypatched
+    subprocess.run, covering its fail-closed branches and two structural cases (ancestor
+    walk-up, bare-repo) -- unlike test_transcript_pr_cost.py's git_tracked=True command-level
+    deny tests, these exercise the function itself rather than routing through --record."""
+
+    def test_timeout_fails_closed(self, tmp_path, monkeypatch):
+        def raising_run(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
+
+        monkeypatch.setattr(subprocess, "run", raising_run)
+
+        assert _mod.ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is True
+
+    def test_oserror_fails_closed(self, tmp_path, monkeypatch):
+        def raising_run(*a, **kw):
+            raise OSError("git binary not found")
+
+        monkeypatch.setattr(subprocess, "run", raising_run)
+
+        assert _mod.ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is True
+
+    def test_unexpected_nonzero_exit_without_not_a_git_repository_text_fails_closed(self, tmp_path, monkeypatch):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, returncode=128, stdout="", stderr="fatal: unknown option\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _mod.ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is True
+
+    def test_ancestor_walk_up_probes_the_first_existing_directory(self, tmp_path, monkeypatch):
+        """ledger_path's own parent, and its grandparent, don't exist -- the walk-up loop must
+        land on tmp_path itself (the first existing ancestor) as the -C argument, not on either
+        non-existent intermediate directory."""
+        ledger_path = tmp_path / "not-yet-created-a" / "not-yet-created-b" / "ledger.tsv"
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="true\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = _mod.ledger_common._ledger_path_is_git_tracked(ledger_path)
+
+        assert result is True
+        assert calls == [["git", "-C", str(tmp_path), "rev-parse", "--is-inside-work-tree"]]
+
+    def test_bare_repository_is_not_treated_as_git_tracked(self, tmp_path, monkeypatch):
+        """returncode == 0 with stdout "false" is git's own bare-repository signal, per this
+        function's own docstring: tracked by git but not a work tree, so this is not an
+        ambiguous result and returns False rather than failing closed."""
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="false\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _mod.ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is False
+
+    def test_not_a_git_repository_stderr_permits(self, tmp_path, monkeypatch):
+        """git's clean "not a git repository" signal is the common case at every real call
+        site -- a ledger path legitimately outside any git working tree -- so this is the one
+        non-zero-exit branch that permits (False) rather than failing closed."""
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, returncode=128, stdout="",
+                stderr="fatal: not a git repository (or any of the parent directories): .git\n",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _mod.ledger_common._ledger_path_is_git_tracked(tmp_path / "ledger.tsv") is False

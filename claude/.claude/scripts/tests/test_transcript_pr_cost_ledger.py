@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -64,9 +65,8 @@ class TestAppendPrCostLedgerRow:
 
 
 class TestPrCostLedgerConcurrentWrite:
-    """Genuine OS-level concurrency isn't deterministic in a unit test --
-    models two sequential --record-shaped lock/write/unlock cycles against
-    the same ledger file instead."""
+    """Two sequential --record-shaped lock/write/unlock cycles, plus a genuine real-thread race
+    against the same ledger file exercising the lock's actual mutual-exclusion guarantee."""
 
     def test_two_sequential_record_writes_both_persist(self, tmp_path):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
@@ -91,6 +91,41 @@ class TestPrCostLedgerConcurrentWrite:
 
         final_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert [r["pr_number"] for r in final_rows] == [1, 2]
+
+    def test_racing_threads_each_persist_their_own_row_via_the_ledger_lock(self, tmp_path):
+        """Real threading.Thread contention against _acquire_pr_cost_ledger_lock, not a
+        simulated sequential stand-in -- mirrors
+        TestMachineIdentity.test_racing_threads_on_first_use_converge_on_one_identity's
+        real-thread race shape. Each thread's own acquire/read/modify-write/release cycle must
+        leave every thread's row present exactly once, with none lost to an unserialized
+        read-modify-write against the shared file. Best-effort: a pass shows this run didn't
+        lose data, not that the lock is race-free, since OS thread scheduling isn't controlled
+        here."""
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+        thread_count = 8
+
+        def _record(pr_number: int) -> None:
+            with open(lock_path, "w") as lock_f:
+                _mod.pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
+                try:
+                    try:
+                        current_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                    except FileNotFoundError:
+                        current_rows = []
+                    row = _sample_pr_cost_row(pr_number=pr_number, captured_at="2026-01-01T00:00:00Z")
+                    _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*current_rows, row])
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+        threads = [threading.Thread(target=_record, args=(i,)) for i in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        final_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert sorted(r["pr_number"] for r in final_rows) == list(range(thread_count))
 
 
 class TestPrCostLedgerRowFormatRoundTrip:

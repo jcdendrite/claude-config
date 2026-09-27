@@ -63,7 +63,7 @@ class TestPrCostExportOrdinalsAndOrder:
         _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_b_active)))
 
         def account_cells(path):
-            return [line.split("\t")[0] for line in path.read_text().splitlines()[2:]]
+            return [_parse_pr_cost_export_row(line)["account"] for line in path.read_text().splitlines()[2:]]
 
         assert account_cells(out_a_active) == account_cells(out_b_active)
         assert account_cells(out_a_active) == ["account-1", "account-2"]
@@ -112,7 +112,7 @@ class TestPrCostExportOptIn:
         rows = text.splitlines()[2:]
         assert len(rows) == 2
         # not renumbered despite acct_c's zero-row ledger and acct_d's skip
-        assert [row.split("\t")[0] for row in rows] == ["account-1", "account-2"]
+        assert [_parse_pr_cost_export_row(row)["account"] for row in rows] == ["account-1", "account-2"]
         # Same parse-into-dict pattern as
         # TestPrCostExportProvenanceLine.test_provenance_line_present_above_header_and_parses_as_key_value_tokens,
         # not a substring check -- "declared=4" would also match "declared=40".
@@ -388,7 +388,7 @@ class TestPrCostExportEmptyLedger:
         assert "opted_in=2" in provenance
         rows = text.splitlines()[2:]
         assert len(rows) == 1
-        assert rows[0].split("\t")[0] == "account-2"  # acct_a's empty ledger contributes no row
+        assert _parse_pr_cost_export_row(rows[0])["account"] == "account-2"  # acct_a's empty ledger contributes no row
 
         # acct_a's empty ledger must not be counted in corpus_identities: an
         # export scoped to acct_b alone produces the identical corpus digest.
@@ -437,7 +437,7 @@ class TestPrCostExportEmptyLedger:
         assert "opted_in=2" in provenance
         rows = text.splitlines()[2:]
         assert len(rows) == 1
-        assert rows[0].split("\t")[0] == "account-2"  # acct_a's missing ledger contributes no row
+        assert _parse_pr_cost_export_row(rows[0])["account"] == "account-2"  # acct_a's missing ledger contributes no row
 
         # acct_a's missing ledger must not be counted in corpus_identities: an
         # export scoped to acct_b alone produces the identical corpus digest.
