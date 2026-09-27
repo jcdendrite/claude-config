@@ -3539,6 +3539,46 @@ class TestScanRootTranscripts:
         scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
 
+    def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
+        """_scan_root_transcripts has no scan_gaps counter of its own, and
+        its two callers in cost.py only catch PermissionError. It keeps
+        silently skipping a symlink-loop project dir by passing
+        _dedup_new_project_dirs a throwaway scan_gaps counter, routing the
+        RuntimeError through the record-and-continue branch instead of the
+        raise-on-None branch."""
+        proj_open = tmp_path / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        loop_link = tmp_path / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        assert (scanned, skipped) == (1, 0)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
+        """This is the scenario that motivates _scan_root_transcripts's own
+        callers in cost.py only catching PermissionError: a project dir
+        reached through a sealed intermediate directory makes is_dir() raise
+        PermissionError (an OSError subclass), not RuntimeError, since
+        resolve() itself never raises for a permission-denied component.
+        _scan_root_transcripts must keep silently skipping it and still
+        count the healthy sibling project dir."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            scanned, skipped = _mod._scan_root_transcripts(root, "*")
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+        assert (scanned, skipped) == (1, 0)
+
 
 class TestPriceTurnArity:
     def test_price_turn_returns_exactly_three_values(self):
@@ -5452,12 +5492,13 @@ class TestScanReadScopeSession:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent(self, fake_projects):
         """A subagents/ directory reached through a sealed session-id
-        ancestor makes subagent_dir.is_dir() raise PermissionError (an
-        OSError) -- corpus._read_session_file_partitioned must treat that
-        the same as no subagents/ dir at all, not crash. This function has
-        no scan_gaps parameter (unlike its sibling _index_subagent_dispatches),
-        so the only observable difference from a readable-empty dir is that
-        no subagent records are merged."""
+        ancestor makes `subagent_dir.is_dir()` raise `PermissionError`.
+        (`PermissionError` is an `OSError` subclass.)
+        `_read_session_file_partitioned` must treat that the same as an
+        absent directory, not crash. Unlike its sibling
+        `_index_subagent_dispatches`, this function has no `scan_gaps`
+        parameter, so the only observable difference from a readable-empty
+        directory is that no subagent records are merged."""
         _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
         _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r2", file_path="/b.py")])])
         session_dir = fake_projects / "sess"
@@ -10922,11 +10963,12 @@ class TestScanGapCounter:
         assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
 
     def test_project_dir_symlink_loop_records_project_dir_level_gap(self, tmp_path):
-        """A self-referencing symlink raises RuntimeError from resolve(), not
-        OSError from is_dir() -- distinct code path from the sealed-directory
-        test above, and the one _dedup_new_project_dirs's reordered
-        resolve()-then-is_dir() check exists to catch (is_dir() alone
-        swallows ELOOP and would silently treat this as an empty scope)."""
+        """A self-referencing symlink raises `RuntimeError` from `resolve()`,
+        not `OSError` from `is_dir()` — a distinct code path from the
+        sealed-directory test above. `is_dir()` alone swallows `ELOOP` and
+        would silently treat this as an empty scope.
+        `_dedup_new_project_dirs`'s reordered `resolve()`-then-`is_dir()`
+        check exists to catch exactly this case."""
         root = tmp_path / "acct-a"
         proj_open = root / "-repo-open"
         proj_open.mkdir(parents=True)
@@ -10939,6 +10981,103 @@ class TestScanGapCounter:
         branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
         assert branches_seen == {"from-open-project"}
         assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_project_dir_symlink_loop_without_scan_gaps_propagates_the_exception(self, tmp_path):
+        """Every non-pooled caller (_iter_scoped_sessions, and
+        _iter_glob_scoped_sessions when called without scan_gaps) passes
+        scan_gaps=None. Unlike the test above, _dedup_new_project_dirs must
+        let resolve()'s RuntimeError propagate uncaught rather than
+        recording a gap that nothing here would ever read."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        with pytest.raises(RuntimeError):
+            list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
+        """A candidate that is itself a readable child of an already-readable
+        root can still fail is_dir() with PermissionError (an OSError
+        subclass), not RuntimeError, when it symlinks through a sealed
+        intermediate directory further down the target path -- resolve()
+        itself succeeds since non-strict resolve() never raises for a
+        permission-denied component. Distinct from the RuntimeError/
+        symlink-loop tests above, which cover resolve()'s own failure mode."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
+        """Mirrors test_project_dir_symlink_loop_without_scan_gaps_propagates_
+        the_exception for the OSError branch: a non-pooled caller passing no
+        scan_gaps must see is_dir()'s PermissionError propagate uncaught."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError):
+                list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+    def test_iter_scoped_sessions_symlink_loop_without_scan_gaps_propagates_the_exception(self, tmp_path):
+        """The slug-matched sibling of
+        test_project_dir_symlink_loop_without_scan_gaps_propagates_the_exception:
+        _iter_scoped_sessions selects project dirs by exact slug match rather
+        than glob, but shares _dedup_new_project_dirs, so it gets the same
+        propagate-on-scan_gaps=None behavior."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        with pytest.raises(RuntimeError):
+            list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root]))
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
+        self, tmp_path,
+    ):
+        """The slug-matched sibling of
+        test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_
+        the_exception: _iter_scoped_sessions shares _dedup_new_project_dirs, so a
+        non-pooled caller passing no scan_gaps must see is_dir()'s PermissionError
+        propagate uncaught here too."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError):
+                list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_transcript_records_session_file_gap_but_readable_empty_one_does_not(self, tmp_path):

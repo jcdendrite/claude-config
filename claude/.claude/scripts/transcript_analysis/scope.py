@@ -212,20 +212,23 @@ def _dedup_new_project_dirs(
     `False` (not `True`) on a symlink loop instead of raising. Either call
     failing with `OSError`/`RuntimeError` on an existing, non-loop entry
     (e.g. an unreadable ancestor) is recorded as a scan gap, not treated as
-    an excluded candidate.
+    an excluded candidate, when `scan_gaps` is given, and propagates instead
+    when `scan_gaps` is `None`.
     """
     for candidate in candidates:
         try:
             resolved_dir = candidate.resolve()
         except (OSError, RuntimeError):
-            if scan_gaps is not None:
-                scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
+            if scan_gaps is None:
+                raise
+            scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
             continue
         try:
             is_dir = resolved_dir.is_dir()
         except (OSError, RuntimeError):
-            if scan_gaps is not None:
-                scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
+            if scan_gaps is None:
+                raise
+            scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
             continue
         if not is_dir:
             continue
@@ -751,7 +754,12 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
     candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
     jsonl_paths = [
         jsonl
-        for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs)
+        # Throwaway counter: this function's own callers in cost.py only catch
+        # PermissionError, so scan_gaps must be non-None here to avoid raising
+        # on any other OSError/RuntimeError scan gap. Nothing reads the
+        # counter back, since _scan_root_transcripts tracks no scan gaps of
+        # its own.
+        for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs, scan_gaps=Counter())
         for jsonl in proj_dir.glob("*.jsonl")
     ]
     skipped = 0
