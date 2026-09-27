@@ -233,6 +233,13 @@ def test_transcript_analysis_cost_trend_subprocess_finds_seeded_session(tmp_path
     assert "2026-W21" in result.stdout  # ISO week of the seeded 2026-05-19 timestamp
 
 
+def test_transcript_analysis_pr_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "pr-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--asof-window-days" in result.stdout
+    assert "default: 3" in result.stdout
+
+
 def _seed_pr_cost_export_account(config_dir: Path) -> None:
     """Build one pr-cost-export account: a `projects/` subdirectory
     (declared_transcript_roots' own is_valid check requires it, even though
