@@ -110,6 +110,7 @@ _lib_capped_for() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout -k 2 "$seconds" "$@"
   else
+    printf '_lib_capped_for: neither timeout nor gtimeout is on PATH -- running %s uncapped\n' "$1" >&2
     "$@"
   fi
 }
