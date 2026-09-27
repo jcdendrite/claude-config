@@ -311,6 +311,66 @@ class TestLibRepoRoot:
         assert result.returncode != 0
 
 
+class TestLibMainRepoRoot:
+    """Direct coverage for _lib_main_repo_root -- review-pr-checkout.sh's
+    and review-pr-finish.sh's shared WORKTREE_DIR anchor, which must resolve
+    to the same main-tree path regardless of which worktree of the repo the
+    caller is standing in."""
+
+    def test_matches_lib_repo_root_from_the_main_tree(self, tmp_path):
+        repo = tmp_path / "main-repo-root-repo"
+        _init_repo(repo)
+        expected = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        actual = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert actual == expected
+
+    def test_from_a_linked_worktree_returns_the_main_tree_root_not_the_worktree_path(self, tmp_path):
+        """_lib_repo_root (--show-toplevel) returns the current worktree's
+        own path when invoked from a linked worktree; _lib_main_repo_root
+        must always return the main tree's path instead, matching
+        review-pr-finish.sh's independent reconstruction of the same
+        WORKTREE_DIR."""
+        repo = tmp_path / "main-repo"
+        _init_repo(repo)
+        (repo / "file.txt").write_text("first\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        subprocess.run(["git", "branch", "feature"], cwd=repo, check=True)
+
+        linked_worktree = tmp_path / "linked-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(linked_worktree), "feature"], cwd=repo, check=True,
+        )
+
+        expected_main_root = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
+            cwd=linked_worktree, capture_output=True, text=True, check=True,
+        )
+        assert result.stdout == expected_main_root
+        assert result.stdout != str(linked_worktree)
+
+    def test_fails_closed_outside_a_git_repository(self, tmp_path):
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
+            cwd=outside, capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
 class TestLibActivePlanFiles:
     def test_git_enumeration_failure_fails_closed(self, tmp_path):
         """A failed `git ls-files` call must exit 1 with .claude/plans/

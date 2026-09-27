@@ -53,6 +53,14 @@ _SKILL_REVIEW_HOOK = (
     HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
 )
 
+# review-pr-check-attribution.sh requires the attribution trailer
+# as a findings body's last non-blank line wherever it requires the
+# `**[Claude Code]**` prefix, and the disclosure line in `diff-only` mode
+# specifically -- every findings-body fixture below that expects `write
+# review-pr` to succeed needs the full shape, not the prefix alone.
+REVIEW_PR_ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+REVIEW_PR_DIFF_ONLY_DISCLOSURE = "Reviewed from the PR diff only — no checkout, no checks run."
+
 
 def _ready_for_review_marker_path(home, repo, session_id: str):
     """No shared helper exists for this marker kind (helpers.py covers
@@ -421,13 +429,11 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["activate", "respond-pr"],
     ["activate", "memory-skill"],
     ["activate", "handoff"],
-    ["activate", "review-pr"],
     ["deactivate", "plan-review"],
     ["deactivate", "ready-for-review"],
     ["deactivate", "respond-pr"],
     ["deactivate", "memory-skill"],
     ["deactivate", "handoff"],
-    ["deactivate", "review-pr"],
     ["status"],
 ]
 
@@ -1337,16 +1343,20 @@ class TestMarkerDirectoryNamingConvention:
     SID = "test-session-naming"
 
     def _seed_review_pr_sibling(self, home, sid, tmp_path):
-        """review-pr's write arm reads a 3-line sibling file (PR identity,
-        headRefOid, findings-body path) rather than deriving its marker value
-        from repo state the way the other arms do. Seeded unconditionally
-        alongside the plans_dir seeding below so every skill in the loop
-        shares the same preconditions."""
-        sibling_dir = home / ".claude" / ".review-pr-active.d"
-        sibling_dir.mkdir(parents=True, exist_ok=True)
-        findings_body = sibling_dir / f"{sid}.body"
-        findings_body.write_text("**[Claude Code]** # findings\n")
-        (sibling_dir / f"{sid}.findings").write_text(f"foo/bar#1\nabc123\n{findings_body}\n")
+        """review-pr's write arm reads a 4-line provenance file (PR identity,
+        headRefOid, PID, mode) rather than deriving its marker value from
+        repo state the way the other arms do. mode "diff-only" needs no
+        local-HEAD match, keeping this seeding independent of whatever
+        commit git_repo happens to be at. Seeded unconditionally alongside
+        the plans_dir seeding below so every skill in the loop shares the
+        same preconditions."""
+        active_dir = home / ".claude" / ".review-pr-active.d"
+        active_dir.mkdir(parents=True, exist_ok=True)
+        findings_body = active_dir / f"{sid}.body"
+        findings_body.write_text(
+            f"**[Claude Code]** # findings\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        (active_dir / f"{sid}.provenance").write_text(f"foo/bar#1\nabc123\n{os.getpid()}\ndiff-only\n")
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_lands_in_skill_derived_directory(
@@ -4710,7 +4720,7 @@ class TestMarkerScriptVerification:
 
 class TestMarkerScriptStatusActiveBypass:
     """`marker.sh status` reports each active-bypass marker (plan-review,
-    ready-for-review, respond-pr, memory-skill, handoff, review-pr) for this
+    ready-for-review, respond-pr, memory-skill, handoff) for this
     session as live, stale, or absent."""
 
     SID = "test-session-status-bypass"
@@ -4721,7 +4731,6 @@ class TestMarkerScriptStatusActiveBypass:
         ("respond-pr", ".respond-pr-active.d"),
         ("memory-skill", ".memory-skill-active.d"),
         ("handoff", ".handoff-active.d"),
-        ("review-pr", ".review-pr-active.d"),
     ]
 
     @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
@@ -4800,12 +4809,22 @@ class TestMarkerScriptStatusUsageBannerCompleteness:
             line for line in text.splitlines() if not line.strip().startswith("#")
         )
 
-    def test_every_completion_marker_named_in_usage_is_checked_in_status_body(self):
-        text = MARKER_SCRIPT.read_text()
-        banner_match = re.search(r"completion marker \(([^)]+)\)", text)
+    def test_every_completion_marker_named_in_usage_is_checked_in_status_body(
+        self, isolated_home, git_repo
+    ):
+        """usage()'s two enum-list lines are printf-assembled from
+        marker.sh's own WRITE_SKILLS/ACTIVE_BYPASS_SKILLS arrays (the
+        registry collapse), so the banner text is scanned from the
+        rendered `--help` output rather than marker.sh's static source --
+        the source itself contains only the printf format string, not the
+        skill names."""
+        help_result = _run(["--help"], cwd=git_repo, home=isolated_home)
+        assert help_result.returncode == 0, help_result.stderr
+        banner_match = re.search(r"completion marker \(([^)]+)\)", help_result.stderr)
         assert banner_match, "usage() banner's completion-marker list not found"
         named = {name.strip() for name in banner_match.group(1).split(",")}
 
+        text = MARKER_SCRIPT.read_text()
         status_body_match = re.search(r"\n  status\)\n(.*?)\n  check\)", text, re.DOTALL)
         assert status_body_match, "status) case body not found"
         status_body = self._strip_comment_lines(status_body_match.group(1))
@@ -4815,12 +4834,16 @@ class TestMarkerScriptStatusUsageBannerCompleteness:
             "wire the difference into both, or drop it from the banner"
         )
 
-    def test_every_active_bypass_marker_named_in_usage_is_checked_in_status_body(self):
-        text = MARKER_SCRIPT.read_text()
-        banner_match = re.search(r"active-bypass marker \(([^)]+)\)", text)
+    def test_every_active_bypass_marker_named_in_usage_is_checked_in_status_body(
+        self, isolated_home, git_repo
+    ):
+        help_result = _run(["--help"], cwd=git_repo, home=isolated_home)
+        assert help_result.returncode == 0, help_result.stderr
+        banner_match = re.search(r"active-bypass marker \(([^)]+)\)", help_result.stderr)
         assert banner_match, "usage() banner's active-bypass-marker list not found"
         named = {name.strip() for name in banner_match.group(1).split(",")}
 
+        text = MARKER_SCRIPT.read_text()
         status_body_match = re.search(r"\n  status\)\n(.*?)\n  check\)", text, re.DOTALL)
         assert status_body_match, "status) case body not found"
         status_body = self._strip_comment_lines(status_body_match.group(1))
@@ -5413,41 +5436,35 @@ class TestMarkerScriptArgumentGrammarIsPositional:
 
 
 class TestMarkerScriptReviewPr:
-    """`activate|deactivate|write review-pr` — the sibling-file write arm and
-    its deactivate-side cleanup (active marker, sibling, completion marker,
-    and the findings-body file itself). See _lib_review_pr_completion_marker_fields
-    in _lib.sh for the read side these markers feed."""
+    """`write review-pr` -- the provenance-file write arm. review-pr carries
+    no `activate`/`deactivate` arms: Step 1's own reads need no
+    active-bypass marker, since they run inside a script a PreToolUse hook
+    cannot see into. See _lib_review_pr_completion_marker_fields in
+    _lib.sh for the read side the four-line completion marker this arm
+    writes feeds."""
 
     SID = "test-session-review-pr"
 
-    def _sibling_path(self, home, sid=SID):
-        return home / ".claude" / ".review-pr-active.d" / f"{sid}.findings"
+    def _provenance_path(self, home, sid=SID):
+        return home / ".claude" / ".review-pr-active.d" / f"{sid}.provenance"
 
     def _fixed_body_path(self, home, sid=SID):
         return home / ".claude" / ".review-pr-active.d" / f"{sid}.body"
 
-    def _declare_sibling(self, home, pr_identity, head_ref_oid, findings_body_path, sid=SID):
-        sibling = self._sibling_path(home, sid)
-        sibling.parent.mkdir(parents=True, exist_ok=True)
-        sibling.write_text(f"{pr_identity}\n{head_ref_oid}\n{findings_body_path}\n")
-        return sibling
+    def _declare_provenance(self, home, pr_identity, head_ref_oid, mode="checkout", pid=None, sid=SID):
+        provenance = self._provenance_path(home, sid)
+        provenance.parent.mkdir(parents=True, exist_ok=True)
+        stored_pid = pid if pid is not None else os.getpid()
+        provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{stored_pid}\n{mode}\n")
+        return provenance
 
-    def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(["activate", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        active_file = isolated_home / ".claude" / ".review-pr-active.d" / sid
-        assert active_file.exists()
-        assert active_file.read_text().strip().isdigit()
-
-    def test_write_stores_pr_identity_head_ref_oid_and_body_hash(
+    def test_write_stores_pr_identity_head_ref_oid_body_hash_and_mode(
         self, isolated_home, git_repo, tmp_path
     ):
         """The write arm's stored headRefOid field must equal the worktree
         HEAD it was declared against, and the stored body-hash field must be
         the findings-body file's actual sha256 -- not a copy of whatever the
-        sibling happened to say."""
+        provenance file happened to say."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         head_sha = subprocess.run(
@@ -5455,8 +5472,8 @@ class TestMarkerScriptReviewPr:
         ).stdout.strip()
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings body\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", head_sha, findings_body, sid)
+        findings_body.write_text(f"**[Claude Code]** # findings body\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n")
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha, mode="checkout", sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -5471,20 +5488,120 @@ class TestMarkerScriptReviewPr:
             ["sha256sum", str(findings_body)], capture_output=True, text=True, check=True
         ).stdout.split()[0]
         assert lines[2] == expected_hash
+        assert lines[3] == "checkout"
 
-    def test_write_passes_clean_findings_body_through_the_secret_scan(
-        self, isolated_home, git_repo
+    def test_write_diff_only_mode_skips_local_head_check(
+        self, isolated_home, git_repo, tmp_path
     ):
-        """Mechanical backstop for SKILL.md Step 7's prose scrubbing
-        instruction: review-pr-scan-findings-body.sh runs before the marker
-        is written. A body containing no credential-shaped string must not
-        be refused -- the sibling passing case to the refusal case below."""
+        """diff-only mode has no reviewed local tree, so the write must
+        succeed with a headRefOid that matches nothing local -- proving the
+        HEAD comparison genuinely does not run in this mode, not merely
+        that it happens to pass."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings body, no secrets here\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        remote_head = "f" * 40
+        self._declare_provenance(isolated_home, "foo/bar#42", remote_head, mode="diff-only", sid=sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        marker = marker_dir / next(f.name for f in marker_dir.iterdir())
+        lines = marker.read_text().splitlines()
+        assert lines[1] == remote_head
+        assert lines[3] == "diff-only"
+
+    def test_write_checkout_mode_refuses_on_head_mismatch(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("**[Claude Code]** # findings body\n")
+        self._declare_provenance(isolated_home, "foo/bar#42", "0" * 40, mode="checkout", sid=sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "HEAD" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == []
+
+    def test_write_refuses_mode_acquired(self, isolated_home, git_repo):
+        """An acquire-only session has run neither the checkout audit nor
+        the no-checkout diff path, so it can never write a completion
+        marker."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("**[Claude Code]** # findings body\n")
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="acquired", sid=sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "neither checkout nor diff-only" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == []
+
+    def test_write_refuses_an_out_of_enum_mode(self, isolated_home, git_repo):
+        """A corrupted or hand-written provenance file (any process that
+        can write files can write this skill's own state) must refuse
+        rather than fall through to either known branch by default."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("**[Claude Code]** # findings body\n")
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="bogus-mode", sid=sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "neither checkout nor diff-only" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == []
+
+    def test_write_refuses_a_non_numeric_pid_field(self, isolated_home, git_repo):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("**[Claude Code]** # findings body\n")
+        self._declare_provenance(
+            isolated_home, "foo/bar#42", "abc123", mode="diff-only", pid="not-a-pid", sid=sid
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "non-numeric PID" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == []
+
+    def test_write_passes_clean_findings_body_through_the_secret_scan(
+        self, isolated_home, git_repo
+    ):
+        """Mechanical backstop for SKILL.md's synthesize-and-record step's
+        prose scrubbing instruction: review-pr-scan-findings-body.sh runs before the marker
+        is written. A body containing no credential-shaped string must not
+        be refused -- the passing case to the refusal case below. mode
+        diff-only, so this test does not also depend on HEAD matching."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text(
+            "**[Claude Code]** # findings body, no secrets here\n\n"
+            f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -5494,8 +5611,8 @@ class TestMarkerScriptReviewPr:
     def test_write_refuses_a_findings_body_missing_the_attribution_prefix(
         self, isolated_home, git_repo
     ):
-        """Mechanical backstop for SKILL.md Step 7's own "start with
-        **[Claude Code]**" instruction: review-pr-check-attribution-prefix.sh
+        """Mechanical backstop for SKILL.md's synthesize-and-record step's
+        own "start with **[Claude Code]**" instruction: review-pr-check-attribution.sh
         runs before the marker is written, the same as the secret scan
         above -- a `PreToolUse` hook never sees the findings body, since
         it's composed by the model's own reasoning rather than passed as a
@@ -5505,7 +5622,7 @@ class TestMarkerScriptReviewPr:
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
         findings_body.write_text("# findings body, no attribution prefix\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, result.stderr
@@ -5525,8 +5642,11 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings\n\nleaked: ghp_" + "a" * 36 + "\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+        findings_body.write_text(
+            "**[Claude Code]** # findings\n\nleaked: ghp_" + "a" * 36 + "\n\n"
+            f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, result.stderr
@@ -5535,7 +5655,7 @@ class TestMarkerScriptReviewPr:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a credential-shaped findings body must not write a marker: {stray}"
 
-    def test_write_without_sibling_file_aborts_without_writing_marker(
+    def test_write_without_provenance_aborts_without_writing_marker(
         self, isolated_home, git_repo
     ):
         sid = self.SID
@@ -5544,89 +5664,41 @@ class TestMarkerScriptReviewPr:
         assert result.returncode == 2, result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == [], f"a missing sibling must not write a marker: {stray}"
+        assert stray == [], f"a missing provenance file must not write a marker: {stray}"
 
-    def test_write_with_incomplete_sibling_aborts_without_writing_marker(
+    def test_write_with_incomplete_provenance_aborts_without_writing_marker(
         self, isolated_home, git_repo, tmp_path
     ):
         sid = self.SID
         _seed_session(isolated_home, sid)
-        # Only two of the three required lines.
-        sibling = self._sibling_path(isolated_home, sid)
-        sibling.parent.mkdir(parents=True, exist_ok=True)
-        sibling.write_text("foo/bar#42\nabc123\n")
+        # Only two of the four required lines.
+        provenance = self._provenance_path(isolated_home, sid)
+        provenance.parent.mkdir(parents=True, exist_ok=True)
+        provenance.write_text("foo/bar#42\nabc123\n")
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == [], f"an incomplete sibling must not write a marker: {stray}"
+        assert stray == [], f"an incomplete provenance file must not write a marker: {stray}"
 
-    def test_write_refuses_a_body_path_outside_the_fixed_location(
+    def test_write_refuses_a_symlink_at_the_findings_body_location(
         self, isolated_home, git_repo, tmp_path
     ):
-        """Same untrusted-third-line shape as deactivate's fixed-path check:
-        the write arm feeds this path to `sha256sum`, so an
-        attacker-influenced sibling pointing at an arbitrary file must abort
-        the write rather than hash and marker-ize whatever it names."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        outside_body = tmp_path / "not-the-fixed-location.md"
-        outside_body.write_text("# attacker-chosen path\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", outside_body, sid)
-
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == [], f"a body path outside the fixed location must not write a marker: {stray}"
-
-    def test_write_refuses_a_relative_path_spelling_of_the_fixed_location(
-        self, isolated_home, git_repo
-    ):
-        """The fixed-path check is a literal string comparison, not a
-        realpath/normalization-based one -- a relative spelling of the same
-        file (dropping the $HOME prefix) must be rejected identically to a
-        wholly different path, guarding against a future regression that
-        swaps the equality check for something more 'helpful' about
-        equivalent spellings. The decoy is seeded at the relative spelling's
-        actual resolution against marker.sh's invocation cwd (git_repo), with
-        content that differs from the real file -- so a regression that
-        dropped the equality check would hash the decoy and this test would
-        observe a written marker instead of an abort, proving the test can
-        fail rather than passing by cwd coincidence."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        fixed_path = self._fixed_body_path(isolated_home, sid)
-        fixed_path.parent.mkdir(parents=True, exist_ok=True)
-        fixed_path.write_text("**[Claude Code]** # findings body\n")
-        relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
-        decoy = git_repo / relative_spelling
-        decoy.parent.mkdir(parents=True, exist_ok=True)
-        decoy.write_text("# decoy body at the relative-path resolution\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", relative_spelling, sid)
-
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == [], f"a relative-path spelling must not write a marker: {stray}"
-
-    def test_write_refuses_a_symlink_at_the_fixed_location(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        """A pre-planted symlink AT the fixed path (not a differently-named
-        path, which the two tests above already cover) would redirect
-        sha256sum's read to an attacker-chosen file the string-equality
-        check never sees -- the write arm must reject the fixed path itself
-        being a symlink before hashing it."""
+        """The findings-body path is now always derived, never read from
+        provenance, so there is no untrusted-path guard left to test --
+        only that a symlink planted at the derived location itself is
+        rejected before being hashed."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         fixed_path = self._fixed_body_path(isolated_home, sid)
         fixed_path.parent.mkdir(parents=True, exist_ok=True)
         real_target = tmp_path / "attacker-chosen-target.md"
-        real_target.write_text("# attacker-chosen content\n")
+        real_target.write_text(
+            "**[Claude Code]** # attacker-chosen content\n\n"
+            f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
         fixed_path.symlink_to(real_target)
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", fixed_path, sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, result.stderr
@@ -5646,8 +5718,10 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings body\n")
-        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
 
         repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
@@ -5664,206 +5738,68 @@ class TestMarkerScriptReviewPr:
             "the write must not follow the symlink and truncate its target"
         )
 
-    def test_deactivate_removes_active_marker_sibling_completion_marker_and_body_file(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        """Short-lived is an explicit deletion, not a TTL: every artifact
-        deactivate is responsible for must be gone afterward, including the
-        findings-body file the sibling merely points to -- when that path is
-        the fixed location deactivate is willing to delete."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
-        active_dir.mkdir(parents=True)
-        (active_dir / sid).write_text(str(os.getpid()))
-        findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.write_text("**[Claude Code]** # findings body\n")
-        sibling = self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
-
-        assert _run(["write", "review-pr"], cwd=git_repo, home=isolated_home).returncode == 0
-        marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        completion_marker = marker_dir / next(f.name for f in marker_dir.iterdir())
-        assert completion_marker.exists()
-
-        result = _run(["deactivate", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-
-        assert not (active_dir / sid).exists()
-        assert not sibling.exists()
-        assert not completion_marker.exists()
-        assert not findings_body.exists()
-
-    def test_deactivate_refuses_to_delete_a_body_path_outside_the_fixed_location(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        """/review-pr's entire purpose is reviewing untrusted, potentially
-        adversarial PR content -- the sibling's third line must not be
-        trusted to name whatever path it likes, or an attacker-influenced
-        session could steer this delete at an arbitrary file. Every other
-        deactivate artifact is still cleaned up; only the out-of-location
-        delete is refused."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
-        active_dir.mkdir(parents=True)
-        (active_dir / sid).write_text(str(os.getpid()))
-        outside_body = tmp_path / "not-the-fixed-location.md"
-        outside_body.write_text("# attacker-chosen path\n")
-        sibling = self._declare_sibling(isolated_home, "foo/bar#42", "abc123", outside_body, sid)
-
-        result = _run(["deactivate", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-
-        assert outside_body.exists(), "deactivate must refuse to delete a path outside the fixed location"
-        assert not (active_dir / sid).exists()
-        assert not sibling.exists()
-
-    def test_deactivate_refuses_a_relative_path_spelling_of_the_fixed_location(
-        self, isolated_home, git_repo
-    ):
-        """Same literal-equality guard as the write arm's equivalent test:
-        a relative spelling of the fixed location (dropping the $HOME
-        prefix) must not delete the real file sitting at that location. A
-        decoy is seeded at the relative spelling's actual resolution against
-        marker.sh's invocation cwd (git_repo) -- absent the equality check,
-        `rm -f` would silently delete that decoy, so asserting it survives
-        is what makes this test able to fail, not just seeing the real file
-        (at an unrelated path) survive by cwd coincidence."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
-        active_dir.mkdir(parents=True)
-        (active_dir / sid).write_text(str(os.getpid()))
-        fixed_path = self._fixed_body_path(isolated_home, sid)
-        fixed_path.write_text("**[Claude Code]** # findings body\n")
-        relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
-        decoy = git_repo / relative_spelling
-        decoy.parent.mkdir(parents=True, exist_ok=True)
-        decoy.write_text("# decoy body at the relative-path resolution\n")
-        sibling = self._declare_sibling(isolated_home, "foo/bar#42", "abc123", relative_spelling, sid)
-
-        result = _run(["deactivate", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-
-        assert fixed_path.exists(), "deactivate must refuse to delete via a relative-path spelling"
-        assert decoy.exists(), "deactivate must not delete whatever the relative spelling actually resolves to"
-        assert not (active_dir / sid).exists()
-        assert not sibling.exists()
-
-    def test_deactivate_with_no_prior_state_is_a_harmless_no_op(self, isolated_home, git_repo):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(["deactivate", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-
+    @pytest.mark.parametrize("suffix", [".body", ".provenance", ".diff", ".context.json"])
     @pytest.mark.parametrize(
-        "adjacent_pid,expect_evicted",
+        "provenance_pid,expect_evicted",
         [
-            pytest.param(None, True, id="no_adjacent_pid_file"),
-            pytest.param("live", False, id="live_pid_adjacent"),
-            pytest.param("dead", True, id="dead_pid_adjacent"),
+            pytest.param(None, True, id="no_provenance_file"),
+            pytest.param("live", False, id="live_pid_in_provenance"),
+            pytest.param("dead", True, id="dead_pid_in_provenance"),
         ],
     )
-    def test_clear_stale_findings_sibling_reaped_only_once_owner_pid_is_dead(
-        self, isolated_home, git_repo, tmp_path, adjacent_pid, expect_evicted
+    def test_clear_stale_review_pr_artifact_reaped_only_once_provenance_pid_is_dead(
+        self, isolated_home, git_repo, suffix, provenance_pid, expect_evicted
     ):
-        """The sibling holds PR identity, headRefOid, and a findings-body
-        path -- never a PID -- so clear-stale's ^[0-9]+$ liveness test would
-        always misread it as a dead marker on the sibling's own content.
-        Gated instead on the owning session's separate PID marker: kept
-        while it's alive (adjacent_pid="live"), reaped once it's confirmed
-        dead or was never written at all (adjacent_pid=None), the same
-        orphan this file's own header names as an accepted gap before this
-        fix -- 'a hard crash between write and this call leaves the sibling
-        and body file on disk indefinitely'."""
+        """Every review-pr artifact suffix holds content, never a PID of its
+        own, so staleness is gated on the PID recorded in the sibling
+        .provenance file: kept while that PID is alive
+        (provenance_pid="live"), reaped once it's confirmed dead or no
+        .provenance file exists at all (provenance_pid=None)."""
         sid = self.SID
-        sibling = self._declare_sibling(
-            isolated_home, "foo/bar#42", "abc123", tmp_path / "findings.md", sid
-        )
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        active_dir.mkdir(parents=True, exist_ok=True)
+        artifact = active_dir / f"{sid}{suffix}"
+        artifact.write_text("artifact content\n")
 
-        if adjacent_pid is not None:
-            active_dir = isolated_home / ".claude" / ".review-pr-active.d"
-            active_dir.mkdir(parents=True, exist_ok=True)
-            stored_pid = str(os.getpid()) if adjacent_pid == "live" else "99999999"
-            (active_dir / sid).write_text(stored_pid)
+        if provenance_pid is not None:
+            stored_pid = str(os.getpid()) if provenance_pid == "live" else "99999999"
+            (active_dir / f"{sid}.provenance").write_text(f"foo/bar#42\nabc123\n{stored_pid}\ncheckout\n")
 
         result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         if expect_evicted:
-            assert not sibling.exists(), (
-                "clear-stale must reap a .findings sibling once its owning "
-                "PID marker is confirmed dead or was never written"
+            assert not artifact.exists(), (
+                f"clear-stale must reap a {suffix} artifact once its provenance "
+                "PID is confirmed dead or no provenance file exists"
             )
         else:
-            assert sibling.exists(), (
-                "clear-stale must not evict a .findings sibling while its "
-                "owning PID marker is still alive"
+            assert artifact.exists(), (
+                f"clear-stale must not evict a {suffix} artifact while its "
+                "provenance PID is still alive"
             )
 
-    @pytest.mark.parametrize(
-        "adjacent_pid,expect_evicted",
-        [
-            pytest.param(None, True, id="no_adjacent_pid_file"),
-            pytest.param("live", False, id="live_pid_adjacent"),
-            pytest.param("dead", True, id="dead_pid_adjacent"),
-        ],
-    )
-    def test_clear_stale_findings_body_reaped_only_once_owner_pid_is_dead(
-        self, isolated_home, git_repo, adjacent_pid, expect_evicted
-    ):
-        """The findings-body file at the fixed .body location holds prose
-        content, never a PID, so it needs the same owner-PID-liveness gate
-        as the .findings sibling above rather than its own name-based
-        exemption -- otherwise it would either evict unconditionally
-        (deleting the body out from under an in-flight /review-pr session
-        between SKILL.md Step 8's write and Step 9's post) or never evict at
-        all (the pre-fix behavior this test used to pin)."""
-        sid = self.SID
-        findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings body\n")
-
-        if adjacent_pid is not None:
-            active_dir = isolated_home / ".claude" / ".review-pr-active.d"
-            active_dir.mkdir(parents=True, exist_ok=True)
-            stored_pid = str(os.getpid()) if adjacent_pid == "live" else "99999999"
-            (active_dir / sid).write_text(stored_pid)
-
-        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        if expect_evicted:
-            assert not findings_body.exists(), (
-                "clear-stale must reap a .body findings file once its owning "
-                "PID marker is confirmed dead or was never written"
-            )
-        else:
-            assert findings_body.exists(), (
-                "clear-stale must not evict a .body findings file while its "
-                "owning PID marker is still alive"
-            )
-
-    def test_clear_stale_dry_run_does_not_evict_findings_sibling_or_body(
+    def test_clear_stale_dry_run_does_not_evict_review_pr_artifacts(
         self, isolated_home, git_repo, tmp_path
     ):
         """--dry-run must report the same dead-owner eviction decision as a
-        real run without actually removing either file."""
+        real run without actually removing any artifact."""
         sid = self.SID
-        sibling = self._declare_sibling(
-            isolated_home, "foo/bar#42", "abc123", tmp_path / "findings.md", sid
-        )
-        findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        active_dir.mkdir(parents=True, exist_ok=True)
+        findings_body = active_dir / f"{sid}.body"
         findings_body.write_text("**[Claude Code]** # findings body\n")
+        diff_file = active_dir / f"{sid}.diff"
+        diff_file.write_text("diff content\n")
 
         result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        assert sibling.exists(), "--dry-run must not remove the .findings sibling"
         assert findings_body.exists(), "--dry-run must not remove the .body file"
+        assert diff_file.exists(), "--dry-run must not remove the .diff file"
         assert "evict (dry-run)" in result.stdout
 
 
 class TestMarkerWriteSymlinkHardeningAcrossArms:
-    """`_write_marker_no_follow`'s O_NOFOLLOW write hardening (proved for
+    """`_lib_write_no_follow`'s O_NOFOLLOW write hardening (proved for
     review-pr's own arm in TestMarkerScriptReviewPr) is shared by every
     `write <skill>` arm, not just review-pr's -- code-review, the
     most-used arm, stands in for the other four plain-hash arms
@@ -5895,7 +5831,7 @@ class TestMarkerWriteSymlinkHardeningAcrossArms:
 
 class TestMarkerActivateSymlinkHardeningAcrossArms:
     """Every `activate <skill>` arm now routes through the same
-    `_write_marker_no_follow` O_NOFOLLOW helper the `write <skill>` arms
+    `_lib_write_no_follow` O_NOFOLLOW helper the `write <skill>` arms
     already used (TestMarkerWriteSymlinkHardeningAcrossArms above) -- a
     plain `>` redirect at a predictable session-id-keyed active-bypass
     marker path would otherwise follow a pre-planted symlink there, the
@@ -5909,7 +5845,6 @@ class TestMarkerActivateSymlinkHardeningAcrossArms:
         ("respond-pr", ".respond-pr-active.d"),
         ("memory-skill", ".memory-skill-active.d"),
         ("handoff", ".handoff-active.d"),
-        ("review-pr", ".review-pr-active.d"),
     ]
 
     @pytest.mark.parametrize("skill,dir_name", ACTIVATE_ARMS)

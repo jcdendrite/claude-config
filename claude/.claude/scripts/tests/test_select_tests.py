@@ -687,6 +687,19 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
         }
 
+    def test_marker_clear_stale_py_change_also_selects_hooks_tests(self):
+        """TestMarkerScriptClearStale (HOOKS_TESTS_DIR's test_marker_script.py)
+        exercises marker-clear-stale.py end-to-end only via `marker.sh
+        clear-stale`'s subprocess call, never by import or by-path read.
+        Without this cross-domain exception, the scripts domain rule claims
+        the path first and that HOOKS_TESTS_DIR coverage goes unrun."""
+        result = _mod.select_pytest_targets([_mod.MARKER_CLEAR_STALE_PY])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+        }
+
     def test_skill_files_read_by_hook_tests_each_also_select_hooks_tests(self):
         """Every SKILL_FILES_READ_BY_HOOK_TESTS member is read by exact path
         from a test under HOOKS_TESTS_DIR -- e.g.
@@ -1521,6 +1534,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.INSTALL_SH,
     _mod.CLAUDE_SETTINGS_JSON,
     _mod.HANDOFF_SKILL_MD,
+    _mod.MARKER_CLEAR_STALE_PY,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,

@@ -1350,18 +1350,18 @@ def _write_review_pr_marker(config_dir: Path, repo_hash: str, session_id: str, c
     (marker_dir / f"{repo_hash}.{session_id}").write_text(content)
 
 
-def test_review_pr_completion_marker_fields_returns_the_three_stored_lines(tmp_path: Path) -> None:
-    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+def test_review_pr_completion_marker_fields_returns_the_four_stored_lines(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
     result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "foo/bar#42\nabc123\ndef456\n"
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
 
 
 def test_review_pr_completion_marker_fields_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
-    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456")
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout")
     result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "foo/bar#42\nabc123\ndef456\n"
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
 
 
 def test_review_pr_completion_marker_fields_absent_marker_returns_1_with_no_output(
@@ -1375,17 +1375,18 @@ def test_review_pr_completion_marker_fields_absent_marker_returns_1_with_no_outp
 @pytest.mark.parametrize(
     "content",
     [
-        pytest.param("foo/bar#42\nabc123\n", id="only_two_lines"),
-        pytest.param("foo/bar#42\n\ndef456\n", id="empty_middle_line"),
-        pytest.param("\nabc123\ndef456\n", id="empty_first_line"),
-        pytest.param("foo/bar#42\nabc123\n\n", id="empty_third_line"),
+        pytest.param("foo/bar#42\nabc123\ndef456\n", id="only_three_lines"),
+        pytest.param("foo/bar#42\n\ndef456\ncheckout\n", id="empty_middle_line"),
+        pytest.param("\nabc123\ndef456\ncheckout\n", id="empty_first_line"),
+        pytest.param("foo/bar#42\nabc123\n\ncheckout\n", id="empty_third_line"),
+        pytest.param("foo/bar#42\nabc123\ndef456\n\n", id="empty_fourth_line"),
         pytest.param("", id="empty_file"),
     ],
 )
 def test_review_pr_completion_marker_fields_malformed_content_returns_1_with_no_output(
     tmp_path: Path, content: str
 ) -> None:
-    """A marker that doesn't parse into exactly three non-empty lines must
+    """A marker that doesn't parse into exactly four non-empty lines must
     never authorize a post on partial data -- each malformed shape below
     fails closed the same way an absent marker does."""
     _write_review_pr_marker(tmp_path, "repohash", "session-a", content)
@@ -1399,14 +1400,14 @@ def test_review_pr_completion_marker_fields_wrong_session_returns_1(tmp_path: Pa
     above: a marker written under one session must not authorize a read from
     another -- see test_other_sessions_marker_does_not_leak_bypass for the
     equivalent property on the active-bypass marker."""
-    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
     result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-b")
     assert result.returncode != 0
     assert result.stdout == ""
 
 
 def test_review_pr_completion_marker_fields_wrong_repo_hash_returns_1(tmp_path: Path) -> None:
-    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
     result = _review_pr_completion_marker_fields(tmp_path, "otherrepohash", "session-a")
     assert result.returncode != 0
     assert result.stdout == ""
@@ -1418,6 +1419,55 @@ def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_pat
     result = _review_pr_completion_marker_fields(tmp_path, "repohash", "../canary")
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+# --- _lib_parse_pr_identity -------------------------------------------------
+#
+# review-pr-checkout.sh and review-pr-post.sh both call this helper for their
+# PR-identity split and validation, so neither carries its own copy.
+
+
+def _parse_pr_identity(pr_identity: str) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_parse_pr_identity "$@"', "bash", pr_identity,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def test_parse_pr_identity_returns_owner_repo_and_number(tmp_path: Path) -> None:
+    result = _parse_pr_identity("foo/bar#42")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar\n42\n"
+
+
+@pytest.mark.parametrize(
+    "pr_identity",
+    [
+        pytest.param("no-hash-or-slash", id="no_hash_or_slash"),
+        pytest.param("foo/bar#NOTANUMBER", id="non_numeric_number"),
+        pytest.param("#42", id="empty_owner_repo"),
+        # A segment made entirely of '.'/'-' characters is a valid, nonempty
+        # run under a naive [A-Za-z0-9._-]+ class, and turns a
+        # `repos/$OWNER_REPO/...` gh api interpolation into a
+        # path-traversal shape.
+        pytest.param("../..#5", id="traversal_segments"),
+        pytest.param("..#5", id="single_dot_segment"),
+    ],
+)
+def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity: str) -> None:
+    result = _parse_pr_identity(pr_identity)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path) -> None:
+    """Bounds the tightened owner/repo regex from the other side of the
+    traversal-rejection cases above: a segment mixing '.'/'-' with at least
+    one alphanumeric character (an ordinary GitHub owner/repo shape) must
+    still pass."""
+    result = _parse_pr_identity("my-org/my.repo#5")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "my-org/my.repo\n5\n"
 
 
 # --- _lib_is_no_gate_release_agent ---------------------------------------
@@ -5618,6 +5668,147 @@ class TestLibSha256NoFollow:
             target.chmod(0o644)
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+class TestLibWriteNoFollow:
+    """Direct unit coverage for _lib_write_no_follow -- otherwise only
+    exercised indirectly through marker.sh's `write`/`activate` arms and
+    the review-pr scripts' own provenance/context/diff artifact writes."""
+
+    def test_writes_stdin_to_a_fresh_path(self, tmp_path: Path) -> None:
+        target = tmp_path / "marker"
+        result = _run_lib_call(f'printf "hello\\n" | _lib_write_no_follow "{target}"', env=dict(os.environ))
+        assert result.returncode == 0
+        assert target.read_text() == "hello\n"
+
+    def test_truncates_and_overwrites_an_existing_file(self, tmp_path: Path) -> None:
+        target = tmp_path / "marker"
+        target.write_text("stale content that must not survive\n")
+        result = _run_lib_call(f'printf "fresh\\n" | _lib_write_no_follow "{target}"', env=dict(os.environ))
+        assert result.returncode == 0
+        assert target.read_text() == "fresh\n"
+
+    def test_symlink_is_refused_and_its_target_is_untouched(self, tmp_path: Path) -> None:
+        real_target = tmp_path / "real.txt"
+        real_target.write_text("pre-existing content\n")
+        link = tmp_path / "link.txt"
+        link.symlink_to(real_target)
+        result = _run_lib_call(f'printf "attacker-controlled\\n" | _lib_write_no_follow "{link}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert link.is_symlink(), "the symlink itself must survive, unmodified"
+        assert real_target.read_text() == "pre-existing content\n", (
+            "the write must not follow the symlink and truncate its target"
+        )
+
+
+class TestLibCatNoFollow:
+    """Direct unit coverage for _lib_cat_no_follow -- otherwise only
+    exercised indirectly through review-pr-post.sh's own re-verification of
+    the findings-body file. Mirrors TestLibSha256NoFollow's cases above,
+    since both share the same O_NOFOLLOW-open primitive and differ only in
+    what they do with the bytes."""
+
+    def test_returns_the_full_file_content(self, tmp_path: Path) -> None:
+        target = tmp_path / "body.txt"
+        content = b"findings body content\n"
+        target.write_bytes(content)
+        result = _run_lib_call(f'_lib_cat_no_follow "{target}"', env=dict(os.environ))
+        assert result.returncode == 0
+        assert result.stdout == content.decode()
+
+    def test_symlink_is_refused(self, tmp_path: Path) -> None:
+        real_target = tmp_path / "real.txt"
+        real_target.write_text("real content\n")
+        link = tmp_path / "link.txt"
+        link.symlink_to(real_target)
+        result = _run_lib_call(f'_lib_cat_no_follow "{link}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_missing_path_is_refused(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.txt"
+        result = _run_lib_call(f'_lib_cat_no_follow "{missing}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_permission_denied_path_is_refused(self, tmp_path: Path) -> None:
+        target = tmp_path / "no-read.txt"
+        target.write_text("secret\n")
+        target.chmod(0o000)
+        try:
+            result = _run_lib_call(f'_lib_cat_no_follow "{target}"', env=dict(os.environ))
+        finally:
+            target.chmod(0o644)
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibReviewPrArtifactPath:
+    """Direct unit coverage for _lib_review_pr_artifact_path -- the one
+    shared derivation review-pr-acquire.sh, review-pr-checkout.sh,
+    review-pr-diff.sh, review-pr-findings-path.sh, review-pr-post.sh,
+    review-pr-finish.sh, and marker.sh's own `write review-pr` arm all call,
+    so none of them can drift from each other by construction."""
+
+    def test_builds_the_dotted_active_dir_path(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" provenance', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.provenance"
+
+    def test_suffix_carrying_its_own_dot_is_passed_through_unmodified(self) -> None:
+        """SUFFIX carries no leading dot by convention, but "context.json"
+        (an already-dotted suffix) must still round-trip unchanged -- this
+        function does no dot-stripping or validation of its own."""
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" context.json', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.context.json"
+
+
+class TestLibReviewPrWorktreeDir:
+    """Direct unit coverage for _lib_review_pr_worktree_dir -- the naming
+    convention review-pr-checkout.sh (creates the worktree) and
+    review-pr-finish.sh (removes it) must derive identically."""
+
+    def test_builds_the_worktree_path_with_owner_slash_repo_joined_by_a_percent(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_worktree_dir "/repo" "foo/bar" "42"', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/repo/.claude/worktrees/review-pr-foo%bar-42"
+
+    def test_owner_repo_with_no_slash_is_passed_through_unmodified(self) -> None:
+        """Defensive characterization, not a validated input shape -- owner/
+        repo is expected to always contain exactly one '/' (enforced by
+        _lib_parse_pr_identity upstream of every real caller), so this pins
+        what happens if that invariant is ever violated rather than
+        asserting it should be."""
+        result = _run_lib_call(
+            '_lib_review_pr_worktree_dir "/repo" "no-slash" "7"', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/repo/.claude/worktrees/review-pr-no-slash-7"
+
+    def test_owner_repo_pairs_that_collided_under_the_old_hyphen_join_now_differ(self) -> None:
+        """foo/bar-baz#5 and foo-bar/baz#5 both previously resolved to
+        review-pr-foo-bar-baz-5 -- the '-' join couldn't tell which hyphen was
+        the original OWNER_REPO slash and which was already part of an owner
+        or repo name."""
+        first = _run_lib_call(
+            '_lib_review_pr_worktree_dir "/repo" "foo/bar-baz" "5"', env=dict(os.environ)
+        )
+        second = _run_lib_call(
+            '_lib_review_pr_worktree_dir "/repo" "foo-bar/baz" "5"', env=dict(os.environ)
+        )
+        assert first.returncode == 0
+        assert second.returncode == 0
+        assert first.stdout != second.stdout
+        assert first.stdout == "/repo/.claude/worktrees/review-pr-foo%bar-baz-5"
+        assert second.stdout == "/repo/.claude/worktrees/review-pr-foo-bar%baz-5"
 
 
 # --- _lib_config_lines -------------------------------------------------

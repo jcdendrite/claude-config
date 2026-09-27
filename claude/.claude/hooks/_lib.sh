@@ -422,6 +422,26 @@ _lib_repo_root() {
   printf '%s' "$root"
 }
 
+# Main-tree root, resolved via --git-common-dir rather than --show-toplevel:
+# the two agree from the main working tree, but --show-toplevel returns the
+# CURRENT worktree's own path when run from a linked worktree, while
+# --git-common-dir always points at the shared .git directory regardless of
+# which worktree the call is made from.
+# review-pr-checkout.sh and review-pr-finish.sh each anchor their own
+# WORKTREE_DIR reconstruction here (not at _lib_repo_root's own
+# possibly-linked-worktree result), so the two independent computations
+# agree.
+# Exit 1, empty stdout: not inside a git repository, git is absent, or the
+# call timed out.
+_lib_main_repo_root() {
+  local common_git_dir root
+  common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | tr -d '\n')
+  [ -n "$common_git_dir" ] || return 1
+  root=$(dirname "$common_git_dir")
+  [ -n "$root" ] || return 1
+  printf '%s' "$root"
+}
+
 # Compute the marker repo-hash for an absolute repo-toplevel path.
 # Input must have no trailing newline -- printf '%s' omits one, so the SHA
 # covers exactly the bytes of $1.
@@ -514,11 +534,17 @@ _lib_marker_value_present() {
 }
 
 # _lib_review_pr_completion_marker_fields CONFIG_DIR REPO_HASH SESSION_ID
-# Prints the review-pr completion marker's three stored fields -- PR
-# identity, headRefOid, body hash, one per line -- and returns 0, but only
-# when THIS session's own marker file exists and parses into exactly three
-# non-empty lines. Returns 1 with no output otherwise (marker absent, wrong
-# session, malformed content).
+# Prints four fields, one per line: PR identity, headRefOid, body hash,
+# mode. Returns 0 when THIS session's own marker file exists and the first
+# four lines are all non-empty; returns 1 with no output otherwise (marker
+# absent, wrong session, malformed content).
+# A fifth line, if present, is silently ignored -- the marker is entirely
+# script-generated with no append operation, so a trailing line can only
+# appear via direct tampering.
+# mode is "checkout" or "diff-only", carried through from the provenance
+# file `marker.sh write review-pr` read when it wrote this marker. It
+# selects which freshness binding review-pr-post.sh applies -- a local HEAD
+# comparison makes sense only when a reviewed tree exists.
 #
 # Deliberately session-scoped, unlike _lib_marker_value_present's
 # cross-session glob above: this authorization is bound to the session that
@@ -534,13 +560,62 @@ _lib_review_pr_completion_marker_fields() {
   _lib_valid_session_id_component "$session_id" || return 1
   local marker="$config_dir/review-pr-markers/$repo_hash.$session_id"
   [ -f "$marker" ] || return 1
-  local content pr_identity head_ref_oid body_hash
+  local content pr_identity head_ref_oid body_hash mode
   content=$(_lib_capped cat "$marker" 2>/dev/null) || return 1
   pr_identity=$(printf '%s\n' "$content" | sed -n '1p')
   head_ref_oid=$(printf '%s\n' "$content" | sed -n '2p')
   body_hash=$(printf '%s\n' "$content" | sed -n '3p')
-  [ -n "$pr_identity" ] && [ -n "$head_ref_oid" ] && [ -n "$body_hash" ] || return 1
-  printf '%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash"
+  mode=$(printf '%s\n' "$content" | sed -n '4p')
+  [ -n "$pr_identity" ] && [ -n "$head_ref_oid" ] && [ -n "$body_hash" ] && [ -n "$mode" ] || return 1
+  printf '%s\n%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash" "$mode"
+}
+
+# _lib_parse_pr_identity PR_IDENTITY
+# Splits a <owner>/<repo>#<number> PR identity into owner/repo and number,
+# printing owner/repo then number on two lines, and returns 0. Returns 1
+# with no output when the number segment is not purely numeric, or the
+# owner/repo segment doesn't match the tightened shape below. Shared by
+# review-pr-checkout.sh, review-pr-post.sh, review-pr-acquire.sh,
+# review-pr-diff.sh, and review-pr-finish.sh, so none of them carries its
+# own copy of this split and its validation.
+#
+# Rejects a bare `.`/`..` segment, which a naive [A-Za-z0-9._-]+ class would
+# otherwise accept and turn into a path-traversal shape.
+#
+# Error text is deliberately NOT produced here -- it stays at each call
+# site, which names its own script and its own abort phrasing.
+_lib_parse_pr_identity() {
+  local pr_identity="$1"
+  local pr_number="${pr_identity##*#}"
+  local owner_repo="${pr_identity%#*}"
+  [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+  [[ "$owner_repo" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  printf '%s\n%s\n' "$owner_repo" "$pr_number"
+}
+
+# _lib_review_pr_artifact_path CONFIG_DIR SESSION_ID SUFFIX
+# Prints $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.$SUFFIX -- the one
+# shared derivation for every review-pr session-scoped artifact path
+# (provenance, body, diff, context.json), so review-pr-acquire.sh,
+# review-pr-checkout.sh, review-pr-diff.sh, review-pr-findings-path.sh,
+# review-pr-post.sh, review-pr-finish.sh, and marker.sh's own `write
+# review-pr` arm cannot drift from each other by construction. SUFFIX
+# carries no leading dot (e.g. "body", "provenance", "diff", "context.json").
+_lib_review_pr_artifact_path() {
+  printf '%s/.review-pr-active.d/%s.%s' "$1" "$2" "$3"
+}
+
+# _lib_review_pr_worktree_dir MAIN_REPO_ROOT OWNER_REPO PR_NUMBER
+# Prints $MAIN_REPO_ROOT/.claude/worktrees/review-pr-<owner>%<repo>-<number>
+# -- the review-pr checkout worktree's path, shared by review-pr-checkout.sh
+# (creates it) and review-pr-finish.sh (removes it), so the two cannot
+# derive the naming convention differently from each other. The OWNER_REPO
+# slash becomes '%', not '-': _lib_parse_pr_identity's owner/repo charset is
+# [A-Za-z0-9._-], which never contains '%', so the marker can't collide with
+# a hyphen already inside an owner or repo name.
+_lib_review_pr_worktree_dir() {
+  local main_repo_root="$1" owner_repo="$2" pr_number="$3"
+  printf '%s/.claude/worktrees/review-pr-%s-%s' "$main_repo_root" "${owner_repo//\//%}" "$pr_number"
 }
 
 # _lib_sha256_no_follow PATH
@@ -568,6 +643,48 @@ with os.fdopen(fd, "rb") as f:
         digest.update(chunk)
 print(digest.hexdigest())
 ' "$target"
+}
+
+# _lib_cat_no_follow PATH
+# Prints PATH's full raw content through a single os.open(O_NOFOLLOW) and
+# returns 0 -- the same atomic symlink-refusal as _lib_sha256_no_follow,
+# for a caller that needs the verified bytes themselves (to hash AND
+# forward downstream from one read) rather than only their digest.
+# Prints nothing and returns 1 on a missing file, a symlink, or a
+# permission error. Shared with review-pr-post.sh's own use, which hashes
+# and writes out the same captured content rather than re-opening PATH by
+# path a second time.
+_lib_cat_no_follow() {
+  local target="$1"
+  _lib_capped python3 -c '
+import os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+with os.fdopen(fd, "rb") as f:
+    sys.stdout.buffer.write(f.read())
+' "$target"
+}
+
+# _lib_write_no_follow DEST_PATH
+# Writes stdin to DEST_PATH through a single os.open(O_NOFOLLOW) -- refuses a
+# symlink at the final path component atomically with the write, so a
+# pre-planted symlink at a predictable session-scoped destination is never
+# followed and truncated the way a plain `>` redirect would follow it.
+# Shared by marker.sh's `write <skill>` arms and the review-pr scripts that
+# write session-scoped provenance/context/diff artifacts at an identically
+# predictable, session-ID-keyed path.
+_lib_write_no_follow() {
+  _lib_capped python3 -c '
+import os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+except OSError:
+    sys.exit(1)
+with os.fdopen(fd, "wb") as f:
+    f.write(sys.stdin.buffer.read())
+' "$1"
 }
 
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:

@@ -102,6 +102,14 @@ HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
 # Import dependency of test_skills.py; see _skill_auxiliary_files.py's docstring.
 SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
+# marker.sh's `clear-stale` arm shells out to this script; its end-to-end
+# coverage (TestMarkerScriptClearStale) lives in HOOKS_TESTS_DIR's
+# test_marker_script.py, reached only via that subprocess call, never by
+# import or by-path read -- undetectable by TestCrossDomainReadCompleteness's
+# constant-scan, so declared here by hand, the same shape as
+# LOVABLE_CLOUD_PLUGIN_MANIFEST above.
+MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
+
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
 PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
 PLAN_REVIEW_SKILL_MD = "claude-skills/skills/plan-review/SKILL.md"
@@ -452,6 +460,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
+# MARKER_CLEAR_STALE_PY: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
@@ -499,6 +508,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
+    (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),

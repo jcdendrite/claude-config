@@ -53,19 +53,28 @@
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
 #
-# Second bypass path: /review-pr's active marker at
-# ~/.claude/.review-pr-active.d/<session_id>. Four guarantees:
-#   - A matched READ releases the same way respond-pr's own marker does.
-#   - A matched WRITE is never released here at all: every `gh pr
-#     review`/`reviews` write during an active /review-pr session is denied
-#     unconditionally, redirecting to ~/.claude/scripts/review-pr-post.sh.
-#   - That script independently re-verifies the HEAD, PR identity, and
-#     findings-body hash recorded by /review-pr's own completion marker
-#     (see that script's header, and _lib_review_pr_completion_marker_fields
-#     in _lib.sh for the read it shares with marker.sh's `write review-pr`
-#     arm) before it ever calls gh.
-#   - `--approve` is not a reachable code path in that script, so this gate
-#     needs no approve-spelling denylist of its own.
+# Second bypass path: none needed for /review-pr's own reads. Step 1's
+# three-endpoint fetch runs inside ~/.claude/scripts/review-pr-acquire.sh,
+# including the `gh api .../pulls/N/reviews` call the REST arm below would
+# otherwise gate -- a PreToolUse hook sees only the literal Bash-tool
+# command text (`~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`,
+# which contains none of the gated REST/GraphQL patterns below) and never
+# inspects a subprocess the script itself spawns. No read-side bypass marker
+# exists for /review-pr's Step 1 reads: the gap this relies on is the same
+# one require-worktree-for-git-writes.sh has (see that hook's header): a hook
+# that matches literal Bash-tool command text can't see a `gh api` call
+# made from inside a wrapper script -- deliberately, and documented here
+# rather than left as an undocumented reliance on a hook gap.
+#
+# A matched WRITE is never released, with or without a marker: every `gh pr
+# review`/`reviews` write is denied unconditionally, redirecting to
+# ~/.claude/scripts/review-pr-post.sh. That script independently
+# re-verifies the HEAD (in `checkout` mode), PR identity, and findings-body
+# hash recorded by /review-pr's own completion marker (see that script's
+# header, and _lib_review_pr_completion_marker_fields in _lib.sh for the
+# read it shares with marker.sh's `write review-pr` arm) before it ever
+# calls gh. `--approve` is not a reachable code path in that script, so
+# this gate needs no approve-spelling denylist of its own.
 # Named accepted gap: this gate decides per whole command, like every other
 # arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
 # with an unrelated command executes atomically -- an attacker able to
@@ -112,16 +121,6 @@ fi
 # through to the gate.
 if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
-fi
-
-# review-pr active marker: computed here, used further down. Unlike
-# respond-pr's blanket bypass above, this does NOT exit 0 unconditionally --
-# a live marker only proves a /review-pr session is running, never that the
-# review itself happened. It releases reads unconditionally further below;
-# a write additionally requires the completion marker checked there.
-REVIEW_PR_ACTIVE=0
-if _lib_active_bypass_marker_live_and_touch ".review-pr-active.d" "$SESSION_ID"; then
-  REVIEW_PR_ACTIVE=1
 fi
 
 # grep matches within a line and `.` never crosses a newline, so any command
@@ -340,19 +339,11 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
 fi
 shopt -u nocasematch
 
-# review-pr read bypass: an active marker releases a matched READ
-# unconditionally (step 1 needs the complete three-endpoint fetch the same
-# way an author does). A matched WRITE is never released here -- see the
-# unconditional-deny block below.
-if [ "$REVIEW_PR_ACTIVE" -eq 1 ] && [ "$GATED_WRITE" -eq 0 ]; then
-  exit 0
-fi
-
 # Every gated write is denied unconditionally past this point: respond-pr's
 # blanket bypass above already released any write issued from inside that
-# skill, and review-pr's active marker (checked above) releases reads only,
-# never a write -- see "Second bypass path" above for what posting a
-# `gh pr review` through review-pr-post.sh instead guarantees.
+# skill, and /review-pr's Step 1 reads never reach this gate at all (see
+# "Second bypass path" above) -- there is no read-release path here for a
+# write to ride along with.
 if [ "$GATED_WRITE" -eq 1 ]; then
   emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0

@@ -126,6 +126,16 @@ def _gh_shim_source(
             "GH_HOST": os.environ.get("GH_HOST"),
             "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
         }}
+        # Captured at invocation time, before review-pr-post.sh's own EXIT
+        # trap deletes its mktemp'd -F file -- a later, post-exit read from
+        # the test process would find nothing left to read.
+        if "-F" in args:
+            f_path = args[args.index("-F") + 1]
+            try:
+                with open(f_path) as f:
+                    record["body_content"] = f.read()
+            except OSError:
+                record["body_content"] = None
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
         if args[:2] == ["pr", "view"] and PR_VIEW_STDOUT:
@@ -382,9 +392,10 @@ class TestHappyPath:
         )
         assert result.returncode == 0, result.stderr
 
-        calls = _read_pr_review_calls(call_log)
-        assert len(calls) == 1
-        args = calls[0]
+        pr_review_records = [r for r in _read_records(call_log) if r["args"][:2] == ["pr", "review"]]
+        assert len(pr_review_records) == 1
+        record = pr_review_records[0]
+        args = record["args"]
         assert args[:2] == ["pr", "review"]
         assert args[2] == "42"
         assert flag in args
@@ -392,7 +403,68 @@ class TestHappyPath:
         r_index = args.index("-R")
         assert args[r_index + 1] == "foo/bar"
         f_index = args.index("-F")
-        assert args[f_index + 1] == str(body_file)
+        # gh reads review-pr-post.sh's own re-verified mktemp copy, not the
+        # original findings-body file at FINDINGS_BODY_PATH -- opening that
+        # path again after its hash check would leave a symlink-swap window
+        # between the check and this read.
+        tmp_body_file = Path(args[f_index + 1])
+        assert tmp_body_file != body_file
+        assert record["body_content"] == body_file.read_text()
+
+
+class TestModeGating:
+    """The local HEAD comparison only makes sense in `checkout` mode, where
+    a reviewed tree exists -- in `diff-only` mode there is no local tree,
+    and the remote headRefOid re-check (TestPrIdentityCrossCheck) is the
+    sole freshness binding."""
+
+    def test_diff_only_mode_skips_local_head_check_but_still_posts(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        body_file, body_hash = _write_findings_body(isolated_home)
+        # A headRefOid that matches neither the local repo's HEAD nor
+        # anything else locally derivable -- proving the local-HEAD
+        # comparison genuinely does not run in this mode, not merely that
+        # it happens to pass.
+        remote_head = "f" * 40
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, PR_IDENTITY, remote_head, body_hash, SID, mode="diff-only"
+        )
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=remote_head
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_read_pr_review_calls(call_log)) == 1
+
+    def test_diff_only_mode_still_refuses_on_remote_head_ref_oid_mismatch(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, PR_IDENTITY, "f" * 40, body_hash, SID, mode="diff-only"
+        )
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid="0" * 40
+        )
+        assert result.returncode != 0
+        assert "headRefOid" in result.stderr
+        assert _read_pr_review_calls(call_log) == []
+
+    def test_out_of_enum_mode_fails_closed(self, isolated_home, git_repo, tmp_path):
+        """A corrupted or hand-written provenance/marker (any process that
+        can write files can write this skill's own state) must refuse
+        rather than fall through to either known branch by default."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, PR_IDENTITY, head_sha(git_repo), body_hash, SID, mode="acquired"
+        )
+        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        assert result.returncode != 0
+        assert "neither checkout nor diff-only" in result.stderr
+        assert _read_calls(call_log) == []
 
 
 class TestGhHostStripped:
@@ -500,4 +572,51 @@ class TestGhPrReviewFailureBranch:
         )
         assert marker.exists(), (
             "a failed post must leave the completion marker intact for a retry"
+        )
+
+
+class TestTmpFindingsBodyFileCleanup:
+    """The EXIT trap (_cleanup_tmp_findings_body) deletes the mktemp'd,
+    re-verified copy of the findings body gh -F reads, on every exit path --
+    pinned here on both a successful post and a gh pr review failure, the
+    two cases where the tmp file exists by the time the trap fires."""
+
+    def test_tmp_file_removed_after_a_successful_post(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+        )
+        assert result.returncode == 0, result.stderr
+        f_index = _read_pr_review_calls(call_log)[0].index("-F")
+        tmp_body_file = Path(_read_pr_review_calls(call_log)[0][f_index + 1])
+        assert not tmp_body_file.exists(), (
+            "the EXIT trap must delete the mktemp'd findings-body copy after a successful post"
+        )
+
+    def test_tmp_file_removed_after_a_gh_pr_review_failure(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo,
+            isolated_home,
+            ["comment"],
+            tmp_path,
+            pr_view_head_ref_oid=marker_head,
+            fail_pr_review=True,
+        )
+        assert result.returncode != 0
+        f_index = _read_pr_review_calls(call_log)[0].index("-F")
+        tmp_body_file = Path(_read_pr_review_calls(call_log)[0][f_index + 1])
+        assert not tmp_body_file.exists(), (
+            "the EXIT trap must delete the mktemp'd findings-body copy even "
+            "when gh pr review itself fails"
         )

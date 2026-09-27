@@ -1302,18 +1302,20 @@ def write_review_pr_completion_marker(
     body_hash: str,
     session_id: str = DEFAULT_TEST_SESSION_ID,
     config_dir: Path | None = None,
+    mode: str = "checkout",
 ) -> Path:
-    """Write review-pr's three-line completion marker directly (PR identity,
-    headRefOid, body hash) -- the shape `marker.sh write review-pr` produces
-    and `_lib_review_pr_completion_marker_fields` (_lib.sh) reads. Written
-    independently of the real write arm (unlike
+    """Write review-pr's four-line completion marker directly (PR identity,
+    headRefOid, body hash, mode) -- the shape `marker.sh write review-pr`
+    produces and `_lib_review_pr_completion_marker_fields` (_lib.sh) reads.
+    Written independently of the real write arm (unlike
     write_plan_review_marker, which shells out to the production hash
     function) so a test seeding a marker here checks require-respond-pr.sh's
     read side against known-correct content, not against marker.sh's own
-    output."""
+    output. mode defaults to "checkout", the only mode under which the
+    local-HEAD comparison this marker's headRefOid field feeds applies."""
     marker = review_pr_completion_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"{pr_identity}\n{head_ref_oid}\n{body_hash}\n")
+    marker.write_text(f"{pr_identity}\n{head_ref_oid}\n{body_hash}\n{mode}\n")
     return marker
 
 

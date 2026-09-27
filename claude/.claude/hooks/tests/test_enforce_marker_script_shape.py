@@ -13,6 +13,8 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
+    REPO_ROOT,
+    SCRIPTS_DIR,
     bash_input,
     build_path_without,
     edit_input,
@@ -23,11 +25,15 @@ from helpers import (
 )
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
+MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
-# The 25 single-command tilde-form shapes the hook accepts — single source of
+# The 23 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
+# review-pr carries no activate/deactivate shape: Step 1's own reads need no
+# active-bypass marker once they run inside a script a PreToolUse hook
+# cannot see into (require-respond-pr.sh's own header explains why).
 TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write code-review",
     "~/.claude/scripts/marker.sh write skill-review",
@@ -41,13 +47,11 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh activate respond-pr",
     "~/.claude/scripts/marker.sh activate memory-skill",
     "~/.claude/scripts/marker.sh activate handoff",
-    "~/.claude/scripts/marker.sh activate review-pr",
     "~/.claude/scripts/marker.sh deactivate plan-review",
     "~/.claude/scripts/marker.sh deactivate ready-for-review",
     "~/.claude/scripts/marker.sh deactivate respond-pr",
     "~/.claude/scripts/marker.sh deactivate memory-skill",
     "~/.claude/scripts/marker.sh deactivate handoff",
-    "~/.claude/scripts/marker.sh deactivate review-pr",
     "~/.claude/scripts/marker.sh clear-stale",
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
     "~/.claude/scripts/marker.sh resolve-session-id",
@@ -59,7 +63,7 @@ TILDE_MARKER_SHAPES = [
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 25 single-command shapes, each must be allowed       #
+    # Valid shapes — 23 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -160,7 +164,7 @@ class TestEnforceMarkerScriptShape:
     # permitted for any op/target combination: the chain's end state is   #
     # identical to running each op separately, and every op is already    #
     # individually allowlisted or harmless (clear-stale). These are NOT   #
-    # single shapes and must NOT appear in the 25-shape parametrize list  #
+    # single shapes and must NOT appear in the 21-shape parametrize list  #
     # above.                                                              #
     # ------------------------------------------------------------------ #
 
@@ -418,6 +422,18 @@ class TestEnforceMarkerScriptShape:
         """review-pr has no check arm -- must be denied, mirroring
         test_check_mismatched_skill_denied above."""
         cmd = "~/.claude/scripts/marker.sh check review-pr"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_activate_review_pr_now_denied(self):
+        """review-pr has no activate arm -- must be denied, mirroring
+        test_activate_verification_denied above."""
+        cmd = "~/.claude/scripts/marker.sh activate review-pr"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_deactivate_review_pr_now_denied(self):
+        """review-pr has no deactivate arm -- must be denied, mirroring
+        test_deactivate_verification_denied above."""
+        cmd = "~/.claude/scripts/marker.sh deactivate review-pr"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_check_missing_skill_argument_denied(self):
@@ -734,7 +750,6 @@ class TestGateReleaseAuthority:
             "respond-pr",
             "memory-skill",
             "handoff",
-            "review-pr",
         ],
     )
     def test_activate_denied_for_no_release_agents(self, agent_type, target):
@@ -2010,3 +2025,73 @@ class TestPrescriptionAllowlistAlignment:
         "any excluded shape" clause would silently re-grant a future
         disqualified shape instead of failing this test."""
         assert {"clear-stale", "clear-stale --dry-run"} == self.ALLOWLIST_EXCEPTIONS
+
+
+class TestMarkerRegistryShapeCountConsistency:
+    """Derives the valid shape set from marker.sh's own registry arrays
+    and cross-checks it against TILDE_MARKER_SHAPES, the denial list, the
+    header comment, and docs/scripts.md's two integers, so the four can't
+    independently drift."""
+
+    NON_ARRAY_SUBCOMMANDS = [
+        "clear-stale",
+        "clear-stale --dry-run",
+        "resolve-session-id",
+        "status",
+        "check code-review",
+        "check verification",
+    ]
+
+    @staticmethod
+    def _marker_sh_array(name: str) -> list[str]:
+        result = subprocess.run(
+            ["bash", "-c", f'. {MARKER_SCRIPT}; printf "%s\\n" "${{{name}[@]}}"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return [line for line in result.stdout.splitlines() if line]
+
+    def _derived_valid_shapes(self) -> set[str]:
+        write_skills = self._marker_sh_array("WRITE_SKILLS")
+        activate_skills = self._marker_sh_array("ACTIVE_BYPASS_SKILLS")
+        shapes = {f"~/.claude/scripts/marker.sh write {skill}" for skill in write_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh activate {skill}" for skill in activate_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh deactivate {skill}" for skill in activate_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh {sub}" for sub in self.NON_ARRAY_SUBCOMMANDS}
+        return shapes
+
+    def test_derived_shape_set_matches_tilde_marker_shapes(self):
+        assert self._derived_valid_shapes() == set(TILDE_MARKER_SHAPES), (
+            "marker.sh's own WRITE_SKILLS/ACTIVE_BYPASS_SKILLS registry no "
+            "longer agrees with TILDE_MARKER_SHAPES -- update whichever "
+            "side is stale."
+        )
+
+    def test_denial_list_length_matches_the_registry(self):
+        hook_text = ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text()
+        denial_block_match = re.search(r"Valid shapes:\n(.*?)\n\nChains of", hook_text, re.DOTALL)
+        assert denial_block_match, "denial list not found in enforce-marker-script-shape.sh"
+        denial_lines = [
+            line for line in denial_block_match.group(1).splitlines()
+            if line.strip().startswith("~/.claude/scripts/marker.sh")
+        ]
+        assert len(denial_lines) == len(TILDE_MARKER_SHAPES)
+
+    def test_header_comment_integer_matches_the_registry(self):
+        hook_text = ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text()
+        header_match = re.search(r"must\n#\s*match one of the (\d+) single-command shapes", hook_text)
+        assert header_match, "header comment's shape-count integer not found"
+        assert int(header_match.group(1)) == len(TILDE_MARKER_SHAPES)
+
+    def test_docs_scripts_md_integers_match_the_registry_and_the_allowlist(self):
+        docs_text = (REPO_ROOT / "docs" / "scripts.md").read_text()
+        counts_match = re.search(
+            r"enumerates (\d+) valid invocation shapes; (\d+) of them", docs_text
+        )
+        assert counts_match, "docs/scripts.md's marker.sh two-number sentence not found"
+        total, allowlisted = int(counts_match.group(1)), int(counts_match.group(2))
+        assert total == len(TILDE_MARKER_SHAPES)
+        assert allowlisted == len(TILDE_MARKER_SHAPES) - len(
+            TestPrescriptionAllowlistAlignment.ALLOWLIST_EXCEPTIONS
+        )

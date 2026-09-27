@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from helpers import SKILLS_DIR, head_sha
 from transcript_analysis import pricing
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -247,6 +248,147 @@ def _direnv_shim_source_stalls_without_reading_stdin(seconds: int) -> str:
             time.sleep({seconds})
         sys.exit(0)
     """)
+
+
+# ---------------------------------------------------------------------------
+# review-pr scaffolding shared across its own gh-shimmed test files
+# (test_review_pr_checkout.py, test_review_pr_diff.py,
+# test_review_pr_acquire.py, test_review_pr_finish.py) -- promoted here
+# rather than left as module-level functions inside test_review_pr_checkout.py
+# (where they originated) or imported across sibling test modules, matching
+# _shimmed_env's own precedent above: this suite has no other
+# cross-test-file import.
+# ---------------------------------------------------------------------------
+
+
+def _install_audit_script(home: Path) -> None:
+    """Symlink the real audit-execution-surface.py into the isolated
+    $HOME/.claude/skills/review-pr/ -- the installed-layout path
+    review-pr-checkout.sh/review-pr-diff.sh resolve via
+    $CONFIG_DIR/skills/review-pr/ (stow-packages.sh: claude-skills/ stows to
+    ~/.claude/). Exercises the real predicate rather than a stand-in copy
+    that could drift from it."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    if not target.exists():
+        target.symlink_to(SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+
+
+def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+    """Write $HOME/.claude/sessions/<pid> in the two-line format
+    capture-session-id.sh writes -- every review-pr script under test here
+    resolves its own session id (and, for the provenance-writing scripts,
+    its own Claude PID) by walking process ancestors via
+    _lib_resolve_claude_pid, so a test exercising a success path needs a
+    live session file for that walk to find. Duplicated from
+    test_review_pr_post.py's own helper of the same name rather than
+    imported across test trees, matching _shimmed_env's precedent above.
+
+    pid defaults to this test process's own pid: marker.sh (invoked by
+    several of these scripts) resolves its session id by walking process
+    ancestors, and when it runs as a subprocess of pytest, that walk
+    reaches the pytest process itself.
+    """
+    target_pid = os.getpid() if pid is None else pid
+    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(target_pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
+def _git_shim_that_fails_on_worktree_prune(tmp_path: Path) -> Path:
+    """A `git` PATH shim that fails only "git ... worktree prune",
+    delegating every other invocation to the real git binary -- shared by
+    test_review_pr_worktree_remove.py's and
+    test_review_pr_worktree_replace.py's own CLI-level tests, each proving
+    _review_pr_worktree.remove_worktree's RuntimeError on a failed prune
+    surfaces through that caller's own exit code and stderr message."""
+    real_git = shutil.which("git")
+    shim_dir = tmp_path / f"git_shim_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        if [[ "$*" == *"worktree prune"* ]]; then
+          echo "synthetic prune failure" >&2
+          exit 1
+        fi
+        exec {shlex.quote(real_git)} "$@"
+    """))
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _build_repo_with_pr_ref(
+    tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
+    *, symlink_name: str | None = None, base_symlink_name: str | None = None,
+) -> tuple[Path, str]:
+    """A local repo with an `origin` remote and a PR ref pushed directly to
+    it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
+    which is never a normal branch on the base repo. Returns (repo, pr_sha)
+    with the working copy left checked out at the pre-PR commit, so a
+    successful checkout's own worktree content is what proves the PR
+    commit landed, not the main checkout's.
+
+    The bare remote's own path embeds owner_repo's two path segments (e.g.
+    `.../remote/foo/bar`), so review-pr-checkout.sh's/review-pr-diff.sh's own
+    origin-identity check (comparing $1's owner/repo against the worktree's
+    actual origin) sees the same value callers pass as $1 -- the same
+    last-two-path-segments shape a real `https://github.com/<owner>/<repo>.git`
+    origin parses to.
+
+    symlink_name, when given, adds a git-tracked symlink (tree-entry mode
+    120000) at that path to the PR commit alongside pr_file.txt -- used by
+    the symlink-detection tests below, which need a PR commit that actually
+    is a symlink, not a same-named regular file.
+
+    base_symlink_name, when given, instead commits the symlink on the BASE
+    branch, before the PR commit -- used by the scoping test below, which
+    needs a symlink this PR's own diff never touches, distinct from
+    symlink_name above (which the PR commit itself adds).
+    """
+    bare = tmp_path / "remote" / owner_repo
+    bare.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "--bare"], cwd=bare, check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("main\n")
+    base_add_paths = ["file.txt"]
+    if base_symlink_name is not None:
+        (repo / base_symlink_name).symlink_to("/etc/passwd")
+        base_add_paths.append(base_symlink_name)
+    # --literal-pathspecs: a pathspec-magic-prefixed symlink name (e.g. a
+    # leading ':') must be added literally, not parsed as a magic-signature
+    # pathspec -- "--" alone does not disable that parsing.
+    subprocess.run(["git", "--literal-pathspecs", "add", *base_add_paths], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
+    main_sha = head_sha(repo)
+
+    (repo / "pr_file.txt").write_text("pr change\n")
+    git_add_paths = ["pr_file.txt"]
+    if symlink_name is not None:
+        (repo / symlink_name).symlink_to("/etc/passwd")
+        git_add_paths.append(symlink_name)
+    subprocess.run(["git", "--literal-pathspecs", "add", *git_add_paths], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
+    pr_sha = head_sha(repo)
+    subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)
+    subprocess.run(["git", "reset", "-q", "--hard", main_sha], cwd=repo, check=True)
+
+    return repo, pr_sha
 
 
 def _write_subagent_jsonl(

@@ -14,40 +14,25 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, SKILLS_DIR, head_sha
+from helpers import SCRIPTS_DIR
 
-from .conftest import _shimmed_env
+from .conftest import _build_repo_with_pr_ref, _install_audit_script, _seed_session, _shimmed_env
 
 SCRIPT = SCRIPTS_DIR / "review-pr-checkout.sh"
 OWNER_REPO = "foo/bar"
 PR_NUMBER = "42"
 PR_IDENTITY = f"{OWNER_REPO}#{PR_NUMBER}"
-
-
-def _install_audit_script(home: Path) -> None:
-    """Symlink the real audit-execution-surface.py into the isolated
-    $HOME/.claude/skills/review-pr/ -- the installed-layout path
-    review-pr-checkout.sh resolves via $CONFIG_DIR/skills/review-pr/
-    (stow-packages.sh: claude-skills/ stows to ~/.claude/). Exercises the
-    real predicate rather than a stand-in copy that could drift from it."""
-    skill_dir = home / ".claude" / "skills" / "review-pr"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    target = skill_dir / "audit-execution-surface.py"
-    if not target.exists():
-        target.symlink_to(SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+SID = "test-session-review-pr-checkout"
+_ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 
 def _worktree_dir(repo: Path) -> Path:
-    return repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '-')}-{PR_NUMBER}"
-
-
-def _lock_dir(repo: Path) -> Path:
-    return Path(f"{_worktree_dir(repo)}.lock")
+    return repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '%')}-{PR_NUMBER}"
 
 
 def _local_pr_ref_names(repo: Path) -> str:
@@ -63,73 +48,18 @@ def isolated_home(tmp_path):
     return home
 
 
-def _build_repo_with_pr_ref(
-    tmp_path: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER,
-    *, symlink_name: str | None = None, base_symlink_name: str | None = None,
-) -> tuple[Path, str]:
-    """A local repo with an `origin` remote and a PR ref pushed directly to
-    it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
-    which is never a normal branch on the base repo. Returns (repo, pr_sha)
-    with the working copy left checked out at the pre-PR commit, so a
-    successful checkout's own worktree content is what proves the PR
-    commit landed, not the main checkout's.
-
-    The bare remote's own path embeds owner_repo's two path segments (e.g.
-    `.../remote/foo/bar`), so review-pr-checkout.sh's origin-identity check
-    (comparing $1's owner/repo against the worktree's actual origin) sees
-    the same value callers pass as $1 -- the same last-two-path-segments
-    shape a real `https://github.com/<owner>/<repo>.git` origin parses to.
-
-    symlink_name, when given, adds a git-tracked symlink (tree-entry mode
-    120000) at that path to the PR commit alongside pr_file.txt -- used by
-    the symlink-detection tests below, which need a PR commit that actually
-    is a symlink, not a same-named regular file.
-
-    base_symlink_name, when given, instead commits the symlink on the BASE
-    branch, before the PR commit -- used by the scoping test below, which
-    needs a symlink this PR's own diff never touches, distinct from
-    symlink_name above (which the PR commit itself adds).
-    """
-    bare = tmp_path / "remote" / owner_repo
-    bare.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "--bare"], cwd=bare, check=True)
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    (repo / "file.txt").write_text("main\n")
-    base_add_paths = ["file.txt"]
-    if base_symlink_name is not None:
-        (repo / base_symlink_name).symlink_to("/etc/passwd")
-        base_add_paths.append(base_symlink_name)
-    # --literal-pathspecs: a pathspec-magic-prefixed symlink name (e.g. a
-    # leading ':') must be added literally, not parsed as a magic-signature
-    # pathspec -- "--" alone does not disable that parsing.
-    subprocess.run(["git", "--literal-pathspecs", "add", *base_add_paths], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
-    subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
-    main_sha = head_sha(repo)
-
-    (repo / "pr_file.txt").write_text("pr change\n")
-    git_add_paths = ["pr_file.txt"]
-    if symlink_name is not None:
-        (repo / symlink_name).symlink_to("/etc/passwd")
-        git_add_paths.append(symlink_name)
-    subprocess.run(["git", "--literal-pathspecs", "add", *git_add_paths], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
-    pr_sha = head_sha(repo)
-    subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)
-    subprocess.run(["git", "reset", "-q", "--hard", main_sha], cwd=repo, check=True)
-
-    return repo, pr_sha
-
-
 @pytest.fixture
 def repo_with_pr_ref(tmp_path):
     return _build_repo_with_pr_ref(tmp_path)
+
+
+# Sentinel default for head_repo_full_name/base_repo_full_name below: "same
+# repo as whatever the request path actually named" -- computed from the
+# shimmed request itself (args[1] = "repos/<owner>/<repo>/pulls/<n>"),
+# rather than baked to the OWNER_REPO module constant, so a test using a
+# different owner/repo (e.g. TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum's
+# "my-org/my.repo") still gets a safe, same-repo trust response by default.
+_SAME_AS_REQUEST = "__SAME_AS_REQUEST__"
 
 
 def _gh_shim_source(
@@ -140,10 +70,21 @@ def _gh_shim_source(
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
+    author_association: str = "MEMBER",
+    head_repo_full_name: str | None = _SAME_AS_REQUEST,
+    base_repo_full_name: str | None = _SAME_AS_REQUEST,
+    fail_trust_check: bool = False,
+    malformed_trust_check: bool = False,
 ) -> str:
     """gh shim recording every invocation, matching test_review_pr_post.py's
     own shim shape. Dispatches on the invocation's own first word(s):
     `gh pr view ... --json headRefOid` returns `head_ref_oid`; `gh api
+    .../pulls/N` (no trailing `/files`) returns the trust-classification
+    payload built from `author_association`/`head_repo_full_name`/
+    `base_repo_full_name` -- both default to `_SAME_AS_REQUEST`, echoing
+    back the request path's own owner/repo, so every pre-existing test
+    below that doesn't care about trust classification still reaches
+    checkout unchanged regardless of which owner/repo it uses; `gh api
     .../files --paginate ...` prints `files`, one per line. `fail_pr_view`/
     `fail_files` exit 1 on the matching call only, modeling a `gh` failure
     (rate limit, network) on that one endpoint without the production `gh`
@@ -154,7 +95,11 @@ def _gh_shim_source(
     when given, is returned by the SECOND `pr view` call onward instead of
     `head_ref_oid` -- models a force-push landing between
     review-pr-checkout.sh's initial headRefOid fetch and its own re-fetch of
-    it just before the audit runs."""
+    it just before the audit runs. `head_repo_full_name=None` models a
+    deleted-fork PR (REST `head.repo` reads null). `fail_trust_check` exits
+    1 on the trust-check call only; `malformed_trust_check` exits 0 but
+    prints non-JSON, modeling a malformed response distinct from an
+    outright `gh` failure."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -168,6 +113,12 @@ def _gh_shim_source(
         FAIL_PR_VIEW = {fail_pr_view!r}
         FAIL_FILES = {fail_files!r}
         PARTIAL_FILES_THEN_FAIL = {list(partial_files_then_fail or [])!r}
+        AUTHOR_ASSOCIATION = {author_association!r}
+        HEAD_REPO_FULL_NAME = {head_repo_full_name!r}
+        BASE_REPO_FULL_NAME = {base_repo_full_name!r}
+        SAME_AS_REQUEST = {_SAME_AS_REQUEST!r}
+        FAIL_TRUST_CHECK = {fail_trust_check!r}
+        MALFORMED_TRUST_CHECK = {malformed_trust_check!r}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
         if os.path.exists(CALL_LOG):
@@ -192,6 +143,23 @@ def _gh_shim_source(
                 oid = HEAD_REF_OID_SECOND
             if oid:
                 print(oid)
+            sys.exit(0)
+        if args[:1] == ["api"] and len(args) >= 2 and not args[1].endswith("/files"):
+            if FAIL_TRUST_CHECK:
+                sys.exit(1)
+            if MALFORMED_TRUST_CHECK:
+                print("not json")
+                sys.exit(0)
+            path_parts = args[1].split("/")
+            requested_repo = path_parts[1] + "/" + path_parts[2] if len(path_parts) >= 3 else None
+            head_name = requested_repo if HEAD_REPO_FULL_NAME == SAME_AS_REQUEST else HEAD_REPO_FULL_NAME
+            base_name = requested_repo if BASE_REPO_FULL_NAME == SAME_AS_REQUEST else BASE_REPO_FULL_NAME
+            head_repo = {{"full_name": head_name}} if head_name is not None else None
+            print(json.dumps({{
+                "author_association": AUTHOR_ASSOCIATION,
+                "head": {{"repo": head_repo}},
+                "base": {{"repo": {{"full_name": base_name}}}},
+            }}))
             sys.exit(0)
         if args[:1] == ["api"]:
             if PARTIAL_FILES_THEN_FAIL:
@@ -231,15 +199,25 @@ def _run(
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
+    author_association: str = "MEMBER",
+    head_repo_full_name: str | None = _SAME_AS_REQUEST,
+    base_repo_full_name: str | None = _SAME_AS_REQUEST,
+    fail_trust_check: bool = False,
+    malformed_trust_check: bool = False,
     extra_env: dict | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    # A successful checkout writes provenance, which needs a live session
+    # -- seeded unconditionally, harmlessly idempotent for the many tests
+    # here that abort before ever reaching that write.
+    _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
     env = {
         **_shimmed_env(
             tmp_path,
             _gh_shim_source(
                 call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail,
-                head_ref_oid_second,
+                head_ref_oid_second, author_association, head_repo_full_name, base_repo_full_name,
+                fail_trust_check, malformed_trust_check,
             ),
         ),
         "HOME": str(home),
@@ -347,6 +325,232 @@ class TestMissingAuditScript:
         assert _read_calls(call_log) == []
 
 
+class TestTrustClassificationRefuses:
+    """Script exit-code tests with a PATH-shimmed `gh`, not hook-deny tests
+    -- the trust block lives in the script by design (a hook cannot see a
+    subprocess, and cannot verify the audit's own input). Trust
+    classification widens the stop conditions; it never removes one."""
+
+    @pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "NONE"])
+    def test_restricted_author_association_refuses_with_no_fetch_or_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path, author_association
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
+        )
+        assert result.returncode != 0
+        assert "review-pr-diff.sh" in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+        assert not _worktree_dir(repo).exists()
+        # No files pagination either -- the block fires before it.
+        assert not any(c[:1] == ["api"] and c[1].endswith("/files") for c in _read_calls(call_log))
+
+    def test_cross_repo_via_differing_full_name_refuses(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            head_repo_full_name="some-fork/bar", base_repo_full_name=OWNER_REPO,
+        )
+        assert result.returncode != 0
+        assert "review-pr-diff.sh" in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+        assert not _worktree_dir(repo).exists()
+
+    def test_deleted_fork_null_head_repo_refuses(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A null `head.repo` (REST payload) means the PR's fork was
+        deleted -- treated as cross-repo, the more restrictive read on an
+        ambiguous input, never as a pass."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], head_repo_full_name=None,
+        )
+        assert result.returncode != 0
+        assert "review-pr-diff.sh" in result.stderr
+        assert not _worktree_dir(repo).exists()
+
+    @pytest.mark.parametrize("author_association", ["MEMBER", "OWNER"])
+    def test_member_or_owner_author_paired_with_cross_repo_still_refuses(
+        self, isolated_home, repo_with_pr_ref, tmp_path, author_association
+    ):
+        """A MEMBER/OWNER author association must not itself waive the
+        cross-repo check -- otherwise a suite that only checks cross-repo
+        status for non-members would pass, which is the exact
+        standing-gated shape this design rejects."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
+            head_repo_full_name="some-fork/bar", base_repo_full_name=OWNER_REPO,
+        )
+        assert result.returncode != 0
+        assert "review-pr-diff.sh" in result.stderr
+        assert not _worktree_dir(repo).exists()
+
+    def test_member_same_repo_still_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association="MEMBER",
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+
+    def test_trust_block_fires_before_the_paginated_file_list_call(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association="NONE",
+        )
+        assert result.returncode != 0
+        calls = _read_calls(call_log)
+        assert calls, "the trust-check call itself must still have been made"
+        assert calls[0][:1] == ["api"] and not calls[0][1].endswith("/files"), (
+            "the trust-classification call must be the first gh invocation, "
+            "strictly before the paginated files listing"
+        )
+        assert not any(c[1].endswith("/files") for c in calls if c[:1] == ["api"])
+
+    def test_trust_check_gh_failure_aborts_rather_than_falling_through_to_checkout(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A `gh` failure on the trust-check call itself must never be read
+        as 'no restriction found' -- the same "any gh failure aborts"
+        discipline this plan states elsewhere, extended to this call."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], fail_trust_check=True,
+        )
+        assert result.returncode != 0
+        assert not _worktree_dir(repo).exists()
+
+    def test_trust_check_malformed_response_aborts(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A malformed (non-JSON) trust-check response is distinct from an
+        outright `gh` failure -- both must abort, never fall through."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], malformed_trust_check=True,
+        )
+        assert result.returncode != 0
+        assert not _worktree_dir(repo).exists()
+
+
+class TestProvenanceWrite:
+    """review-pr-checkout.sh rewrites this session's provenance file with
+    mode "checkout" after its own independent re-derivation -- never
+    trusting review-pr-acquire.sh's own mode "acquired" write."""
+
+    def test_successful_checkout_writes_checkout_mode_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+        assert provenance.exists()
+        lines = provenance.read_text().splitlines()
+        assert lines[0] == PR_IDENTITY
+        assert lines[1] == pr_sha
+        assert lines[2].isdigit()
+        assert lines[3] == "checkout"
+
+    def test_successful_checkout_then_marker_write_pins_mode_as_last_line_of_both_files(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Pins the shared 4-line schema convention across the two
+        artifacts review-pr-checkout.sh and marker.sh's `write review-pr`
+        arm produce: mode is the LAST positional field in both the
+        provenance file and the completion marker, not merely field index
+        3 -- a future field inserted at either end must not silently break
+        either side's own sed -n '4p' (marker.sh) / lines[-1] read."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        worktree_dir = Path(result.stdout.strip())
+
+        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+        assert provenance.read_text().splitlines()[-1] == "checkout"
+
+        findings_body = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.body"
+        findings_body.write_text(f"**[Claude Code]** # findings\n\n{_ATTRIBUTION_TRAILER}\n")
+
+        marker_env = {"HOME": str(isolated_home)}
+        marker_env.pop("CLAUDE_CONFIG_DIR", None)
+        marker_result = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "review-pr"],
+            cwd=worktree_dir, env=marker_env, capture_output=True, text=True,
+        )
+        assert marker_result.returncode == 0, marker_result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        marker_path = next(marker_dir.iterdir())
+        assert marker_path.read_text().splitlines()[-1] == "checkout"
+
+    def test_refused_trust_class_writes_no_provenance(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association="NONE",
+        )
+        assert result.returncode != 0
+        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+        assert not provenance.exists()
+
+
+class TestInvokedFromALinkedWorktree:
+    def test_worktree_dir_lands_under_the_main_tree_not_the_linked_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """review-pr-checkout.sh must anchor WORKTREE_DIR under the main
+        tree even when the session invoking it is standing in a linked
+        worktree of the same repo, matching review-pr-finish.sh's own
+        independent reconstruction of the identical path -- a divergence
+        here orphans the review worktree on cleanup, since finish.sh's
+        existence guard would check the wrong path."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        linked_worktree = tmp_path / "session-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(linked_worktree), "HEAD"],
+            cwd=repo, check=True,
+        )
+
+        result, call_log = _run(
+            linked_worktree, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+
+        expected_worktree_dir = _worktree_dir(repo)
+        actual_worktree_dir = Path(result.stdout.strip())
+        assert actual_worktree_dir == expected_worktree_dir
+        assert expected_worktree_dir.exists()
+        assert not str(actual_worktree_dir).startswith(str(linked_worktree))
+
+
 class TestAuditCleanProceedsToCheckout:
     def test_clean_audit_fetches_and_checks_out_the_pr_commit(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -369,9 +573,12 @@ class TestAuditCleanProceedsToCheckout:
 
         calls = _read_calls(call_log)
         assert any(c[:2] == ["pr", "view"] for c in calls), "headRefOid must be self-fetched"
-        api_calls = [c for c in calls if c[:1] == ["api"]]
-        assert api_calls, "the file list must be self-fetched"
-        assert "--paginate" in api_calls[0], (
+        # Scoped to the files-listing call specifically, not api_calls[0] --
+        # the trust-classification call is also a `gh api` call and runs
+        # first.
+        files_api_calls = [c for c in calls if c[:1] == ["api"] and c[1].endswith("/files")]
+        assert files_api_calls, "the file list must be self-fetched"
+        assert "--paginate" in files_api_calls[0], (
             "the files listing call must paginate -- a regression dropping "
             "--paginate would silently cap the audited file list at one page"
         )
@@ -679,104 +886,43 @@ class TestSymlinkDetection:
         assert not _worktree_dir(repo).exists()
 
 
-class TestWorktreeLock:
-    """The directory mutex around the worktree add/remove sequence, published
-    via an atomic rename so a waiter never observes a lock directory with no
-    owner file inside it, and its stale-lock reclamation: a lock directory
-    with no live, fresh owner PID inside it is reclaimed rather than waited
-    out, distinguishing a concurrent invocation that is still genuinely
-    running from one a prior run's SIGKILL orphaned."""
+class TestWorktreeReplaceIntegration:
+    """The worktree lock/replace sequence's own concurrency properties
+    (mutual exclusion, automatic release on a SIGKILLed holder, deadline
+    exceeded) are unit-tested directly against review-pr-worktree-
+    replace.py in test_review_pr_worktree_replace.py -- this only pins that
+    review-pr-checkout.sh actually delegates to it and reacts sensibly to a
+    transient contention, rather than re-testing the lock primitive itself
+    through this script's much heavier subprocess-and-gh-shim harness."""
 
-    def test_live_owner_pid_denies_at_the_deadline_and_names_path_and_remedy(
+    def test_transient_lock_contention_is_waited_out_not_treated_as_failure(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS overrides the production 30s
-        wait so this test doesn't itself block for 30s -- the lock's own
-        owner PID is this test process's own pid, alive for the whole test
-        run, so the wait genuinely runs out rather than reclaiming early."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        lock_dir = _lock_dir(repo)
-        lock_dir.mkdir(parents=True)
-        (lock_dir / "owner").write_text(str(os.getpid()))
+        lock_path = Path(f"{_worktree_dir(repo)}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-            extra_env={"REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS": "1"},
+        holder = subprocess.Popen(
+            [
+                sys.executable, "-c",
+                "import fcntl, sys, time\n"
+                "f = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(f, fcntl.LOCK_EX)\n"
+                "print('locked', flush=True)\n"
+                "time.sleep(2)\n",
+                str(lock_path),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
         )
-        assert result.returncode != 0
-        assert str(lock_dir) in result.stderr
-        assert f"rmdir {lock_dir}" in result.stderr
-        assert not _worktree_dir(repo).exists()
-        # The lock itself must survive an unsuccessful wait -- a genuinely
-        # live owner's lock must never be torn down by a losing waiter.
-        assert lock_dir.exists()
-
-    @pytest.mark.timing
-    def test_dead_pid_owner_is_reclaimed_without_waiting_out_the_deadline(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """Distinct from the live-owner case above: a dead owner PID must be
-        reclaimed on sight, not held up against the (here, default 30s)
-        wait deadline -- proven by wall-clock elapsed time, not just a
-        successful outcome, since a regression that fell through to the
-        ordinary wait-then-timeout path would also eventually deny rather
-        than succeed, but only after the full deadline. 25s (not the
-        original tighter bound) tolerates this script's own subprocess-heavy
-        run (two headRefOid fetches, a paginated files fetch, a ref fetch,
-        an audit, a symlink ls-tree, two worktree ops) under CI contention,
-        while still proving reclaim happens well under the 30s wait
-        deadline this test is actually pinning."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        lock_dir = _lock_dir(repo)
-        lock_dir.mkdir(parents=True)
-        (lock_dir / "owner").write_text("99999999")  # outside Linux/macOS max pid range -> always dead
-
-        started = time.monotonic()
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-        )
-        elapsed = time.monotonic() - started
-        assert result.returncode == 0, result.stderr
-        assert elapsed < 25, (
-            f"a dead-PID lock must be reclaimed immediately, not waited out ({elapsed}s elapsed)"
-        )
-        assert Path(result.stdout.strip()) == _worktree_dir(repo)
-        assert not lock_dir.exists(), "the lock must be released again on a successful run"
-
-    @pytest.mark.timing
-    def test_live_pid_owner_with_aged_mtime_is_reclaimed_without_waiting_out_the_deadline(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """Distinct from both cases above: a live owner PID whose owner-file
-        mtime has aged past LOCK_STALE_AGE_MINUTES is reclaimed on sight too,
-        the same as a dead PID -- REVIEW_PR_LOCK_STALE_AGE_MINUTES overrides
-        the production 5-minute ceiling so this test doesn't itself wait 5
-        minutes for the age to pass. Owned by this test process's own PID
-        (alive for the whole test run), so only the aged-mtime branch of the
-        reclaim guard can be what lets this succeed quickly."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        lock_dir = _lock_dir(repo)
-        lock_dir.mkdir(parents=True)
-        owner_file = lock_dir / "owner"
-        owner_file.write_text(str(os.getpid()))
-        aged_time = time.time() - 90  # older than the 1-minute override below
-        os.utime(owner_file, (aged_time, aged_time))
-
-        started = time.monotonic()
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-            extra_env={"REVIEW_PR_LOCK_STALE_AGE_MINUTES": "1"},
-        )
-        elapsed = time.monotonic() - started
-        assert result.returncode == 0, result.stderr
-        assert elapsed < 25, (
-            f"an aged-mtime live-PID lock must be reclaimed immediately, not waited out ({elapsed}s elapsed)"
-        )
-        assert Path(result.stdout.strip()) == _worktree_dir(repo)
-        assert not lock_dir.exists(), "the lock must be released again on a successful run"
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            result, _ = _run(
+                repo, isolated_home, [PR_IDENTITY], tmp_path,
+                head_ref_oid=pr_sha, files=["a.py"],
+            )
+            assert result.returncode == 0, result.stderr
+            assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        finally:
+            holder.wait(timeout=10)

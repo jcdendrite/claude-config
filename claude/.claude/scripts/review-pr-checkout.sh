@@ -18,14 +18,20 @@ usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/review-pr-checkout.sh <owner>/<repo>#<number>
 
-Self-derives every fact the passive-execution audit and the checkout need
-rather than trusting them as arguments. First checks that <owner>/<repo>
-matches this worktree's own origin remote, aborting before any gh call on a
-mismatch. Then fetches the PR's own full, paginated file list and its
-current headRefOid directly from `gh`, re-fetches headRefOid once more to
-catch a force-push landing while the file list was being paginated, pipes
-the file list to audit-execution-surface.py, and only fetches
-refs/pull/<N>/head when the audit returns clean. A stop verdict exits
+Self-derives every fact the trust classification, the passive-execution
+audit, and the checkout need rather than trusting them as arguments. First
+checks that <owner>/<repo> matches this worktree's own origin remote,
+aborting before any gh call on a mismatch. Then fetches this PR's own
+author_association and cross-repo status directly from `gh api
+repos/{owner}/{repo}/pulls/{number}` -- unconditionally, on every
+invocation -- and refuses a FIRST_TIME_CONTRIBUTOR/NONE author or a
+cross-repository PR (including a deleted-fork PR, whose head.repo reads
+null) before any further fetch, naming review-pr-diff.sh as the path to use
+instead. Only past that gate does it fetch the PR's own full, paginated
+file list and its current headRefOid directly from `gh`, re-fetch
+headRefOid once more to catch a force-push landing while the file list was
+being paginated, pipe the file list to audit-execution-surface.py, and only
+fetch refs/pull/<N>/head when the audit returns clean. A stop verdict exits
 non-zero before any fetch of the PR's ref, naming the matched paths and
 reasons on stderr. On a clean audit, asserts the fetched SHA still equals
 the headRefOid this script itself fetched earlier in the same run -- a
@@ -35,8 +41,12 @@ PR's own changed files, for any git-tracked symlink (mode 120000) among
 them, which audit-execution-surface.py's path-only match cannot see, and
 aborts the same way on a hit. A pre-existing symlink elsewhere in the tree
 that this PR does not touch is out of scope. A second run against the same
-PR replaces the prior worktree. Prints the worktree's absolute path on
-stdout as the sole output of a successful run.
+PR replaces the prior worktree. On success, rewrites this session's
+provenance file with mode "checkout" (PR identity, the verified headRefOid,
+this session's Claude PID, the mode) after this script's own independent
+re-derivation -- never trusting review-pr-acquire.sh's own mode "acquired"
+write. Prints the worktree's absolute path on stdout as the sole output of
+a successful run.
 EOF
 }
 
@@ -46,29 +56,19 @@ if [[ $# -ne 1 ]]; then
 fi
 
 PR_IDENTITY="$1"
-# Same <owner>/<repo>#<number> shape and split as review-pr-post.sh's own
-# MARKER_PR_IDENTITY handling, so the two scripts agree on one PR-identity
-# convention.
-PR_NUMBER="${PR_IDENTITY##*#}"
-OWNER_REPO="${PR_IDENTITY%#*}"
-if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-  echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' has no numeric PR number." >&2
-  usage
-  exit 2
-fi
-# Each segment must hold at least one alphanumeric character -- a bare `..`
-# or `.` segment passes a naive [A-Za-z0-9._-]+ class (it's a valid,
-# nonempty run of allowed characters) and turns a `repos/$OWNER_REPO/...`
-# gh api interpolation into a path-traversal shape (e.g. `../..#5` yields
-# `repos/../../pulls/5/files`).
-if [[ ! "$OWNER_REPO" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-  echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' does not name a valid owner/repo." >&2
-  usage
-  exit 2
-fi
 
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
+
+# Same split and validation review-pr-post.sh's own MARKER_PR_IDENTITY
+# handling uses, so the two scripts agree on one PR-identity convention.
+if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$PR_IDENTITY"); then
+  echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' is not a valid <owner>/<repo>#<number>." >&2
+  usage
+  exit 2
+fi
+OWNER_REPO=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '1p')
+PR_NUMBER=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '2p')
 
 CONFIG_DIR=$(_lib_config_dir) || {
   echo "review-pr-checkout.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty). Abort before any fetch." >&2
@@ -116,9 +116,52 @@ fi
 # (stow-packages.sh) -- the same installed path SKILL.md's own Step 2 names
 # literally. Anchoring on $CONFIG_DIR rather than a relative ../../.. guess
 # off this script's own path survives a future scripts/ directory move.
+# Checked before the trust block below (a local misconfiguration, not a gh
+# call) so an uninstalled skill aborts with no network round trip at all.
 AUDIT_SCRIPT="$CONFIG_DIR/skills/review-pr/audit-execution-surface.py"
 if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   echo "review-pr-checkout.sh: audit script not found at $AUDIT_SCRIPT -- the review-pr skill is not installed under this config dir. Abort before any fetch." >&2
+  exit 2
+fi
+
+# Unconditional trust classification, enforced by the script rather than
+# left to the model: a stop the model evaluates in prose is not a stop.
+# This script already
+# self-fetches everything else it refuses on, so the trust class belongs
+# beside them, checked on every invocation -- placed before the headRefOid
+# fetch and the paginated file-list call, so a refused PR never has its
+# file list paginated.
+# authorAssociation is not a `gh pr view --json` field (REFERENCES.md), so
+# this REST call is the only way to get it; it also carries head.repo/
+# base.repo, deriving cross-repo status independently of step 1's own
+# isCrossRepository field rather than trusting that upstream read.
+# Trust classification widens the stop conditions below; it never removes
+# one -- a MEMBER/OWNER author paired with a cross-repository PR still
+# refuses via the cross-repo check further down, regardless of standing.
+GH_PR_TRUST_TIMEOUT_SECONDS=10
+if ! TRUST_JSON=$(_lib_capped_for "$GH_PR_TRUST_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
+  echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's trust-classification data (gh api failed or timed out). Abort before any fetch -- a gh failure here must never be read as 'no restriction found'." >&2
+  exit 2
+fi
+AUTHOR_ASSOCIATION=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.author_association // empty' 2>/dev/null) || AUTHOR_ASSOCIATION=""
+if [[ -z "$AUTHOR_ASSOCIATION" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's trust-classification data carried no author_association (malformed response). Abort before any fetch." >&2
+  exit 2
+fi
+# A null head.repo (the PR's fork was deleted) reads as empty here -- jq
+# indexes a field off `null` as `null`, never an error -- so it falls
+# through to the empty-HEAD_REPO_FULL_NAME branch below and is treated as
+# cross-repo: failing toward the more restrictive path on an ambiguous read.
+HEAD_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.head.repo.full_name // empty' 2>/dev/null) || HEAD_REPO_FULL_NAME=""
+BASE_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.base.repo.full_name // empty' 2>/dev/null) || BASE_REPO_FULL_NAME=""
+case "$AUTHOR_ASSOCIATION" in
+  FIRST_TIME_CONTRIBUTOR | NONE)
+    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's author association is $AUTHOR_ASSOCIATION -- checkout is refused unconditionally for this trust class. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
+    exit 2
+    ;;
+esac
+if [[ -z "$HEAD_REPO_FULL_NAME" || "$HEAD_REPO_FULL_NAME" != "$BASE_REPO_FULL_NAME" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER is cross-repository (head repo '$HEAD_REPO_FULL_NAME' vs base repo '$BASE_REPO_FULL_NAME') -- checkout is refused unconditionally for this trust class, regardless of author standing. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
   exit 2
 fi
 
@@ -273,132 +316,73 @@ if [[ -n "$SYMLINK_ENTRIES" ]]; then
   exit 2
 fi
 
-WORKTREE_DIR="$REPO_ROOT/.claude/worktrees/review-pr-${OWNER_REPO//\//-}-$PR_NUMBER"
-# `git worktree add` below creates WORKTREE_DIR's own leading directories
-# itself, but the lock directory below is a plain `mkdir` (not `mkdir -p`),
-# so its parent must already exist on this repo's very first review-pr run.
+# _lib_main_repo_root, not $REPO_ROOT: review-pr-finish.sh reconstructs
+# WORKTREE_DIR the same way, under the main tree, regardless of which tree
+# this script itself is standing in -- both must derive WORKTREE_DIR
+# identically or a checkout run from a linked worktree orphans its own
+# worktree on cleanup. Every other use of $REPO_ROOT in this script (fetch,
+# ls-tree, remote get-url) is unaffected: those correctly hit the shared
+# object/ref/config store from either tree.
+MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
+  echo "review-pr-checkout.sh: could not resolve this repository's main tree root. Abort with no worktree created." >&2
+  exit 2
+}
+WORKTREE_DIR=$(_lib_review_pr_worktree_dir "$MAIN_REPO_ROOT" "$OWNER_REPO" "$PR_NUMBER")
+# `git worktree add` (inside review-pr-worktree-replace.py below) creates
+# WORKTREE_DIR's own leading directories itself, but the lock file lives
+# alongside it and needs its own parent directory to exist beforehand, on
+# this repo's very first review-pr run.
 mkdir -p -- "$(dirname "$WORKTREE_DIR")"
 
-# Serializes concurrent invocations against the same PR through the whole
-# check/remove/add sequence below, so one invocation's `worktree remove`
-# can never delete a directory the other has already started reading from.
-# Keyed to WORKTREE_DIR (unique per owner/repo/PR-number), so a concurrent
-# run against a DIFFERENT PR never blocks on this one. Directory-mutex,
-# published via the atomic rename below -- rather than flock(1), which
-# stock macOS does not ship.
-# LOCK_WAIT_DEADLINE_SECONDS bounds how long a second invocation blocks
-# before giving up, rather than waiting forever behind a lock a crashed
-# prior run never released.
-LOCK_DIR="$WORKTREE_DIR.lock"
-# Overridable for tests exercising the deadline-exceeded path without a real
-# 30s wait; malformed (empty, non-digit, zero, zero-padded, or 9+ digits)
-# falls back to the production default, same guard shape as marker.sh's
-# CODE_REVIEW_CHECK_MAX_AGE_SECONDS.
-case "${REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS:-}" in
-  ''|0|*[!0-9]*|0[0-9]*|?????????*) LOCK_WAIT_DEADLINE_SECONDS=30 ;;
-  *) LOCK_WAIT_DEADLINE_SECONDS="$REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS" ;;
-esac
-# A lock whose owner PID is dead, or whose owner file has aged past this many
-# minutes, is reclaimed rather than waited out: this script's own internal
-# timeouts (two headRefOid fetches, the paginated files fetch, the ref
-# fetch, the symlink ls-tree, and up to two worktree ops) sum to under 170s
-# in the worst case, so a lock still held after 5 minutes almost certainly
-# outlived a SIGKILLed prior run, not a slow-but-alive one. Overridable for
-# tests exercising the aged-live-PID reclaim path without a real 5-minute
-# wait; same malformed-value-fallback guard shape as
-# LOCK_WAIT_DEADLINE_SECONDS above.
-case "${REVIEW_PR_LOCK_STALE_AGE_MINUTES:-}" in
-  ''|0|*[!0-9]*|0[0-9]*|?????????*) LOCK_STALE_AGE_MINUTES=5 ;;
-  *) LOCK_STALE_AGE_MINUTES="$REVIEW_PR_LOCK_STALE_AGE_MINUTES" ;;
-esac
-LOCK_DEADLINE=$(( $(date +%s) + LOCK_WAIT_DEADLINE_SECONDS ))
-LOCK_ACQUIRED=""
-until [[ -n "$LOCK_ACQUIRED" ]]; do
-  # Atomic acquisition: stage the owner-PID file inside a mktemp -d sibling
-  # (same parent directory as LOCK_DIR, so the publish step below stays on
-  # one filesystem), then publish it onto LOCK_DIR's own path via a single
-  # os.rename(2) call. rename(2) fails outright (ENOTEMPTY) when LOCK_DIR
-  # already exists and is non-empty, unlike a plain `mv` onto an existing
-  # directory, which would nest the staged directory inside it instead of
-  # failing. A bare `mkdir "$LOCK_DIR"` followed by a separate `printf >
-  # owner` (the prior shape here) left a window where a waiter could read
-  # an empty or missing owner file and misjudge a lock that is
-  # mid-acquisition as orphaned.
-  STAGED_LOCK_DIR=$(mktemp -d "$WORKTREE_DIR.lock.XXXXXX" 2>/dev/null) || STAGED_LOCK_DIR=""
-  if [[ -n "$STAGED_LOCK_DIR" ]]; then
-    printf '%s' "$$" > "$STAGED_LOCK_DIR/owner"
-    if _lib_capped python3 -c '
-import os, sys
-try:
-    os.rename(sys.argv[1], sys.argv[2])
-except OSError:
-    sys.exit(1)
-' "$STAGED_LOCK_DIR" "$LOCK_DIR" 2>/dev/null; then
-      LOCK_ACQUIRED=1
-    else
-      rm -rf -- "$STAGED_LOCK_DIR" 2>/dev/null
-    fi
-  fi
-  if [[ -z "$LOCK_ACQUIRED" ]]; then
-    # Same two-part liveness test _lib_active_bypass_marker_live applies to
-    # its own markers (dead PID, or a live PID whose marker has aged out) --
-    # not that function itself, since a directory-based mutex with a PID
-    # file inside it is a different marker shape than its single-file
-    # session markers.
-    LOCK_OWNER_PID=$(_lib_capped cat "$LOCK_DIR/owner" 2>/dev/null | _lib_capped tr -d '[:space:]') || LOCK_OWNER_PID=""
-    if ! { [[ "$LOCK_OWNER_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_OWNER_PID" 2>/dev/null \
-      && [[ -n "$(_lib_capped find "$LOCK_DIR/owner" -mmin -"$LOCK_STALE_AGE_MINUTES" 2>/dev/null)" ]]; }; then
-      # Dead PID, or aged past the ceiling above -- reclaim rather than wait
-      # out the full deadline. Falls through to the deadline check and sleep
-      # below rather than looping back immediately: an `rm -rf` that keeps
-      # failing (e.g. a permissions issue) must still hit the deadline
-      # instead of spinning with no sleep.
-      rm -rf -- "$LOCK_DIR" 2>/dev/null
-    fi
-    if [[ "$(date +%s)" -ge "$LOCK_DEADLINE" ]]; then
-      echo "review-pr-checkout.sh: could not acquire the worktree lock at $LOCK_DIR within ${LOCK_WAIT_DEADLINE_SECONDS}s -- a concurrent invocation against the same PR may still be running. If it is not, remove the lock with: rmdir $LOCK_DIR. Abort." >&2
-      exit 2
-    fi
-    sleep 0.2
-  fi
-done
-# Re-reads $LOCK_DIR/owner rather than trusting this process still owns it:
-# a lock robbed by a waiter that misjudged it stale (a narrow race this
-# process cannot itself prevent) must never have its rightful new owner's
-# live lock torn down by this process's own stale cleanup.
-trap '[[ "$(_lib_capped cat "$LOCK_DIR/owner" 2>/dev/null)" == "$$" ]] && { rm -f "$LOCK_DIR/owner" 2>/dev/null; rmdir "$LOCK_DIR" 2>/dev/null; }' EXIT
-
-# A second run against the same PR replaces the prior worktree rather than
-# erroring on an existing path (SKILL.md's own rerun policy). `worktree
-# remove --force` alone can fail on a not-quite-clean prior worktree, so the
-# directory removal plus a prune is the fallback rather than leaving a
-# half-torn-down worktree behind.
-#
-# 30s, matching this script's own network-fetch budget above: a checkout/
-# teardown's cost scales with tree size, the same as a fetch, not with a
-# local index read (_lib_capped's 5s default).
-WORKTREE_OP_TIMEOUT_SECONDS=30
-if [[ -e "$WORKTREE_DIR" ]]; then
-  if ! _lib_capped_for "$WORKTREE_OP_TIMEOUT_SECONDS" git -C "$REPO_ROOT" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1; then
-    rm -rf -- "$WORKTREE_DIR"
-  fi
-fi
-# Unconditional, not only inside the `[[ -e ]]` branch above: per
-# git-worktree(1), a prior run's directory can be removed (by this script,
-# or by hand) while its .git/worktrees/<id> metadata survives, which makes
-# `[[ -e "$WORKTREE_DIR" ]]` false and would otherwise skip the prune that
-# clears it -- the subsequent un-forced `worktree add` then fails
-# deterministically against that stale metadata.
-_lib_capped git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1 || true
-
-# --detach: no branch name, so this worktree is invisible to
-# cleanup-idle-open-pr-worktrees.sh, which classifies reclaim candidates by
-# matching a branch name to an open PR. Accepted gap -- a dedicated reclaim
-# mechanism for detached review-pr worktrees is a larger follow-up, out of
-# scope here.
-if ! _lib_capped_for "$WORKTREE_OP_TIMEOUT_SECONDS" git -C "$REPO_ROOT" worktree add --detach "$WORKTREE_DIR" "$FETCHED_SHA" >/dev/null 2>&1; then
-  echo "review-pr-checkout.sh: git worktree add failed for $WORKTREE_DIR at $FETCHED_SHA. Abort." >&2
+# Resolved before the worktree-replace call below so SESSION_ID can be
+# passed into review-pr-worktree-replace.py, which writes the
+# WORKTREE_DIR.owner ownership sidecar itself, inside its own locked
+# section -- atomic with the worktree creation itself. See that script's
+# own header for why a caller-side write of that sidecar after the lock is
+# released is unsafe.
+SESSION_AND_PID=$(_lib_resolve_claude_pid) || {
+  echo "review-pr-checkout.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run) -- cannot record provenance or ownership. Abort before creating a worktree." >&2
+  exit 2
+}
+SESSION_ID="${SESSION_AND_PID%% *}"
+CLAUDE_PID="${SESSION_AND_PID##* }"
+if ! _lib_valid_session_id_component "$SESSION_ID"; then
+  echo "review-pr-checkout.sh: resolved session id '$SESSION_ID' is not a valid path component -- cannot record provenance or ownership. Abort before creating a worktree." >&2
   exit 2
 fi
 
-printf '%s\n' "$WORKTREE_DIR"
+# Serializes concurrent invocations against the same PR through the whole
+# remove/prune/add sequence, so one invocation's `worktree remove` can never
+# delete a directory the other has already started reading from. Keyed to
+# WORKTREE_DIR (unique per owner/repo/PR-number), so a concurrent run
+# against a DIFFERENT PR never blocks on this one. review-pr-worktree-
+# replace.py holds an fcntl.flock on WORKTREE_DIR.lock for the sequence's
+# whole duration, which releases automatically on process exit (including
+# SIGKILL), so a crashed holder is never observed as still holding it.
+# 210s sizes the wait deadline to the locked section's own worst-case hold
+# time under the lock, not to crash recovery: 7 git/rm calls x 30s
+# (_review_pr_worktree.py's GIT_OP_TIMEOUT_SECONDS), covering the rollback
+# path's second remove_worktree call alongside the base sequence's own. A
+# waiter that times out is behind a legitimately slow, still-alive holder.
+WORKTREE_REPLACE_SCRIPT="$(dirname "$0")/review-pr-worktree-replace.py"
+WORKTREE_REPLACE_LOCK_WAIT_DEADLINE_SECONDS=210
+WORKTREE_DIR_OUTPUT=$(python3 "$WORKTREE_REPLACE_SCRIPT" "$MAIN_REPO_ROOT" "$WORKTREE_DIR" "$FETCHED_SHA" "$SESSION_ID" "$WORKTREE_REPLACE_LOCK_WAIT_DEADLINE_SECONDS") || WORKTREE_DIR_OUTPUT=""
+if [[ -z "$WORKTREE_DIR_OUTPUT" ]]; then
+  echo "review-pr-checkout.sh: could not replace the review worktree at $WORKTREE_DIR (lock contention, a git worktree operation failed, or the ownership sidecar could not be written -- see review-pr-worktree-replace.py's own message above). Abort." >&2
+  exit 2
+fi
+
+# Provenance write: rewrite this session's provenance file with mode
+# "checkout" after this script's own independent re-derivation of PR
+# identity and headRefOid -- never trusting
+# review-pr-acquire.sh's own mode "acquired" write. marker.sh write
+# review-pr reads this sibling file; an acquire-only session (mode still
+# "acquired") can never write a completion marker.
+PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
+mkdir -p -- "$(dirname "$PROVENANCE")"
+if ! printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$CLAUDE_PID" "checkout" | _lib_write_no_follow "$PROVENANCE"; then
+  echo "review-pr-checkout.sh: could not write provenance file $PROVENANCE -- cannot record this checkout. The worktree above was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
+  exit 2
+fi
+
+printf '%s\n' "$WORKTREE_DIR_OUTPUT"

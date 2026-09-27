@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Mechanical secret scan over /review-pr's findings-body file, run before
-# Step 9 posts it. SKILL.md Step 8's "scrub any secret value" instruction is
-# prose the model composes the body under, not a tool-call argument, so
-# deny-private-project-refs.sh (which fires on tool calls) never sees it --
-# this closes that gap with a grep, not a model re-read.
+# the deliver step posts it. SKILL.md's synthesize-and-record step's own
+# "scrub any secret value" instruction is prose the model composes the body
+# under, not a tool-call argument, so deny-private-project-refs.sh (which
+# fires on tool calls) never sees it -- this closes that gap with a grep,
+# not a model re-read.
 # Not a general-purpose scanner: reuses _LIB_CREDENTIAL_VALUE_REGEX
 # (_lib.sh), the same credential-shape check deny-pii-in-commits.sh and
 # redact-credential-values.sh already use, so a hit here is a shape those
@@ -34,6 +35,11 @@ if [[ ! -r "$FINDINGS_BODY_PATH" ]]; then
   echo "review-pr-scan-findings-body.sh: cannot read $FINDINGS_BODY_PATH." >&2
   exit 2
 fi
+
+# grep below follows a symlink at this path, not O_NOFOLLOW: marker.sh's
+# `write review-pr` arm runs _lib_sha256_no_follow against this same path
+# after this scan and refuses the whole write on a symlinked target, so
+# that downstream hash check is what actually closes the symlink-follow gap.
 
 # -n prints the line number, not the match itself -- the deny message below
 # names where the hit is, so the finding can be located and scrubbed
