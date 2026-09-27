@@ -1,4 +1,4 @@
-"""Tests for evals/review_bench/runner.py (dispatch 1b). Offline throughout:
+"""Tests for evals/review_bench/runner.py. Offline throughout:
 every per-run validity check is driven by synthetic subagent transcripts
 under evals/fixtures/review-bench/, in the JSONL sidecar shape
 test_measure_subagent_model_resolution.py's own helpers write. No test
@@ -201,7 +201,7 @@ class TestObservedModelCheck:
 
     def test_applies_the_same_way_under_a_judge_model_id(self, tmp_path: Path) -> None:
         """The same check, under the judge's own frozen ID in place of the
-        reviewer's -- dispatch 1c's judge runs reuse this unchanged."""
+        reviewer's -- the judge runs reuse this unchanged."""
         scenario = _load_scenario(tmp_path, "normal-success")  # observed model is claude-sonnet-5
         result = _evaluate(scenario, agent_declared_tools=DECLARED_TOOLS)
         session_jsonl = scenario / "session-1.jsonl"
@@ -612,6 +612,40 @@ class TestEnvironmentDriftReruns:
         )
         assert len(result.records) == 1
         assert result.records[0].ambient_config_commit == "sha2"
+
+    def test_block_raises_after_max_retries_against_a_persistently_flapping_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _patch_inner_prompt_to_match_build_review_prompt(scenario, "fix: bug")
+        spec = runner.DefectFixtureSpec(
+            defect_id="d1", subject="fix: bug", arm_fixture_dirs={"current-rule": scenario},
+            arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
+            live_checkout_roots=(), changed_relpaths=("changed_file.py",),
+        )
+        # Every reading differs from the last -- an environment that never
+        # stabilizes, unlike the drift-then-stabilize sequence above.
+        shas = (f"sha{i}" for i in range(1, 100))
+        monkeypatch.setattr(
+            runner, "read_environment_record", lambda **_kw: runner.EnvironmentRecord("v1", next(shas), False),
+        )
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl")
+
+        with pytest.raises(runner.EnvironmentDriftExceededError) as excinfo:
+            runner.run_defect_block(
+                spec, arms=("current-rule",), k=1, seed=1, campaign_id="c1",
+                launch=lambda cmd, cwd, timeout_s: ([], False), workers=1,
+            )
+
+        # The two retried iterations' drift prints to stderr. The final,
+        # fatal iteration's drift -- the one that actually triggered the
+        # failure -- is folded into the exception's own message instead.
+        stderr = capsys.readouterr().err
+        assert stderr.count("block drifted during its run") == runner.MAX_ENVIRONMENT_DRIFT_RETRIES
+        assert stderr.count("ambient_config_commit") == runner.MAX_ENVIRONMENT_DRIFT_RETRIES
+        assert "ambient_config_commit" in str(excinfo.value)
+        assert "cli_version" in str(excinfo.value)
+        assert "dirty" in str(excinfo.value)
 
 
 class TestBlockCleanupOrdering:

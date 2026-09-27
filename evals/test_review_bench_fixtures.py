@@ -1,9 +1,11 @@
-"""Tests for evals/review_bench/fixture_repo.py and evals/review_bench/arms.py
-(dispatch 1b). Offline throughout: every fixture_repo test builds a
-throwaway two-commit tmp_path git repo as its source_repo (the same pattern
-test_review_bench_mining.py's own git-repo helpers use); every arms test
-renders from a synthetic production agent file under tmp_path, never a
-real claude/.claude/agents/*.md. No test launches `claude`.
+"""Tests for evals/review_bench/fixture_repo.py and evals/review_bench/arms.py.
+Offline throughout: every fixture_repo test builds a throwaway two-commit
+tmp_path git repo as its source_repo (the same pattern
+test_review_bench_mining.py's own git-repo helpers use); most arms tests
+render from a synthetic production agent file under tmp_path. The
+TestRenderArmAgentAgainstRealProductionAgentFiles contract test is the one
+exception, rendering from the real claude/.claude/agents/*.md files
+instead. No test launches `claude`.
 """
 from __future__ import annotations
 
@@ -265,6 +267,21 @@ class TestRenderArmAgent:
 
         with pytest.raises(arms.ArmSnapshotError):
             arms.render_arm_agent(arms.ARM_CURRENT_RULE, _LENS, agents_dir=agents_dir)
+
+
+class TestRenderArmAgentAgainstRealProductionAgentFiles:
+    """Contract test: every other TestRenderArmAgent case above renders from
+    a synthetic stand-in, so none of them would notice a wording edit to a
+    real claude/.claude/agents/*.md file breaking LENS_READ_CLAUSES's exact-
+    match assumption. This is the only test exercising the real files."""
+
+    @pytest.mark.parametrize("lens", sorted(arms.LENS_READ_CLAUSES))
+    def test_current_rule_arm_renders_from_the_real_production_agent_file(self, lens: str) -> None:
+        arms.render_arm_agent(arms.ARM_CURRENT_RULE, lens)
+
+    @pytest.mark.parametrize("lens", sorted(arms.LENS_READ_CLAUSES))
+    def test_function_context_arm_renders_from_the_real_production_agent_file(self, lens: str) -> None:
+        arms.render_arm_agent(arms.ARM_FUNCTION_CONTEXT, lens)
 
 
 class TestSnapshotArmAndInstallArm:

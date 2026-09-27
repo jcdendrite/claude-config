@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A-bench CLI: `mine-szz`, `mine-rounds`, `confirm` for evals/review_bench's
 known-defect set; `snapshot-arms`, `smoke`, and `run` for its fixture and
-runner harness (dispatch 1b); `judge`, `spot-check export|import`,
-`analyze`, and `freeze` for its adjudication and analysis (dispatch 1c).
+runner harness; `judge`, `spot-check export|import`, `analyze`, and `freeze`
+for its adjudication and analysis.
 
 LOCAL USE ONLY -- never run in CI. `mine-rounds` reads this account's own
 session transcripts; `mine-szz` and `confirm` read this repo's own git
@@ -14,9 +14,9 @@ auth.
 
 See .claude/plans/measure-review-quality.md's Approach > Defect set for the
 mining algorithms, Approach > "Fixtures and arms" and "Runs and
-adjudication" for the runner and judge design, Approach > "Analysis, margin,
-and minimum set size" and "Freeze and invalidation" for `analyze`/`freeze`,
-and Critical files' Dispatch 1a/1b/1c sections for this CLI's spec.
+adjudication" for the runner and judge design, and Approach > "Analysis,
+margin, and minimum set size" and "Freeze and invalidation" for
+`analyze`/`freeze`.
 """
 from __future__ import annotations
 
@@ -67,8 +67,8 @@ def cmd_mine_szz(args: argparse.Namespace) -> int:
 
 def cmd_mine_rounds(args: argparse.Namespace) -> int:
     # Lazy import: transcript_analysis is a large module tree with no
-    # bearing on the frozen harness constants, so it must stay out of M9's
-    # content-hash import closure (Critical files, Dispatch 1a).
+    # bearing on the frozen harness constants, so it must stay out of their
+    # content-hash import closure.
     from review_bench import defects, mine_review_rounds
 
     candidates = mine_review_rounds.mine(REPO_ROOT)
@@ -88,7 +88,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     defects.assert_unique_ids(candidates, miner="confirm")
 
     # Checked against every candidate's excerpt, not only the one a given
-    # description confirms -- the drafting session saw the whole shortlist (M12).
+    # description confirms -- the drafting session saw the whole shortlist.
     excerpts_by_id = {c.id: c.excerpt for c in candidates if c.excerpt}
 
     defects_path = Path(args.defects_path)
@@ -115,8 +115,8 @@ def cmd_confirm(args: argparse.Namespace) -> int:
 
         violation = defects.check_description_provenance(candidate.description, public_text, excerpts_by_id)
         if violation is not None:
-            # No other excerpt text ever reaches the terminal here (row 41) --
-            # only the candidate ID, the matched run, and its source candidate ID.
+            # No other excerpt text ever reaches the terminal here -- only
+            # the candidate ID, the matched run, and its source candidate ID.
             print(
                 f"confirm: rejected {candidate.id} -- description shares the word run "
                 f"{violation.shared_run!r} with candidate {violation.source_candidate_id}'s excerpt",
@@ -136,6 +136,11 @@ def cmd_confirm(args: argparse.Namespace) -> int:
             print(f"confirm: rejected {candidate.id} -- {exc}", file=sys.stderr)
             rejected += 1
             continue
+        # id is printed alongside description so the engineer's last look
+        # before promotion covers both. id is machine-generated, unlike
+        # description, which the engineer authors. Nothing else in this flow
+        # puts id's content in front of a human before it's committed.
+        print(f"confirm: promoting {defect.id} -- {defect.description!r}", file=sys.stderr)
         appended.append(defect)
 
     # No override: a rejected entry is never written, on this or any later run,
@@ -182,7 +187,7 @@ def _load_defects_for_run(args: argparse.Namespace) -> list:
 
 def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
     import run_skill_evals
-    from review_bench import runner
+    from review_bench import analysis, runner
 
     if args.k is None:
         args.k = runner.DEFAULT_K
@@ -211,16 +216,35 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
             arms_snapshot_root=Path(args.arms_root), run_store=run_store,
         )
 
-    result = runner.run_campaign(
-        [d.id for d in selected], build_spec=build_spec,
-        arms=(runner.arms_mod.ARM_CURRENT_RULE, runner.arms_mod.ARM_FUNCTION_CONTEXT),
-        k=args.k, seed=args.seed, campaign_id=campaign_id, run_store=run_store,
-        records_path=records_path, projects_root=runner.config_dir() / "projects",
-        fault=fault, workers=args.workers,
-    )
-    total = sum(len(block.records) for block in result.block_results.values())
+    try:
+        result = runner.run_campaign(
+            [d.id for d in selected], build_spec=build_spec,
+            arms=(runner.arms_mod.ARM_CURRENT_RULE, runner.arms_mod.ARM_FUNCTION_CONTEXT),
+            k=args.k, seed=args.seed, campaign_id=campaign_id, run_store=run_store,
+            records_path=records_path, projects_root=runner.config_dir() / "projects",
+            fault=fault, workers=args.workers,
+        )
+    except runner.EnvironmentDriftExceededError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    all_records = [record for block in result.block_results.values() for record in block.records]
+    total = len(all_records)
     print(
         f"{args.subcommand}: campaign {campaign_id} ran {total} run(s) across {len(result.block_results)} defect(s)",
+        file=sys.stderr,
+    )
+    # The raw path is terminal-only, for the engineer's own review (Approach
+    # > "Out-of-session reads"); the committed --out report from `analyze`
+    # carries only the per-arm count, never a path.
+    for record in all_records:
+        for path in record.out_of_session_paths:
+            print(
+                f"{args.subcommand}: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}",
+                file=sys.stderr,
+            )
+    print(
+        f"{args.subcommand}: out-of-session read counts per arm = "
+        f"{analysis.out_of_session_counts_by_arm(all_records)}",
         file=sys.stderr,
     )
     return 0
@@ -235,7 +259,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         # only resolved to its default inside _run_or_smoke above. Passed by
         # hand to `freeze --last-smoke-manifest-hash` rather than read back
         # from a state file, since a smoke campaign's pass/fail judgment
-        # itself is the engineer's own manual gate (Verification gate 6).
+        # itself is the engineer's own manual gate.
         from review_bench import analysis
 
         manifest_hash = analysis.closure_manifest_hash(analysis.compute_harness_closure())
@@ -280,6 +304,11 @@ def cmd_judge(args: argparse.Namespace) -> int:
     run_store = runner.RunStore(_resolve_judge_run_store_dir(args.judge_run_store_dir, campaign_id))
     judge_records_path = Path(args.judge_records_dir) / f"{campaign_id}.jsonl"
     live_checkout_roots = runner.default_live_checkout_roots()
+
+    # Printed before acquire_lock, not only in the final success message, so
+    # an operator who omitted --campaign-id still has a stderr line naming
+    # the auto-generated ID to resume with after a mid-run crash.
+    print(f"judge: campaign {campaign_id} -- run store at {run_store.store_dir}", file=sys.stderr)
 
     run_store.acquire_lock()
     try:
@@ -449,7 +478,7 @@ def cmd_spot_check_import(args: argparse.Namespace) -> int:
     kappa_by_kind = adjudicate.score_spot_check(sample, human_labels)
     for kind in sorted(kappa_by_kind):
         kappa = kappa_by_kind[kind]
-        validated = "validated" if kappa >= analysis.KAPPA_SUBSTANTIAL_FLOOR else "NOT validated (see row 23's floor)"
+        validated = "validated" if kappa >= analysis.KAPPA_SUBSTANTIAL_FLOOR else "NOT validated (below KAPPA_SUBSTANTIAL_FLOOR)"
         print(f"spot-check import: {kind} kappa = {kappa:.3f} -- {validated}", file=sys.stderr)
 
     agreement_by_arm = adjudicate.split_agreement_by_arm(sample, human_labels)
@@ -530,7 +559,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     if args.baseline_conditions_path is None:
         verdict, interval = analysis.baseline_sensitivity_verdict(recall_counts, kept_ids, baseline_arm, other_arm)
-        print(f"analyze: baseline sensitivity = {verdict} (M1 interval {interval})", file=sys.stderr)
+        print(f"analyze: baseline sensitivity = {verdict} (interval {interval})", file=sys.stderr)
     else:
         recall_verdict, recall_interval = analysis.recall_noninferiority_verdict(
             recall_counts, kept_ids, baseline_arm, other_arm,
@@ -549,7 +578,12 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         f"analyze: missing runs by reason per arm = {analysis.missing_run_counts_by_reason(reviewer_records)}",
         file=sys.stderr,
     )
-    # Counts only, never the paths themselves (Approach > "Out-of-session reads").
+    # The raw path is terminal-only, for the engineer's own review (Approach
+    # > "Out-of-session reads"); the committed --out report below carries
+    # only the per-arm count, never a path.
+    for record in reviewer_records:
+        for path in record.out_of_session_paths:
+            print(f"analyze: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
     print(
         f"analyze: out-of-session read counts per arm = {analysis.out_of_session_counts_by_arm(reviewer_records)}",
         file=sys.stderr,
@@ -557,6 +591,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     # judge_records' own `arm` field holds JUDGE_ARM_RECALL/JUDGE_ARM_PRECISION, not a reviewer
     # arm, but out_of_session_counts_by_arm keys generically off `record.arm` (Approach >
     # "Out-of-session reads").
+    for record in judge_records:
+        for path in record.out_of_session_paths:
+            print(f"analyze: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
     print(
         f"analyze: out-of-session read counts per judge kind = {analysis.out_of_session_counts_by_arm(judge_records)}",
         file=sys.stderr,
@@ -639,6 +676,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         "planning_variance": analysis.planning_variance(args.k),
         "bootstrap_resamples": analysis.BOOTSTRAP_RESAMPLES,
         "bootstrap_seed": analysis.BOOTSTRAP_SEED,
+        "campaign_seed": args.campaign_seed,
         "kappa_floor": analysis.KAPPA_SUBSTANTIAL_FLOOR,
         "missing_run_retry_rule": "a failed run is retried once; a run that fails twice is recorded missing",
         "later_arm_gate": "non-inferiority at delta on recall and on pooled precision; both required",
@@ -708,7 +746,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_szz.set_defaults(func=cmd_mine_szz)
 
     # No scope flag: this miner is always scoped to this repo's own worktrees
-    # on exactly one config-dir root (Critical files, Dispatch 1a).
+    # on exactly one config-dir root.
     p_rounds = sub.add_parser(
         "mine-rounds",
         help="Mine later-review-round candidates from this account's own session transcripts.",
@@ -726,14 +764,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_snapshot = sub.add_parser(
         "snapshot-arms",
-        help="Render both arms' bench-<lens>.md files from production at the freeze commit (PR 2).",
+        help="Render both arms' bench-<lens>.md files from production at the freeze commit.",
     )
     p_snapshot.add_argument("--arms-root", default=str(DEFAULT_ARMS_ROOT), help="Where to write <arm>/bench-<lens>.md.")
     p_snapshot.set_defaults(func=cmd_snapshot_arms)
 
     p_smoke = sub.add_parser(
         "smoke",
-        help="Fault-injectable dry-run campaign against the real CLI (gate 6) -- never the baseline campaign.",
+        help="Fault-injectable dry-run campaign against the real CLI -- never the baseline campaign.",
     )
     _add_campaign_args(p_smoke)
     p_smoke.add_argument(
@@ -815,11 +853,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--out", default=None, help="Optional path to write the machine-readable report JSON.")
     p_analyze.set_defaults(func=cmd_analyze)
 
-    p_freeze = sub.add_parser("freeze", help="Write evals/review_bench/conditions.json (PR 2, run once).")
+    p_freeze = sub.add_parser("freeze", help="Write evals/review_bench/conditions.json (run once, before any baseline campaign).")
     p_freeze.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
     p_freeze.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")
     p_freeze.add_argument("--arms-root", default=str(DEFAULT_ARMS_ROOT), help="Root holding <arm>/bench-<lens>.md snapshots.")
     p_freeze.add_argument("--k", type=int, required=True, help="K being frozen.")
+    p_freeze.add_argument(
+        "--campaign-seed", type=int, required=True,
+        help="The --seed the baseline run/smoke campaign used for its per-defect block shuffle.",
+    )
     p_freeze.add_argument(
         "--last-smoke-manifest-hash", required=True,
         help="The manifest hash `smoke` printed on its last passing campaign (Approach > 'Freeze preconditions').",

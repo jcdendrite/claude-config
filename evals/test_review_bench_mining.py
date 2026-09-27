@@ -1,5 +1,5 @@
 """Tests for evals/review_bench's defect schema, miners, and confirmation
-CLI (dispatch 1a). Offline throughout: mine_szz and mine_review_rounds
+CLI. Offline throughout: mine_szz and mine_review_rounds
 fixtures are real tmp-path git repos (a local bare repo standing in for
 `origin` where a PR-head fetch is exercised) and synthetic transcript
 JSONL. No test launches `claude`.
@@ -724,6 +724,34 @@ class TestMineReviewRoundsCandidates:
         assert candidates[0].evidence["path"] == f"{self._CITED_PATH}:12"
         assert candidates[0].source == "review-round"
 
+    def test_candidate_id_never_embeds_the_raw_branch_name(self, tmp_path, monkeypatch):
+        """A branch name is this account's own text and can carry a private
+        codename, unlike mine_szz.py's SZZ-sourced ids, which embed only
+        already-public commit SHAs. id must carry a content-free fingerprint
+        of the branch instead of the branch itself."""
+        branch = "acme-super-secret-project"
+        self._build_session(tmp_path, branch=branch)
+        candidates = self._mine(tmp_path, monkeypatch)
+        assert len(candidates) == 1
+        assert branch not in candidates[0].id
+        fingerprint = mine_review_rounds._branch_fingerprint(branch)
+        assert candidates[0].id.startswith(f"review-round:{fingerprint}:")
+
+    def test_mine_run_twice_against_the_same_corpus_yields_the_same_candidate_id(self, tmp_path, monkeypatch):
+        """confirm's re-run idempotency and defects.assert_unique_ids's
+        collision guard both depend on _branch_fingerprint being stable
+        across calls, not just within one mine() invocation.
+
+        Both mine() calls run in this same process, so this only catches a
+        per-call random-salt regression in _branch_fingerprint, not a
+        per-process-cached salt that would look deterministic here but not
+        across two separate CLI invocations."""
+        self._build_session(tmp_path)
+        first_run = self._mine(tmp_path, monkeypatch)
+        second_run = self._mine(tmp_path, monkeypatch)
+        assert first_run
+        assert [candidate.id for candidate in first_run] == [candidate.id for candidate in second_run]
+
     def test_citation_of_a_path_outside_earlier_scope_yields_no_candidate(self, tmp_path, monkeypatch):
         self._build_session(tmp_path, finding_text="Reviewer finding: /repo/unrelated.py:9 has a bug.")
         candidates = self._mine(tmp_path, monkeypatch)
@@ -854,6 +882,30 @@ class TestConfirmCli:
         assert "src-1" in captured.err
         assert "reviewer found that" not in captured.err  # no other excerpt text leaks
         assert defects.load_confirmed_defects(defects_path) == []
+
+    def test_confirm_prints_the_promoted_id_alongside_its_description(self, tmp_path, monkeypatch, capsys):
+        """A confirmed id is machine-generated (unlike description, which the
+        engineer authors), so this is the engineer's last look at it before
+        it lands in the committed defects.json -- required for a
+        review-round-sourced id, whose content nothing else in this flow
+        puts in front of a human."""
+        repo, introducing_sha, fix_sha = self._repo_with_two_commits(tmp_path)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
+
+        local_dir = tmp_path / "local"
+        candidate = Candidate(**_candidate_kwargs(
+            id="c-1", base_commit=introducing_sha, head_commit=introducing_sha, fix_commit=fix_sha,
+            description="x was left at its stale initial value.",
+        ))
+        defects.save_candidates(local_dir / "szz_candidates.json", [candidate])
+        defects_path = tmp_path / "defects.json"
+        args = _confirm_args(local_dir, defects_path)
+
+        run_review_bench.cmd_confirm(args)
+
+        stderr = capsys.readouterr().err
+        assert "c-1" in stderr
+        assert "x was left at its stale initial value." in stderr
 
     def test_confirm_appends_passing_candidate_and_is_idempotent_on_rerun(self, tmp_path, monkeypatch):
         repo, introducing_sha, fix_sha = self._repo_with_two_commits(tmp_path)

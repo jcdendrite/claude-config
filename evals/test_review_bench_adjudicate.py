@@ -1,7 +1,6 @@
-"""Tests for evals/review_bench/adjudicate.py (dispatch 1c). Offline
-throughout: every judge-input and parser test works from synthetic
-findings/run-record text, never a real judge answer. No test launches
-`claude`.
+"""Tests for evals/review_bench/adjudicate.py. Offline throughout: every
+judge-input and parser test works from synthetic findings/run-record text,
+never a real judge answer. No test launches `claude`.
 """
 from __future__ import annotations
 

@@ -56,7 +56,11 @@ CLAUDE_TESTS_DIR = "claude/.claude/tests"
 REVIEW_BENCH_DIR = "evals/review_bench"
 REVIEW_BENCH_RUNNER = "evals/run_review_bench.py"
 REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
-# Pre-existing but unmatched until now (row 10): select-tests mapped only
+# A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
+# evals/review_bench/, and hyphenated review-bench, not review_bench.
+# test_review_bench_runner.py loads its scenarios from here.
+REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
+# Pre-existing but unmatched until now: select-tests mapped only
 # SKILL_EVALS_RUNNER under evals/, so this file's own test never ran under
 # domain selection. Folded into the review_bench predicate below (a shared
 # target set, so a review_bench change over-selects this test too) rather
@@ -64,13 +68,30 @@ REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
 
-# evals/review_bench/mine_review_rounds.py's own Reuse list (Critical files,
-# Dispatch 1a) -- the transcript_analysis modules it imports by name.
+# evals/review_bench/mine_review_rounds.py's own Reuse list -- the
+# transcript_analysis modules it imports by name.
 _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: frozenset[str] = frozenset({
     "claude/.claude/scripts/transcript_analysis/corpus.py",
     "claude/.claude/scripts/transcript_analysis/scope.py",
     "claude/.claude/scripts/transcript_analysis/review_rounds.py",
     "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
+})
+
+# evals/review_bench/arms.py's LENS_READ_CLAUSES hand-copies each of these
+# seven lenses' exact read-clause wording out of its own production agent
+# file. evals/test_review_bench_fixtures.py contract-tests that copy against
+# the live file, so a wording edit to any of these seven files needs that
+# test re-run too. The generic AGENTS_DIR row below doesn't cover this: its
+# own targets (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR) never include
+# REVIEW_BENCH_TEST_GLOB.
+_REVIEW_BENCH_LENS_AGENT_FILES: frozenset[str] = frozenset({
+    f"{AGENTS_DIR}/staff-backend-engineer.md",
+    f"{AGENTS_DIR}/staff-frontend-engineer.md",
+    f"{AGENTS_DIR}/staff-sdet.md",
+    f"{AGENTS_DIR}/staff-platform-engineer.md",
+    f"{AGENTS_DIR}/staff-analytics-engineer.md",
+    f"{AGENTS_DIR}/ciso-reviewer.md",
+    f"{AGENTS_DIR}/comment-discipline-reviewer.md",
 })
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
@@ -398,14 +419,15 @@ def _is_test_source_change(path: str) -> bool:
     )
 
 
-# review_bench's own source tree, its CLI entry point, its own flat test
-# files (matched by glob, not by directory containment, since evals/ keeps
-# test_*.py beside the source it exercises rather than under a tests/
-# subdirectory), and MEASURE_SUBAGENT_MODEL_RESOLUTION (see its own comment
-# above for why it rides along here).
+# review_bench's own source tree, its fixture tree, its CLI entry point, its
+# own flat test files (matched by glob, not by directory containment, since
+# evals/ keeps test_*.py beside the source it exercises rather than under a
+# tests/ subdirectory), and MEASURE_SUBAGENT_MODEL_RESOLUTION (see its own
+# comment above for why it rides along here).
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
+        or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
         or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION)
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
@@ -496,6 +518,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
+# _REVIEW_BENCH_LENS_AGENT_FILES: see its own comment above for citation.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -521,16 +544,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # to see.
 # _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: evals/review_bench's
 # mine_review_rounds.py imports these four transcript_analysis modules by
-# name (Critical files, Dispatch 1a's Reuse list) rather than by directory
-# containment, so a change to one of them needs review_bench's own tests
-# re-run in addition to the SCRIPTS_TESTS_DIR the blanket SCRIPTS_DIR domain
-# rule already selects. Same undeclared-dependency shape as
-# TRANSCRIPT_ANALYSIS_TEST_GLOB's own row below.
+# name rather than by directory containment. A change to one of them needs
+# review_bench's own tests re-run, in addition to the SCRIPTS_TESTS_DIR the
+# blanket SCRIPTS_DIR domain rule already selects. Same undeclared-dependency
+# shape as TRANSCRIPT_ANALYSIS_TEST_GLOB's own row below.
 # SKILL_EVALS_RUNNER (second row): evals/run_review_bench.py's own runner
-# (added in a later dispatch) reuses run_skill_evals.py's launch shape (row
-# 9), so a change here also needs review_bench's own tests re-run. Stays a
-# standalone row rather than joining _is_skill_management_or_evals_change's
-# shared SKILLS_TESTS_DIR target below -- that predicate also matches every
+# reuses run_skill_evals.py's launch shape. A change here also needs
+# review_bench's own tests re-run too. This row stays standalone rather than
+# joining _is_skill_management_or_evals_change's shared SKILLS_TESTS_DIR
+# target below, because that predicate also matches every
 # plugins/skill-management/scripts/*.py change, which has no review_bench
 # dependency.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
@@ -551,6 +573,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p in _REVIEW_BENCH_LENS_AGENT_FILES, (REVIEW_BENCH_TEST_GLOB,)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),

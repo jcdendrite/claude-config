@@ -1,6 +1,6 @@
-"""Tests for evals/review_bench/analysis.py (dispatch 1c). Offline
-throughout: every statistic and check works from synthetic RunRecord/label
-data, never a real campaign. No test launches `claude`.
+"""Tests for evals/review_bench/analysis.py. Offline throughout: every
+statistic and check works from synthetic RunRecord/label data, never a real
+campaign. No test launches `claude`.
 """
 from __future__ import annotations
 

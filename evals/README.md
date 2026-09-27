@@ -470,8 +470,8 @@ python evals/run_review_bench.py spot-check export \
 python evals/run_review_bench.py spot-check import \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --labels-path <labels.json>
 
-# Freeze the harness (PR 2, run once, after a passing smoke campaign):
-python evals/run_review_bench.py freeze --k 10 \
+# Freeze the harness (run once, after a passing smoke campaign):
+python evals/run_review_bench.py freeze --k 10 --campaign-seed 0 \
   --last-smoke-manifest-hash <hash from smoke's own output> --smoke-full-k 10
 
 # Compute a campaign's verdicts:
@@ -483,10 +483,10 @@ python evals/run_review_bench.py analyze \
 
 `freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
 model IDs, K, delta, alpha, N_min, the planning variance, the bootstrap's
-resample count and seed, the kappa floor, the retry and missing-run rule, the
-later-arm certification rule, the confirmed defect IDs, and sha256 hashes of
-the harness's own import closure, both arm directories, the judge agent
-files, `defects.json`, and the prompt templates.
+resample count and seed, the campaign seed, the kappa floor, the retry and
+missing-run rule, the later-arm certification rule, the confirmed defect
+IDs, and sha256 hashes of the harness's own import closure, both arm
+directories, the judge agent files, `defects.json`, and the prompt templates.
 
 `analyze` recomputes every one of those hashes on each run. A mismatch
 against the frozen manifest exits 2, naming the changed, added, or removed
@@ -570,13 +570,10 @@ A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
 and its own session store is recorded in that run's `out_of_session_paths`
 and does not fail the run on its own. Only a read of the live checkout's own
 copy of a changed file, or of the ambient config's `projects/` root, fails
-the run. `judge` prints every recorded path to the terminal, once per
-completed judge run, for the engineer's own review. `analyze` reports only
-the per-arm and per-judge-kind counts, both to the terminal and in its
-committed `--out` report. The design calls for the engineer to also review
-a printed path list after each smoke campaign and after the baseline
-campaign. `smoke` and `run` do not yet print that list to the terminal,
-so that review step is a known gap rather than implemented behavior.
+the run. `smoke`, `run`, `judge`, and `analyze` all print every recorded
+path to the terminal, once per run it was recorded against, for the
+engineer's own review — the engineer reviews the smoke campaign's list
+before the go/no-go and the baseline campaign's before shipping it.
 Committed results — `analyze`'s own JSON report, `conditions.json`,
 `results/baseline.json` — carry only the per-arm count, never a path,
 because a path can name a private project.

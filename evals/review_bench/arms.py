@@ -1,11 +1,9 @@
-"""Arm construction for A-bench (dispatch 1b): the current-rule (arm 1) and
+"""Arm construction for A-bench: the current-rule (arm 1) and
 function-context (arm 2) `bench-<lens>.md` files, snapshotted from
 production and installed into a fixture's `.claude/agents/`.
 
 See .claude/plans/measure-review-quality.md's Approach > Fixtures and arms
-> "Arm" for the design each function below follows, and row 11 of the
-plan's assumption ledger for each lens's exact read clause and its source
-line.
+> "Arm" for the design each function below follows.
 """
 from __future__ import annotations
 
@@ -20,24 +18,22 @@ ARM_FUNCTION_CONTEXT = "function-context"
 KNOWN_ARMS: frozenset[str] = frozenset({ARM_CURRENT_RULE, ARM_FUNCTION_CONTEXT})
 
 # Production's Read/Grep/Glob subset, with Bash and Write removed (Approach
-# > "Arm", arm 1) -- a tools: allowlist withholds a tool from the subagent
-# outright (row 32), so an arm can never run Bash or Write regardless of
-# ambient CLI behavior (row 33).
+# > "Arm", arm 1). A `tools:` allowlist withholds an unlisted tool from the
+# subagent outright. An arm therefore cannot run Bash or Write regardless of
+# ambient CLI permission behavior.
 ARM_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
-# model: inherit, so that --model <frozen reviewer ID> governs the
-# dispatched bench-<lens> subagent (row 29) -- the CLI spike (gate 3) found
-# this resolves correctly under the reviewer's own model ID; only judge
-# agent files (dispatch 1c) pin a literal ID instead, per that same
-# finding's outcome branch (row 26).
+# model: inherit, so that --model <frozen reviewer ID> governs the dispatched
+# bench-<lens> subagent. This was verified to resolve correctly under the
+# reviewer's own model ID. Only the judge agent files pin a literal model ID
+# instead.
 ARM_MODEL_FRONTMATTER_VALUE = "inherit"
 
-# The seven lenses with a read clause to substitute (row 11 of the plan's
-# assumption ledger), each mapped to the exact clause verified to occur
-# exactly once in that lens's current production body. Any other duty in
-# the same sentence as the clause (e.g. staff-sdet's "AND the code they
-# test") is not part of the clause, and stays in the body untouched after
-# substitution (Approach > "Arm", arm 2).
+# The seven lenses with a read clause to substitute, each mapped to the exact
+# clause verified to occur exactly once in that lens's current production
+# body. Any other duty in the same sentence as the clause (e.g. staff-sdet's
+# "AND the code they test") is not part of the clause, and stays in the body
+# untouched after substitution (Approach > "Arm", arm 2).
 LENS_READ_CLAUSES: dict[str, str] = {
     "staff-backend-engineer": "Read every changed file fully",
     "staff-frontend-engineer": "Read every changed component and hook (or composable / reactive primitive) fully",
@@ -60,8 +56,8 @@ FUNCTION_CONTEXT_CLAUSE = (
 
 class ArmSnapshotError(ValueError):
     """Raised when a production lens file fails one of snapshot_arm's
-    loud-failure checks (Critical files, Dispatch 1b): a missing ARM_TOOLS
-    entry, or (for arm 2) a read clause that doesn't match exactly once."""
+    loud-failure checks: a missing ARM_TOOLS entry, or (for arm 2) a read
+    clause that doesn't match exactly once."""
 
 
 _FRONTMATTER_FIELD_RE = re.compile(r"(?m)^(\w+):\s*(.*)$")
@@ -120,8 +116,7 @@ def render_arm_agent(arm: str, lens: str, *, agents_dir: Path = AGENTS_DIR) -> s
 
     Fails loudly (ArmSnapshotError) unless production's `tools:` holds
     every ARM_TOOLS entry, and, for ARM_FUNCTION_CONTEXT, unless the lens's
-    read clause matches exactly once in the production body (Critical
-    files, Dispatch 1b).
+    read clause matches exactly once in the production body.
     """
     if arm not in KNOWN_ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {sorted(KNOWN_ARMS)}")
@@ -170,7 +165,7 @@ def install_arm(rendered: dict[str, str], agents_dir: Path) -> None:
 
 
 def write_arm_snapshot(arm: str, dest_dir: Path, *, lenses: list[str] | None = None) -> None:
-    """`snapshot-arms`' own entry point (PR 2, freeze time): render and
+    """`snapshot-arms`' own entry point, run once at freeze time: render and
     write every lens's `bench-<lens>.md` directly under `dest_dir`
     (evals/review_bench/arms/<arm>/), the committed snapshot `install_arm`
     later copies into each run's fixture."""

@@ -1,13 +1,13 @@
-"""A-bench reviewer-run harness (dispatch 1b): campaign/block/run execution,
-per-run validity checks and retry-then-missing, per-run statistics,
-environment recording, and interruption-safe cleanup.
+"""A-bench reviewer-run harness: campaign/block/run execution, per-run
+validity checks and retry-then-missing, per-run statistics, environment
+recording, and interruption-safe cleanup.
 
 See .claude/plans/measure-review-quality.md's Approach > "Runs and
 adjudication" for the full design this module follows. Judge runs
 (bench-judge-recall / bench-judge-precision), adjudicate.py, and analysis.py
-are dispatch 1c's own scope -- this module only runs reviewer arms, but its
+own the judge-side scope -- this module only runs reviewer arms, but its
 per-run validity checks and RunRecord schema are written generically over
-"the run's own directories" so 1c's judge runs reuse them unchanged.
+"the run's own directories" so the judge runs reuse them unchanged.
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
 own docstring for the reuse record this file adds):
@@ -15,8 +15,7 @@ _run_claude_to_completion, _resolved_temp_project_dir,
 subagent_dir_for_session, parse_subagent_dispatches,
 PER_RUN_BUDGET_CAP_USD, and BUDGET_CAP_MULTIPLIER. Reuses
 run_skill_evals.DEFAULT_WORKERS and DISPATCH_TOOL_NAMES. Session stores are
-found by session ID (row 47), never through
-run_skill_evals.compute_session_store_dir().
+found by session ID, never through run_skill_evals.compute_session_store_dir().
 
 LOCAL USE ONLY -- never run in CI. `smoke` and `run` launch real `claude -p`
 sessions against real Claude subscription auth.
@@ -45,40 +44,38 @@ from review_bench.fixture_repo import build_defect_fixture
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # config_dir imported directly from _config_dir, not through
-# run_skill_evals's re-export (row 36; Critical files, Dispatch 1b's Reuse
-# list) -- run_skill_evals already performs this same sys.path.insert as an
-# import-time side effect, but this insert is kept so this module has no
-# hidden ordering dependency on that side effect.
+# run_skill_evals's re-export -- run_skill_evals already performs this same
+# sys.path.insert as an import-time side effect, but this insert is kept so
+# this module has no hidden ordering dependency on that side effect.
 sys.path.insert(0, str(REPO_ROOT / "claude" / ".claude" / "scripts"))
 from _config_dir import config_dir  # noqa: E402
 
-# --- Frozen model IDs (row 29) ------------------------------------------------
+# --- Frozen model IDs ------------------------------------------------------
 REVIEWER_MODEL_ID = "claude-sonnet-5"
 JUDGE_MODEL_ID = "claude-opus-5-5"
 
 # --- Caps (Approach > Runs and adjudication > "Caps") -------------------------
 
-# Reused directly, not re-derived (plan line 136): a measured
+# Reused directly, not re-derived: a measured
 # staff-backend-engineer dispatch cost x 10 (see
 # measure_subagent_model_resolution.py's own comment for the command and
 # date that measured it).
 REVIEWER_BUDGET_CAP_USD = msmr.PER_RUN_BUDGET_CAP_USD
 
-# Bootstrap value, pending the smoke campaign (gate 6). The Caps section's
-# own formula is 10x the p95 of this repo's own staff-reviewer dispatch
+# Bootstrap value, pending the smoke campaign. The Caps section's own
+# formula is 10x the p95 of this repo's own staff-reviewer dispatch
 # durations, but no transcript-analysis.py subcommand yet reports
-# per-dispatch wall-clock duration, and adding one is outside dispatch 1b's
-# file list (Critical files). This reuses run_skill_evals.SAMPLE_TIMEOUT_S
+# per-dispatch wall-clock duration. This reuses run_skill_evals.SAMPLE_TIMEOUT_S
 # (this repo's own existing per-sample default) under the same x10
 # convention msmr.py's own budget cap uses.
 REVIEWER_TIMEOUT_S = run_skill_evals.SAMPLE_TIMEOUT_S * msmr.BUDGET_CAP_MULTIPLIER
 
 # Judge caps and timeouts start at the reviewer's own values -- "the only
 # per-run bounds this repo has measured" (Caps) -- until the smoke
-# campaign's full-K fixture measures each judge separately. Dispatch 1c's
-# judge runs (bench-judge-recall / bench-judge-precision) are the first
-# consumers of these; kept here since they share this module's RunRecord
-# schema and validity-check machinery.
+# campaign's full-K fixture measures each judge separately. The judge runs
+# (bench-judge-recall / bench-judge-precision) are the first consumers of
+# these; kept here since they share this module's RunRecord schema and
+# validity-check machinery.
 RECALL_JUDGE_BUDGET_CAP_USD = REVIEWER_BUDGET_CAP_USD
 RECALL_JUDGE_TIMEOUT_S = REVIEWER_TIMEOUT_S
 PRECISION_JUDGE_BUDGET_CAP_USD = REVIEWER_BUDGET_CAP_USD
@@ -88,21 +85,20 @@ PRECISION_JUDGE_TIMEOUT_S = REVIEWER_TIMEOUT_S
 
 DEFAULT_K = 10  # runs per arm per defect; the pre-freeze lever is K, not delta (Approach > "K, not delta...")
 
-# read-scope's own chars-per-token estimate (row 18), duplicated per the
-# small-duplicated-value exception (plan line 545) -- read_scope.py is
+# read-scope's own chars-per-token estimate, duplicated per the
+# small-duplicated-value exception -- read_scope.py is
 # mid-extraction by #1116. fixture_repo.py carries its own copy of this
 # same constant for the same reason; the two are not imported from each
 # other to avoid a cross-module coupling neither side needs.
 _READ_SCOPE_CHARS_PER_TOKEN = 4
 
-_PARTIAL_VIEW_MARKER = "PARTIAL view"  # G3's own truncation notice text
+_PARTIAL_VIEW_MARKER = "PARTIAL view"  # Read's own truncation notice text
 _READ_LIKE_TOOLS = frozenset({"Read", "Grep", "Glob"})
 
 # review-bench's own fixture/session-store directory prefix (Cleanup) --
 # every _resolved_temp_project_dir() call in this module uses it, so a
 # hard-interrupted run's leftover directories are always findable by this
-# prefix alone (evals/README.md's own documented recovery instructions,
-# dispatch 1c).
+# prefix alone (evals/README.md's own documented recovery instructions).
 FIXTURE_DIR_PREFIX = "review-bench-"
 
 
@@ -160,8 +156,8 @@ def build_dispatch_command(
     dispatch_prompt: str, *, model_id: str, session_id: str, budget_cap_usd: float,
 ) -> list[str]:
     """The thin dispatcher's own launch command (Approach > "Dispatcher").
-    No --permission-mode flag, matching run_skill_evals's own launch shape
-    (row 9) -- default headless mode."""
+    No --permission-mode flag, matching run_skill_evals's own launch shape:
+    default headless mode."""
     return [
         "claude", "-p", dispatch_prompt,
         "--output-format", "stream-json",
@@ -173,20 +169,19 @@ def build_dispatch_command(
     ]
 
 
-# --- RunRecord (Critical files, Dispatch 1b) ----------------------------------
+# --- RunRecord -----------------------------------------------------------------
 
 STATUS_OK = "ok"
 STATUS_MISSING = "missing"
 
-# Dispatch prompt's own naming (plan line 124's "such as" is not exhaustive
-# -- these three are the values with special downstream meaning:
-# invalid-answer is judge-only, dispatch 1c). Every other validity-check
-# failure below is also a legal missing_reason string, named for the check
-# it names (e.g. "wrong-agent"), matching plan line 124's literal "the
-# check its second attempt failed" -- missing_reason is not a closed enum.
+# Dispatch prompt's own naming -- these three are the values with special
+# downstream meaning: invalid-answer is judge-only. Every other validity-check
+# failure below is also a legal missing_reason string, named for the check it
+# names (e.g. "wrong-agent") -- missing_reason takes the name of whichever
+# check the second attempt failed, so it is not a closed enum.
 MISSING_REASON_BUDGET = "budget"
 MISSING_REASON_TIMEOUT = "timeout"
-MISSING_REASON_INVALID_ANSWER = "invalid-answer"  # judge runs only (dispatch 1c)
+MISSING_REASON_INVALID_ANSWER = "invalid-answer"  # judge runs only
 
 # Per-run validity check failure reasons (Approach > "Per-run validity
 # checks"), one constant per bullet, kebab-cased like the three above.
@@ -204,7 +199,7 @@ VALIDITY_FAIL_SIDECAR_MISSING = "sidecar-missing"
 
 @dataclass
 class RunRecord:
-    """JSONL schema (Critical files, Dispatch 1b's own field list, verbatim)."""
+    """RunRecord's JSONL schema, written verbatim to the campaign's records file."""
 
     campaign_id: str
     defect_id: str
@@ -264,13 +259,13 @@ def read_run_records(path: Path) -> list[RunRecord]:
     return records
 
 
-# --- Session-store lookup by session ID (row 47) ------------------------------
+# --- Session-store lookup by session ID -----------------------------------
 
 
 def find_session_jsonl_by_id(projects_root: Path, session_id: str) -> Path | None:
     """The one directory under projects_root holding <session_id>.jsonl,
     whatever that directory's own name -- never derived from the fixture
-    path (row 47; Cleanup)."""
+    path (Cleanup)."""
     if not projects_root.is_dir():
         return None
     matches = sorted(projects_root.glob(f"*/{session_id}.jsonl"))
@@ -753,8 +748,7 @@ _NO_SESSION_ID_YET = ""
 class RunStore:
     """The local run store `smoke`/`run`/`judge` write ahead to, so a hard
     interruption's sweep on resume deletes exactly what an abandoned
-    attempt recorded -- never a directory-name glob (Approach > "Cleanup";
-    M5's own rejected-alternatives note)."""
+    attempt recorded -- never a directory-name glob (Approach > "Cleanup")."""
 
     def __init__(self, store_dir: Path):
         self.store_dir = store_dir
@@ -863,7 +857,7 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
-# --- Fault injection (smoke only; Approach > M5a) -----------------------------
+# --- Fault injection (smoke only) -----------------------------------------
 
 FAULT_WRONG_AGENT = "wrong-agent"
 FAULT_EXTRA_TOOL_CALL = "extra-tool-call"
@@ -871,9 +865,9 @@ KNOWN_SMOKE_FAULTS: frozenset[str] = frozenset({FAULT_WRONG_AGENT, FAULT_EXTRA_T
 
 
 def apply_fault_injection(dispatch_prompt: str, *, fault: str | None) -> str:
-    """Mutate the dispatcher's own -p prompt so a real `smoke` launch (gate
-    6) can drive a genuine validity-check failure through retry-then-missing
-    against the real CLI. `run` never calls this -- its own CLI wiring
+    """Mutate the dispatcher's own -p prompt so a real `smoke` launch can
+    drive a genuine validity-check failure through retry-then-missing
+    against the real CLI. `run` never calls this: its own CLI wiring
     (run_review_bench.py) has no fault-injection argument to pass through."""
     if fault is None:
         return dispatch_prompt
@@ -1030,9 +1024,21 @@ class BlockResult:
     # One representative session ID per arm actually launched -- every run
     # (and every retry) against one arm's fixture_dir lands in the same
     # on-disk session store (Claude Code hashes only the project path), so
-    # any one of them locates it for cleanup (row 47: found by session ID,
-    # never derived from the fixture path).
+    # any one of them locates it for cleanup: found by session ID, never
+    # derived from the fixture path.
     representative_session_id_by_arm: dict[str, str]
+
+
+# Caps run_defect_block's environment-drift rerun loop. Each rerun re-spends
+# every (arm, run_index) pair's real, billable claude -p dispatch. A
+# flapping ambient checkout is routine on this repo's own multi-worktree
+# setup, so an uncapped retry against one would re-spend real Claude
+# subscription budget with no bound.
+MAX_ENVIRONMENT_DRIFT_RETRIES = 2
+
+
+class EnvironmentDriftExceededError(RuntimeError):
+    """Raised when a defect's block still drifts after MAX_ENVIRONMENT_DRIFT_RETRIES reruns."""
 
 
 def run_defect_block(
@@ -1046,51 +1052,74 @@ def run_defect_block(
     through a worker pool (Approach > Terms > "campaign"). Rerun the whole
     block, replacing its first attempt's records rather than joining them,
     when the environment reading at the block's start differs from the one
-    at its end (Approach > "Environment record")."""
+    at its end (Approach > "Environment record"). Reruns at most
+    MAX_ENVIRONMENT_DRIFT_RETRIES times, printing what changed on every
+    retried rerun. The final, fatal drift is folded into
+    EnvironmentDriftExceededError's own message instead."""
     block_plan = build_block_plan(spec.defect_id, arms, k, seed)
-    env_start = read_environment_record()
 
-    def _run_one(arm_and_index: tuple[str, int]) -> RunAttempt:
-        arm, run_index = arm_and_index
-        ctx = RunContext(
-            campaign_id=campaign_id, defect_id=spec.defect_id, subject=spec.subject,
-            agent_name=spec.arm_agent_names[arm], model_id=model_id,
-            agent_declared_tools=spec.agent_declared_tools, fixture_dir=spec.arm_fixture_dirs[arm],
-            live_checkout_roots=spec.live_checkout_roots, changed_relpaths=spec.changed_relpaths,
-            budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, environment=env_start,
+    for attempt_number in range(MAX_ENVIRONMENT_DRIFT_RETRIES + 1):
+        env_start = read_environment_record()
+
+        # env_start is bound as a default argument, not read from the
+        # enclosing scope, so each loop iteration's closure captures its own
+        # attempt's reading rather than whichever one is live when pool.map
+        # actually calls it.
+        def _run_one(arm_and_index: tuple[str, int], *, env_start=env_start) -> RunAttempt:
+            arm, run_index = arm_and_index
+            ctx = RunContext(
+                campaign_id=campaign_id, defect_id=spec.defect_id, subject=spec.subject,
+                agent_name=spec.arm_agent_names[arm], model_id=model_id,
+                agent_declared_tools=spec.agent_declared_tools, fixture_dir=spec.arm_fixture_dirs[arm],
+                live_checkout_roots=spec.live_checkout_roots, changed_relpaths=spec.changed_relpaths,
+                budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, environment=env_start,
+            )
+            return run_one_with_retry(ctx, arm=arm, run_index=run_index, fault=fault, launch=launch, run_store=run_store)
+
+        # Threads, not run_skill_evals's ProcessPoolExecutor precedent: each
+        # worker's own work is a subprocess launch plus disk/file-glob reads, all
+        # I/O that releases the GIL, and _run_one is a closure over per-block
+        # state that a process pool would need to pickle.
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            attempts = list(pool.map(_run_one, block_plan.ordered_runs))
+
+        records = [attempt.record for attempt in attempts]
+        session_id_by_arm: dict[str, str] = {}
+        for (arm, _run_index), attempt in zip(block_plan.ordered_runs, attempts, strict=True):
+            session_id_by_arm.setdefault(arm, attempt.session_id)
+
+        env_end = read_environment_record()
+        if env_start == env_end:
+            if run_store is not None:
+                run_store.mark_block_complete(spec.defect_id)
+            return BlockResult(records=tuple(records), representative_session_id_by_arm=session_id_by_arm)
+
+        drift_description = (
+            f"cli_version {env_start.cli_version!r}->{env_end.cli_version!r}, "
+            f"ambient_config_commit {env_start.ambient_config_commit!r}->{env_end.ambient_config_commit!r}, "
+            f"dirty {env_start.dirty}->{env_end.dirty}"
         )
-        return run_one_with_retry(ctx, arm=arm, run_index=run_index, fault=fault, launch=launch, run_store=run_store)
 
-    # Threads, not run_skill_evals's ProcessPoolExecutor precedent (row 9):
-    # each worker's own work is a subprocess launch plus disk/file-glob
-    # reads, all I/O that releases the GIL, and _run_one is a closure over
-    # per-block state that a process pool would need to pickle.
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        attempts = list(pool.map(_run_one, block_plan.ordered_runs))
+        if attempt_number == MAX_ENVIRONMENT_DRIFT_RETRIES:
+            raise EnvironmentDriftExceededError(
+                f"{spec.defect_id}'s block still drifted after {MAX_ENVIRONMENT_DRIFT_RETRIES} rerun(s) -- "
+                f"the ambient checkout or CLI version isn't holding still long enough for one full block "
+                f"to complete ({drift_description})"
+            )
 
-    records = [attempt.record for attempt in attempts]
-    session_id_by_arm: dict[str, str] = {}
-    for (arm, _run_index), attempt in zip(block_plan.ordered_runs, attempts, strict=True):
-        session_id_by_arm.setdefault(arm, attempt.session_id)
-
-    env_end = read_environment_record()
-    if env_start != env_end:
-        return run_defect_block(
-            spec, arms=arms, k=k, seed=seed, campaign_id=campaign_id, model_id=model_id,
-            budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, run_store=run_store, launch=launch, fault=fault,
-            workers=workers,
+        print(
+            f"run: {spec.defect_id}'s block drifted during its run (rerun "
+            f"{attempt_number + 1}/{MAX_ENVIRONMENT_DRIFT_RETRIES}) -- "
+            f"{drift_description}; rerunning the whole block",
+            file=sys.stderr,
         )
-
-    if run_store is not None:
-        run_store.mark_block_complete(spec.defect_id)
-    return BlockResult(records=tuple(records), representative_session_id_by_arm=session_id_by_arm)
 
 
 def cleanup_defect_block(spec: DefectFixtureSpec, block_result: BlockResult, *, projects_root: Path) -> None:
     """Delete every arm's fixture directory and session store for one
     defect -- called only after every run and retry in its block has
     finished (Approach > "Cleanup"). Each store is found by a representative
-    session ID (row 47), never computed from the fixture path."""
+    session ID, never computed from the fixture path."""
     for arm, fixture_dir in spec.arm_fixture_dirs.items():
         session_id = block_result.representative_session_id_by_arm.get(arm)
         if session_id is not None:
@@ -1170,10 +1199,9 @@ def build_defect_fixture_spec(
     """Build one defect's per-arm fixture directory (fixture_repo.py) and
     install that arm's already-frozen `bench-<lens>.md` snapshot
     (evals/review_bench/arms/<arm>/, written by `snapshot-arms` at freeze
-    time -- PR 2) into it. Never re-renders from the live production agent
-    files here: a run must exercise the frozen arm body, not whatever
-    production has drifted to since the freeze (Approach > "Freeze and
-    invalidation")."""
+    time) into it. Never re-renders from the live production agent files
+    here: a run must exercise the frozen arm body, not whatever production
+    has drifted to since the freeze (Approach > "Freeze and invalidation")."""
     arm_fixture_dirs: dict[str, Path] = {}
     changed_relpaths: tuple[str, ...] = ()
     subject = ""

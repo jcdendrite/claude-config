@@ -1,4 +1,4 @@
-"""Synthetic two-commit fixture repositories for A-bench (dispatch 1b).
+"""Synthetic two-commit fixture repositories for A-bench.
 
 See .claude/plans/measure-review-quality.md's Approach > Fixtures and arms >
 "Fixture" for the design this module follows: a fresh repository built from
@@ -13,8 +13,7 @@ Builds three kinds of directory:
 - the arm-neutral precision-judge fixture (`build_precision_judge_fixture`):
   the same tree, with no `bench-<lens>` file;
 - the recall-judge directory (`build_recall_judge_dir`): no fixture tree at
-  all -- dispatch 1c's `adjudicate.py` populates its judge file and
-  `.bench/judge-recall.md`.
+  all -- `adjudicate.py` populates its judge file and `.bench/judge-recall.md`.
 """
 from __future__ import annotations
 
@@ -28,13 +27,12 @@ from pathlib import Path
 
 from review_bench.defects import ConfirmedDefect
 
-# read-scope's own chars-per-token estimate (row 18 of the plan's assumption
-# ledger), duplicated here rather than imported -- read_scope.py is
-# mid-extraction by #1116 (Critical files, Dispatch 1b, small-duplicated-
+# read-scope's own chars-per-token estimate, duplicated here rather than
+# imported -- read_scope.py is mid-extraction by #1116 (small-duplicated-
 # value exception).
 _READ_SCOPE_CHARS_PER_TOKEN = 4
 
-# G3: a default Read truncates at this many estimated tokens.
+# A default Read truncates at this many estimated tokens.
 _OVER_READ_CAP_TOKENS = 25_000
 
 # Local git only (archive/diff/show), no network I/O. Mirrors mine_szz.py's
@@ -90,7 +88,7 @@ def _clear_dir_contents(dest_dir: Path) -> None:
 def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None:
     """Extract `commit`'s tree from `source_repo` into `dest_dir` via `git
     archive` piped through `tarfile`, never a `git worktree`/clone -- the
-    fixture repo must never share an object store with the real one (M3),
+    fixture repo must never share an object store with the real one,
     so a reviewer's `git log --all` cannot reach a commit past `head_commit`.
     """
     result = subprocess.run(
@@ -133,8 +131,8 @@ def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: 
 @dataclass(frozen=True)
 class ChangedFileStat:
     """One `.bench/changed-files.tsv` row: `path`'s line count and estimated
-    token count at HEAD (characters / 4, row 18), and whether that estimate
-    exceeds the default Read truncation threshold (G3)."""
+    token count at HEAD (characters / 4), and whether that estimate exceeds
+    the default Read truncation threshold."""
 
     path: str
     line_count: int
@@ -174,7 +172,7 @@ def _write_bench_diffs(dest_dir: Path) -> None:
     bench_dir.mkdir(parents=True, exist_ok=True)
     change_diff = _run_git(["diff", "HEAD~1", "HEAD"], cwd=dest_dir).stdout
     (bench_dir / "change.diff").write_text(change_diff)
-    # git-diff(1) -W: "Show whole function as context lines" (row 30).
+    # git-diff(1) -W: "Show whole function as context lines".
     function_context_diff = _run_git(["diff", "-W", "HEAD~1", "HEAD"], cwd=dest_dir).stdout
     (bench_dir / "change-function-context.diff").write_text(function_context_diff)
 
@@ -223,15 +221,15 @@ def build_precision_judge_fixture(source_repo: Path, defect: ConfirmedDefect, de
     """The arm-neutral precision-judge fixture: `build_defect_fixture`'s
     same tree and `.bench/` artifacts, with no `bench-<lens>.md` installed
     (Approach > Runs and adjudication > "Precision judge") -- the judge
-    agent file and `.bench/judge-precision.md` are dispatch 1c's own
-    responsibility (`adjudicate.py`)."""
+    agent file and `.bench/judge-precision.md` are `adjudicate.py`'s own
+    responsibility."""
     return build_defect_fixture(source_repo, defect, dest_dir)
 
 
 def build_recall_judge_dir(dest_dir: Path) -> Path:
     """The recall judge's own working directory: no fixture tree at all
     (Approach > Runs and adjudication > "Recall judge") -- just the
-    directory itself. Dispatch 1c's `adjudicate.py` installs the judge
-    agent file and writes `.bench/judge-recall.md` into it."""
+    directory itself. `adjudicate.py` installs the judge agent file and
+    writes `.bench/judge-recall.md` into it."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     return dest_dir

@@ -2,21 +2,21 @@
 where a later review round cited a path that an earlier round on the same
 branch had already read.
 
-Run this miner before mine_szz.py, not after: session transcripts age out
-on a rolling retention window (`cleanupPeriodDays`, default 30 days), so a
-review-round candidate older than that window is unrecoverable once it
-expires, while the git history mine_szz.py reads is durable and can wait.
+Run this miner before `mine_szz.py`: session transcripts age out after
+`cleanupPeriodDays` (default 30 days), while the git history `mine_szz.py`
+reads does not.
 
 See .claude/plans/measure-review-quality.md's Approach > Defect set >
 "Source 2: later review round" for the full algorithm this module follows.
 
 Reuses transcript_analysis's session-scope, round-window, subagent-dispatch,
-and reviewer-citation helpers rather than re-deriving them (Critical files,
-Dispatch 1a) -- this module never redefines round detection, branch
-attribution, or path normalization of its own.
+and reviewer-citation helpers rather than re-deriving them -- this module
+never redefines round detection, branch attribution, or path normalization
+of its own.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -39,10 +39,10 @@ def resolve_scoped_sessions(roots: Sequence[Path] | None = None):
     """Sessions for mining, scoped to this repo's own worktrees on exactly
     one config-dir root (Approach > Defect set > Source 2, step 1).
 
-    Exits 2 when more than one root is in scope (row 37) -- production
-    always calls this with roots=None, which resolves to
-    (scope._projects_dir(),) alone by construction (row 16); `roots` is
-    overridable only so a test can exercise the guard directly.
+    Exits 2 when more than one root is in scope -- production always calls
+    this with roots=None, which resolves to (scope._projects_dir(),) alone
+    by construction; `roots` is overridable only so a test can exercise the
+    guard directly.
     """
     resolved_roots = tuple(roots) if roots is not None else (scope._projects_dir(),)
     if len(resolved_roots) > 1:
@@ -264,11 +264,9 @@ _GIT_FETCH_TIMEOUT_S = 30.0
 
 
 def resolve_pr_number(repo_dir: Path, branch: str) -> int | None:
-    """Best-effort PR-number lookup via `gh` (row 27, [unverified]) --
-    returns None on any failure, which resolves to ref_status pr-unknown
-    rather than raising. Never called when a local branch already
-    resolves the round (row 27's "a kept local branch is used instead when
-    one exists")."""
+    """Best-effort PR-number lookup via `gh` -- returns None on any
+    failure, which resolves to ref_status pr-unknown rather than raising.
+    Never called when a local branch already resolves the round instead."""
     try:
         result = subprocess.run(
             ["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--limit", "1"],
@@ -292,10 +290,10 @@ def resolve_pr_number(repo_dir: Path, branch: str) -> int | None:
 def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tuple[str, str | None]:
     """Resolve one round's branch to a ref_status and a reachable ref.
 
-    A kept local branch is checked first and used instead of fetching
-    (row 27); the PR head is fetched explicitly to a dedicated ref only
-    when no local branch exists, since this repo's own fetch refspec is
-    `+refs/heads/*:refs/remotes/origin/*` only (row 38) and never reaches
+    A kept local branch is checked first and used instead of fetching; the
+    PR head is fetched explicitly to a dedicated ref only when no local
+    branch exists, since this repo's own fetch refspec is
+    `+refs/heads/*:refs/remotes/origin/*` only and never reaches
     `refs/pull/<N>/head` on its own.
     """
     if _local_branch_exists(repo_dir, branch):
@@ -419,6 +417,15 @@ def resolve_defect_commits(
     )
 
 
+def _branch_fingerprint(branch: str) -> str:
+    """A short, content-free stand-in for a real git branch name in a
+    committed candidate ID. A branch name is this account's own text, not
+    project-owned data the way a commit SHA is, so it never appears in an
+    ID's own bytes. Contrast mine_szz.py's SZZ-sourced IDs, which embed
+    real (and already-public) commit SHAs directly."""
+    return hashlib.sha256(branch.encode()).hexdigest()[:12]
+
+
 def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candidate]:
     """Mine later-review-round candidates from this repo's own session
     corpus (Approach > Defect set > Source 2)."""
@@ -471,7 +478,7 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
                         # - one later round citing a key two or more earlier
                         #   rounds each scoped (earlier.ts)
                         # - two later rounds citing the same key (later.ts)
-                        id=f"review-round:{branch}:{key}:{earlier.ts}:{later.ts}",
+                        id=f"review-round:{_branch_fingerprint(branch)}:{key}:{earlier.ts}:{later.ts}",
                         source="review-round",
                         lens=guess_lens(hit.raw_path),
                         base_commit=resolution.base_commit,

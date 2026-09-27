@@ -3,10 +3,9 @@ candidates by blaming each fix commit's diff back to its introducing
 commit.
 
 See .claude/plans/measure-review-quality.md's Approach > Defect set >
-"Source 1: SZZ-style blame" for the full algorithm this module follows,
-and row 22 for the git-blame(1)/SZZ primary-source citations it rests on.
+"Source 1: SZZ-style blame" for the full algorithm this module follows.
 
-stdlib `subprocess` only (M2a) -- no third-party SZZ implementation.
+stdlib `subprocess` only -- no third-party SZZ implementation.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ from review_bench.defects import Candidate, assert_unique_ids, guess_lens
 
 # Approach > Defect set > Source 1, step 1.
 _FIX_SUBJECT_RE = re.compile(r"fix|bug|regression", re.IGNORECASE)
-# `main` is squash-merged with a "(#N)" subject suffix (row 20).
+# `main` is squash-merged with a "(#N)" subject suffix.
 _PR_SUFFIX_RE = re.compile(r"\(#(\d+)\)\s*$")
 # A `git blame --porcelain` header line: "<40-hex sha> <orig-line> <final-line> [<group-count>]".
 _BLAME_HEADER_RE = re.compile(r"^([0-9a-f]{40}) \d+ \d+")
@@ -29,11 +28,11 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _OLD_FILE_HEADER_RE = re.compile(r"^--- (.+)$")
 
 # Pre-insertion context lines blamed for an addition-only hunk, since SZZ
-# cannot attribute a pure omission (row 22, step 4).
+# cannot attribute a pure omission.
 _ADDITION_ONLY_CONTEXT_LINES = 3
 
-# read-scope's own chars-per-token estimate (row 18), reused here for
-# ranking by files over one Read call (G3).
+# read-scope's own chars-per-token estimate, reused here for ranking by
+# files over one Read call.
 _CHARS_PER_TOKEN = 4
 _READ_CAP_TOKENS = 25_000
 
@@ -288,7 +287,7 @@ def _build_candidate(
 def _rank(repo_dir: Path, candidates: list[Candidate], *, stats: _MineStats | None = None) -> list[Candidate]:
     """Ranking rule (Source 1, step 6): modified-line hits before
     adjacent-line hits; a single introducer before several; files over one
-    Read call first (G3). Age is deliberately not a ranking key."""
+    Read call first. Age is deliberately not a ranking key."""
 
     def key(candidate: Candidate) -> tuple[bool, bool, bool]:
         tokens = _estimate_tokens(repo_dir, candidate.head_commit, candidate.evidence["path"], stats=stats)

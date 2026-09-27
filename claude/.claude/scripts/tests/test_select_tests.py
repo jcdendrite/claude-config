@@ -668,8 +668,8 @@ class TestSelectPytestTargets:
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
         """Also selects REVIEW_BENCH_TEST_GLOB: evals/run_review_bench.py's
-        own runner reuses run_skill_evals.py's launch shape (row 9), so a
-        change here needs review_bench's own tests re-run too."""
+        own runner reuses run_skill_evals.py's launch shape, so a change
+        here needs review_bench's own tests re-run too."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB}
@@ -688,6 +688,17 @@ class TestSelectPytestTargets:
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
 
+    def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+        """evals/fixtures/review-bench/ is a sibling tree, not a
+        REVIEW_BENCH_DIR subdirectory (evals/fixtures/, not
+        evals/review_bench/), so it needs its own disjunct in the predicate
+        rather than falling open."""
+        result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_FIXTURES_DIR}/normal-success/session-1.jsonl"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
     def test_review_bench_test_glob_member_change_selects_itself(self):
         """A test_review_bench*.py file itself is outside REVIEW_BENCH_DIR
         (evals/, not evals/review_bench/), so it needs its own glob-matched
@@ -699,8 +710,8 @@ class TestSelectPytestTargets:
         }
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
-        """Previously unmatched (row 10) -- falls open to the full suite no
-        longer, now that it rides the review_bench predicate."""
+        """Previously unmatched -- falls open to the full suite no longer,
+        now that it rides the review_bench predicate."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -709,10 +720,10 @@ class TestSelectPytestTargets:
 
     def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
         """mine_review_rounds.py imports these four transcript_analysis
-        modules by name (Critical files, Dispatch 1a); without this
-        cross-domain exception, the blanket SCRIPTS_DIR rule (plus the
-        generic .py-under-claude/ rule, which every SCRIPTS_DIR .py file
-        also matches -- see test_scripts_change_also_selects_ticket_reference_discipline_test)
+        modules by name; without this cross-domain exception, the blanket
+        SCRIPTS_DIR rule (plus the generic .py-under-claude/ rule, which
+        every SCRIPTS_DIR .py file also matches -- see
+        test_scripts_change_also_selects_ticket_reference_discipline_test)
         would claim the path first and review_bench's own tests would
         never re-run."""
         for dependency in sorted(_mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES):
@@ -722,6 +733,20 @@ class TestSelectPytestTargets:
                 _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
                 _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
             }, dependency
+
+    def test_review_bench_lens_agent_file_change_also_selects_review_bench_tests(self):
+        """arms.py's LENS_READ_CLAUSES hand-copies each of these seven
+        lenses' exact read-clause wording out of its own production agent
+        file. Without this cross-domain exception, the generic AGENTS_DIR
+        row's own targets (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR) would claim
+        the path first. The contract test pinning that copy would then
+        never re-run."""
+        for agent_file in sorted(_mod._REVIEW_BENCH_LENS_AGENT_FILES):
+            result = _mod.select_pytest_targets([agent_file])
+            assert result.is_full_suite is False, agent_file
+            assert set(result.target_paths) == {
+                _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+            }, agent_file
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's

@@ -4,8 +4,7 @@ their validation, JSON load/save, and the description-provenance check
 the committed evals/review_bench/defects.json.
 
 See .claude/plans/measure-review-quality.md's Approach > Defect set for the
-mining algorithms that produce `Candidate` records, and Critical files'
-Dispatch 1a section for this module's own schema spec.
+mining algorithms that produce `Candidate` records.
 """
 from __future__ import annotations
 
@@ -19,12 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-# The seven reviewer lenses whose agent body carries a read clause (row 11
-# of the plan's assumption ledger) -- the only lenses A-bench's arm 2
-# (function-context) can substitute a clause for. staff-data-engineer and
-# staff-product-engineer own other code-review checklist items but have no
-# read clause to replace, so a defect either of them owns can never enter
-# this benchmark.
+# The seven reviewer lenses whose agent body carries a read clause -- the
+# only lenses A-bench's arm 2 (function-context) can substitute a clause
+# for. staff-data-engineer and staff-product-engineer own other code-review
+# checklist items but have no read clause to replace, so a defect either of
+# them owns can never enter this benchmark.
 KNOWN_LENSES: frozenset[str] = frozenset({
     "staff-backend-engineer",
     "staff-frontend-engineer",
@@ -124,8 +122,8 @@ class Candidate:
         return cls(**dict(data))
 
 
-# ConfirmedDefect's exact field set -- "no field outside the schema, so
-# description is the only free text" (Critical files, Dispatch 1a).
+# ConfirmedDefect's exact field set -- no field outside the schema, so
+# description is the only free text field.
 _CONFIRMED_DEFECT_FIELDS: frozenset[str] = frozenset({
     "id", "source", "lens", "base_commit", "head_commit", "fix_commit", "fix_date", "description",
 })
@@ -187,9 +185,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def assert_unique_ids(candidates: list[Candidate], *, miner: str) -> None:
     """Fail loudly on a same-run `Candidate.id` collision, rather than let
     it resolve silently to "last write wins". `confirm`'s `excerpts_by_id`
-    and `existing_ids` lookups (row 41's leak guard) both key on `id` -- a
-    collision there can check a description against the wrong sibling's
-    excerpt, or make a distinct finding permanently unconfirmable."""
+    and `existing_ids` lookups both key on `id` -- a collision there can
+    check a description against the wrong sibling's excerpt, or make a
+    distinct finding permanently unconfirmable."""
     seen: set[str] = set()
     for candidate in candidates:
         if candidate.id in seen:
@@ -223,9 +221,9 @@ def guess_lens(path: str) -> str:
     """A miner's pre-fill guess for a candidate's owning lens.
 
     Heuristic only, based on the changed path's shape -- real routing is
-    judgment over code-review/SKILL.md's Item-ownership table (row 13),
-    which this function does not read. The engineer confirms or overrides
-    this value for every candidate before it can be promoted.
+    judgment over code-review/SKILL.md's Item-ownership table, which this
+    function does not read. The engineer confirms or overrides this value
+    for every candidate before it can be promoted.
     """
     name = Path(path).name
     if path.endswith(".sh") or "/hooks/" in path:
@@ -240,7 +238,7 @@ def guess_lens(path: str) -> str:
     return "staff-backend-engineer"
 
 
-# --- Description provenance (row 41) ---------------------------------------
+# --- Description provenance -------------------------------------------------
 
 # \w already matches Unicode letters (accented Latin included) under a str
 # pattern, so no separate non-ASCII handling is needed here.
@@ -263,7 +261,7 @@ class ProvenanceViolation(NamedTuple):
     shared with a `.local/` excerpt (up to `_SIX_GRAM_WINDOW` words, capped
     below that by whichever of the description/excerpt is shorter), and the
     candidate ID whose excerpt holds it -- the only two facts `confirm` is
-    allowed to print on rejection (row 41)."""
+    allowed to print on rejection."""
 
     shared_run: str
     source_candidate_id: str
@@ -278,8 +276,7 @@ def check_description_provenance(
     shares with some candidate's `.local/` finding excerpt, unless that run
     also occurs in `public_git_text` -- `git show` of the defect's
     introducing and fix commits (see `public_git_text` below) -- which
-    marks it as shared code or an identifier rather than lifted prose
-    (row 41).
+    marks it as shared code or an identifier rather than lifted prose.
 
     The run length is `_SIX_GRAM_WINDOW` (six words) whenever both texts
     are long enough for that window. When either the description or a
@@ -294,7 +291,7 @@ def check_description_provenance(
 
     Checked against every candidate's excerpt in `excerpts_by_candidate_id`,
     not only the one this description confirms, since the drafting session
-    saw the whole shortlist (M12).
+    saw the whole shortlist.
     """
     description_tokens = _tokenize(description)
     if not description_tokens:
@@ -327,9 +324,9 @@ _LOCAL_GIT_TIMEOUT_S = 10.0
 
 def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *, run=subprocess.run) -> str:
     """The defect's public git text: `git show` of its introducing commit
-    plus its fix commit (row 41) -- what `check_description_provenance`
-    treats as legitimately shared code or identifiers, never a leaked
-    `.local/` excerpt."""
+    plus its fix commit -- what `check_description_provenance` treats as
+    legitimately shared code or identifiers, never a leaked `.local/`
+    excerpt."""
     parts = []
     for commit in (introducing_commit, fix_commit):
         result = run(

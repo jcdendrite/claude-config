@@ -1,6 +1,6 @@
 """Judge-input construction, `.bench/` path normalization, blind ordering,
 tolerant answer parsing, judge-run execution, and the human spot-check for
-A-bench (dispatch 1c).
+A-bench.
 
 See .claude/plans/measure-review-quality.md's Approach > "Runs and
 adjudication" for the full design this module follows.
@@ -578,8 +578,8 @@ def run_defect_judges(
 SPOT_CHECK_RECALL_SAMPLE_SIZE = 100
 SPOT_CHECK_PRECISION_SAMPLE_SIZE = 100
 # The kappa floor itself (analysis.KAPPA_SUBSTANTIAL_FLOOR) is one of
-# analysis.py's own design constants (Critical files, Dispatch 1c) -- this
-# module only computes kappa, it does not gate on it.
+# analysis.py's own design constants -- this module only computes kappa,
+# it does not gate on it.
 
 SPOT_CHECK_KIND_RECALL = "recall"
 SPOT_CHECK_KIND_PRECISION = "precision"
@@ -711,8 +711,8 @@ def import_spot_check_labels(path: Path) -> list[HumanSpotCheckLabel]:
 
 
 def cohens_kappa(labels_a: Sequence[str], labels_b: Sequence[str]) -> float:
-    """Cohen's kappa (Landis & Koch 1977, row 23) between two label
-    sequences over the same items, in the same order."""
+    """Cohen's kappa (Landis & Koch 1977) between two label sequences over
+    the same items, in the same order."""
     if len(labels_a) != len(labels_b):
         raise ValueError("cohens_kappa: label sequences must be the same length")
     n = len(labels_a)
@@ -752,7 +752,7 @@ def split_agreement_by_arm(
 ) -> dict[str, float]:
     """The fraction of precision spot-check items, per arm, where the human
     confirmed the judge's marked span was exactly one finding (Approach >
-    "Human spot-check", "Split agreement"). Never gates (row 44)."""
+    "Human spot-check", "Split agreement"). Never gates."""
     candidates_by_id = {c.item_id: c for c in candidates}
     agree_and_total_by_arm: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for human_label in human_labels:

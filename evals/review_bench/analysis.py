@@ -1,6 +1,6 @@
 """Statistics, freeze/invalidation checks, and the import-closure manifest
-for A-bench (dispatch 1c). Standard library only (`statistics`, `math`,
-`random`, `hashlib`, `ast`) -- no numerical dependency (row 35).
+for A-bench. Standard library only (`statistics`, `math`, `random`,
+`hashlib`, `ast`) -- no numerical dependency.
 
 See .claude/plans/measure-review-quality.md's Approach > "Analysis, margin,
 and minimum set size" for the statistics this module implements, and
@@ -9,8 +9,7 @@ Approach > "Freeze and invalidation" for the manifest/precondition checks.
 Every check in this module raises HarnessInvalidatedError rather than
 exiting the process directly, so each one is independently testable;
 evals/run_review_bench.py's `analyze` and `freeze` subcommands catch it,
-print its message, and call `sys.exit(2)` (Critical files, Dispatch 1c:
-"Each check refuses with exit 2").
+print its message, and call `sys.exit(2)`.
 """
 from __future__ import annotations
 
@@ -37,22 +36,21 @@ STATUS_OK = runner.STATUS_OK
 # --- Design constants (Approach > "Analysis, margin, and minimum set size") --
 
 DELTA = 0.05  # the margin, 5 percentage points absolute, on both recall and pooled precision
-ALPHA_ONE_SIDED = 0.025  # FDA (2016)'s one-sided convention (row 23); paired with a two-sided 95% interval
+ALPHA_ONE_SIDED = 0.025  # FDA (2016)'s one-sided convention; paired with a two-sided 95% interval
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_SEED = 0
-KAPPA_SUBSTANTIAL_FLOOR = 0.61  # Landis & Koch 1977's "substantial" threshold (row 23)
+KAPPA_SUBSTANTIAL_FLOOR = 0.61  # Landis & Koch 1977's "substantial" threshold
 
-# The planning variance's own two components (row 24): mean per-defect
-# detection variance v = p(1-p) ~= 0.15, and between-defect true-difference
-# variance tau^2 = 0.01. Never revised by an observed sigma_d (Approach >
-# "The margin").
+# The planning variance's own two components: mean per-defect detection
+# variance v = p(1-p) ~= 0.15, and between-defect true-difference variance
+# tau^2 = 0.01. Never revised by an observed sigma_d (Approach > "The margin").
 _PLANNING_V = 0.15
 _PLANNING_TAU_SQUARED = 0.01
 
 
 def planning_variance(k: int) -> float:
-    """sigma_d^2(K) = 2v/K + tau^2 (row 24) -- gives 0.04 at K=10, 0.03 at
-    K=15, 0.025 at K=20 (Approach > "The margin")."""
+    """sigma_d^2(K) = 2v/K + tau^2 -- gives 0.04 at K=10, 0.03 at K=15,
+    0.025 at K=20 (Approach > "The margin")."""
     return (2 * _PLANNING_V) / k + _PLANNING_TAU_SQUARED
 
 
@@ -60,7 +58,7 @@ def n_min(k: int) -> int:
     """N_min = ceil((z_0.975 + z_0.80)^2 * sigma_d^2(k) / delta^2) (Approach
     > "The margin"), using statistics.NormalDist for the z-values rather
     than a hardcoded 7.849 -- n_min(10) == 126, n_min(15) == 95, n_min(20)
-    == 79 (plan line 658)."""
+    == 79."""
     z_alpha = NormalDist().inv_cdf(1 - ALPHA_ONE_SIDED)  # z_0.975
     z_power = NormalDist().inv_cdf(0.80)  # z_0.80, 80% power
     variance = planning_variance(k)
@@ -250,8 +248,9 @@ def baseline_sensitivity_verdict(
     arm_1: str, arm_2: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
 ) -> tuple[str, tuple[float, float]]:
     """ICH E10's assay sensitivity (Approach > "Sensitivity verdict for the
-    baseline"): M1 is the lower limit of the two-sided 95% interval for
-    recall_1 - recall_2. Never grounds to revise the defect set (row 6)."""
+    baseline"): sensitive when the lower limit of the two-sided 95% interval
+    for recall_1 - recall_2 exceeds delta. Never grounds to revise the
+    defect set."""
 
     def statistic(resample_ids: Sequence[str]) -> float:
         return arm_recall(recall_counts_by_defect, resample_ids, arm_1) - arm_recall(
@@ -360,7 +359,7 @@ def recall_by_fix_date_half(
     fix_dates_by_defect: Mapping[str, str], arm: str,
 ) -> dict[str, float]:
     """Recall split at the median fix date of the kept defects -- an
-    observable proxy for memorization exposure (row 28), never gating."""
+    observable proxy for memorization exposure, never gating."""
     dated = sorted(kept_defect_ids, key=lambda defect_id: fix_dates_by_defect[defect_id])
     midpoint = len(dated) // 2
     return {
@@ -482,14 +481,13 @@ def closure_manifest_hash(closure: Mapping[str, str]) -> str:
 
 
 # --- Freeze preconditions and invalidation (Approach > "Freeze preconditions",
-# "Drift between PR 1 and PR 2 ...") ------------------------------------------
+# "Drift between mining/confirmation and freeze is accepted, not locked") -----
 
 
 class HarnessInvalidatedError(Exception):
-    """Raised by a check that must exit 2, naming the failing field (Critical
-    files, Dispatch 1c: "Each check refuses with exit 2"). Carries the
-    already-formatted message; run_review_bench.py's `analyze` and `freeze`
-    subcommands catch it, print the message, and call sys.exit(2)."""
+    """Raised by a check that must exit 2, naming the failing field. Carries
+    the already-formatted message; run_review_bench.py's `analyze` and
+    `freeze` subcommands catch it, print the message, and call sys.exit(2)."""
 
 
 def check_manifest_matches(current_closure: Mapping[str, str], frozen_closure: Mapping[str, str]) -> None:
