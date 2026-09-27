@@ -1126,6 +1126,124 @@ class TestBaseOverlayDisjointness:
         assert overlap == set(), f"settings.base.json sets overlay-allowed key(s): {overlap}"
 
 
+class TestBaseOverlayDisjointnessAtRuntime:
+    """Same invariant as TestBaseOverlayDisjointness, enforced by the script
+    itself against whatever base_file it's actually given -- not just the
+    one settings.base.json checked into this repo. Scoped to the actual
+    leak, not to base merely mentioning the key: an overlay that overrides
+    base's value (TestOverlayMerge's autoMode-replacement cases) is exactly
+    the safe case this must not reject."""
+
+    # A realistic value per overlay-allowed key, used by both the allow-path
+    # and overlay-present-but-not-overriding deny-path tests below. env's
+    # value must fall within ENV_NAME_REGEX's vendor-recognized namespace
+    # (render-settings.sh) to be accepted rather than rejected on that
+    # separate ground.
+    _OVERLAY_ALLOWED_KEY_VALUES = {
+        "autoMode": {"environment": ["$defaults", "base-only-entry"]},
+        "env": {"DISABLE_TELEMETRY": "0"},
+        "skillListingBudgetFraction": 0.2,
+    }
+    _OVERLAY_ALLOWED_KEY_OVERRIDE_VALUES = {
+        "autoMode": {"environment": ["$defaults"]},
+        "env": {"DISABLE_TELEMETRY": "1"},
+        "skillListingBudgetFraction": 0.4,
+    }
+
+    @pytest.mark.parametrize("overlay_key", sorted(OVERLAY_ALLOWED_TOP_LEVEL_KEYS))
+    def test_base_key_overridden_by_matching_overlay_key_is_accepted(
+        self, tmp_path: Path, overlay_key: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {overlay_key: self._OVERLAY_ALLOWED_KEY_VALUES[overlay_key]},
+        )
+        override_value = self._OVERLAY_ALLOWED_KEY_OVERRIDE_VALUES[overlay_key]
+        _write_json(config_dir / "settings.overlay.json", {overlay_key: override_value})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered[overlay_key] == override_value
+
+    def test_base_autoMode_with_no_overlay_file_is_refused(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {"autoMode": {"environment": ["$defaults", "leaked-to-everyone"]}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "sets overlay-owned key(s) not overridden by" in result.stderr
+        bad_keys_segment = result.stderr.split("sets overlay-owned key(s) not overridden by", 1)[1]
+        assert "autoMode" in bad_keys_segment
+        assert not (config_dir / "settings.json").exists()
+
+    @pytest.mark.parametrize("overlay_key", sorted(OVERLAY_ALLOWED_TOP_LEVEL_KEYS))
+    def test_base_key_with_overlay_present_but_not_overriding_it_is_refused(
+        self, tmp_path: Path, overlay_key: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {overlay_key: self._OVERLAY_ALLOWED_KEY_VALUES[overlay_key]},
+        )
+        _write_json(config_dir / "settings.overlay.json", {})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "sets overlay-owned key(s) not overridden by" in result.stderr
+        bad_keys_segment = result.stderr.split("sets overlay-owned key(s) not overridden by", 1)[1]
+        assert overlay_key in bad_keys_segment
+        assert not (config_dir / "settings.json").exists()
+
+    def test_base_autoMode_overridden_by_overlay_autoMode_null_is_currently_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins current behavior: overlay.autoMode = null satisfies the
+        guard's has() check even though it isn't a meaningful trust
+        decision. Not an endorsement -- a future change to reject vacuous
+        overrides is a deliberate, separate change, not an accidental one."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {"autoMode": {"environment": ["$defaults", "base-only-entry"]}},
+        )
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": None})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["autoMode"] is None
+
+    @pytest.mark.parametrize("overlay_key", sorted(OVERLAY_ALLOWED_TOP_LEVEL_KEYS - {"autoMode"}))
+    def test_base_setting_another_overlay_allowed_key_is_refused(
+        self, tmp_path: Path, overlay_key: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {overlay_key: self._OVERLAY_ALLOWED_KEY_VALUES[overlay_key]},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert overlay_key in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+
 class TestEnabledKeyDeletion:
     """enabled has no consumer anymore and no special-cased handling --
     an overlay carrying it is refused the same as any other unrecognized

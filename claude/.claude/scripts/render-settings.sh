@@ -32,6 +32,13 @@ fi
 # carrying only `defaultMode` -- any other key or shape is rejected outright,
 # not merged. See docs/auto-mode.md for the full contract.
 #
+# If settings.base.json sets one of those same three overlay-allowed keys,
+# this account's overlay must also set it (and thereby replace it) -- the
+# merge below only lets the overlay override them, so an unoverridden
+# base-set value flows unchanged into this account's settings.json, which
+# is exactly what autoMode's per-account trust model can never allow.
+# Rejected outright, same as an unrecognized overlay key.
+#
 # Every top-level key base and the overlay don't claim carries forward from
 # the prior settings.json (theme/model/effortLevel and friends), since
 # Claude Code writes those directly into the live file rather than into
@@ -157,6 +164,19 @@ if [[ -e "$overlay_file" ]]; then
 fi
 
 base_json="$(jq -c '.' -- "$base_file")"
+
+# An overlay-allowed key set in base survives into the merged result
+# unchanged whenever this account's overlay doesn't also set it -- the one
+# thing autoMode's per-account trust model can never allow. Checked here,
+# once both base_json and the fully-validated overlay_json are settled, so
+# an overlay that legitimately overrides base's value (declaring its own
+# whole-value replacement, same as any other overlay-allowed key) is never
+# penalized for base merely mentioning the key too.
+if ! jq -n -e --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] == []' >/dev/null 2>&1; then
+  bad_keys="$(jq -rn --argjson overlayAllowed "$OVERLAY_ALLOWED_KEYS_JSON" --argjson overlay "$overlay_json" --argjson base "$base_json" '[$base | keys[] | select(. as $k | ($overlayAllowed | index($k) != null) and (($overlay | has($k)) | not))] | join(", ")')"
+  echo "render-settings.sh: $base_file sets overlay-owned key(s) not overridden by $overlay_file: $bad_keys -- must be overridden by $overlay_file (or removed from $base_file), otherwise they leak unchanged to every account whose overlay doesn't override them -- refusing to render" >&2
+  exit 1
+fi
 
 # $target here is this script's own prior output, not user-supplied input to
 # validate: a missing or unparseable prior file means nothing to carry
