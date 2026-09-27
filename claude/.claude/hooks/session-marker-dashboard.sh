@@ -104,7 +104,9 @@ if [ ! -f "$CONFIG_DIR/.review-narrative-ledger-disabled" ]; then
       LEDGER_SUMMARY=$(_lib_jq -rs '
           (map(select(.disposition=="ADDRESS")) | length) as $addressed
         | (map(select(.disposition=="DEFER")) | length) as $deferred
-        | "\($addressed + $deferred) findings recorded this session: \($addressed) addressed, \($deferred) deferred — see review-narrative-ledger for detail"
+        | if ($addressed + $deferred) > 0 then
+            "\($addressed + $deferred) findings recorded this session: \($addressed) addressed, \($deferred) deferred — see review-narrative-ledger for detail"
+          else empty end
         ' "$LEDGER_FILE" 2>/dev/null)
     fi
   fi

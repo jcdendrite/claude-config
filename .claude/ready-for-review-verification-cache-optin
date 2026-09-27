@@ -1,0 +1,16 @@
+# Claude Code ready-for-review verification-cache opt-in.
+#
+# Presence of this file on the default branch (read from origin, never the
+# working tree) lets ready-for-review's step 2 skip re-running this repo's
+# test, lint, and typecheck commands when the same tree already passed them
+# inside the freshness window.
+#
+# Committing it attests two things no tooling here can verify:
+# 1. The default branch requires CI to pass before merge.
+# 2. That CI runs the checks step 2 would otherwise run locally.
+#
+# Forks and copies: this attestation belongs to the repo that committed it.
+# Delete it unless both facts hold for yours.
+# To disable, delete this file from the default branch; existing worktrees
+# keep the old state until their next git fetch.
+# See docs/design-decisions/ready-for-review-verification-cache.md.

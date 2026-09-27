@@ -66,6 +66,7 @@ over any paraphrase here.
 | `pr_cost_disclosure` | `enum:dollars` | `false` | config-dir | no | [README § PR cost disclosure](../README.md#pr-cost-disclosure) |
 | `pr_description_tighten_prose` | bool | `true` | config-dir | no | [hooks.md § Prose tightening opt-out](hooks.md#prose-tightening-opt-out) |
 | `handoff_nudge` | bool | `true` | config-dir | no | [handoff-nudge.md](handoff-nudge.md) |
+| `memory_audit_nudge` | bool | `true` | config-dir | no | [memory-audit-nudge.md](memory-audit-nudge.md) |
 | `consume_durable_continuity` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
 | `commit_stall_block` | bool | `true` | config-dir | no | [commit-stall-block.md](commit-stall-block.md) |
 | `session_title_from_branch` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
@@ -139,7 +140,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 16 keys:
+   the 17 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
      names — the resolved config dir alone, or (for the six keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
@@ -151,7 +152,7 @@ It runs two phases, always in this order:
    - Writes the legacy-derived value only the first time the key has no
      existing state-file row — a hand-edit or an earlier import is never
      overwritten by a later run.
-   - For the ten non-enforcement-critical keys, this happens fully
+   - For the eleven non-enforcement-critical keys, this happens fully
      non-interactively.
    - For the five enforcement-critical keys, import is direction-aware
      rather than TTY-gated: it compares the legacy-derived value against
@@ -171,7 +172,7 @@ It runs two phases, always in this order:
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
      a default row only for a key with no legacy fallback mechanism at
-     all. None exist among today's 16 keys besides `test_selection_tracking`,
+     all. None exist among today's 17 keys besides `test_selection_tracking`,
      whose `legacy-filename` and `legacy-polarity` are both empty. Scaffold
      therefore currently writes only that one key's default row. A key with
      a legacy-polarity
@@ -250,7 +251,7 @@ internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 16
+itself from one Claude account's config dir to another's merges *all 17
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`

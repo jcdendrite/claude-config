@@ -1,15 +1,15 @@
-# GH-978 Unit 2 — Make the hook-test timeout caps injectable
+# GH-978 — Make the hook-test timeout caps injectable
 
 ## Context
 
 Cut the real wall-clock time the hook and script test suites spend waiting
 for a genuine `timeout(1)` kill to fire, without changing how any commit or
 credential gate's production timeout actually behaves. GH-978 is a tracking
-epic for cutting hook-chain and test-suite process overhead; Unit 1 (merged,
-PR #985) consolidated the PreToolUse `_lib.sh` bootstrap. This is Unit 2,
-from the epic body:
+epic for cutting hook-chain and test-suite process overhead; PR #985
+(merged) consolidated the PreToolUse `_lib.sh` bootstrap. This plan makes
+the timeout caps injectable, from the epic body:
 
-> **Unit 2 — Make the timeout caps injectable. Remove the real sleeps from
+> **Make the timeout caps injectable. Remove the real sleeps from
 > the 54 cap-boundary tests. The design question is doing this without
 > creating a production bypass of a security gate's timeout, since these are
 > commit and credential gates.**
@@ -1064,7 +1064,7 @@ neither one's self-review seeing the other's — exactly the condition
   PR-scoped CI check — this branch's diff against its target, failing on
   any non-test hit under those two paths — would make the claim a
   repeatable automated gate instead of a one-time read. Deferred as
-  CI-workflow scope beyond this Unit.
-- **The remaining 247-tests-at-≥1.0s band from the epic.** Unit 2 targets
+  CI-workflow scope beyond this plan.
+- **The remaining 247-tests-at-≥1.0s band from the epic.** This plan targets
   only the cap-boundary population. Whatever is left above 1.0s after this
-  lands is input to a later unit, not a gap in this one.
+  lands is input to later epic work, not a gap in this one.
