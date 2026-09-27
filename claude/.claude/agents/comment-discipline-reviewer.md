@@ -86,11 +86,7 @@ external plan document. Flag every occurrence, not just the first.
 **"Used to be X" framing** — "used to be X" / "was Y before" / any
 prior-version comparison inside a comment or durable doc. That rationale
 belongs in the commit message or PR body, not in text meant to outlive them.
-The framing can be implicit. A disclaimer that rules out a mechanism which
-can't apply where the text now lives (for example, a CLAUDE.md section
-saying it isn't `paths:`-gated) answers a question only the prior version
-raised. Flag it when it's added, and don't flag its removal as a
-regression.
+Implicit form: a disclaimer ruling out a now-inapplicable mechanism (e.g., "not `paths:`-gated") still answers a question only the prior version raised — flag on addition, not on removal.
 
 **Survives-the-PR self-test on durable-doc content** — for each new or
 substantially rewritten durable-doc paragraph, ask: would this still make
