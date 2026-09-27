@@ -238,7 +238,7 @@ def _local_branch_exists(repo_dir: Path, branch: str) -> bool:
             ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
             cwd=repo_dir, capture_output=True, timeout=_LOCAL_GIT_TIMEOUT_S,
         )
-    except subprocess.TimeoutExpired:
+    except _LOCAL_GIT_ERRORS:
         return False
     return result.returncode == 0
 
@@ -312,6 +312,12 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
         return "fetch-failed", None
     except subprocess.TimeoutExpired:
         print(f"mine-rounds: fetch of PR #{pr_number}'s head timed out after {_GIT_FETCH_TIMEOUT_S}s", file=sys.stderr)
+        return "fetch-failed", None
+    except (FileNotFoundError, OSError) as exc:
+        # Matches this file's own _LOCAL_GIT_ERRORS convention (a
+        # missing/unresolvable `git` binary on PATH) rather than crashing
+        # the whole mining sweep over one round's fetch.
+        print(f"mine-rounds: fetch of PR #{pr_number}'s head failed ({type(exc).__name__}): {exc}", file=sys.stderr)
         return "fetch-failed", None
     return "fetched", dest_ref
 

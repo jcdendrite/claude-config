@@ -387,7 +387,8 @@ class TestSessionStoreNotFoundThroughExecuteRun:
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", subject="fix: bug", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=tmp_path, live_checkout_roots=(),
-            changed_relpaths=(), budget_cap_usd=1.0, timeout_s=1, environment=runner.EnvironmentRecord("v1", "sha1", False),
+            changed_relpaths=(), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
+            environment=runner.EnvironmentRecord("v1", "sha1", False),
         )
         record = runner.execute_run(
             ctx, arm="current-rule", run_index=0, session_id="missing-session",
@@ -444,7 +445,8 @@ class TestConfigDirLeakNotExemptedForSiblingSession:
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", subject="fix: bug", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=tmp_path / "fixture", live_checkout_roots=(),
-            changed_relpaths=(), budget_cap_usd=1.0, timeout_s=1, environment=runner.EnvironmentRecord("v1", "sha1", False),
+            changed_relpaths=(), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
+            environment=runner.EnvironmentRecord("v1", "sha1", False),
         )
         record = runner.execute_run(
             ctx, arm="current-rule", run_index=0, session_id="session-a",
@@ -556,7 +558,8 @@ class TestRetryThenMissing:
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", subject="fix: bug", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=scenario, live_checkout_roots=(),
-            changed_relpaths=(), budget_cap_usd=1.0, timeout_s=1, environment=runner.EnvironmentRecord("v1", "sha1", False),
+            changed_relpaths=(), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
+            environment=runner.EnvironmentRecord("v1", "sha1", False),
         )
         attempt = runner.run_one_with_retry(ctx, arm="current-rule", run_index=0, launch=fake_launch)
 
@@ -579,7 +582,7 @@ class TestRetryThenMissing:
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", subject="fix: bug", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=scenario, live_checkout_roots=(),
-            changed_relpaths=("changed_file.py",), budget_cap_usd=1.0, timeout_s=1,
+            changed_relpaths=("changed_file.py",), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
             environment=runner.EnvironmentRecord("v1", "sha1", False),
         )
         attempt = runner.run_one_with_retry(ctx, arm="current-rule", run_index=0, launch=fake_launch)
@@ -595,7 +598,7 @@ class TestEnvironmentDriftReruns:
         spec = runner.DefectFixtureSpec(
             defect_id="d1", subject="fix: bug", arm_fixture_dirs={"current-rule": scenario},
             arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
-            live_checkout_roots=(), changed_relpaths=("changed_file.py",),
+            live_checkout_roots=(), changed_relpaths=("changed_file.py",), over_read_cap=False,
         )
         env_readings = iter([
             runner.EnvironmentRecord("v1", "sha1", False),  # block 1 start
@@ -621,7 +624,7 @@ class TestEnvironmentDriftReruns:
         spec = runner.DefectFixtureSpec(
             defect_id="d1", subject="fix: bug", arm_fixture_dirs={"current-rule": scenario},
             arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
-            live_checkout_roots=(), changed_relpaths=("changed_file.py",),
+            live_checkout_roots=(), changed_relpaths=("changed_file.py",), over_read_cap=False,
         )
         # Every reading differs from the last -- an environment that never
         # stabilizes, unlike the drift-then-stabilize sequence above.
@@ -669,6 +672,7 @@ class TestBlockCleanupOrdering:
             defect_id="d1", subject="fix: bug", arm_fixture_dirs={"current-rule": fixture_dir, "function-context": fixture_dir},
             arm_agent_names={"current-rule": AGENT_NAME, "function-context": AGENT_NAME},
             agent_declared_tools=DECLARED_TOOLS, live_checkout_roots=(), changed_relpaths=("changed_file.py",),
+            over_read_cap=False,
         )
         result = runner.run_defect_block(
             spec, arms=("current-rule", "function-context"), k=2, seed=1, campaign_id="c1",
@@ -706,7 +710,7 @@ class TestWriteAheadRecordedBeforeLaunch:
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", subject="fix: bug", agent_name=AGENT_NAME, model_id=MODEL_ID,
             agent_declared_tools=DECLARED_TOOLS, fixture_dir=scenario, live_checkout_roots=(),
-            changed_relpaths=("changed_file.py",), budget_cap_usd=1.0, timeout_s=1,
+            changed_relpaths=("changed_file.py",), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
             environment=runner.EnvironmentRecord("v1", "sha1", False),
         )
         runner.run_one_with_retry(ctx, arm="current-rule", run_index=0, launch=fake_launch, run_store=RecordingRunStore())
@@ -731,7 +735,7 @@ class TestRunCampaignResume:
             return runner.DefectFixtureSpec(
                 defect_id=defect_id, subject="fix: bug", arm_fixture_dirs={"current-rule": scenario},
                 arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
-                live_checkout_roots=(), changed_relpaths=("changed_file.py",),
+                live_checkout_roots=(), changed_relpaths=("changed_file.py",), over_read_cap=False,
             )
 
         run_store = runner.RunStore(tmp_path / "run-store")
@@ -755,7 +759,7 @@ class TestRunCampaignResume:
         assert run_store.completed_block_ids() == {"defect-done", "defect-pending"}
 
 
-def _build_two_commit_source_repo(repo_dir: Path) -> ConfirmedDefect:
+def _build_two_commit_source_repo(repo_dir: Path, *, changed_file_content: str = "x = 2\n") -> ConfirmedDefect:
     """A throwaway real git repo with exactly base_commit then head_commit,
     for build_defect_fixture_spec (never a real evals/review_bench source)."""
     repo_dir.mkdir(parents=True, exist_ok=True)
@@ -768,7 +772,7 @@ def _build_two_commit_source_repo(repo_dir: Path) -> ConfirmedDefect:
     base_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, check=True,
     ).stdout.strip()
-    (repo_dir / "changed_file.py").write_text("x = 2\n")
+    (repo_dir / "changed_file.py").write_text(changed_file_content)
     subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "fix: bug"], cwd=repo_dir, check=True)
     head_commit = subprocess.run(
@@ -803,6 +807,27 @@ class TestBuildDefectFixtureSpecRecordsDirectoriesImmediately:
         assert len(pending) == 1
         assert pending[0].session_id == runner._NO_SESSION_ID_YET
         assert Path(pending[0].directory) == spec.arm_fixture_dirs["current-rule"]
+
+    def test_over_cap_changed_file_sets_over_read_cap_true(self, tmp_path: Path) -> None:
+        """A changed file crossing fixture_repo._OVER_READ_CAP_TOKENS must
+        flip DefectFixtureSpec.over_read_cap to True through the real
+        any(stat.over_read_cap ...) wiring, not just via a directly
+        constructed RunRecord -- mirrors fixture_repo.py's own
+        test_over_read_cap_flag_follows_the_chars_divided_by_four_threshold
+        threshold-boundary test, one layer up."""
+        # 100_004 chars // 4 == 25_001, one token over fixture_repo._OVER_READ_CAP_TOKENS (25_000).
+        defect = _build_two_commit_source_repo(tmp_path / "source", changed_file_content="a" * 100_004)
+        arms_snapshot_root = tmp_path / "arms"
+        agent_dir = arms_snapshot_root / "current-rule"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "bench-staff-backend-engineer.md").write_text("agent body\n")
+
+        spec = runner.build_defect_fixture_spec(
+            defect, arm_names=("current-rule",), source_repo=tmp_path / "source", live_checkout_roots=(),
+            arms_snapshot_root=arms_snapshot_root,
+        )
+
+        assert spec.over_read_cap is True
 
 
 class TestRunStoreResume:
@@ -993,8 +1018,8 @@ class TestRunRecordJsonlRoundTrip:
             status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
             observed_tools=("Read", "Grep"), out_of_session_paths=("/tmp/x.py",), findings_text="No findings.",
             wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
-            whole_file_reads_of_changed_files=1, dispatch_prompt_verbatim=True, cli_version="2.1.0",
-            ambient_config_commit="deadbeef",
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
         )
         runner.append_run_record(path, record)
         runner.append_run_record(path, record)
@@ -1009,8 +1034,8 @@ class TestRunRecordJsonlRoundTrip:
             status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
             observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
             wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
-            whole_file_reads_of_changed_files=1, dispatch_prompt_verbatim=True, cli_version="2.1.0",
-            ambient_config_commit="deadbeef",
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
         )
         runner.append_run_records(path, (record, record, record))
         assert len(runner.read_run_records(path)) == 3
@@ -1019,6 +1044,24 @@ class TestRunRecordJsonlRoundTrip:
         path = tmp_path / "records.jsonl"
         runner.append_run_records(path, ())
         assert not path.exists()
+
+    def test_from_dict_defaults_missing_over_read_cap_to_false(self) -> None:
+        """A reviewer.jsonl/judge.jsonl line written before over_read_cap
+        existed lacks the key entirely -- from_dict must default it rather
+        than raise a raw TypeError."""
+        data = {
+            "campaign_id": "c1", "defect_id": "d1", "arm": "current-rule", "run_index": 0,
+            "opaque_run_id": "abc123", "status": runner.STATUS_OK, "missing_reason": None,
+            "observed_model": MODEL_ID, "observed_tools": ("Read", "Grep"), "out_of_session_paths": (),
+            "findings_text": "No findings.", "wall_clock_s": 12.5, "read_calls": 3, "read_tokens_est": 100,
+            "partial_view_reads": 0, "paged_followups": 0, "whole_file_reads_of_changed_files": 1,
+            "dispatch_prompt_verbatim": True, "cli_version": "2.1.0", "ambient_config_commit": "deadbeef",
+        }
+        assert "over_read_cap" not in data
+
+        record = runner.RunRecord.from_dict(data)
+
+        assert record.over_read_cap is False
 
 
 class TestApplyFaultInjection:

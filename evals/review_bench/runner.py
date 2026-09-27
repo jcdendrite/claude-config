@@ -217,6 +217,7 @@ class RunRecord:
     partial_view_reads: int
     paged_followups: int
     whole_file_reads_of_changed_files: int
+    over_read_cap: bool  # any changed file over the read-cap-token threshold (fixture_repo.ChangedFileStat)
     dispatch_prompt_verbatim: bool
     cli_version: str
     ambient_config_commit: str
@@ -229,6 +230,8 @@ class RunRecord:
         data = dict(data)
         data["observed_tools"] = tuple(data.get("observed_tools") or ())
         data["out_of_session_paths"] = tuple(data.get("out_of_session_paths") or ())
+        # Pre-over_read_cap-field reviewer.jsonl/judge.jsonl records lack this key.
+        data["over_read_cap"] = data.get("over_read_cap", False)
         return cls(**data)
 
 
@@ -901,6 +904,7 @@ class RunContext:
     fixture_dir: Path
     live_checkout_roots: tuple[Path, ...]
     changed_relpaths: tuple[str, ...]
+    over_read_cap: bool
     budget_cap_usd: float
     timeout_s: int
     # The block's own start-of-block environment reading (evals/README.md's
@@ -961,7 +965,7 @@ def execute_run(
         wall_clock_s=wall_clock_s, read_calls=stats.read_calls, read_tokens_est=stats.read_tokens_est,
         partial_view_reads=stats.partial_view_reads, paged_followups=stats.paged_followups,
         whole_file_reads_of_changed_files=stats.whole_file_reads_of_changed_files,
-        dispatch_prompt_verbatim=validity.prompt_verbatim,
+        over_read_cap=ctx.over_read_cap, dispatch_prompt_verbatim=validity.prompt_verbatim,
         cli_version=ctx.environment.cli_version, ambient_config_commit=ctx.environment.ambient_config_commit,
     )
     return record
@@ -1020,6 +1024,7 @@ class DefectFixtureSpec:
     agent_declared_tools: frozenset[str]
     live_checkout_roots: tuple[Path, ...]
     changed_relpaths: tuple[str, ...]
+    over_read_cap: bool
 
 
 @dataclass(frozen=True)
@@ -1076,7 +1081,8 @@ def run_defect_block(
                 agent_name=spec.arm_agent_names[arm], model_id=model_id,
                 agent_declared_tools=spec.agent_declared_tools, fixture_dir=spec.arm_fixture_dirs[arm],
                 live_checkout_roots=spec.live_checkout_roots, changed_relpaths=spec.changed_relpaths,
-                budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, environment=env_start,
+                over_read_cap=spec.over_read_cap, budget_cap_usd=budget_cap_usd, timeout_s=timeout_s,
+                environment=env_start,
             )
             return run_one_with_retry(ctx, arm=arm, run_index=run_index, fault=fault, launch=launch, run_store=run_store)
 
@@ -1210,6 +1216,7 @@ def build_defect_fixture_spec(
     arm" section)."""
     arm_fixture_dirs: dict[str, Path] = {}
     changed_relpaths: tuple[str, ...] = ()
+    over_read_cap = False
     subject = ""
     for arm in arm_names:
         fixture_dir = msmr._resolved_temp_project_dir(FIXTURE_DIR_PREFIX)
@@ -1221,6 +1228,7 @@ def build_defect_fixture_spec(
             run_store.record_directory(defect.id, fixture_dir, _NO_SESSION_ID_YET)
         fixture = build_defect_fixture(source_repo, defect, fixture_dir)
         changed_relpaths = tuple(stat.path for stat in fixture.changed_files)
+        over_read_cap = any(stat.over_read_cap for stat in fixture.changed_files)
         subject = _head_commit_subject(fixture_dir)
         snapshot_path = arms_snapshot_root / arm / f"bench-{defect.lens}.md"
         agents_dir = fixture_dir / ".claude" / "agents"
@@ -1232,5 +1240,5 @@ def build_defect_fixture_spec(
         defect_id=defect.id, subject=subject, arm_fixture_dirs=arm_fixture_dirs,
         arm_agent_names={arm: f"bench-{defect.lens}" for arm in arm_names},
         agent_declared_tools=frozenset(arms_mod.ARM_TOOLS), live_checkout_roots=live_checkout_roots,
-        changed_relpaths=changed_relpaths,
+        changed_relpaths=changed_relpaths, over_read_cap=over_read_cap,
     )

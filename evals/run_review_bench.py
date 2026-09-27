@@ -573,6 +573,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         print(f"analyze: certification = {certification}", file=sys.stderr)
 
     print(f"analyze: read tokens/run per arm = {analysis.read_token_stats(reviewer_records)}", file=sys.stderr)
+    print(
+        f"analyze: partial-view/paged-followup counts per arm = {analysis.partial_and_paged_counts(reviewer_records)}",
+        file=sys.stderr,
+    )
     print(f"analyze: whole-file-read adherence per arm = {analysis.whole_file_read_adherence(reviewer_records)}", file=sys.stderr)
     print(
         f"analyze: missing runs by reason per arm = {analysis.missing_run_counts_by_reason(reviewer_records)}",
@@ -598,15 +602,38 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
+    # recall_by_fix_date_half and recall_diff_over_read_cap_stratum both need
+    # per-defect fix_date/over_read_cap flags the recall-counts join above
+    # doesn't carry.
+    fix_dates_by_defect = {defect.id: defect.fix_date for defect in confirmed}
+    recall_by_fix_date_half_per_arm = {
+        arm: analysis.recall_by_fix_date_half(recall_counts, kept_ids, fix_dates_by_defect, arm)
+        for arm in (baseline_arm, other_arm)
+    }
+    print(f"analyze: recall by fix-date half per arm = {recall_by_fix_date_half_per_arm}", file=sys.stderr)
+
+    over_read_cap_defect_ids = {record.defect_id for record in reviewer_records if record.over_read_cap}
+    recall_diff_over_read_cap_stratum = analysis.recall_diff_over_read_cap_stratum(
+        recall_counts, kept_ids, over_read_cap_defect_ids, baseline_arm, other_arm,
+    )
+    print(f"analyze: recall diff in the over-read-cap stratum = {recall_diff_over_read_cap_stratum}", file=sys.stderr)
+
+    observed_sigma_d = analysis.observed_sigma_d(recall_counts, kept_ids, baseline_arm, other_arm)
+    print(f"analyze: observed sigma_d = {observed_sigma_d}", file=sys.stderr)
+
     if args.out is not None:
         report = {
             "kept_defect_ids": kept_ids,
             "precision_kept_defect_ids": precision_kept_ids,
             "read_tokens_per_arm": analysis.read_token_stats(reviewer_records),
+            "partial_and_paged_counts_per_arm": analysis.partial_and_paged_counts(reviewer_records),
             "whole_file_read_adherence_per_arm": analysis.whole_file_read_adherence(reviewer_records),
             "missing_runs_by_reason_per_arm": analysis.missing_run_counts_by_reason(reviewer_records),
             "out_of_session_read_counts_per_arm": analysis.out_of_session_counts_by_arm(reviewer_records),
             "out_of_session_read_counts_per_judge_kind": analysis.out_of_session_counts_by_arm(judge_records),
+            "recall_by_fix_date_half_per_arm": recall_by_fix_date_half_per_arm,
+            "recall_diff_over_read_cap_stratum": recall_diff_over_read_cap_stratum,
+            "observed_sigma_d": observed_sigma_d,
         }
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)

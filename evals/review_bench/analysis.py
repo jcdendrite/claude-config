@@ -18,6 +18,7 @@ import random
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from statistics import NormalDist, mean, stdev
 
@@ -352,7 +353,7 @@ def recall_by_fix_date_half(
 ) -> dict[str, float]:
     """Recall split at the median fix date of the kept defects -- an
     observable proxy for memorization exposure, never gating."""
-    dated = sorted(kept_defect_ids, key=lambda defect_id: fix_dates_by_defect[defect_id])
+    dated = sorted(kept_defect_ids, key=lambda defect_id: datetime.fromisoformat(fix_dates_by_defect[defect_id]))
     midpoint = len(dated) // 2
     return {
         "earlier_half": arm_recall(recall_counts_by_defect, dated[:midpoint], arm),

@@ -440,7 +440,11 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
         wall_clock_s=wall_clock_s, read_calls=stats.read_calls, read_tokens_est=stats.read_tokens_est,
         partial_view_reads=stats.partial_view_reads, paged_followups=stats.paged_followups,
         whole_file_reads_of_changed_files=stats.whole_file_reads_of_changed_files,
-        dispatch_prompt_verbatim=validity.prompt_verbatim,
+        # Always False: a judge run holds no fixture tree's own ChangedFileStat --
+        # changed_relpaths_for computes relpaths directly against source_repo,
+        # never a built fixture. recall_diff_over_read_cap_stratum also only
+        # ever consumes reviewer records, never a judge_kind "arm".
+        over_read_cap=False, dispatch_prompt_verbatim=validity.prompt_verbatim,
         cli_version=ctx.environment.cli_version, ambient_config_commit=ctx.environment.ambient_config_commit,
     )
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ def _run_record(defect_id: str, arm: str, opaque_run_id: str, findings_text: str
         status=status, missing_reason=None, observed_model="claude-sonnet-5", observed_tools=("Read",),
         out_of_session_paths=(), findings_text=findings_text, wall_clock_s=1.0, read_calls=1,
         read_tokens_est=10, partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=0,
-        dispatch_prompt_verbatim=True, cli_version="2.0.0", ambient_config_commit="deadbeef",
+        over_read_cap=False, dispatch_prompt_verbatim=True, cli_version="2.0.0", ambient_config_commit="deadbeef",
     )
 
 
@@ -270,6 +271,36 @@ class TestSpotCheckSampling:
         ]
         sample = adjudicate.select_spot_check_sample(candidates, sample_size=100, seed=0)
         assert len(sample) == 100
+
+    def test_allocates_proportionally_with_largest_remainder_rounding_on_an_uneven_split(self) -> None:
+        """7:2:1 across three labels, sample_size=4, exercises both the
+        proportional math (raw shares 2.8/0.8/0.4, none of which are already
+        integers) and the remainder-redistribution branch: after int()
+        truncation (2/0/0, using 2 of the 4 slots), the 2 remaining slots go
+        to the two largest fractional remainders (FOUND's 0.8 and
+        NOT_FOUND's 0.8), never to OTHER's smaller 0.4 -- the branch the
+        two prior tests (both an exact 50/50 split) never exercise."""
+        candidates = [
+            adjudicate.SpotCheckCandidate(
+                item_id=f"d1:found{i}", kind="recall", judge_label="FOUND", display_text="x", arm="current-rule",
+            )
+            for i in range(7)
+        ] + [
+            adjudicate.SpotCheckCandidate(
+                item_id=f"d1:notfound{i}", kind="recall", judge_label="NOT_FOUND", display_text="x",
+                arm="current-rule",
+            )
+            for i in range(2)
+        ] + [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:other0", kind="recall", judge_label="OTHER", display_text="x", arm="current-rule",
+            ),
+        ]
+        sample = adjudicate.select_spot_check_sample(candidates, sample_size=4, seed=0)
+
+        assert len(sample) == 4
+        counts_by_label = Counter(c.judge_label for c in sample)
+        assert counts_by_label == {"FOUND": 3, "NOT_FOUND": 1}
 
     def test_export_never_writes_judge_label_or_arm(self, tmp_path) -> None:
         candidates = [

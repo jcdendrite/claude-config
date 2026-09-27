@@ -18,7 +18,7 @@ def _run_record(
     defect_id: str, arm: str, opaque_run_id: str, *, cli_version: str = "2.0.0",
     ambient_config_commit: str = "deadbeef", missing_reason: str | None = None, status: str = "ok",
     out_of_session_paths: tuple[str, ...] = (), read_tokens_est: int = 10, partial_view_reads: int = 0,
-    paged_followups: int = 0, whole_file_reads_of_changed_files: int = 0,
+    paged_followups: int = 0, whole_file_reads_of_changed_files: int = 0, over_read_cap: bool = False,
 ) -> runner.RunRecord:
     return runner.RunRecord(
         campaign_id="c1", defect_id=defect_id, arm=arm, run_index=0, opaque_run_id=opaque_run_id,
@@ -26,8 +26,8 @@ def _run_record(
         observed_tools=("Read",), out_of_session_paths=out_of_session_paths, findings_text="x",
         wall_clock_s=1.0, read_calls=1, read_tokens_est=read_tokens_est,
         partial_view_reads=partial_view_reads, paged_followups=paged_followups,
-        whole_file_reads_of_changed_files=whole_file_reads_of_changed_files, dispatch_prompt_verbatim=True,
-        cli_version=cli_version, ambient_config_commit=ambient_config_commit,
+        whole_file_reads_of_changed_files=whole_file_reads_of_changed_files, over_read_cap=over_read_cap,
+        dispatch_prompt_verbatim=True, cli_version=cli_version, ambient_config_commit=ambient_config_commit,
     )
 
 
@@ -421,6 +421,27 @@ class TestSecondaryReportColumns:
         fix_dates = {"d1": "2024-01-01", "d2": "2024-03-01", "d3": "2024-06-01"}
         result = analysis.recall_by_fix_date_half(counts, ["d1", "d2", "d3"], fix_dates, ARM_BASELINE)
         assert result == {"earlier_half": pytest.approx(0.8), "later_half": pytest.approx(0.35)}
+
+    def test_recall_by_fix_date_half_sorts_by_chronological_instant_not_by_lexicographic_string(self) -> None:
+        """d1's fix_date string sorts lexicographically before d2's, but a
+        -08:00 offset on d1 and a +05:00 offset on d2 put d1's instant
+        (2024-01-16T07:00:00Z) after d2's (2024-01-15T20:00:00Z) -- a raw
+        string sort (the pre-fix behavior) would put d1 in the earlier
+        half instead of d2, asserting the wrong values below."""
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 2}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+            "d2": analysis.DefectRecallCounts(
+                defect_id="d2", found_by_arm={ARM_BASELINE: 8}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+        }
+        fix_dates = {"d1": "2024-01-15T23:00:00-08:00", "d2": "2024-01-16T01:00:00+05:00"}
+        assert fix_dates["d1"] < fix_dates["d2"]  # lexicographically, the reverse of chronological order
+
+        result = analysis.recall_by_fix_date_half(counts, ["d1", "d2"], fix_dates, ARM_BASELINE)
+
+        assert result == {"earlier_half": pytest.approx(0.8), "later_half": pytest.approx(0.2)}
 
     def test_recall_diff_over_read_cap_stratum_is_arm_x_minus_baseline_on_the_stratum(self) -> None:
         counts = {

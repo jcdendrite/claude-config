@@ -479,6 +479,11 @@ python evals/run_review_bench.py analyze \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
 ```
 
+`evals/review_bench/.local/*_candidates.json` (`mine-rounds`' and `mine-szz`'s
+own miner output) can carry real session or finding-excerpt text and is
+gitignored for that reason — never copy its content into a committed file or
+another private-project-adjacent surface.
+
 ### Frozen conditions and invalidation
 
 `freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge

@@ -529,7 +529,7 @@ Environment drift triggers the same rule. If the CLI version or ambient config c
     - environment readings with the within-block rerun;
     - block-end cleanup.
 
-    Only `smoke` accepts fault-injection options (gate 6); `run` rejects them. `RunRecord` fields: campaign_id, defect_id, arm, run_index, opaque_run_id, status, missing_reason, observed_model, observed_tools, out_of_session_paths, findings_text, wall_clock_s, read_calls, read_tokens_est, partial_view_reads, paged_followups, whole_file_reads_of_changed_files, dispatch_prompt_verbatim, cli_version, ambient_config_commit.
+    Only `smoke` accepts fault-injection options (gate 6); `run` rejects them. `RunRecord` fields: campaign_id, defect_id, arm, run_index, opaque_run_id, status, missing_reason, observed_model, observed_tools, out_of_session_paths, findings_text, wall_clock_s, read_calls, read_tokens_est, partial_view_reads, paged_followups, whole_file_reads_of_changed_files, over_read_cap, dispatch_prompt_verbatim, cli_version, ambient_config_commit.
   - `evals/test_review_bench_runner.py`
   - Synthetic subagent transcripts under `evals/fixtures/review-bench/`.
 - Modify:

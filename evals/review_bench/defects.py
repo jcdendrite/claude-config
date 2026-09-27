@@ -133,10 +133,8 @@ class ConfirmedDefect:
 
     `description` is the only free-text field. `confirm` runs it through
     `check_description_provenance`, which catches a verbatim or
-    near-verbatim word run shared with a `.local/` finding excerpt. It has
-    no resistance to a paraphrase or reordering of the same content, so the
-    human drafting the description remains the primary safeguard against a
-    leak, not this check.
+    near-verbatim word run shared with a `.local/` finding excerpt --
+    see that function's own docstring for the check's limits.
     """
 
     id: str

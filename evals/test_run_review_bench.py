@@ -47,14 +47,15 @@ def _commit(repo: Path, message: str) -> str:
 
 def _run_record(
     defect_id: str, arm: str, opaque_run_id: str, findings_text: str, *, status: str = "ok",
-    out_of_session_paths: tuple[str, ...] = (),
+    out_of_session_paths: tuple[str, ...] = (), over_read_cap: bool = False,
 ) -> runner.RunRecord:
     return runner.RunRecord(
         campaign_id="c1", defect_id=defect_id, arm=arm, run_index=0, opaque_run_id=opaque_run_id,
         status=status, missing_reason=None, observed_model="claude-sonnet-5", observed_tools=("Read",),
         out_of_session_paths=out_of_session_paths, findings_text=findings_text, wall_clock_s=1.0, read_calls=1,
         read_tokens_est=10, partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=0,
-        dispatch_prompt_verbatim=True, cli_version="2.0.0", ambient_config_commit="deadbeef",
+        over_read_cap=over_read_cap, dispatch_prompt_verbatim=True, cli_version="2.0.0",
+        ambient_config_commit="deadbeef",
     )
 
 
@@ -463,6 +464,77 @@ class TestCmdAnalyzeOutOfSessionReport:
         # carries only the count.
         stderr = capsys.readouterr().err
         assert f"analyze: out-of-session read in {JUDGE_ARM_RECALL} run j-recall: secret/path.txt" in stderr
+
+
+class TestCmdAnalyzeReportCompleteness:
+    def test_written_report_carries_every_never_gating_secondary_column(self, tmp_path: Path) -> None:
+        """Regression guard: a per-function unit test on analysis.py's own
+        secondary-column functions cannot catch cmd_analyze never calling
+        one of them. This asserts the wiring -- every column is present in
+        the --out report -- not each column's own math, which
+        test_review_bench_analysis.py already covers.
+
+        d1 and d2 carry opposite detection patterns (d1 found only in
+        current-rule, d2 found only in function-context) and only d2 is
+        over_read_cap -- so the over-cap-restricted stratum's recall diff
+        (+1.0, d2 alone) diverges from what a broken over_read_cap
+        extraction would silently produce instead (0.0, arm_recall's own
+        empty-defect-list default): the specific-value assertion below
+        can't pass by accident the way a bare key-presence check can."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(
+            defects_path, [_confirmed_single_defect("d1"), _confirmed_single_defect("d2")],
+        )
+
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        reviewer_records = [
+            _run_record("d1", arms_mod.ARM_CURRENT_RULE, "run-a", "Leaks a connection on error."),
+            _run_record("d1", arms_mod.ARM_FUNCTION_CONTEXT, "run-b", "Nothing to report."),
+            _run_record("d2", arms_mod.ARM_CURRENT_RULE, "run-c", "Nothing to report.", over_read_cap=True),
+            _run_record("d2", arms_mod.ARM_FUNCTION_CONTEXT, "run-d", "Leaks a null pointer.", over_read_cap=True),
+        ]
+        runner.append_run_records(reviewer_records_path, reviewer_records)
+
+        judge_records_path = tmp_path / "judge.jsonl"
+        judge_records = [
+            _run_record(
+                "d1", JUDGE_ARM_RECALL, "j-recall-1", 'run-a: FOUND -- "Leaks a connection"\nrun-b: NOT_FOUND',
+            ),
+            _run_record(
+                "d1", JUDGE_ARM_PRECISION, "j-precision-1",
+                '### Run run-a\n1. VALID -- "Leaks a connection"\n### Run run-b\n',
+            ),
+            _run_record(
+                "d2", JUDGE_ARM_RECALL, "j-recall-2",
+                'run-c: NOT_FOUND\nrun-d: FOUND -- "Leaks a null pointer"',
+            ),
+            _run_record("d2", JUDGE_ARM_PRECISION, "j-precision-2", "### Run run-c\n### Run run-d\n"),
+        ]
+        runner.append_run_records(judge_records_path, judge_records)
+
+        out_path = tmp_path / "report.json"
+        args = argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
+            out=str(out_path),
+        )
+
+        exit_code = run_review_bench.cmd_analyze(args)
+
+        assert exit_code == 0
+        report = json.loads(out_path.read_text())
+        # Every never-gating secondary column analysis.py exposes, except
+        # split agreement (produced by `spot-check import`, not `analyze`).
+        for column in (
+            "read_tokens_per_arm", "partial_and_paged_counts_per_arm", "whole_file_read_adherence_per_arm",
+            "missing_runs_by_reason_per_arm", "out_of_session_read_counts_per_arm",
+            "out_of_session_read_counts_per_judge_kind", "recall_by_fix_date_half_per_arm",
+            "recall_diff_over_read_cap_stratum", "observed_sigma_d",
+        ):
+            assert column in report, f"cmd_analyze's --out report is missing the {column!r} secondary column"
+        # d2 is the sole over_read_cap defect and is found only in
+        # function-context (ARM_FUNCTION_CONTEXT - ARM_CURRENT_RULE = 1 - 0).
+        assert report["recall_diff_over_read_cap_stratum"] == 1.0
 
 
 def _candidate(**overrides) -> defects.Candidate:
