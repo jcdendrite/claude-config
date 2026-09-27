@@ -27,10 +27,11 @@ Optional frontmatter:
 - **`user-invocable`** — `false` hides the skill from the slash-command
   menu but keeps it auto-triggerable from the description.
 - **`disable-model-invocation`** — `true` removes the description from the
-  always-loaded skill-listing budget; Skill tool invocations still work.
-  Use `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
-  loaded by a parent via Glob + the Read tool — `test-conventions`, `plan-review`,
-  and `code-review` all use this pattern; auto-trigger is not needed.
+  always-loaded skill-listing budget; Skill tool invocations still work. Use
+  `true` on add-on skills (`.claude/skills/<parent>-<project>/SKILL.md`)
+  loaded by a parent via Glob + the Read tool — `test-conventions`,
+  `plan-review`, and `code-review` all use this pattern; auto-trigger is not
+  needed.
 
 Description text is always-loaded context budget; body text is conditional — so overspend in the description costs more than overspend in the body.
 
@@ -40,12 +41,7 @@ body sections already enumerate; the summary routes.
 
 ## 2. Trigger design
 
-Format the description with two parallel lists:
-
-```
-TRIGGER when: <specific situation>; <another>; <another>.
-DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scope>.
-```
+Format the description with two parallel lists: `TRIGGER when: <specific situation>; <another>; <another>.` and `DO NOT TRIGGER when: <obvious misfire>; <adjacent skill's surface>; <out of scope>.`
 
 **Specificity sources, in priority order:**
 
@@ -132,12 +128,7 @@ If not all three hold, point at the canonical source.
 
 ## 7. Review checklist
 
-When the staged diff is (or includes) `plan-review/ROUTING.md`, items 1-4
-(frontmatter, description scope, trigger specificity, DO NOT TRIGGER
-coverage) do not apply — it has no frontmatter or description — but items
-5-12 (length, behavior test, voice, cross-reference correctness, duplication
-justification, redaction, behavioral-equivalence audit,
-platform-genericness) do.
+When the staged diff is (or includes) `plan-review/ROUTING.md`, items 1-4 do not apply — it has no frontmatter or description — but items 5-12 do (see each item's title below).
 
 1. **Frontmatter** — `name` matches directory; `description` present and contains both `TRIGGER when:` and `DO NOT TRIGGER when:` blocks. `allowed-tools` and `user-invocable` only if needed. Add `disable-model-invocation: true` on add-on skills loaded by a parent via Glob + the Read tool (`.claude/skills/<parent>-<project>/SKILL.md`).
 2. **Description scope** — the description's TRIGGER list matches
@@ -197,4 +188,12 @@ blockers), record completion by running this command exactly once:
 ~/.claude/scripts/marker.sh write skill-review
 ```
 
-The pathspecs `claude-skills/skills/**/SKILL.md`, `plugins/*/skills/**/SKILL.md`, `skills/**/SKILL.md`, and `claude-skills/skills/plan-review/ROUTING.md` are encoded inside `marker.sh write skill-review` so the marker matches what `require-skill-review.sh` checks — covering stowed skills, project-scoped plugin skills, plugin-root-equals-repo-root skills, and the hardcoded `ROUTING.md` exception.
+The following pathspecs are encoded inside `marker.sh write
+skill-review` so the marker matches what `require-skill-review.sh`
+checks:
+- `claude-skills/skills/**/SKILL.md` — stowed skills
+- `plugins/*/skills/**/SKILL.md` — project-scoped plugin skills
+- `skills/**/SKILL.md` — plugin-root-equals-repo-root skills
+- `.claude/skills/**/SKILL.md` — this repo's own project-layer skills
+- `claude-skills/skills/plan-review/ROUTING.md` — the hardcoded
+  `ROUTING.md` exception

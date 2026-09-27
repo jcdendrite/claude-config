@@ -6,6 +6,7 @@
       "Bash(~/.claude/scripts/marker.sh write plan-review)",
       "Bash(~/.claude/scripts/marker.sh write ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh write cumulative-review)",
+      "Bash(~/.claude/scripts/marker.sh write verification)",
       "Bash(~/.claude/scripts/marker.sh activate plan-review)",
       "Bash(~/.claude/scripts/marker.sh activate ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh activate respond-pr)",
@@ -19,6 +20,7 @@
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
       "Bash(~/.claude/scripts/marker.sh check code-review)",
+      "Bash(~/.claude/scripts/marker.sh check verification)",
       "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
@@ -26,6 +28,17 @@
       "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
       "Bash(~/.claude/scripts/worktree-removal-status.sh)",
       "Bash(worktree-removal-status)"
+    ],
+    "ask": [
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
+      "Bash(cleanup-merged-branches)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
+      "Bash(cleanup-merged-branches --all-projects)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
+      "Bash(cleanup-merged-branches --all-projects --dry-run)",
+      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
+      "Bash(cleanup-idle-open-pr-worktrees)",
+      "Edit(//**/.claude/settings*.json)"
     ],
     "deny": [
       "Bash(sudo *)",
@@ -74,6 +87,7 @@
   },
   "disableArtifact": true,
   "disableWorkflows": true,
+  "syncClaudeAiSkills": false,
   "attribution": {
     "sessionUrl": false
   },
@@ -92,6 +106,7 @@
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
+    "memory-store-audit": "name-only",
     "measure-check-output": "name-only",
     "review-loop-cost-audit": "name-only",
     "loop": "name-only",
@@ -141,6 +156,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/set-session-title-from-branch.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-memory-store-audit.sh",
+            "timeout": 10
           }
         ]
       },
@@ -459,6 +484,19 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-resume-command.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-answer-provenance.sh"
           }
         ]
       },
@@ -505,17 +543,5 @@
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
-  },
-  "enabledPlugins": {
-    "claude-md-management@claude-plugins-official": false,
-    "claude-code-setup@claude-plugins-official": false
-  },
-  "extraKnownMarketplaces": {
-    "claude-plugins-official": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
-      }
-    }
   }
 }

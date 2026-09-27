@@ -80,11 +80,17 @@ LABEL="${SKILL_NAME##*:}"
 LABEL="${LABEL##*/}"
 [ "$LABEL" = "handoff" ] || exit 0
 
-# _lib_capped_for (claude/.claude/hooks/_lib.sh) sends SIGTERM only, with no
-# -k/--kill-after force-kill, and falls back to fully uncapped execution when
+# _lib_capped_for (claude/.claude/hooks/_lib.sh) escalates to SIGKILL 2s
+# after its SIGTERM, and falls back to fully uncapped execution when
 # neither timeout nor gtimeout is on PATH. PostToolUse runs synchronously, so
-# a wedged marker.sh call under that gap blocks the whole turn with no retry
-# path.
+# a wedged marker.sh call under the uncapped fallback (or a D-state child)
+# blocks the whole turn with no retry path.
+# marker.sh has no TERM trap, so a kill at the cap boundary (SIGTERM, or the
+# -k SIGKILL) landing after the marker file is opened but before its PID is
+# written leaves the marker empty.
+# The PID is written by one small printf > file write.
+# _lib_active_bypass_marker_live evicts an empty, non-numeric, or dead-PID
+# marker, so an empty marker leaves the gate enforcing.
 if ! _lib_capped_for 2 "$CONFIG_DIR/scripts/marker.sh" activate handoff >/dev/null 2>&1; then
   # Observability only, same posture as the schema-drift signal above: a
   # per-session-deduped log line under a distinct tag distinguishes a

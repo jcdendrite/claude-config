@@ -1,20 +1,22 @@
 ---
 name: review-loop-cost-audit
-description: Diagnose whether a branch's review-loop spend is a stuck loop, plan-grinding, or ordinary large-diff work between review gates, by correlating review-round-cost's dated round table against a git-log code-freeze instant, via a corpus-wide sweep or a single-branch deep audit. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
+description: Decompose why a branch's review loop cost what it did and ran as many rounds as it did, by where the dollars concentrated and what triggered each expensive round, via a corpus-wide sweep or a single-branch deep audit. Reports shares, causes, and cheaper levers; the post-freeze flags (stuck loop, plan-grinding, gate-denial churn) are among several. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
 argument-hint: "[branch-name | sweep] [output-path]"
 ---
 
 ## Step 0 — Scope and safety
 
-Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation". Report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`, since `--this-repo` does not imply single-account scope. `cost --summary` is scoped to the active account only, on its own `Scope:` line.
+Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation". Report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`, since `--this-repo` does not imply single-account scope. `cost --summary` is scoped to this repository on the active account only, on its own `Scope:` line. `--branches` matches the branch-name string only and pools same-named branches across roots, so record which roots the branch's sessions actually live in rather than assuming one.
 
 This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
+
+`judgment-pair` and `user-input` print raw human prompt text regardless of `--redact`. Keep that text in the artifact directory's two files only (the report and `judgment-pairs.md`), never in the return or in any tracked file.
 
 Caveats beyond what is stated below are not restated here — see `transcript-analysis/SKILL.md` § "Caveats" and `docs/transcript-analysis.md`.
 
 ## Step 1 — Mode select
 
-No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → deep audit (Step 3). Deep audit never infers its subject from the current branch — the session running the audit is usually anchored in the audit's own worktree, not the branch under investigation.
+No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → deep audit (Step 3). Deep audit never infers its subject from the current branch, unless the caller's handoff or request names this skill with no target and exactly one branch is being handed off. The session running the audit is usually anchored in the audit's own worktree, not the branch under investigation.
 
 ## Step 2 — Sweep: rank candidates, never a verdict
 
@@ -22,7 +24,7 @@ No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → dee
 python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo
 ```
 
-Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total — already a complete per-branch dollar ranking, so no session/turn-count screening is needed. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size. When the caller instead gives an absolute minimum, use that.
+Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total, which is already a complete per-branch dollar ranking, so no session/turn-count screening is needed. Also note each branch's top-round share of `X`, computed from its round table — a branch whose spend sits in one round and a branch whose spend is spread across many need different audits. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size. When the caller instead gives an absolute minimum, use that.
 
 Cross-check completeness:
 
@@ -32,7 +34,7 @@ python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 
 A branch with zero rounds never appears in `review-round-cost`'s table, so the set difference against this `buckets` listing is the completeness check.
 
-For each candidate, note the round mix (a `plan-review`-heavy mix is the plan-grinding signature) and run:
+For each candidate, note the round mix and run:
 
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --branches <branch>
@@ -40,7 +42,7 @@ python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --bran
 
 for within-branch reviewer skew and dispatches per round. A corpus-wide unfiltered `subagent-mix --this-repo` run supplies a ranking-aid denominator only — label it explicitly as not a threshold. Per-type dispatch share scales with both branch size and corpus age, so it ranks but does not threshold.
 
-Output a ranked candidate list with the reason each ranked, stating plainly that the sweep has not distinguished thrash from ordinary large-diff work. When more than one candidate is plausible, use `AskUserQuestion` to hand the chosen branch to Step 3.
+Output a ranked candidate list with the reason each ranked, stating plainly that the sweep has not decomposed any branch's cost. When more than one candidate is plausible, use `AskUserQuestion` to hand the chosen branch to Step 3.
 
 ## Step 3 — Deep audit of one branch
 
@@ -51,65 +53,121 @@ In order:
 python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo --branches <branch>
 ```
 
-**(b) Dated round table and reconciliation line.**
+**(b) Dated round table, round instants, and reconciliation line.**
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo --branches <branch>
 ```
+The table is date-only. Take round instants from the event timeline, which prints an ISO instant per skill invocation, reviewer spawn, architect consult, and denial:
+```bash
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch>
+```
+A round is one skill invocation, not one review pass. Its window is the one `docs/transcript-analysis.md` § "review-round-cost" defines. Non-review work such as a handoff write-up, a `pr-description` run, or a `code-writer` dispatch stays inside that window, so a round's main-thread dollars are an upper bound on its review cost. A single invocation can hold several reviewer waves separated by fix work, so list each round's reviewer spawns with their instants and count the waves, reading a gap of tens of minutes as a wave boundary. Report the waves per round next to the round's dollars. Never describe a multi-wave round as one review.
 
-**(c) Resolve code-churn dates, tiered.**
+**(c) Cost decomposition.** Arithmetic on the Step (b) table, then the checks below.
+
+- **Concentration:** the top round's share of round dollars and of branch dollars. Also the fewest rounds that cover 60% of round dollars.
+- **Main vs fan-out:** for each concentrated round, the split between `main $` and `agent $`, and its `agents` count. Main-heavy means the orchestrator did the work; agent-heavy means fan-out width. The remedies differ.
+- **Window check:** a concentrated round's window may contain more than review work. Confirm from Step (b)'s timeline that the window holds reviewer waves, and name what else it spans (consults, code-writer dispatches, hook denials, gaps over an hour). A round whose main-thread cost is unexplained by its timeline is reported as a window artifact, not as an expensive orchestrator. Naming non-review work in the window is not enough. Once such work is named, do not read the round's main-thread dollars as review cost, and subtract the named work before pricing any lever off them.
+- **Round mix:** `ready-for-review` rounds typically dispatch no agents and are cheap. Report review rounds separately from gate re-runs.
+- **Non-round share:** `review-round-cost` prices only a round's own window. The fix a round causes lands outside that window, so the residual includes implementation. State that on every line that reports the residual. The toolkit yields one reconciliation number, not a split, so name the residual's components by count only:
+  - code-writer dispatches
+  - architect consults
+  - resyncs with the default branch
+  - continuation sessions: the branch's `Sess` count from Step (a)'s `buckets` run, minus one
+
+**(d) Resolve code-churn dates, classify commits, and record the tip SHA.**
 - **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
 
-  `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day. Compare the two clocks as instants, never as date strings.
-- **Tier 2** — no local ref: resolve the PR number with `pr-link --repo owner/repo --this-repo --branches <branch>`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
-- **Tier 3** — both unavailable: stop and report the churn signal as unavailable. Label the outside-review-window share — the % of the branch's review-round dollars (from `review-round-cost`'s table) that falls outside its dated round windows — as non-diagnostic. This is a real, printed outcome, not a fallback to a weaker proxy.
+  `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day. Compare the two clocks as instants, never as date strings. `%ad` is the author instant; use it for every ordering test below.
+- **Tier 2** — no local ref: run the `gh` call from the repo's worktree root as its own single statement, so `gh` resolves the repo from the working directory and no repo slug is guessed. Resolve the PR number with `gh pr list --head <branch> --state all --json number --limit 1`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
+- **Tier 3** — both unavailable: report the churn signal as unavailable and skip Step (e)'s commit joins. Do not substitute a weaker proxy for it. Steps (c), (f) and (g) still run.
 
-**(d) Classify commits and take the freeze instant.** Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. The **code-freeze instant** is the last code-bearing commit's author instant. A branch whose commits are one squashed WIP commit carries no usable per-commit date series — return **Inconclusive** (Step 4) rather than reading a single commit as an immediate freeze.
+Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. A branch whose commits are one squashed WIP commit carries no usable per-commit date series; skip the joins in (e) and say why. Never read a single commit as an immediate freeze.
 
-**(d2) Confirm the branch has actually frozen.** A freeze partition presupposes a freeze. Record the tip SHA and run `TZ=UTC git log -1 --date=iso-local --format='%h %cd' <branch>`, then apply both tests:
+Record the tip SHA when Tier 1 or Tier 2 resolves the branch. Tier 3 has no tip SHA to record, so part 6 reports it as unavailable. Re-read the SHA after Step (g), just before writing the artifact. A changed SHA means the corpus was read mid-flight; report it with the results so a later re-run can tell whether the branch moved. Committer time alone moving (a resync or rebase) is not new work and does not make the branch active.
 
-- Tip newer than the newest round in Step (b)'s table → the branch moved after the last round the corpus observed.
-- Tip moved during this audit (re-read the ref after Step (c) and compare SHAs) → the corpus was read mid-flight.
+**(e) Round→commit interleave and the freeze flag.** Join each round's window to the commits authored inside or after it, by author instant. Report per round: commits authored between its invocation and its close, where the close follows the boundary cited in Step (b), and the rounds that produced no commit. Then the **code-freeze instant**, the last code-bearing commit's author instant, and the flag: post-freeze rounds N, and their share of round dollars.
 
-Either one returns **Inconclusive — branch still active** (Step 4), but run Step (g)'s gate-denial scan first. That scan needs no freeze date, so a still-active branch can still carry a **Gate-denial churn** verdict. Report the tip SHA with the verdict so a later re-run can tell whether the branch moved since.
+- A freeze partition presupposes rounds after the freeze. When the freeze instant is after the newest round's invocation, print **no rounds start after the freeze**. That is zero-by-construction, a healthy loop that ends on a fix. It is not the same finding as zero-after-checking, and only zero-after-checking is a clean bill of health.
+- Neither the zero-by-construction outcome nor the zero-after-checking outcome ends the audit, which always continues to (f) and (g).
 
-**(e) Partition.** Split Step (b)'s round table at the code-freeze instant and report the rounds and dollars that fall after it. When the freeze instant is at or after the newest round, say **partition vacuous — no rounds fall after the freeze** and return **Inconclusive**. Never report that case as zero post-freeze rounds. Zero-by-construction and zero-after-checking are different findings. Only the second is a clean bill of health.
-
-**(f) Per-session skew.**
-```bash
-python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --branches <branch> --per-session
-```
-`--this-repo` alone routinely puts more than one root in scope, so expect this to be refused — fall back to the aggregate run below when it is.
+**(f) Descriptive context.** Run and report:
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo --branches <branch> --deny-summary
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --this-repo --branches <branch>
 ```
-Per-session granularity is unavailable under multi-root scope. Use the aggregate run's `Top subagent types` column, the per-branch dispatch-count breakdown, as the skew signal instead.
+For `subagent-mix`, read the aggregate run's `Top subagent types` column as the skew signal, since `--per-session` is refused under a multi-root `--this-repo` scope. Report skew and dispatches per round without using them as criteria, since neither tracks the freeze partition.
 
-**(g) Characterize the post-freeze rounds.** Required before any thrash verdict in Step 4, and skipped only when Step (e) found no post-freeze rounds. The gate-denial scan below is the exception: it needs no freeze date and runs even when Step (d2) or Step (e) already returned Inconclusive. The counts from Steps (b)–(f) establish only that rounds ran after the freeze, not what they did. Invoke `transcript-narrative` for the branch and establish three things:
+For `review-trace --deny-summary`, the census names which gate produced the denials and which command shapes recur. This census feeds Step 4's Denial-retry waste flag.
 
-- Whether successive rounds of the same skill raised new findings each time or re-surfaced ones already raised.
-- Whether repeated `ready-for-review` rounds re-ran an identical denial with the command shape unadapted.
-- Whether the rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review.
+For `fail-seq`, read it as a one-line check on whether debugging drove cost.
 
-Where the narrative cannot settle which of these applies, the verdict is **Inconclusive**.
+**(g) Attribute a trigger to each sampled round.** The sample is the rounds Step (c) needs to cover 60% of round dollars, plus every round Step (e) found with no following commit. When Step (e)'s joins were skipped, the sample is the 60% set only. Do not read all rounds.
 
-## Step 4 — Verdict rubric
+`<artifact-dir>` is the directory of Step 5's output file: the caller-supplied output path's directory, or a fresh `mktemp -d`. Apply Step 5's tracked-tree guard to the `judgment-pairs.md` path itself before running `judgment-pair`, since that file holds raw human prompt text. Write it only in that directory.
 
-The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal. It yields a candidate rather than a verdict. Step 3(g)'s narrative read is what confirms or rejects the label. A thrash label is a claim that read must evidence, and never a threshold the share alone can clear. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
+Extract the human decision points:
+```bash
+python3 ~/.claude/scripts/transcript-analysis.py judgment-pair --this-repo --branches <branch> --out <artifact-dir>/judgment-pairs.md
+```
+Invoke `transcript-narrative` for the branch only for a sampled round the pairs and the round's own findings text leave unattributed.
 
-Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never as criteria. Neither tracks the freeze partition: a branch with no post-freeze rounds can carry the corpus's highest within-branch skew. Requiring them as co-signals suppresses true positives.
+Assign each sampled round one trigger class:
 
-**Verdict per round type, not per branch.** A branch's `code-review`, `plan-review`, and `ready-for-review` rounds routinely diverge — productive code review alongside genuine plan-grinding on one unimplemented slice, for instance. One label per branch destroys that finding. Emit a verdict for each round type that has post-freeze rounds, then a one-line branch summary naming the divergence when the verdicts differ.
+- **new-finding** — the round's reviewers raised an issue not raised before.
+- **fix-induced** — the round's findings are defects the previous round's own fix introduced.
+- **human-scope-expansion** — a human turn added work (promoted a deferred finding, overrode a recommendation, widened scope) before the round.
+- **gate-denial** — the round re-ran because a hook denied a step, not because of review content.
+- **pipeline-mandatory** — the pipeline required the round regardless of findings (a gate re-run after a push).
+- **unattributed** — no primary source settles it.
 
-- **Stuck loop** — post-freeze rounds of this type keep opening and re-surface findings already raised, rather than new ones each round.
-- **Plan-grinding** — post-freeze `plan-review` rounds iterating a plan whose feature is still unimplemented, with post-freeze commits touching only artifact paths.
-- **Gate-denial churn** — post-freeze `ready-for-review` rounds re-running an identical denial across sessions with the command shape unadapted. Distinct from stuck loop: nothing is being re-reviewed.
-- **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range (no early freeze), whatever the outside-review-window share reads.
-- **Inconclusive** — Tier 3, a single squashed commit (Step 3d), a branch still active (Step 3d2), or a vacuous partition (Step 3e).
+A class is assigned only from a primary source: the round's own findings text or a human turn, cited by session and turn or by findings-file path. Commit titles may corroborate a class and never establish one. Default to `unattributed` and print the count, including where the read cannot tell fix-induced from new-finding. A table that is mostly `unattributed` is a useful audit, and one that is confidently mislabeled is not.
 
-State the non-discrimination rule in words. Carry no dollar total, no per-branch cost share, and no figure from either corpus into the verdict text — this is a repo-wide publication rule, not a per-branch choice.
+A missing findings file is not evidence that the round raised no findings. A reviewer dispatched without `findings_path` returns its findings inline, in the round's own Agent tool result in the dispatching session's transcript. A pipeline rule is never a primary source, so a round whose findings text cannot be read is `unattributed` whatever the pipeline required.
+
+Also note whether rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review. That is session churn, not loop churn, and it does not support a stuck-loop flag.
+
+Causes carry no judgment. `human-scope-expansion` and `new-finding` are often the branch working correctly. Only the flags in Step 4 carry a judgment.
+
+## Step 4 — Report
+
+Emit the six parts below. Carry no dollar total, no per-branch cost share, and no corpus figure into text that leaves the artifact; this is a repo-wide publication rule. Within the artifact, quote shares and counts, and quote dollars only in the round table.
+
+1. **Headline** — rounds split by type, with the review-round versus gate-re-run split and the concentration fact. Name the waves-per-round finding when a round held more than one wave.
+2. **Where the money went** — three shares: top round of round dollars, round versus non-round, and main versus fan-out within the concentrated rounds.
+3. **Why the rounds happened** — the trigger-class table over the sampled rounds, `unattributed` counted explicitly, each row citing its source. Report `pipeline-mandatory` rounds as the loop's fixed cost, by count and share, and never as the top cause. The top cause is the discretionary trigger class (every class except `pipeline-mandatory`) holding the most sampled-round dollars, named as `unattributed` when that class leads the discretionary classes. When fixed-cost rounds dominate, say so and defer the judgment to the Mandatory-round-inflation flag.
+4. **Flags** — each raised or not raised, with its evidence:
+   - **Concentration** — one round or few rounds carry most of the round dollars, after the Step (c) window check.
+   - **Stuck loop** — rounds keep re-surfacing findings already raised.
+   - **Plan-grinding** — rounds iterate a plan whose feature is unimplemented, with post-freeze commits touching only artifact paths.
+   - **Gate-denial churn** — rounds re-ran an identical denial with the command shape unadapted. Nothing is being re-reviewed.
+   - **Denial-retry waste** — one gate's benign-command denials recurring across reviewer spawns.
+   - **Mandatory-round inflation** — gate re-runs make up most of the round count.
+   - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range with no early freeze.
+
+   Rules for the freeze-based flags:
+   - Stuck loop, Plan-grinding, and Gate-denial churn are evaluated only over rounds that started after the freeze. They are not-evaluable when Step (e) printed that no rounds started after the freeze, or when Step (e)'s commit joins were skipped.
+   - Legitimate large-diff work is not-evaluable when the commit joins were skipped.
+   - The post-freeze round share only nominates a candidate. Raise a flag on the Step (g) read of those rounds' findings, never on the share alone.
+   - Name the round type a flag applies to (`code-review`, `plan-review`, or `ready-for-review`), since the types routinely diverge on one branch.
+5. **What would have been cheaper** — one to three levers tied to the top discretionary cause, each naming the evidence it rests on. A lever that rests only on an `unattributed` class is not a lever.
+   - A lever against a mandatory round may only make that round cheaper, through fewer spawns or less orchestrator work inside its window. It never skips or merges the round.
+   - A lever that would change documented behavior must cite the skill body, hook, or decision doc it would change and state what that rule protects. Uncited, it is not a lever.
+   - A lever that prescribes a command-shape change must name the denial's cause from a primary source, the denial's own text. The `--deny-summary` census gives gate names and command shapes but not reasons, so a gate's name is not a cause.
+   - Restating an instruction that already exists is a compliance observation. It does not count toward the one to three levers.
+6. **Caveats** — which of these applied: account scope (`--this-repo` versus `cost --summary`), same-named branch pooling across roots, and anything from `transcript-analysis/SKILL.md` § "Caveats". Also the tip SHA and the roots the branch's sessions live in.
 
 ## Step 5 — Artifact and return
 
-Write one file: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm it does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it, matching `transcript-narrative/SKILL.md`'s own guard.
+This step is the deep audit's. A sweep writes no artifact file and has no headline, top discretionary cause or levers. Its output is Step 2's ranked candidate list, stated as candidates and reasons with no dollar figures or cost shares, per Step 4's publication rule.
 
-The file opens with a not-for-publication line, then carries the quoted scope headers, the round table, the churn table, the verdict, and which caveats applied. Return only the path, the verdict, and the two or three discriminating facts — never the tables inline. A subagent that invokes this skill by name returns the same three things, keeping every table in the subagent's own context and the artifact file.
+Write one report file, plus Step 3(g)'s `judgment-pairs.md` in the same directory: to the caller-supplied output-path argument, or under `mktemp -d` when none is given — state plainly to the caller that the `mktemp -d` default is temporary. Before writing to a caller-supplied path, confirm each path written (the report file and `judgment-pairs.md`) either resolves outside a git-tracked tree or is covered by that tree's `.gitignore`, matching `transcript-narrative/SKILL.md`'s own guard.
+
+The file opens with a not-for-publication line. It then carries the quoted scope headers, the round table with waves per round, the churn table, the six report parts, and which caveats applied.
+
+Return only these four items: the path, the headline, the top discretionary cause (with the fixed-cost round count alongside), and the levers from Step 4 part 5. State them as counts and qualitative findings, for example "one round carries most of the round dollars", and never as a dollar figure or a cost share, per Step 4's publication rule. Include no tables inline.
+
+A subagent that invokes this skill by name returns the same four items. It keeps every table in its own context and in the artifact file.
+
+For a publish-ready aggregate, use `cost-counts --this-repo --branches <branch>` rather than figures from this artifact.

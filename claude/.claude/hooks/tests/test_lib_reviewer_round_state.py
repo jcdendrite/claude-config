@@ -60,6 +60,22 @@ def _state_value(repo: Path, extra_env: dict | None = None) -> subprocess.Comple
     )
 
 
+def _isolated_hooks_dir_missing_config_keys_psv(tmp_path: Path) -> Path:
+    """Symlinks _lib.sh and its _config.sh sibling into an isolated hooks
+    dir with no config-keys.psv of its own -- config-keys.psv is resolved
+    relative to _config.sh's own directory (_CONFIG_SCHEMA_FILE in
+    _config.sh), not CLAUDE_CONFIG_DIR, so reproducing a missing schema
+    means isolating the hooks dir itself rather than the config dir.
+    Mirrors test_config_lib.py's TestExitCodeContract.test_unreadable_schema_returns_exit_3
+    isolation technique, extended to _lib.sh since
+    _lib_reviewer_round_state_cap lives there, not in _config.sh."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_lib.sh").symlink_to(LIB_SH)
+    (isolated_hooks_dir / "_config.sh").symlink_to(LIB_SH.parent / "_config.sh")
+    return isolated_hooks_dir
+
+
 def _state_cap(config_dir: str | None) -> subprocess.CompletedProcess:
     """Shell out to the real _lib_reviewer_round_state_cap with
     CLAUDE_CONFIG_DIR set to config_dir (or unset when None) -- isolates
@@ -253,12 +269,59 @@ class TestLibReviewerRoundStateCap:
         assert result.stdout.strip() == "2"
 
     def test_cap_is_one_with_pilot_sentinel_present(self, tmp_path):
+        """Legacy fallback arm: no claude-config.toml row, so _config_value
+        falls back to the raw legacy-file presence probe."""
         config_dir = tmp_path / "config-dir"
         config_dir.mkdir()
         (config_dir / ".round-consult-round2-pilot").touch()
         result = _state_cap(str(config_dir))
         assert result.returncode == 0
         assert result.stdout.strip() == "1"
+
+    def test_cap_is_one_with_toml_key_true_and_no_legacy_file(self, tmp_path):
+        """TOML arm: round_consult_round2_pilot = true resolves the cap
+        without any legacy sentinel file present."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text(
+            "round_consult_round2_pilot = true\n"
+        )
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "1"
+
+    def test_default_cap_when_toml_key_false_overrides_legacy_file(self, tmp_path):
+        """TOML-wins-over-legacy precedence: an explicit false in
+        claude-config.toml overrides a stale legacy sentinel file."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / ".round-consult-round2-pilot").touch()
+        (config_dir / "claude-config.toml").write_text(
+            "round_consult_round2_pilot = false\n"
+        )
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_default_cap_when_config_keys_psv_missing(self, tmp_path):
+        """Pins the always-valid-integer contract when config-keys.psv
+        itself is missing (interrupted stow-relink/git-pull), not merely an
+        unreadable CLAUDE_CONFIG_DIR -- _config_enabled's exit 3 propagates
+        through the `if` as false, so the cap resolves the safe default."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        isolated_hooks_dir = _isolated_hooks_dir_missing_config_keys_psv(tmp_path)
+        env = dict(os.environ)
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_reviewer_round_state_cap'],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
 
     def test_default_cap_on_unresolvable_config_dir(self):
         """A relative CLAUDE_CONFIG_DIR fails _lib_config_dir's own

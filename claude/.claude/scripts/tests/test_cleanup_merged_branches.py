@@ -14,10 +14,10 @@ import re
 import shutil
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
+from helpers import assert_cap_engaged, scaled_shim_sleep, write_scaled_timeout_shim
 
 from .conftest import (
     _base_test_env,
@@ -2254,8 +2254,8 @@ class TestFetchLoopCapInterruptsHungRemote:
 
     @pytest.mark.timing
     def test_hung_pr_ref_fetch_is_capped_and_falls_back_to_stale_name(self, tmp_path, fake_gh):
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_ancestor_merged_branch(local, remote, "feat/hung-fetch", 909)
 
@@ -2265,12 +2265,13 @@ class TestFetchLoopCapInterruptsHungRemote:
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
             'for arg in "$@"; do\n'
             '  case "$arg" in\n'
-            '    refs/pull/*/head) sleep 30; break ;;\n'
+            f'    refs/pull/*/head) sleep {scaled_shim_sleep(30)}; break ;;\n'
             '  esac\n'
             'done\n'
             f'exec {real_git} "$@"\n'
@@ -2282,20 +2283,10 @@ class TestFetchLoopCapInterruptsHungRemote:
         })
         env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
 
-        start = time.monotonic()
-        result = _run_script(local, env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=15):
+            result = _run_script(local, env)
 
         assert result.returncode == 0
-        assert elapsed >= 14.5, (
-            f"elapsed {elapsed:.1f}s is too fast for the stub to have actually stalled -- "
-            f"the fallback below would also pass on a fetch that merely failed instantly, "
-            f"which doesn't prove the cap interrupted anything"
-        )
-        assert elapsed < 19.5, (
-            f"expected the 15s _lib_capped_for cap on the refs/pull/909/head fetch to fire "
-            f"(stub sleeps 30s if it does not), took {elapsed:.1f}s"
-        )
         assert "likely a reused branch name" in result.stdout, (
             "a fetch killed by the cap must still degrade to the stale-name fallback, not hang or crash"
         )

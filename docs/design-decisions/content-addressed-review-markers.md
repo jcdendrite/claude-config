@@ -2,7 +2,7 @@
 
 *Formerly `docs/design-decisions.md` §2.*
 
-Five kinds exist: `code-review`, `plan-review`, `ready-for-review`, `skill-review`, and `cumulative-review` ([§44](ready-for-review-cumulative-diff-cache.md)) — a fifth kind that hashes the cumulative PR-vs-base diff so `ready-for-review` step 3 can reuse a prior clean pass instead of re-running it on a byte-identical rebase.
+Six kinds exist: `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `cumulative-review`, and `verification`. `cumulative-review` ([§44](ready-for-review-cumulative-diff-cache.md)) hashes the cumulative PR-vs-base diff so `ready-for-review` step 3 can reuse a prior clean pass instead of re-running it on a byte-identical rebase. `verification` ([ready-for-review-verification-cache.md](ready-for-review-verification-cache.md)) hashes `HEAD^{tree}` so `ready-for-review` step 2 can reuse a prior clean check/test pass instead of re-running it against a tree it already verified.
 
 A marker's *content* — not its filename, and not its mere existence — is what authorizes a gate to open. The sha256 is taken from the staged diff at the time `/code-review` runs; the hook recomputes the sha256 at commit time and compares. If even one line has been re-staged since the review ran, the sha256 doesn't match and the gate fires again — no manual invalidation needed, no timer to expire, no way to accidentally commit a diff that wasn't reviewed.
 

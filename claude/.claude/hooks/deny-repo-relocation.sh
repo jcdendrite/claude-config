@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: stop Claude Code itself from performing an unsupported move/rename of
 # this claude-config checkout — moving or renaming the repo root breaks every
 # stow symlink under ~/.claude/ and ~/.local/bin/ at once, with nothing left

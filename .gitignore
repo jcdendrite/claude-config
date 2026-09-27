@@ -72,6 +72,11 @@ claude/.claude/credential-value-patterns.md
 # accidental copy inside the stowed tree from being committed.
 claude/.claude/transcript-config-dirs
 
+# Same belt-and-suspenders for the user-local output-preferences file described
+# in README.md's Output preferences section. It is never committed; this entry
+# prevents a copy inside the stowed tree from landing in git history.
+claude/.claude/output-preferences.md
+
 # Machine-level opt-in markers belong at ~/.claude/ directly, created by hand
 # (touch), never via the stow package. These entries stop an accidental in-tree
 # copy from being committed and shipped to every stow user. See
@@ -139,8 +144,13 @@ claude/.claude/telemetry/
 # hooks/skills but is per-machine scratch space regardless of origin.
 claude/.claude/.handoff-nudge-fired.d/
 claude/.claude/.handoff-nudge.log
+claude/.claude/.memory-audit-nudge-disabled
+claude/.claude/.memory-audit-nudge-fired
+claude/.claude/.memory-audit-nudge.log
+claude/.claude/.memory-audit-quarantine/
 claude/.claude/.permission-prompt-log.jsonl
 claude/.claude/.plan-review-routing-read.d/
+claude/.claude/.test-selection-log.jsonl
 claude/.claude/.worktree-anchor-nudge.d/
 claude/.claude/briefs/
 claude/.claude/cache/
@@ -152,3 +162,13 @@ claude/.claude/issue-triage/
 # read-check-write window (never the ledger file itself, since renaming it
 # would swap the locked inode out from under a racing recorder).
 docs/cost-ledger.md.lock
+
+# Claude Code's skill trash.
+# claude/.claude/settings.json's syncClaudeAiSkills: false makes the CLI move
+# already-synced skills into ~/.claude/skills/.trash/ (see
+# docs/design-decisions/claude-ai-skill-sync-disabled-by-default.md).
+# Under stow directory-fold, that path resolves to this one inside the repo.
+# Untracked-and-unignored files show up in `git ls-files --others
+# --exclude-standard`, which trips select-tests.py's full-suite fallback
+# on every unrelated change.
+claude-skills/skills/.trash/

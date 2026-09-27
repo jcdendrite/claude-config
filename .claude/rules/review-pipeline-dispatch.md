@@ -1,6 +1,7 @@
 ---
 paths:
   - "claude-skills/skills/**/SKILL.md"
+  - ".claude/skills/**/SKILL.md"
   - "claude/.claude/agents/*.md"
   - "plugins/**/*"
   - ".claude/rules/**"
@@ -40,7 +41,8 @@ agent, or plugin files:
   - `commit_stall_block`
   - `authorization_boundary_restore`
 
-  Only these three of each row's columns:
+  Only these four of each row's columns:
+  - `default`
   - `resolution`
   - `legacy-probe-on-resolution-failure`
   - `legacy-import-locations`

@@ -5,11 +5,16 @@ import hashlib
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, build_path_without
+from helpers import (
+    HOOKS_DIR,
+    assert_cap_engaged,
+    build_path_without,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
+)
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -68,6 +73,18 @@ def _active_plan_hash(
         text=True,
         check=True,
         env={**os.environ, **(env_overrides or {})},
+    )
+    return result.stdout.strip()
+
+
+def _code_review_marker_value(repo: Path, base: str) -> str:
+    """Shell out to the real _lib_code_review_marker_value against `repo`."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_code_review_marker_value "$1" "$2"',
+         "_code_review_marker_value", str(repo), base],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -266,34 +283,32 @@ class TestLibRepoRoot:
         _lib_capped so callers (marker.sh's _resolve_repo_root,
         pr-diff-against-base.sh --record) fail fast instead of hanging for
         however long the harness's own outer Bash-tool timeout allows."""
-        timeout_path = shutil.which("timeout")
-        if not timeout_path:
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
         fake_bin = tmp_path / "fake-bin"
         fake_bin.mkdir()
+        write_scaled_timeout_shim(fake_bin)
         fake_git = fake_bin / "git"
         fake_git.write_text(
             "#!/bin/sh\n"
-            # 30s, well past _lib_capped's 5s cap -- avoids a race against
+            # Well past _lib_capped's 5s cap -- avoids a race against
             # the cap firing at the same instant a shorter sleep would end.
-            'if [ "$1" = "rev-parse" ]; then sleep 30; fi\n'
+            f'if [ "$1" = "rev-parse" ]; then sleep {scaled_shim_sleep(30)}; fi\n'
         )
         fake_git.chmod(0o755)
 
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        result = subprocess.run(
-            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(fake_bin, production_cap=5):
+            result = subprocess.run(
+                ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
 
         assert result.returncode != 0
-        assert elapsed < 8, f"_lib_repo_root took {elapsed:.1f}s — the git call is not capped"
 
 
 class TestLibActivePlanFiles:
@@ -343,6 +358,37 @@ class TestLibActivePlanFiles:
             f"stdout must name .claude/plans/ on enumeration failure, got {result.stdout!r}"
         )
 
+    def test_sort_failure_fails_closed(self, tmp_path):
+        """A failed `sort -u` call merging the untracked- and modified-plan
+        lists must exit 1 with .claude/plans/ itself named on stdout, not
+        silently report an empty (clean) active set -- same fail-closed
+        convention as test_git_enumeration_failure_fails_closed above, pinned
+        for the sort step rather than the git enumeration it follows."""
+        repo = tmp_path / "sort-failure-repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("seed\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "active-plan.md").write_text("# active\n")
+
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "sort"
+        stub.write_text("#!/bin/bash\nexit 1\n")
+        stub.chmod(0o755)
+
+        result = _active_plan_files(
+            repo, env_overrides={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"}
+        )
+        assert result.returncode == 1, (
+            f"expected exit 1 on a failed sort, got {result.returncode}"
+        )
+        assert result.stdout.strip() == str(plans_dir), (
+            f"stdout must name .claude/plans/ on sort failure, got {result.stdout!r}"
+        )
+
 
 class TestLibActivePlanHash:
     """Tests for _lib_active_plan_hash (GH #466). Relational assertions
@@ -369,6 +415,28 @@ class TestLibActivePlanHash:
         subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True)
         assert _active_plan_hash(repo) == ""
+
+    def test_empty_active_set_returns_empty_for_non_empty_base(self, tmp_path):
+        """An empty active set disarms the gate for any BASE, not only the
+        empty one: two distinct non-empty bases must both yield empty stdout,
+        so the result cannot depend on which base was supplied."""
+        repo = tmp_path / "clean-plans-with-base"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True)
+        head_tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        head_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert head_tree != head_commit
+
+        assert _active_plan_hash(repo, base=head_tree) == ""
+        assert _active_plan_hash(repo, base=head_commit) == ""
 
     def test_nonempty_when_plan_active(self, tmp_path):
         repo = tmp_path / "active-plan"
@@ -551,6 +619,37 @@ class TestLibActivePlanHash:
         assert first == second
 
 
+class TestLibCodeReviewMarkerValueSentinelIsIntentionalDivergence:
+    """Pins why _lib_code_review_marker_value keeps its empty-base sentinel
+    while _lib_active_plan_hash does not. With a non-empty base,
+    require-code-review.sh skips its empty-diff exit and consults the marker
+    comparison, so the value is an authorization and must bind to the base's
+    identity. The plan-review gate disarms on an empty active set and
+    consults no marker at all, so a base-bound plan-review value would
+    demand a review of nothing. Not an oversight to "fix" for symmetry."""
+
+    def test_code_review_value_binds_to_base_where_plan_hash_disarms(self, tmp_path):
+        repo = tmp_path / "sentinel-divergence"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "plan"], cwd=repo, check=True)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        code_review_value = _code_review_marker_value(repo, base)
+        plan_hash = _active_plan_hash(repo, base=base)
+
+        independent_sentinel_oracle = hashlib.sha256(
+            f"code-review-empty-base:{base}".encode()
+        ).hexdigest()
+        assert code_review_value == independent_sentinel_oracle
+        assert plan_hash == ""
+
+
 class TestLibAdvanceOffsetPastCompleteLines:
     """Unit tests for _lib_advance_offset_past_complete_lines -- shared by
     nudge-handoff-near-context-cap.sh and nudge-long-turn-subagent.sh for
@@ -611,18 +710,19 @@ class TestLibAdvanceOffsetPastCompleteLines:
         _lib_capped_for(2) -- a stalled tail must not hang the scan, and per
         the function's own documented limitation must degrade to OFFSET
         unchanged rather than partial progress."""
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
         transcript.write_text("line one\nline two\npartial-no-newline")
         real_tail = shutil.which("tail")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
+        write_scaled_timeout_shim(stub_dir)
         stub = stub_dir / "tail"
         stub.write_text(
             '#!/bin/bash\n'
             'if [ "$1" = "-c" ] && [[ "$2" == +* ]]; then\n'
-            '  sleep 10\n'
+            f'  sleep {scaled_shim_sleep(10)}\n'
             'fi\n'
             f'exec {real_tail} "$@"\n'
         )
@@ -630,23 +730,14 @@ class TestLibAdvanceOffsetPastCompleteLines:
 
         offset = 0
         size = transcript.stat().st_size
-        start = time.monotonic()
-        result = _advance_offset(
-            transcript, offset, size,
-            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged(stub_dir, production_cap=SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS):
+            result = _advance_offset(
+                transcript, offset, size,
+                env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 0
         assert result.stdout.strip() == str(offset), "a timed-out slow-path scan must return OFFSET unchanged"
-        # No upper bound: 5/8 trials clocked 4.0-4.8s with no extra system
-        # load, an empirically observed baseline rather than a guessed
-        # margin -- the invariant that matters is not hanging for the ~10s
-        # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS - 0.5, (
-            f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s for this single call"
-        )
 
     def test_tail_absent_from_path_freezes_offset_at_current_size(self, tmp_path):
         """The function's own doc comment in _lib.sh documents this exact

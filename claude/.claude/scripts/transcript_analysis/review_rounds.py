@@ -65,15 +65,16 @@ _SLASH_COMMAND_RE = re.compile(r"<command-name>/([^<]+)</command-name>")
 
 
 def _round_skill_name(raw: str) -> str:
-    """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS
-    membership.
+    """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS or
+    REVIEW_TRACE_SKILLS membership: strip the directory qualifier (as
+    _normalize_skill_name does) and then the plugin:/dir: qualifier too.
 
-    Mirrors _normalize_skill_name (transcript-analysis.py:2253-2277)'s
-    directory-qualifier strip (segment after the last "/"), then also strips
-    a remaining `plugin:`/`dir:` qualifier by taking the segment after the
-    last ":" — safe here, unlike _normalize_skill_name (which deliberately
-    keeps such a prefix for its own display-label use), because REVIEW_SKILLS
-    is a closed three-name membership test, not a display label.
+    _normalize_skill_name (transcript-analysis.py:2253-2277) strips the
+    directory qualifier (segment after the last "/"). It keeps a
+    plugin:/dir: prefix for its own display-label use. This function also
+    strips that prefix, by taking the segment after the last ":". That is
+    safe here because both REVIEW_SKILLS and REVIEW_TRACE_SKILLS are
+    closed-set membership tests, not display labels.
     """
     normalized = raw.rsplit("/", 1)[-1]
     return normalized.rsplit(":", 1)[-1]
@@ -116,7 +117,7 @@ def _round_open_skill(rec: dict) -> str | None:
     return None
 
 
-def _detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
+def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
 
@@ -127,6 +128,11 @@ def _detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     opening record. No cross-path dedup is needed between the two
     invocation shapes. They are disjoint by construction: a Skill tool_use
     lives on an assistant record, a /slash tag lives on a user record.
+
+    Public (no leading underscore): author_outcome.py is a second consumer,
+    reading only each window's own open_idx/skill (its own outcome-span
+    definition is not this function's window_end -- see
+    docs/transcript-analysis.md's author-outcome section).
     """
     n = len(records)
     windows: list[tuple[int, int, str]] = []
@@ -316,7 +322,7 @@ def compute_review_round_costs(
     for jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing — see pricing.py
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
-        windows = _detect_round_windows(records)
+        windows = detect_round_windows(records)
         record_branches = _session_record_branches(records, windows)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         visited: set[str] = set()
@@ -404,7 +410,7 @@ def compute_review_round_counts(
 
     Detection reuses the same three helpers in the same order as
     compute_review_round_costs -- pricing.dedup_turns_by_request_id,
-    _detect_round_windows, _session_record_branches -- so the two functions
+    detect_round_windows, _session_record_branches -- so the two functions
     can never disagree on what counts as one round. Dedup runs before
     detection here too, not only before pricing (see
     pricing.dedup_turns_by_request_id's own docstring): without it, one API
@@ -422,7 +428,7 @@ def compute_review_round_counts(
     counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
     for _jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)  # dedup before detection, not only before pricing -- see pricing.py
-        windows = _detect_round_windows(records)
+        windows = detect_round_windows(records)
         if not windows:
             continue
         record_branches = _session_record_branches(records, windows)

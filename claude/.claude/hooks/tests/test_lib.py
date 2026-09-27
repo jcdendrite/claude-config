@@ -28,7 +28,9 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    _make_git_exiting_with_status,
     _run_git,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_cherry_pick,
@@ -42,15 +44,19 @@ from helpers import (
     resolve_conflicted_rebase,
     reviewer_round_state_key,
     run_hook,
+    scaled_shim_sleep,
     staged_diff_hash,
     staged_diff_hash_at_base,
+    write_scaled_timeout_shim,
 )
 
-from .conftest import _worktree_lock_reason, assert_cap_engaged
+from .conftest import _worktree_lock_reason
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
+# The skill-management plugin ships its own copy of _lib_capped_for, since plugin hooks cannot source the stowed _lib.sh.
+_SKILL_MANAGEMENT_PLUGIN_LIB = HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "_lib.sh"
 
 # require-code-review.sh is an unmodified production caller of
 # _lib_parse_tool_input_or_deny, used by the delimiter-shift regression test
@@ -544,9 +550,9 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """
     import shutil
 
-    timeout_path = shutil.which("timeout")
+    timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
     if not timeout_path:
-        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
     bash_path = shutil.which("bash")
     if not bash_path:
@@ -554,32 +560,37 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
 
     # Create a fake jq that sleeps 10 seconds, plus stubs for required tools.
     fake_jq = tmp_path / "jq"
-    fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+    fake_jq.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(10)}\n")
     fake_jq.chmod(0o755)
 
     # Symlink real timeout and bash so the harness can find them.
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
-    # Also symlink standard commands needed by the harness.
-    # dirname is required too: _lib.sh's own sourcing of _config.sh
-    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
-    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
-    # header comment on that source line).
-    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
+    # Also symlink standard commands needed by the harness. dirname is
+    # required too: _lib.sh's own sourcing of _config.sh resolves its path
+    # via `$(dirname "${BASH_SOURCE[0]}")`, and a failed source aborts
+    # _lib.sh's own sourcing entirely (see _lib.sh's header comment on that
+    # source line). sleep must be symlinked too: the fake jq's body shells
+    # out to it, and a missing sleep would return instantly instead of
+    # stalling.
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname", "sleep"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
 
+    # write_scaled_timeout_shim replaces the timeout symlink above, since
+    # Path.write_text follows a symlink rather than replacing it.
+    write_scaled_timeout_shim(tmp_path)
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
-    start = time.monotonic()
-    result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
-    elapsed = time.monotonic() - start
+    with assert_cap_engaged(tmp_path, production_cap=5):
+        result = _run_harness('{"tool_name":"Bash","tool_input":{"command":"ls"}}', env=env)
 
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
-    assert elapsed < 6, f"hung-jq test took {elapsed:.1f}s — timeout did not fire within 6s"
 
 
+# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary
+# condition this test is named for, and the OK assertion below would still pass.
 def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> None:
     """Without timeout(1), valid payload still returns OK via bare jq."""
     import shutil
@@ -611,6 +622,8 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
+# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps
+# end-to-end evidence that the binary itself enforces a cap.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
     """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
@@ -647,6 +660,8 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
 
 
+# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test
+# would never execute and the exit-124 assertion would still pass.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
     """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
@@ -685,6 +700,7 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
 
 
+# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.
 def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     tmp_path: Path,
 ) -> None:
@@ -720,6 +736,57 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+def test_lib_capped_for_uncapped_fallback_emits_stderr_note(tmp_path: Path) -> None:
+    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for's uncapped
+    fallback emits a diagnostic naming the gap, so a caller or log can tell
+    the cap silently didn't apply rather than reading a clean exit as capped."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    # `true` is a bash builtin, so it needs no PATH entry of its own.
+    result = _run_lib_call("_lib_capped_for 0.1 true", env=env)
+
+    assert result.returncode == 0, repr(result)
+    assert "_lib_capped_for" in result.stderr and "uncapped" in result.stderr, repr(result.stderr)
+
+
+def test_lib_capped_for_uncapped_fallback_note_fires_every_call(tmp_path: Path) -> None:
+    """The note above fires on every uncapped-fallback call, not just the
+    first -- each call independently ran without a cap, so each is worth
+    its own diagnostic."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = _run_lib_call(
+        "_lib_capped_for 0.1 true; _lib_capped_for 0.1 true; _lib_capped_for 0.1 true", env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    assert result.stderr.count("_lib_capped_for: neither timeout nor gtimeout") == 3, repr(result.stderr)
+
+
+# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
+# the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
     """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
 
@@ -760,6 +827,163 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
 
     assert result.returncode == 0, repr(result)
     assert result.stdout == "real-timeout-path", repr(result.stdout)
+
+
+@pytest.mark.parametrize("lib_path", [_LIB_SH, _SKILL_MANAGEMENT_PLUGIN_LIB], ids=["stowed", "plugin"])
+@pytest.mark.parametrize("binary_name", ["timeout", "gtimeout"])
+def test_lib_capped_for_passes_kill_after_flag_before_the_duration(
+    tmp_path: Path, lib_path: Path, binary_name: str
+) -> None:
+    """`-k` and `2` arrive as two separate argv entries, in that order, both
+    ahead of SECONDS: timeout(1) requires OPTION before DURATION, and
+    BusyBox's timeout rejects the long `--kill-after=2` spelling. Pinned
+    against both binary names (the gtimeout case leaves `timeout` absent from
+    PATH) and both copies of the wrapper, so a later "tidy-up" to
+    `--kill-after=2` fails this test instead of shipping."""
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    argv_log = tmp_path / "argv.log"
+    fake_timeout = tmp_path / binary_name
+    fake_timeout.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_log))}\n"
+        "exit 0\n"
+    )
+    fake_timeout.chmod(0o755)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_path))}; _lib_capped_for 5 echo hi"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    argv = argv_log.read_text().splitlines()
+    assert argv[:4] == ["-k", "2", "5", "echo"], (
+        f"expected -k and 2 as separate argv entries ahead of the duration, got {argv!r}"
+    )
+
+
+# A plain, untrapped `sleep N` (this block's sibling cases above) dies to a bare SIGTERM either way, so it
+# cannot show whether `-k` is present. The SIGTERM-immune child is described in
+# conftest's `_write_conditional_sleep_shim`; only `-k`'s grace-expiry SIGKILL can end it.
+@pytest.mark.timing
+def test_lib_capped_for_kills_a_sigterm_immune_child_via_the_grace(tmp_path: Path) -> None:
+    """A child that ignores SIGTERM outright must still return within
+    cap+grace, not hang to the fixture's own much longer sleep. The grace's
+    SIGKILL reports 137, not timeout(1)'s ordinary 124, so the wall time is
+    asserted alongside the status."""
+    timeout_path = shutil.which("timeout")
+    if not timeout_path:
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    sleep_path = shutil.which("sleep")
+    if not sleep_path:
+        pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "timeout").symlink_to(timeout_path)
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call("_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'", env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 137, repr(result)
+    # Nominal 3s (cap 1 + grace 2). The bound sits well inside the fixture's 30s sleep,
+    # so it separates a fired grace from a hang, and its headroom over nominal absorbs subprocess-spawn contention.
+    assert elapsed < 15, f"SIGTERM-immune child took {elapsed:.1f}s — the -k grace did not fire"
+
+
+@pytest.mark.parametrize("cap_kill_status", ["124", "137", "143"])
+def test_status_consistent_with_cap_kill_accepts_cap_kill_statuses(cap_kill_status: str) -> None:
+    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {cap_kill_status}", env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "" and result.stderr == ""
+
+
+@pytest.mark.parametrize("other_status", ["0", "1", "2", "125", "126", "127", "130"])
+def test_status_consistent_with_cap_kill_rejects_other_statuses(other_status: str) -> None:
+    result = _run_lib_call(f"_lib_status_consistent_with_cap_kill {other_status}", env=dict(os.environ))
+    assert result.returncode == 1, repr(result)
+    assert result.stdout == "" and result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "_lib_status_consistent_with_cap_kill",
+        "_lib_status_consistent_with_cap_kill ''",
+        "_lib_status_consistent_with_cap_kill abc",
+    ],
+    ids=["absent", "empty", "non-numeric"],
+)
+def test_status_consistent_with_cap_kill_rejects_absent_empty_and_non_numeric_under_set_u(call: str) -> None:
+    """Returns exactly 1 with no output, and a shell under `set -u` reaches the next statement."""
+    result = _run_lib_call(f"set -u; {call}; echo reached-$?", env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "reached-1\n", repr(result.stdout)
+    assert result.stderr == ""
+
+
+def _cap_fire_path_env(tmp_path: Path) -> dict:
+    """A PATH holding only the real timeout(1) and the tools _lib.sh and the composition cases need."""
+    for name in ("timeout", "bash", "sleep", "dirname"):
+        real_path = shutil.which(name)
+        if not real_path:
+            pytest.skip(f"{name} not found in PATH")
+        (tmp_path / name).symlink_to(real_path)
+    return {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+
+
+@pytest.mark.timing
+def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_cap_fire(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 1 sleep 5; _lib_status_consistent_with_cap_kill $?; echo classified-$?", env=env
+    )
+    assert result.stdout == "classified-0\n", repr(result)
+
+
+@pytest.mark.timing
+def test_status_consistent_with_cap_kill_recognizes_a_real_sigterm_immune_cap_fire(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 1 bash -c 'trap \"\" TERM; exec sleep 30'; "
+        "_lib_status_consistent_with_cap_kill $?; echo classified-$?",
+        env=env,
+    )
+    assert result.stdout == "classified-0\n", repr(result)
+
+
+def test_status_consistent_with_cap_kill_rejects_a_child_that_exits_one(tmp_path: Path) -> None:
+    env = _cap_fire_path_env(tmp_path)
+    result = _run_lib_call(
+        "_lib_capped_for 5 bash -c 'exit 1'; _lib_status_consistent_with_cap_kill $?; echo classified-$?",
+        env=env,
+    )
+    assert result.stdout == "classified-1\n", repr(result)
 
 
 def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
@@ -1236,6 +1460,82 @@ def test_no_gate_release_agent_rejects_non_members(agent_type: str) -> None:
     assert not _is_no_gate_release_agent(agent_type)
 
 
+def _reviewer_persona_agents() -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_reviewer_persona_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def test_reviewer_persona_set_is_review_only_roster_minus_harness_builtins() -> None:
+    """The set is the review-only roster minus Explore and Plan, by derivation not by copy.
+
+    Catches the shell-side `Explore | Plan) continue` exclusion drifting from
+    this literal. A new harness built-in added to the review-only roster with
+    the exclusion left untouched passes, since the name lands on both sides.
+    """
+    review_only = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert review_only, "review-only roster must not be empty"
+    assert set(_reviewer_persona_agents()) == set(review_only) - {"Explore", "Plan"}
+
+
+def _is_reviewer_persona(agent_type: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_is_reviewer_persona "$1"', "bash", agent_type],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_is_reviewer_persona_accepts_every_member_of_the_derived_roster() -> None:
+    roster = _reviewer_persona_agents()
+    assert roster, "reviewer-persona roster must not be empty"
+    rejected = [agent_type for agent_type in roster if not _is_reviewer_persona(agent_type)]
+    assert not rejected, f"roster members rejected by _lib_is_reviewer_persona: {rejected}"
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        "Explore",
+        "Plan",
+        "code-writer",
+        "plan-architect",
+        "general-purpose",
+        "",
+        "staff-sdet-x",
+        "staff-sde",
+        "STAFF-SDET",
+        "ciso-reviewer comment-discipline-reviewer",
+    ],
+)
+def test_is_reviewer_persona_rejects_agents_that_are_not_reviewer_personas_and_absent_type(
+    agent_type: str,
+) -> None:
+    """Every agent outside the reviewer-persona array is rejected.
+
+    Explore and Plan are review-only roster members but harness built-ins.
+    code-writer is an implementer. plan-architect is a design consultant that a
+    caller branches on separately. general-purpose is a harness built-in outside
+    the review-only roster. The empty case is a dispatch payload with no
+    subagent_type. The staff-sdet variants pin that the predicate is not doing
+    prefix or case-insensitive matching. The space-joined pair of two real
+    roster members pins that a value is not accepted as a substring or word
+    list of the roster.
+    """
+    assert not _is_reviewer_persona(agent_type)
+
+
 # --- _lib_valid_session_id_component --------------------------------------
 #
 # Every call site that builds a filesystem path from a hook-payload-supplied
@@ -1577,11 +1877,12 @@ def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -
 
     stub_dir = tmp_path / "stub-bin-find"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_find = stub_dir / "find"
-    stub_find.write_text(f'#!/bin/bash\nsleep 10\nexec {real_find} "$@"\n')
+    stub_find.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_find} "$@"\n')
     stub_find.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5):
         result = subprocess.run(
             [
                 "bash",
@@ -1613,7 +1914,10 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
     the real `cat`, which would emit the marker's stored PID and grant the
     bypass; a working cap kills the stub before that exec runs, so this
     fails on a missing/broken `_lib_capped` wrap instead of passing
-    regardless of whether the cap engaged."""
+    regardless of whether the cap engaged.
+
+    cat and tr share the same 5s cap on this pipe; command="cat" isolates
+    cat's kill from tr's."""
     marker = _write_active_bypass_marker(tmp_path, "sess-cat-hang", str(os.getpid()))
 
     real_cat = shutil.which("cat")
@@ -1624,11 +1928,12 @@ def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) ->
 
     stub_dir = tmp_path / "stub-bin-cat"
     stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
     stub_cat = stub_dir / "cat"
-    stub_cat.write_text(f'#!/bin/bash\nsleep 10\nexec {real_cat} "$@"\n')
+    stub_cat.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_cat} "$@"\n')
     stub_cat.chmod(0o755)
 
-    with assert_cap_engaged():
+    with assert_cap_engaged(stub_dir, production_cap=5, killed_calls=1, command="cat"):
         result = subprocess.run(
             [
                 "bash",
@@ -2107,6 +2412,297 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
 
     assert result.returncode == 0
     assert result.stdout == "develop"
+
+
+# --- _lib_verification_cache_sentinel_present -------------------------------
+#
+# Pure predicate over local refs, unlike the hash-computing helpers above --
+# tested directly at this layer rather than only through marker.sh's `check
+# verification` arm.
+
+
+def _sentinel_present(repo_root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_verification_cache_sentinel_present "$1"',
+         "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _commit_sentinel_at_ref(repo: Path, ref: str) -> None:
+    """Creates a lone-file commit holding the verification-cache opt-in
+    sentinel and points REF at it, via a throwaway index -- never touches
+    the repo's own checked-out branch, working tree, or real index."""
+    tmp_index = repo / ".git" / "sentinel-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# sentinel\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         f"100644,{blob_oid},.claude/ready-for-review-verification-cache-optin"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_on_origin_default(tmp_path: Path) -> None:
+    """The positive case the opt-in gate depends on: the sentinel committed
+    at origin/<default-branch> reads present."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
+def test_verification_cache_sentinel_absent_from_origin_default(tmp_path: Path) -> None:
+    """origin/<default-branch> exists and resolves, but the sentinel was
+    never committed to it -- the default-off gate's ordinary state."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_absent_when_origin_head_unset(tmp_path: Path) -> None:
+    """No origin/HEAD symbolic ref at all, even though the sentinel is
+    committed somewhere reachable -- fails closed through
+    _lib_default_branch_from_origin_head's own two-outcome contract rather
+    than falling back to guessing a branch name."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_present_only_on_non_default_branch_reads_absent(
+    tmp_path: Path,
+) -> None:
+    """The sentinel is committed to origin/other, but origin/HEAD points at
+    origin/main, which lacks it -- presence on a non-default branch must not
+    count as opted in."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/other")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def _commit_sentinel_tree_at_ref(repo: Path, ref: str) -> None:
+    """Same throwaway-index technique as _commit_sentinel_at_ref, but nests a
+    file one level under the sentinel path so the path itself resolves to a
+    git tree (directory) rather than a blob."""
+    tmp_index = repo / ".git" / "sentinel-tree-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# nested\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         "100644,"
+         f"{blob_oid},"
+         ".claude/ready-for-review-verification-cache-optin/nested-file"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel tree"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path) -> None:
+    """Pins the `cat-file -e` design choice documented in _lib.sh: it confirms
+    an object exists at the sentinel path but not its type, so a tree
+    (directory) committed there reads as present identically to a blob."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_tree_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
+# --- _lib_head_tree_hash -----------------------------------------------
+#
+# Sibling of _lib_verification_cache_sentinel_present above: also read
+# directly at this layer, since marker.sh's write/check verification arms
+# only exercise it as one step inside a larger recipe.
+
+
+def _head_tree_hash_result(
+    repo_root: Path, cap_mode: str = "capped"
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+         "bash", cap_mode, str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_head_tree_hash_capped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """The capped path's stdout is exactly `git rev-parse HEAD^{tree}` --
+    write and check's shared recipe depends on this matching bit-for-bit."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_uncapped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """Same recipe as the capped case, run through the uncapped branch --
+    both cap_mode arguments must compute the identical hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "uncapped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_absent_on_commit_less_repo(tmp_path: Path) -> None:
+    """No HEAD to resolve. `git rev-parse HEAD^{tree}` exits 128 but still
+    echoes the literal string "HEAD^{tree}", so the two-outcome contract
+    must check git's own exit status rather than stdout emptiness."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_head_tree_hash_invalid_cap_mode_exits_2_with_message(tmp_path: Path) -> None:
+    """An unrecognized cap_mode argument is a caller bug, not a git failure --
+    it exits 2 (distinct from the 1 a resolvable-but-absent HEAD returns) and
+    names the bad value in its stderr message."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    result = _head_tree_hash_result(repo, "sideways")
+
+    assert result.returncode == 2
+    assert (
+        "_lib_head_tree_hash: invalid cap_mode sideways (want capped or uncapped)"
+        in result.stderr
+    )
+
+
+@pytest.mark.timing
+def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path) -> None:
+    """A stalled `git rev-parse HEAD^{tree}` must not hang the caller past
+    the 5s _lib_capped cap, and a killed call must fall through to the same
+    absent outcome a commit-less repo gets, never a false hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
+    stub_git = stub_dir / "git"
+    stub_git.write_text(
+        '#!/bin/bash\n'
+        'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
+        f'  sleep {scaled_shim_sleep(10)}\n'
+        'fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    stub_git.chmod(0o755)
+
+    with assert_cap_engaged(stub_dir, production_cap=5):
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+             "bash", "capped", str(repo)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
 
 
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
@@ -5694,6 +6290,46 @@ class TestGateDiffBaseSha256ObjectFormat:
         _assert_valid_tree_oid(repo, result.stdout)
 
 
+class TestGateDiffBaseAnchorNamespaceShadow:
+    """A local branch or tag literally named `origin/<default>` outranks the
+    remote-tracking ref under git's short-name resolution, so the anchor
+    check must use the fully-qualified refs/remotes/ path."""
+
+    @pytest.mark.parametrize("shadow_kind", ["branch", "tag"])
+    @pytest.mark.parametrize("has_remote_tracking_ref", [True, False])
+    @pytest.mark.parametrize("state", ["merge", "cherry-pick"])
+    def test_local_ref_named_like_remote_tracking_ref_is_not_the_anchor(
+        self, tmp_path: Path, shadow_kind: str, has_remote_tracking_ref: bool, state: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        _run_git(repo, "checkout", "-qb", "side")
+        (repo / "f.txt").write_text("unreviewed\n")
+        _run_git(repo, "add", "f.txt")
+        _run_git(repo, "commit", "-qm", "unreviewed commit")
+        unreviewed_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+        _run_git(repo, "checkout", "-q", "main")
+        if has_remote_tracking_ref:
+            _run_git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        if shadow_kind == "branch":
+            _run_git(repo, "branch", "origin/main", unreviewed_oid)
+        else:
+            _run_git(repo, "tag", "origin/main", unreviewed_oid)
+        _forge_state_marker(repo / ".git", state, unreviewed_oid)
+
+        # Precondition: the short name resolves to the shadow, so the test
+        # fails against an anchor spelled `origin/<default>`.
+        shadowed_oid = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "origin/main"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert shadowed_oid == unreviewed_oid
+
+        result = _gate_diff_base(repo)
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
 class TestGateDiffBaseUntrustedAnchor:
     def test_reaches_neither_anchor_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         """A cherry-pick whose source was never pushed anywhere over-gates
@@ -6188,6 +6824,33 @@ class TestGateDiffBaseCapFaultInjection:
         assert result.stdout == ""
 
 
+class TestGateDiffBaseCapKillStatusesAreUndetermined:
+    """Every status a cap kill can produce -- 124 (GNU SIGTERM kill), 143
+    (BusyBox SIGTERM kill), and 137 (SIGKILL after the grace, on both) --
+    must read as undetermined (exit 2), not as the "no override" answer
+    (exit 1). See _lib_capped_for's header in _lib.sh for the mapping. No
+    real cap is engaged: the shim exits with the status directly."""
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    @pytest.mark.parametrize(
+        "arg_pattern",
+        ["merge-tree", '*"^{tree}"'],
+        ids=["merge-tree", "tree-verify"],
+    )
+    def test_cap_kill_status_returns_undetermined_with_empty_stdout(
+        self, tmp_path: Path, arg_pattern: str, cap_kill_status: int
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert(repo)
+        bin_dir = tmp_path / "bin-exiting-with-status"
+        _make_git_exiting_with_status(bin_dir, arg_pattern, cap_kill_status)
+        env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
+        result = _gate_diff_base(repo, env=env)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
 class TestGateDiffBaseMergeTreeSkippedWhenAnchorFails:
     def test_merge_tree_never_invoked_when_state_reaches_no_anchor(
         self, tmp_path: Path
@@ -6397,3 +7060,282 @@ class TestStagedDiffHash:
         result = _staged_diff_hash(repo, "", env=env, timeout=30)
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+class TestLibAcquireAppendLockCalledTwice:
+    """_lib_acquire_append_lock's own docstring documents that calling it
+    twice in the same process orphans the first call's lock file, since the
+    second call's `trap ... EXIT` replaces rather than stacks on the
+    first's. review-ledger.sh and log-reviewer-round.sh each call it at
+    most once per process, so this exercises the primitive directly rather
+    than through either caller."""
+
+    def test_second_call_orphans_the_first_lock_file(self, tmp_path: Path) -> None:
+        first_lock = tmp_path / "first.lock"
+        second_lock = tmp_path / "second.lock"
+        result = subprocess.run(
+            ["bash", "-c",
+             f'. "{_LIB_SH}"; _lib_acquire_append_lock "$1"; _lib_acquire_append_lock "$2"',
+             "_", str(first_lock), str(second_lock)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not second_lock.exists(), "the second call's own lock must be released on exit"
+        assert first_lock.exists(), (
+            "the first call's lock must be left orphaned once the second "
+            "call's EXIT trap replaces the first's"
+        )
+
+
+def _run_ledger_sweep_window_days(settings_file: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; _ledger_sweep_window_days "$1"', "_", str(settings_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLedgerSweepWindowDays:
+    """GH-973: _ledger_sweep_window_days derives the ledger's sweep window
+    from Claude Code's own cleanupPeriodDays setting, floored at
+    _LEDGER_SWEEP_FLOOR_DAYS. review-ledger.sh's own
+    TestReviewLedgerSweepWindowFromSettings (test_review_ledger_script.py)
+    covers this value's wiring into clear-stale's `find -mtime +N`; the
+    arithmetic itself is pinned here instead."""
+
+    _MISSING_OR_NON_NUMERIC_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, "
+        "or non-numeric -- using the 30-day floor"
+    )
+    _NINE_PLUS_DIGITS_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, "
+        "implausibly large -- using the 30-day floor"
+    )
+
+    def test_defaults_to_thirty_when_settings_file_absent(self, tmp_path: Path) -> None:
+        result = _run_ledger_sweep_window_days(tmp_path / "nonexistent-settings.json")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_custom_cleanup_period_days_is_honored(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 60}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "60"
+        assert result.stderr == ""
+
+    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert (
+            "_ledger_sweep_window_days: configured value 5 is below the "
+            "30-day floor, using the floor instead"
+        ) in result.stderr
+
+    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{not valid json")
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": "60"}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_negative_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": -5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
+    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
+        self, tmp_path: Path, cleanup_period_days: float
+    ) -> None:
+        """jq's `select(type == "number")` passes a whole-number float like
+        90.0 through as the string "90.0", which the digit-only case
+        pattern rejects -- this pins that the result is the floor (30),
+        never the truncated integer (90)."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
+        self, tmp_path: Path
+    ) -> None:
+        """A 9+-digit all-digit value can exceed bash's signed-integer
+        range, making the `-lt` floor comparison itself error and fall
+        through unfloored instead of returning _LEDGER_SWEEP_FLOOR_DAYS --
+        this pins the digit-count guard added to reject it before that
+        comparison runs."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr
+
+    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(
+        self, tmp_path: Path
+    ) -> None:
+        """99999999 (8 digits) sits one digit under the 9-digit guard's
+        threshold and is a real, above-floor value -- pins that the guard
+        doesn't fire early and truncate a legitimate large-but-in-range
+        cleanupPeriodDays."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "99999999"
+        assert result.stderr == ""
+
+    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(
+        self, tmp_path: Path
+    ) -> None:
+        """100000000 (9 digits) is the guard's exact threshold -- pins that
+        the boundary itself floors, not just values far past it."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 100000000}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr
+
+
+# --- _lib_conflict_marker_deny_paths -----------------------------------------
+#
+# Plugin-only helper (no stowed-copy counterpart -- marker.sh, the write
+# side, has no conflict-marker scan to share it with), so these source
+# _SKILL_MANAGEMENT_PLUGIN_LIB directly rather than _LIB_SH.
+# Pure set-difference: exact-line matching semantics only. The scan's
+# git-dependent properties (index-vs-worktree read, diff-presentation-config
+# immunity, the marker regex's own boundary behavior) stay pinned at the
+# subprocess-fixture layer in test_require_skill_review.py's
+# TestSkillReviewGateConflictMarkerHardDeny.
+
+
+def _conflict_marker_deny_paths(
+    candidates: str, marker_free: str, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_SKILL_MANAGEMENT_PLUGIN_LIB}; _lib_conflict_marker_deny_paths "$1" "$2"',
+            "bash", candidates, marker_free,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+
+
+class TestConflictMarkerDenyPaths:
+    def test_exact_line_match_is_excluded(self) -> None:
+        result = _conflict_marker_deny_paths("skills/x/SKILL.md", "skills/x/SKILL.md")
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_suffix_of_a_marker_free_entry_is_not_treated_as_marker_free(self) -> None:
+        """A clean `plugins/p/skills/x/SKILL.md` ends with the conflicted
+        `skills/x/SKILL.md` -- exact-line match must not let that suffix
+        relationship clear the shorter path."""
+        conflicted = "skills/x/SKILL.md"
+        clean_sibling = "plugins/p/skills/x/SKILL.md"
+        result = _conflict_marker_deny_paths(conflicted, clean_sibling)
+        assert result.returncode == 0
+        assert result.stdout == conflicted
+
+    def test_prefix_of_a_marker_free_entry_is_not_treated_as_marker_free(self) -> None:
+        """The reverse relationship: a clean `skills/x/SKILL.md.bak` starts
+        with the conflicted `skills/x/SKILL.md` -- still not a match."""
+        conflicted = "skills/x/SKILL.md"
+        clean_sibling = "skills/x/SKILL.md.bak"
+        result = _conflict_marker_deny_paths(conflicted, clean_sibling)
+        assert result.returncode == 0
+        assert result.stdout == conflicted
+
+    def test_empty_candidates_produces_no_deny_paths(self) -> None:
+        result = _conflict_marker_deny_paths("", "skills/x/SKILL.md")
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_empty_marker_free_returns_candidates_unchanged(self) -> None:
+        candidates = "skills/a/SKILL.md\nskills/b/SKILL.md"
+        result = _conflict_marker_deny_paths(candidates, "")
+        assert result.returncode == 0
+        assert result.stdout == candidates
+
+    def test_mixed_candidates_clear_only_the_marker_free_entries(self) -> None:
+        """Order-preserving partial removal: the marker-free candidate drops
+        out, the other two stay in their original order."""
+        candidates = "skills/a/SKILL.md\nskills/b/SKILL.md\nskills/c/SKILL.md"
+        marker_free = "skills/b/SKILL.md\nskills/z/SKILL.md"
+        result = _conflict_marker_deny_paths(candidates, marker_free)
+        assert result.returncode == 0
+        assert result.stdout == "skills/a/SKILL.md\nskills/c/SKILL.md"
+
+    def test_all_candidates_marker_free_produces_no_deny_paths(self) -> None:
+        candidates = "skills/a/SKILL.md\nskills/b/SKILL.md"
+        result = _conflict_marker_deny_paths(candidates, candidates)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+
+# --- Cross-copy parity of the shared gate-base closure -----------------------
+
+_SHARED_CLOSURE_FUNCTIONS = [
+    "_lib_capped",
+    "_lib_capped_for",
+    "_lib_default_branch_from_origin_head",
+    "_lib_default_branch_or_guess",
+    "_lib_git_inprogress_state",
+    "_lib_gate_diff_base",
+    "_lib_skill_review_diff_base",
+    "_lib_staged_diff_hash",
+    "_lib_marker_value_present",
+]
+
+
+def _declared_function_body(lib_path: Path, function_name: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", '. "$1"; declare -f "$2"', "bash", str(lib_path), function_name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0 and result.stdout, (
+        f"{function_name} is not defined by {lib_path}: {result.stderr}"
+    )
+    return result.stdout
+
+
+@pytest.mark.parametrize("function_name", _SHARED_CLOSURE_FUNCTIONS)
+def test_shared_closure_function_is_identical_across_stowed_and_plugin_lib(
+    function_name: str,
+) -> None:
+    """The plugin cannot source the stowed _lib.sh, so it carries copies of the
+    gate-base closure. The marker recipe and the anchor check must not drift
+    between them: a marker written under one recipe would never match the
+    other side, or one copy would carry a weaker anchor."""
+    assert _declared_function_body(_LIB_SH, function_name) == _declared_function_body(
+        _SKILL_MANAGEMENT_PLUGIN_LIB, function_name
+    )

@@ -109,7 +109,26 @@ Replace narrative with imperative. Agent bodies are operational instructions to 
 
 If not all three hold, point at the canonical source.
 
-## 7. Review checklist
+## 7. Existence test: should this be an agent at all?
+
+A new agent file is a permanent global cost. Its `description` loads into every session's Agent-tool schema on every machine that installs this repo, dispatched or not (`test_agent_roster.py`, `AGENT_DESCRIPTION_MAX_CHARS` comment). A skill body is lazy — it costs nothing until the skill runs. Instructions, criteria, and output schemas therefore belong in the calling skill's body or the dispatch prompt.
+
+An agent file earns its description budget only through what frontmatter buys that a dispatch prompt cannot:
+
+- `tools:` — a harness-enforced privilege cap a dispatch prompt cannot replicate; `general-purpose` carries `Write`/`Bash`/`Skill` unconditionally.
+- `model:`/`effort:` pins that hold when the dispatching session is anchored elsewhere.
+- No `Agent` tool, foreclosing a dispatch cascade.
+
+**An agent whose only dispatch site is one skill's one step is presumed wrong** — fold it into that skill, with a `general-purpose` dispatch carrying an explicit `model:` only if the step still needs its own context.
+
+Two questions decide whether an exception holds; answer both in the PR and record a surviving exception as a new `docs/design-decisions/<slug>.md` file:
+
+1. Is the privilege cap load-bearing? A read-only cap on a dispatch that was never going to act, inside a workflow whose acting session holds `Bash`/`Write` anyway, constrains nothing.
+2. Does the call site fire often enough to amortize an always-loaded description? `plan-architect` (`docs/design-decisions.md` §30/§37) is the standing exception because every `/plan-it` run reaches it; a periodic maintenance workflow does not.
+
+Do not duplicate this section into `subagent-delegation` or `skill-review` — the anti-pattern requires an agent file to exist, and `agent-review` always fires on a new or deleted agent file, so one home is enough.
+
+## 8. Review checklist
 
 1. **Frontmatter contract** — `name` matches the agent's identity slug; `description` present and contains both `TRIGGER when:` and `DO NOT TRIGGER when:` blocks. **`tools` vs `allowed-tools`:** agent files use `tools` (restrictive allowlist); skill files use `allowed-tools` (additive). Mixing them silently breaks the cap. Verify the field name matches the file type.
 
@@ -152,3 +171,5 @@ If not all three hold, point at the canonical source.
 16. **Platform-genericness** — the reviewed agent's own body prescribes no tool-invocation verb as a mandatory instruction step, and cites no source-material bias anchor (a named team's or org's practice given as the reason a rule holds, instead of the rule's own rationale); extract every hit mechanically — do not rely on noticing during read-through. Vendor or product names naming a `staff-*` persona's recognized domain landscape (Terraform, Snowflake, Fivetran, Sentry, and similar) are not violations: `staff-*` bodies are domain-expert review personas whose job is enumerating that landscape, so it is load-bearing domain knowledge in the reviewed agent's own body, not platform lock-in. Flag any hit not justified as deliberate or illustrative; agent bodies have no `<skill>-<project>` layer to relocate content to, so an unjustified hit is generalized or removed from the reviewed agent's body directly. (Repo-specific; the tool-verb and bias-anchor rationale applies to agent bodies for the same reason it applies to skill bodies — see repo-root `CLAUDE.md` "Global skill bodies stay platform-agnostic.")
 
 17. **`effort` field discipline** — check against `~/.claude/CLAUDE.md` "Model & Effort Routing" for the current per-agent effort-tier policy, not this line — that policy can change independently of this checklist. `Explore`'s `low` pin is the canonical fast-lookup case; an agent with no `effort:` pin at all silently inherits whatever effort the invoking session runs at, so every agent in the roster should carry an explicit pin unless a documented reason exists to leave it unset.
+
+18. **Existence test** — if the agent's only dispatch site is one skill's one step, apply §7. Fold it into the calling skill unless both §7 questions answer yes, with the surviving exception recorded as a `docs/design-decisions/<slug>.md` file.
