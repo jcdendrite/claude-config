@@ -2666,11 +2666,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     --per-session is refused outright under multi-root, since it would
     otherwise join a foreign account's own session-id prefix to its branch
     name.
-    --per-dispatch replaces the model-mix table with one row per resolved
-    dispatch (dangling or not) instead of aggregating by agentType — the
-    same _dispatch_usage_summary call already made at this table's join
-    site, printed per row instead of summed into model_mix. Refused outright
-    under multi-root for the same reason as --per-session.
     Under --this-repo, every branch prints raw (account-<K>/<branch>) with
     no attestation gate: this function excludes isSidechain records before
     ever reading gitBranch, unlike cmd_subagents, so a subagent's own
@@ -2687,7 +2682,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
-    per_dispatch: bool = bool(getattr(args, "per_dispatch", False))
 
     if multi_root and per_session:
         print(
@@ -2695,17 +2689,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             " scope (--config-dir was given) — a per-session row would join a"
             " foreign account's own session-id prefix to its branch name; drop"
             " --per-session or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if multi_root and per_dispatch:
-        print(
-            "subagent-mix: --per-dispatch is refused when more than one root is in"
-            " scope (--config-dir was given) — a per-dispatch row would print a"
-            " foreign account's own dispatch-id (a session-id fragment) with no"
-            " per-account origin marker; drop --per-dispatch or scope to a single"
-            " profile",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -2792,11 +2775,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     })
     declared_pin_cache: dict[tuple[Path, str], str] = {}
     total_meta_read_errors = 0
-    # Only populated under --per-dispatch: one row per resolved dispatch
-    # (dangling or not), printed instead of model_mix's per-agentType
-    # aggregate -- multi_root already refuses --per-dispatch above, so these
-    # rows need no root-scoped redaction of their own.
-    dispatch_rows: list[dict] = []
 
     for jsonl, records in session_iter:
         root_idx = _root_index_for_path(jsonl, resolved_roots) if multi_root else None
@@ -2852,17 +2830,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                             row["actual_dollars"] += actual_dollars
                             if reprice_as:
                                 row["counterfactual_dollars"] += counterfactual_dollars or 0.0
-                        if per_dispatch:
-                            dispatch_rows.append({
-                                "stype": stype,
-                                "dispatch_id": paired_jsonl.stem[:8],
-                                "dangling": observed is None,
-                                "declared": declared_pin,
-                                "requested": requested_model or _UNREQUESTED_MODEL_LABEL,
-                                "observed": observed,
-                                "actual_dollars": actual_dollars,
-                                "counterfactual_dollars": counterfactual_dollars,
-                            })
                 elif name == "Skill":
                     skill = inp.get("skill") or ""
                     if skill in REVIEW_SKILLS:
@@ -2919,48 +2886,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
 
-    if per_dispatch:
-        if dispatch_rows:
-            header = f"{'AgentType':<28} {'Dispatch':<10} {'Status':<9} {'Declared':<10} {'Actual$':>12}"
-            if reprice_as:
-                header += f" {'Counterfactual$':>18} {'Delta':>12}"
-            header += f" {'Requested':<12} Observed"
-            print(f"\n{header}")
-            print("-" * len(header))
-            # Sorted by (label, dispatch_id) rather than insertion order, so
-            # two same-agentType dispatches print as adjacent, deterministically
-            # ordered rows instead of whatever order session_iter happened to
-            # scan its files in.
-            for drow in sorted(
-                dispatch_rows, key=lambda d: (_stype_label((None, d["stype"])), d["dispatch_id"])
-            ):
-                stype_label = _stype_label((None, drow["stype"]))
-                status = "dangling" if drow["dangling"] else "run"
-                observed_str = drow["observed"] or "—"
-                line = (
-                    f"{stype_label:<28} {drow['dispatch_id']:<10} {status:<9} {drow['declared']:<10} "
-                    f"{_fmt_usd(drow['actual_dollars']):>12}"
-                )
-                if reprice_as:
-                    counterfactual = drow["counterfactual_dollars"] or 0.0
-                    delta = drow["actual_dollars"] - counterfactual
-                    line += f" {_fmt_usd(counterfactual):>18} {_fmt_usd(delta):>12}"
-                line += f" {drow['requested']:<12} {observed_str}"
-                print(line)
-            # Same two diagnostics as the aggregated table below -- see their
-            # comments there for what each means.
-            if total_unpriced_turns:
-                print(
-                    f"  ({total_unpriced_turns:,} unpriced turns / {total_unpriced_tokens:,}"
-                    " tokens excluded from priced spend)"
-                )
-            if all_stale_models:
-                print(
-                    "STALE PRICING — today is past the re-verify-by date for: "
-                    + ", ".join(sorted(all_stale_models))
-                    + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing this table's dollar figures."
-                )
-    elif model_mix:
+    if model_mix:
         header = f"{'AgentType':<28} {'Runs':>5} {'Dangling':>9}  {'Declared':<10} {'Actual$':>12}"
         if reprice_as:
             header += f" {'Counterfactual$':>18} {'Delta':>12}"
@@ -12142,14 +12068,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--per-session",
         action="store_true",
         help="Break out by individual session instead of aggregating per branch. Refused under --config-dir.",
-    )
-    p_mix.add_argument(
-        "--per-dispatch",
-        action="store_true",
-        help=(
-            "Replace the model-mix table with one row per resolved dispatch (dangling or not)"
-            " instead of aggregating by agentType. Refused under --config-dir."
-        ),
     )
     p_mix.add_argument(
         "--since-date", metavar="DATE", type=_iso_date,

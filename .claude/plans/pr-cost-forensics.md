@@ -78,7 +78,6 @@ Three conditions that read like givens are not: transcript retention, the privat
 
   Lighter primitives rejected: (a) a caller-side correction factor in `subagent-mix` — leaves the defect live for every other future caller of the primitive; (b) a docstring caveat only — the number stays wrong on screen. Neither is lighter than a four-line fix at the source.
 - **Rename `duration`'s `Sessions` column and correct its docstring** — *anchors: row 7.* A one-word printed-label fix at the site that produced the misreading. Not a behaviour change; the computed value is unchanged.
-- **`subagent-mix --per-dispatch`** — *anchors: row 1.* `_dispatch_usage_summary` is already called per dispatch inside `cmd_subagent_mix`'s own join site; only the aggregation step discards the per-dispatch row. Adding a flag that prints instead of aggregating is the minimum change. Must carry the same multi-root refusal `--per-session` already has. Lighter primitives rejected: (a) a standalone subcommand duplicating the dispatch-pairing index; (b) a `--verbose` mode on the existing table — conflates two output shapes in one renderer.
 - **Per-review-round cost: lighter primitive reused, not built** — *anchors: row 1, row 16.* `review-round-cost` already existed and was reused instead of building a new instrument. Its boundary rule — close at the next round-open or the next fresh user prompt — approximates a review-*pass* cost claim that excludes implementation work done between passes, though same-window fix-application turns still land inside the window it draws.
 - **A `docs/case-studies/` page plus an index row** — *anchors: root.* The lightest durable surface that survives transcript retention. Heavier alternatives rejected: a new subcommand encoding the finding (a one-off study is not a re-runnable instrument), and a hook (nothing here is an automatic-trigger request).
 
@@ -98,7 +97,7 @@ Explicitly **not** used, and named as identification bounds in the study rather 
 
 **Cut line: fix what makes a printed number wrong or a needed attribution impossible; record what only makes a future question cheaper.**
 
-**Closed (3):** the dedup defect (row 6 — a wrong number on screen), per-dispatch cost rows, and per-review-round cost (the two attributions whose absence actually blocked this dissection).
+**Closed (2):** the dedup defect (row 6 — a wrong number on screen) and per-review-round cost (the two attributions whose absence actually blocked this dissection).
 
 **Recorded, not closed** — with the reason each stayed out:
 
@@ -141,9 +140,7 @@ Before Phase 1 begins — decoupled from Phase 1/2's own review-cycle time, whic
 
 **Phase 2 — attribution surfaces** (`code-writer`)
 
-- `claude/.claude/scripts/transcript-analysis.py` — `subagent-mix --per-dispatch` (print per-dispatch rows from the existing call site inside `cmd_subagent_mix`; carry `--per-session`'s multi-root refusal).
-- `claude/.claude/scripts/tests/test_transcript_analysis.py` — coverage for `--per-dispatch`: two same-`agent_type` dispatches carrying different totals, asserting two distinct rows; the multi-root refusal path; and an independent dedup-invariant assertion against `--per-dispatch` output, so a Phase 1 revert alone is still caught.
-- `docs/transcript-analysis.md` — document the flag, the corrected `duration` column semantics, and the `cost`-vs-`subagents` turn-count denominators (row 8).
+- `docs/transcript-analysis.md` — document the corrected `duration` column semantics, and the `cost`-vs-`subagents` turn-count denominators (row 8).
 - **Reuse:** `_index_subagent_dispatches` (already imported), `_dispatch_usage_summary`, `_branch_filter`.
 - **Verification:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py` and `.venv/bin/ruff check claude/.claude/`
 

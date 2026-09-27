@@ -982,7 +982,6 @@ def _subagent_mix_args(
     this_repo: bool = False,
     branches: str | None = None,
     per_session: bool = False,
-    per_dispatch: bool = False,
     since: str | None = None,
     since_date: str | None = None,
     until_date: str | None = None,
@@ -994,7 +993,6 @@ def _subagent_mix_args(
         "this_repo": this_repo,
         "branches": branches,
         "per_session": per_session,
-        "per_dispatch": per_dispatch,
         "since": since,
         "since_date": since_date,
         "until_date": until_date,
@@ -1684,202 +1682,6 @@ class TestSubagentMixDollars:
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$0.00"
         assert "1 unpriced turns / 1,000,500 tokens excluded" in out
-
-
-class TestSubagentMixPerDispatch:
-    """--per-dispatch prints one row per resolved dispatch instead of
-    aggregating by agentType."""
-
-    def test_per_dispatch_prints_distinct_rows_for_two_same_agent_type_dispatches(self, fake_projects, capsys):
-        """Two staff-sdet dispatches carrying different dollar totals stay two
-        distinct $3.00/$6.00 rows, never summed into one $9.00 row the way
-        the default aggregated table would (see
-        test_actual_dollars_sum_across_multiple_dispatches_of_same_agent_type
-        in TestSubagentMixDollars). Also pins the Requested/Observed cells.
-        Both are computed by the same pre-existing aggregation
-        _dispatch_usage_summary feeds — --per-dispatch only appends those
-        values per row, it does not introduce new computation for them."""
-        session_id = "sess-per-dispatch"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))
-        out = capsys.readouterr().out
-        dollar_values = _column_values_for_matching_rows(
-            out, header_contains="Actual$", label="Actual$", row_prefix="staff-sdet"
-        )
-        assert sorted(dollar_values) == ["$3.00", "$6.00"]
-        assert "$9.00" not in out
-        # Neither dispatch passed requested_model; both ran claude-sonnet-4-6.
-        requested_values = _column_values_for_matching_rows(
-            out, header_contains="Actual$", label="Requested", row_prefix="staff-sdet"
-        )
-        observed_values = _column_values_for_matching_rows(
-            out, header_contains="Actual$", label="Observed", row_prefix="staff-sdet"
-        )
-        assert requested_values == ["(none)", "(none)"]
-        assert observed_values == ["sonnet", "sonnet"]
-
-    def test_per_dispatch_dollars_reflect_dedup_not_raw_per_block_sum(self, fake_projects, capsys):
-        """--per-dispatch's Actual$ must price a same-requestId two-block run
-        once (_dispatch_usage_summary's own dedup-before-pricing fix), not
-        once per content block -- an independent regression test so a revert
-        of that fix is caught here too, not only by
-        TestDispatchUsageSummaryDedupBeforePricing's own tests."""
-        session_id = "sess-per-dispatch-dedup"
-        request_id = "req-per-dispatch"
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="main", sidechain=True, request_id=request_id,
-            content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="main", sidechain=True, request_id=request_id,
-            content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1", [rec1, rec2], agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        # 1,000,000 input tokens, billed once per the run's last (deduped)
-        # record, at claude-sonnet-4-6's $3.00/MTok rate: exactly $3.00 -- a
-        # pre-dedup, per-content-block sum would double-count to $6.00.
-        assert cols["Actual$"] == "$3.00"
-
-    def test_dangling_dispatch_prints_as_dangling_row_with_zero_dollars(self, fake_projects, capsys):
-        """A meta.json with no readable sibling .jsonl is a dangling dispatch
-        under --per-dispatch too, printed as its own row (not silently
-        dropped) with status=dangling and Actual$=$0.00 -- the per-dispatch
-        counterpart of TestSubagentMixDollars' aggregated-table dangling
-        coverage (test_dangling_jsonl_excluded_from_runs_denominator)."""
-        session_id = "sess-per-dispatch-dangling"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
-        subdir.mkdir(parents=True, exist_ok=True)
-        meta = {"agentType": "staff-sdet", "description": "d", "toolUseId": "a1", "spawnDepth": 1}
-        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        # Deliberately no agent-1.jsonl written -- the dangling case.
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="agent-1", max_labels=5)
-        assert cols["Status"] == "dangling"
-        assert cols["Actual$"] == "$0.00"
-
-    def test_non_string_meta_model_does_not_crash_per_dispatch_run(self, fake_projects, capsys):
-        """A second, index-surviving dispatch keeps dispatch_rows non-empty
-        so the --per-dispatch render path actually executes -- without it
-        the malformed entry alone would leave dispatch_rows empty and this
-        test would never touch that path."""
-        session_id = "sess-badmodel-per-dispatch"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
-        subdir.mkdir(parents=True, exist_ok=True)
-        meta = {
-            "agentType": "staff-sdet", "description": "d", "toolUseId": "a1",
-            "model": ["opus"], "spawnDepth": 1,
-        }
-        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))  # must not raise TypeError
-        out = capsys.readouterr().out
-        assert "(1 meta.json files failed to parse, excluded)" in out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$3.00"
-
-    def test_per_dispatch_with_reprice_as_renders_counterfactual_and_delta(self, fake_projects, capsys):
-        """--per-dispatch combined with --reprice-as renders the same
-        Counterfactual$/Delta columns per row as the aggregated table's own
-        reprice_as coverage (see test_reprice_as_delta_arithmetic in
-        TestSubagentMixDollars) -- 1,000,000 input tokens at
-        claude-sonnet-4-6's $3.00/MTok actual rate versus
-        claude-haiku-4-5-20251001's $1.00/MTok counterfactual rate."""
-        session_id = "sess-per-dispatch-reprice"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True, reprice_as="claude-haiku-4-5-20251001"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
-        assert cols["Actual$"] == "$3.00"
-        assert cols["Counterfactual$"] == "$1.00"
-        assert cols["Delta"] == "$2.00"
-
-    def test_per_dispatch_dangling_dispatch_with_reprice_as_renders_zero_counterfactual(self, fake_projects, capsys):
-        """A dangling dispatch (meta.json, no sibling .jsonl) under
-        --per-dispatch --reprice-as must not crash formatting a None
-        counterfactual_dollars, since _dispatch_usage_summary returns
-        counterfactual_dollars=None for a dangling dispatch.
-        The `counterfactual = drow["counterfactual_dollars"] or 0.0` guard
-        renders $0.00 instead of _fmt_usd raising TypeError on None."""
-        session_id = "sess-per-dispatch-dangling-reprice"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
-        subdir.mkdir(parents=True, exist_ok=True)
-        meta = {"agentType": "staff-sdet", "description": "d", "toolUseId": "a1", "spawnDepth": 1}
-        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        # Deliberately no agent-1.jsonl written -- the dangling case.
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True, reprice_as="claude-haiku-4-5-20251001"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="agent-1", max_labels=7)
-        assert cols["Status"] == "dangling"
-        assert cols["Actual$"] == "$0.00"
-        assert cols["Counterfactual$"] == "$0.00"
-
-    def test_per_dispatch_with_no_agent_spawns_in_scope_prints_no_extra_table(self, fake_projects, capsys):
-        """--per-dispatch against a session carrying a review-skill
-        invocation but no Agent/Task spawn leaves dispatch_rows empty -- the
-        summary table still prints (Spawns=0), the per-dispatch table's own
-        header never appears, and cmd_subagent_mix does not crash on the
-        empty dispatch_rows list."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=6)
-        assert cols["Spawns"] == "0"
-        assert "Dispatch" not in out
 
 
 class TestDispatchUsageSummaryDedupBeforePricing:
@@ -2776,18 +2578,6 @@ class TestSubagentMixMultiRoot:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--per-session" in err
-        assert "--config-dir" in err
-
-    def test_per_dispatch_refused_under_multi_root(self, fake_projects, fake_config_dir_factory, capsys):
-        """--per-dispatch carries the same multi-root refusal --per-session
-        already has -- a per-dispatch row would print a foreign account's own
-        dispatch-id with no per-account origin marker."""
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)], per_dispatch=True))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--per-dispatch" in err
         assert "--config-dir" in err
 
     def test_multi_root_stamps_do_not_publish_banner_on_stdout_and_stderr(

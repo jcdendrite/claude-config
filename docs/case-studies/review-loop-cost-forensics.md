@@ -19,7 +19,7 @@
 The full method, including every fix, new attribution surface, and gate below, was pre-registered in `.claude/plans/pr-cost-forensics.md` before any figure in this document was cited. Three sequenced steps:
 
 1. Correct one pricing defect and one mislabeled column.
-2. Add `subagent-mix --per-dispatch` (new) and reuse the already-shipped `review-round-cost`.
+2. Fix the pricing defect's remaining call sites and reuse the already-shipped `review-round-cost`.
 3. Re-measure against real branch data and author this record.
 
 No pipeline-behavior change ships from this study — recommendations are named but deferred to a separate reviewed plan.
@@ -50,7 +50,7 @@ Ranked, with what each is grounded in:
 
 Two defects in `transcript-analysis.py` were found and fixed before this study's own figures could be trusted, and are recorded here so a future reader of an older report knows which numbers moved and why.
 
-- **`_dispatch_usage_summary` pricing defect (fixed).** The function streamed its JSONL line-by-line and never deduplicated by request ID before pricing, while every other pricing path in the tool does. This double-counted cache-class tokens on any multi-record API response and over-summed `output_tokens` across a run whose values only reach the billed figure on the final record, materially overstating every per-dispatch and per-agent-type dollar figure the function fed. The affected call sites were `_dispatch_usage_summary`'s own callers, i.e. `subagent-mix --per-dispatch`. Any per-dispatch or per-agent-type dollar total printed by this tool before this fix landed is unreliable and should not be cited forward; see [`design-decisions/plan-architect-consult-mode.md`](../design-decisions/plan-architect-consult-mode.md) for the specific downstream metric this discontinuity affects.
+- **`_dispatch_usage_summary` pricing defect (fixed).** The function streamed its JSONL line-by-line and never deduplicated by request ID before pricing, while every other pricing path in the tool does. This double-counted cache-class tokens on any multi-record API response and over-summed `output_tokens` across a run whose values only reach the billed figure on the final record, materially overstating every per-dispatch and per-agent-type dollar figure the function fed. The affected call site was `_dispatch_usage_summary`'s own caller inside `cmd_subagent_mix`'s model-mix table. Any per-dispatch or per-agent-type dollar total printed by this tool before this fix landed is unreliable and should not be cited forward; see [`design-decisions/plan-architect-consult-mode.md`](../design-decisions/plan-architect-consult-mode.md) for the specific downstream metric this discontinuity affects.
 - **`duration`'s "Sessions" column, mislabeled (fixed).** The column counted activity bursts separated by an idle-gap threshold, not distinct session files — a label defect, not a data defect, and nothing downstream consumed it as a session count. Renamed; the computed value is unchanged.
 - **Per-review-round cost duplication, closed.** `review-round-cost` (pre-existing) is the correct instrument for attributing branch dollars to review rounds; see Gate result 4 for its output on this branch.
 

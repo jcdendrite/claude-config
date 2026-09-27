@@ -220,7 +220,6 @@ Byte totals are aggregate-only: no tool-result content, file paths, session IDs,
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--per-session` — break out by individual session instead of aggregating per branch. Refused when `--config-dir` puts more than one root in scope — a per-session row would join a foreign account's own session-id prefix to its branch name.
-- `--per-dispatch` — replace the model-mix table with one row per resolved dispatch (dangling or not) instead of aggregating by `agentType`. Refused under `--config-dir` for the same reason as `--per-session`.
 - `--since Nd` — limit both tables to records with timestamp in the last N days (e.g. `35d`)
 - `--since-date YYYY-MM-DD` / `--until-date YYYY-MM-DD` — closed date range bounding the model-mix table's `Actual$`/`Counterfactual$` columns only, inclusive start / exclusive end (`[since, until)`, UTC day boundaries). Unlike `--since Nd`, this filters at the *sidechain assistant record* level, not the dispatch level: a dispatch whose sidechain straddles the window edge has only its in-window records priced into `Actual$`, never the whole dispatch's dollars just because it started inside the window. Every other column in this table (`Runs`, `Dangling`, `Declared`, `Requested`, `Observed`) keeps `--since Nd`'s existing dispatch-level scope, unaffected by `--since-date`/`--until-date`.
 - `--reprice-as MODEL_ID` — re-price that same in-window usage at an alternate model ID via `_price_turn`, adding `Counterfactual$` and `Delta` (`Actual$ − Counterfactual$`, negative when the counterfactual model is pricier) columns. `MODEL_ID` must be one of `_MODEL_BASE_INPUT_RATES`'s keys; an unrecognized value is rejected, listing the valid IDs.
@@ -252,17 +251,6 @@ AgentType                    Runs  Dangling  Declared        Actual$    Counterf
 ------------------------------------------------------------------------------------------------------------------------------------------
 staff-sdet                      4         0  sonnet          $12.40              $4.13        $8.27 (none)(4)                      opus(1), sonnet(3)
 ```
-
-With `--per-dispatch` instead, the model-mix table above is replaced entirely — one row per resolved dispatch (synthetic, illustrative figures only):
-```
-AgentType                    Dispatch   Status    Declared        Actual$ Requested    Observed
----------------------------------------------------------------------------------------------------
-staff-sdet                   a1b2c3d4   run       sonnet           $3.10 (none)        opus
-staff-sdet                   e5f6a7b8   run       sonnet           $2.90 (none)        sonnet
-code-writer                  9c8d7e6f   run       sonnet           $2.85 sonnet        sonnet
-```
-
-`Dispatch` is the paired subagent transcript's own filename stem, truncated to 8 characters (the same truncation `--per-session`'s session-suffix uses) — the identifier that keeps two same-`agentType` dispatches on distinct rows instead of summed into one. `Status` is `run` or `dangling` (this table's per-row counterpart to the aggregated table's `Runs`/`Dangling` columns); a dangling row's `Observed` renders `—`, since there is no sidechain to read a model from. `Requested`/`Observed` are single values here, not the aggregated table's comma-joined bucket lists, since each row is exactly one dispatch.
 
 Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/ready-for-review` spawns. In the model-mix table, `Runs` counts dispatches with a readable `subagents/*.meta.json` **and** a readable sibling `.jsonl` — a dangling pair (meta.json present, `.jsonl` missing or unreadable) is excluded from `Runs` and counted under `Dangling` instead. `Declared` is the frontmatter `model:` pin from `config_dir()/agents/<agentType>.md`, or `built-in` when no on-disk agent file exists (e.g. `general-purpose`, `claude-code-guide`, `Plan`). `Requested` is `meta.json`'s own `model` key, bucketed under `(none)` when absent. `Observed` is the modal real model ID across the dispatch's own sidechain — two distinct real model IDs report the literal `mixed` bucket rather than collapsing to one family, and a sidechain whose only recorded model is `<synthetic>` resolves to `other`, never counted as a pin violation. `Actual$` sums `_price_turn`'s own per-class dollars over each matched dispatch's sidechain, scoped to `--since-date`/`--until-date` when given (unbounded otherwise) — a dispatch with no priced usage in scope (a synthetic-only sidechain, or a fully out-of-window one) renders `$0.00`, never a crash or a blank cell.
 
