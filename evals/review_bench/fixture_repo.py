@@ -1,11 +1,8 @@
-"""Synthetic two-commit fixture repositories for A-bench.
-
-See .claude/plans/measure-review-quality.md's Approach > Fixtures and arms >
-"Fixture" for the design this module follows: a fresh repository built from
-`git archive` trees only (never a `git worktree`/clone of the real repo, so
-a reviewer's `git log --all` cannot reach a later commit), holding exactly
-`base_commit` then `head_commit`, plus a `.bench/` directory excluded via
-`.git/info/exclude`.
+"""Synthetic two-commit fixture repositories for A-bench: a fresh repository
+built from `git archive` trees only (never a `git worktree`/clone of the real
+repo, so a reviewer's `git log --all` cannot reach a later commit), holding
+exactly `base_commit` then `head_commit`, plus a `.bench/` directory excluded
+via `.git/info/exclude`.
 
 Builds three kinds of directory:
 - an arm fixture (`build_arm_fixture`): the two-commit tree plus an
@@ -42,10 +39,10 @@ _OVER_READ_CAP_TOKENS = 25_000
 # guess against this repo's own git-call latency.
 _LOCAL_GIT_TIMEOUT_S = 10.0
 
-# Fixed author and date for both fixture commits (Approach > Fixtures and
-# arms > "Fixture"), so two builds of the same defect produce byte-identical
-# commits -- a real author/date would leak when the fixture was actually
-# built, which is not part of what a run measures.
+# Fixed author and date for both fixture commits, so two builds of the same
+# defect produce byte-identical commits -- a real author/date would leak
+# when the fixture was actually built, which is not part of what a run
+# measures.
 _FIXTURE_AUTHOR_NAME = "A-bench fixture"
 _FIXTURE_AUTHOR_EMAIL = "review-bench@localhost"
 _FIXTURE_COMMIT_DATE = "2000-01-01T00:00:00+00:00"
@@ -115,9 +112,8 @@ def _head_commit_subject(source_repo: Path, commit: str) -> str:
 
 def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: Path) -> None:
     """Build `dest_dir` as a fresh git repository holding exactly two
-    commits: `defect.base_commit`'s tree, then `defect.head_commit`'s tree
-    (Approach > Fixtures and arms > "Fixture"). `dest_dir` must exist and be
-    empty."""
+    commits: `defect.base_commit`'s tree, then `defect.head_commit`'s tree.
+    `dest_dir` must exist and be empty."""
     _run_git(["init", "-q"], cwd=dest_dir)
     _extract_commit_tree(source_repo, defect.base_commit, dest_dir)
     _commit_snapshot(dest_dir, _FIXTURE_BASE_COMMIT_MESSAGE)
@@ -219,17 +215,15 @@ def build_defect_fixture(source_repo: Path, defect: ConfirmedDefect, dest_dir: P
 
 def build_precision_judge_fixture(source_repo: Path, defect: ConfirmedDefect, dest_dir: Path) -> FixtureRepo:
     """The arm-neutral precision-judge fixture: `build_defect_fixture`'s
-    same tree and `.bench/` artifacts, with no `bench-<lens>.md` installed
-    (Approach > Runs and adjudication > "Precision judge") -- the judge
-    agent file and `.bench/judge-precision.md` are `adjudicate.py`'s own
-    responsibility."""
+    same tree and `.bench/` artifacts, with no `bench-<lens>.md` installed --
+    the judge agent file and `.bench/judge-precision.md` are `adjudicate.py`'s
+    own responsibility."""
     return build_defect_fixture(source_repo, defect, dest_dir)
 
 
 def build_recall_judge_dir(dest_dir: Path) -> Path:
-    """The recall judge's own working directory: no fixture tree at all
-    (Approach > Runs and adjudication > "Recall judge") -- just the
-    directory itself. `adjudicate.py` installs the judge agent file and
-    writes `.bench/judge-recall.md` into it."""
+    """The recall judge's own working directory: no fixture tree at all,
+    just the directory itself. `adjudicate.py` installs the judge agent file
+    and writes `.bench/judge-recall.md` into it."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     return dest_dir

@@ -667,18 +667,22 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
-        """Also selects REVIEW_BENCH_TEST_GLOB: evals/run_review_bench.py's
-        own runner reuses run_skill_evals.py's launch shape, so a change
-        here needs review_bench's own tests re-run too."""
+        """Also selects REVIEW_BENCH_TEST_GLOB and REVIEW_BENCH_RUNNER_TEST:
+        evals/run_review_bench.py's own runner reuses run_skill_evals.py's
+        launch shape, so a change here needs review_bench's own tests
+        re-run too."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB}
+        assert set(result.target_paths) == {
+            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REVIEW_BENCH_RUNNER_TEST,
+        }
 
     def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -686,6 +690,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -697,6 +702,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_test_glob_member_change_selects_itself(self):
@@ -707,6 +713,20 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
+        }
+
+    def test_review_bench_runner_test_change_selects_itself(self):
+        """evals/test_run_review_bench.py's own "test_run_review_bench"
+        filename doesn't match REVIEW_BENCH_TEST_GLOB's "test_review_bench*"
+        prefix, so it needs its own named-file target (mirroring
+        MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST) to select itself rather than
+        falling open."""
+        result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER_TEST])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
@@ -716,6 +736,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
@@ -731,7 +752,7 @@ class TestSelectPytestTargets:
             assert result.is_full_suite is False, dependency
             assert set(result.target_paths) == {
                 _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
-                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REVIEW_BENCH_RUNNER_TEST,
             }, dependency
 
     def test_review_bench_lens_agent_file_change_also_selects_review_bench_tests(self):
@@ -746,6 +767,7 @@ class TestSelectPytestTargets:
             assert result.is_full_suite is False, agent_file
             assert set(result.target_paths) == {
                 _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+                _mod.REVIEW_BENCH_RUNNER_TEST,
             }, agent_file
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
@@ -1614,6 +1636,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    _mod.REVIEW_BENCH_RUNNER_TEST,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR

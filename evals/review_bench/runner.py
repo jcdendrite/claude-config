@@ -2,12 +2,13 @@
 validity checks and retry-then-missing, per-run statistics, environment
 recording, and interruption-safe cleanup.
 
-See .claude/plans/measure-review-quality.md's Approach > "Runs and
-adjudication" for the full design this module follows. Judge runs
-(bench-judge-recall / bench-judge-precision), adjudicate.py, and analysis.py
-own the judge-side scope -- this module only runs reviewer arms, but its
-per-run validity checks and RunRecord schema are written generically over
-"the run's own directories" so the judge runs reuse them unchanged.
+See evals/README.md's "Review bench" section for the operational design:
+usage, frozen conditions and invalidation, interruption and cleanup, and
+out-of-session reads. Judge runs (bench-judge-recall / bench-judge-precision),
+adjudicate.py, and analysis.py own the judge-side scope -- this module only
+runs reviewer arms, but its per-run validity checks and RunRecord schema are
+written generically over "the run's own directories" so the judge runs reuse
+them unchanged.
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
 own docstring for the reuse record this file adds):
@@ -54,7 +55,7 @@ from _config_dir import config_dir  # noqa: E402
 REVIEWER_MODEL_ID = "claude-sonnet-5"
 JUDGE_MODEL_ID = "claude-opus-5-5"
 
-# --- Caps (Approach > Runs and adjudication > "Caps") -------------------------
+# --- Caps --------------------------------------------------------------------
 
 # Reused directly, not re-derived: a measured
 # staff-backend-engineer dispatch cost x 10 (see
@@ -81,9 +82,9 @@ RECALL_JUDGE_TIMEOUT_S = REVIEWER_TIMEOUT_S
 PRECISION_JUDGE_BUDGET_CAP_USD = REVIEWER_BUDGET_CAP_USD
 PRECISION_JUDGE_TIMEOUT_S = REVIEWER_TIMEOUT_S
 
-# --- Terms (Approach > Runs and adjudication > "Terms") -----------------------
+# --- Terms -------------------------------------------------------------------
 
-DEFAULT_K = 10  # runs per arm per defect; the pre-freeze lever is K, not delta (Approach > "K, not delta...")
+DEFAULT_K = 10  # runs per arm per defect; the pre-freeze lever this harness tunes is K, not the effect-size delta
 
 # read-scope's own chars-per-token estimate, duplicated per the
 # small-duplicated-value exception -- read_scope.py is
@@ -104,8 +105,8 @@ FIXTURE_DIR_PREFIX = "review-bench-"
 
 @dataclass(frozen=True)
 class BlockPlan:
-    """One defect's run order: every (arm, run_index) pair, K per arm, in a
-    seeded shuffled order (Approach > Terms > "block")."""
+    """One defect's own "block": every (arm, run_index) pair, K per arm, in a
+    seeded shuffled order."""
 
     defect_id: str
     ordered_runs: tuple[tuple[str, int], ...]
@@ -120,7 +121,7 @@ def build_block_plan(defect_id: str, arms: tuple[str, ...], k: int, seed: int) -
     return BlockPlan(defect_id=defect_id, ordered_runs=tuple(combos))
 
 
-# --- Prompts (Approach > "Review prompt" and "Dispatcher") -------------------
+# --- Prompts ---------------------------------------------------------------
 
 REVIEW_PROMPT_TEMPLATE = (
     "Review the change from HEAD~1 to HEAD in this repository. Its commit "
@@ -146,8 +147,7 @@ def build_review_prompt(subject: str) -> str:
 
 def build_dispatcher_prompt(agent: str, inner_prompt: str) -> str:
     """The dispatcher's own `-p` prompt: DISPATCH_PROMPT_TEMPLATE plus
-    inner_prompt (the review or judge prompt) between the marker lines
-    (Approach > "Dispatcher")."""
+    inner_prompt (the review or judge prompt) between the marker lines."""
     header = DISPATCH_PROMPT_TEMPLATE.format(agent=agent)
     return f"{header}\n\n{_DISPATCH_PROMPT_MARKER_OPEN}\n{inner_prompt}\n{_DISPATCH_PROMPT_MARKER_CLOSE}"
 
@@ -155,9 +155,8 @@ def build_dispatcher_prompt(agent: str, inner_prompt: str) -> str:
 def build_dispatch_command(
     dispatch_prompt: str, *, model_id: str, session_id: str, budget_cap_usd: float,
 ) -> list[str]:
-    """The thin dispatcher's own launch command (Approach > "Dispatcher").
-    No --permission-mode flag, matching run_skill_evals's own launch shape:
-    default headless mode."""
+    """The thin dispatcher's own launch command. No --permission-mode flag,
+    matching run_skill_evals's own launch shape: default headless mode."""
     return [
         "claude", "-p", dispatch_prompt,
         "--output-format", "stream-json",
@@ -183,8 +182,8 @@ MISSING_REASON_BUDGET = "budget"
 MISSING_REASON_TIMEOUT = "timeout"
 MISSING_REASON_INVALID_ANSWER = "invalid-answer"  # judge runs only
 
-# Per-run validity check failure reasons (Approach > "Per-run validity
-# checks"), one constant per bullet, kebab-cased like the three above.
+# Per-run validity check failure reasons, one constant per check, kebab-cased
+# like the three above.
 VALIDITY_FAIL_PROMPT_MISMATCH = "prompt-mismatch"
 VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL = "extra-dispatcher-tool-call"
 VALIDITY_FAIL_WRONG_AGENT = "wrong-agent"
@@ -485,7 +484,8 @@ def compute_read_stats(
     )
 
 
-# --- Leak / out-of-session classification (Approach > "Out-of-session reads") -
+# --- Leak / out-of-session classification (evals/README.md's "Out-of-session
+# reads" section) --------------------------------------------------------------
 
 
 def _resolve(raw_path: str, *, base_dir: Path) -> Path:
@@ -501,7 +501,8 @@ def _resolve(raw_path: str, *, base_dir: Path) -> Path:
 def is_changed_file_leak(resolved_path: Path, live_checkout_roots: tuple[Path, ...], changed_relpaths: tuple[str, ...]) -> bool:
     """True when resolved_path IS, or is a directory that CONTAINS, the live
     checkout's own copy of a file the defect's introducing or fix commit
-    changed (Approach > "Per-run validity checks", first leak bullet)."""
+    changed -- one of the two leaks that fail a run outright (evals/README.md's
+    "Out-of-session reads" section)."""
     for root in live_checkout_roots:
         root = root.resolve()
         for relpath in changed_relpaths:
@@ -514,11 +515,12 @@ def is_changed_file_leak(resolved_path: Path, live_checkout_roots: tuple[Path, .
 def is_config_dir_leak(resolved_path: Path, projects_root: Path, own_session_paths: tuple[Path, ...]) -> bool:
     """True when resolved_path is the active config dir's projects/ root, is
     under it, or is a directory containing it -- except this run's own
-    session transcript file or its own subagent sidecar directory (second
-    leak bullet). own_session_paths must name exactly those two paths, not
-    the whole per-arm session-store directory K concurrent runs of one arm
-    share (Approach > "Cleanup"), or a sibling run's own transcript would
-    be exempted too."""
+    session transcript file or its own subagent sidecar directory (the other
+    of the two leaks that fail a run outright; evals/README.md's "Out-of-
+    session reads" section). own_session_paths must name exactly those two
+    paths, not the whole per-arm session-store directory that K concurrent
+    runs of one arm share, or a sibling run's own transcript would be
+    exempted too."""
     if any(resolved_path.is_relative_to(p.resolve()) for p in own_session_paths):
         return False
     projects_root = projects_root.resolve()
@@ -529,7 +531,7 @@ def is_out_of_session(resolved_path: Path, own_dirs: tuple[Path, ...]) -> bool:
     return not any(resolved_path.is_relative_to(d.resolve()) for d in own_dirs)
 
 
-# --- Per-run validity checks (Approach > "Per-run validity checks") -----------
+# --- Per-run validity checks -------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -575,9 +577,9 @@ def evaluate_run_validity(
     live_checkout_roots: tuple[Path, ...],
     changed_relpaths: tuple[str, ...],
 ) -> RunValidity:
-    """Run every check in Approach > "Per-run validity checks", in the order
-    a cheap check can short-circuit an expensive one. Returns the first
-    failure found, or an ok RunValidity carrying every observable stat."""
+    """Runs every validity check below in the order a cheap check can
+    short-circuit an expensive one. Returns the first failure found, or an ok
+    RunValidity carrying every observable stat."""
     if timed_out:
         return _fail(MISSING_REASON_TIMEOUT)
 
@@ -656,7 +658,8 @@ def evaluate_run_validity(
     )
 
 
-# --- Environment record (Approach > "Environment record") --------------------
+# --- Environment record (evals/README.md's "Frozen conditions and
+# invalidation" section) --------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -675,10 +678,11 @@ def ambient_config_checkout_root() -> Path:
 
 def default_live_checkout_roots() -> tuple[Path, ...]:
     """The two live checkouts a per-run validity check must never let a
-    Read/Grep/Glob reach into (Approach > "Per-run validity checks"): the
-    harness's own checkout, and the one the ambient config resolves into --
-    distinct locations under this repo's own worktree-isolation model
-    (repo-root CLAUDE.md), deduped here since they coincide outside it."""
+    Read/Grep/Glob reach into (evals/README.md's "Out-of-session reads"
+    section): the harness's own checkout, and the one the ambient config
+    resolves into -- distinct locations under this repo's own
+    worktree-isolation model (repo-root CLAUDE.md), deduped here since they
+    coincide outside it."""
     roots = {REPO_ROOT.resolve(), ambient_config_checkout_root().resolve()}
     return tuple(sorted(roots))
 
@@ -710,7 +714,8 @@ def read_environment_record(*, checkout_root: Path | None = None) -> Environment
     )
 
 
-# --- Run store: write-ahead record, resume sweep, lock (Approach > "Cleanup") -
+# --- Run store: write-ahead record, resume sweep, lock (evals/README.md's
+# "Interruption and cleanup" section) -----------------------------------------
 
 _LOCK_FILENAME = "lock.pid"
 _WRITE_AHEAD_FILENAME = "write-ahead.jsonl"
@@ -739,16 +744,17 @@ class WriteAheadEntry:
     session_id: str  # "" for a directory-creation-only entry, before any run against it has a session ID yet
 
 
-# The directory-creation half of a write-ahead record (Approach > "Cleanup":
-# "each directory it creates, as soon as it exists") predates any run
-# launching against it, so no session ID exists yet to pair with it.
+# The directory-creation half of a write-ahead record (evals/README.md's
+# "Interruption and cleanup" section) predates any run launching against it,
+# so no session ID exists yet to pair with it.
 _NO_SESSION_ID_YET = ""
 
 
 class RunStore:
     """The local run store `smoke`/`run`/`judge` write ahead to, so a hard
     interruption's sweep on resume deletes exactly what an abandoned
-    attempt recorded -- never a directory-name glob (Approach > "Cleanup")."""
+    attempt recorded -- never a directory-name glob (evals/README.md's
+    "Interruption and cleanup" section)."""
 
     def __init__(self, store_dir: Path):
         self.store_dir = store_dir
@@ -897,10 +903,10 @@ class RunContext:
     changed_relpaths: tuple[str, ...]
     budget_cap_usd: float
     timeout_s: int
-    # The block's own start-of-block reading (Approach > "Environment
-    # record") -- stamped onto every RunRecord in the block, not
-    # re-measured per run. Only the block itself reads the environment
-    # again, once, at its end, to detect drift.
+    # The block's own start-of-block environment reading (evals/README.md's
+    # "Frozen conditions and invalidation" section) -- stamped onto every
+    # RunRecord in the block, not re-measured per run. Only the block itself
+    # reads the environment again, once, at its end, to detect drift.
     environment: EnvironmentRecord
 
 
@@ -911,8 +917,8 @@ def execute_run(
     """Launch one reviewer run under its caller-assigned session_id and
     evaluate its validity. Never retries -- the caller (run_one_with_retry)
     owns retry-then-missing and must write this run's session ID ahead of
-    calling this function (Approach > "Cleanup": "each run's session ID,
-    before that run launches")."""
+    calling this function (evals/README.md's "Interruption and cleanup"
+    section)."""
     inner_prompt = build_review_prompt(ctx.subject)
     dispatch_prompt = apply_fault_injection(
         build_dispatcher_prompt(ctx.agent_name, inner_prompt), fault=fault
@@ -971,19 +977,17 @@ def run_one_with_retry(
     ctx: RunContext, *, arm: str, run_index: int, fault: str | None = None,
     launch=msmr._run_claude_to_completion, run_store: RunStore | None = None,
 ) -> RunAttempt:
-    """Execute one run against ctx.fixture_dir (shared by every run of this
-    (defect, arm) -- Approach > "Cleanup": "K concurrent runs share one
-    fixture per arm"); on validity failure, retry exactly once with a fresh
-    session ID before recording it missing (Approach > "Per-run validity
-    checks": "A failed run is retried once. A run that fails twice is
-    recorded as missing...").  The fixture itself is read-only to every
-    tool an arm holds, so a retry never needs a fresh one.
+    """Execute one run against ctx.fixture_dir, shared by every run of this
+    (defect, arm) -- K concurrent runs share one fixture per arm; on validity
+    failure, retry exactly once with a fresh session ID before recording it
+    missing. The fixture itself is read-only to every tool an arm holds, so a
+    retry never needs a fresh one.
 
     Each attempt's session ID is write-ahead recorded before its own
     execute_run()/launch() call, not after. A hard interruption during the
     up-to-REVIEWER_TIMEOUT_S launch is the highest-probability window for
     one, which the write-ahead record exists to make recoverable on resume
-    (Approach > "Cleanup").
+    (evals/README.md's "Interruption and cleanup" section).
 
     Returns every attempt's own session ID too (not only the winning one),
     so the caller's cleanup can find every session store this run actually
@@ -1000,7 +1004,7 @@ def run_one_with_retry(
     return attempt
 
 
-# --- Block / campaign orchestration (Approach > "Terms", "Cleanup") ----------
+# --- Block / campaign orchestration -------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1049,10 +1053,10 @@ def run_defect_block(
     workers: int = run_skill_evals.DEFAULT_WORKERS,
 ) -> BlockResult:
     """Run every (arm, run_index) in spec.defect_id's seeded block order
-    through a worker pool (Approach > Terms > "campaign"). Rerun the whole
-    block, replacing its first attempt's records rather than joining them,
-    when the environment reading at the block's start differs from the one
-    at its end (Approach > "Environment record"). Reruns at most
+    through a worker pool. Rerun the whole block, replacing its first
+    attempt's records rather than joining them, when the environment reading
+    at the block's start differs from the one at its end (evals/README.md's
+    "Frozen conditions and invalidation" section). Reruns at most
     MAX_ENVIRONMENT_DRIFT_RETRIES times, printing what changed on every
     retried rerun. The final, fatal drift is folded into
     EnvironmentDriftExceededError's own message instead."""
@@ -1117,8 +1121,9 @@ def run_defect_block(
 
 def cleanup_defect_block(spec: DefectFixtureSpec, block_result: BlockResult, *, projects_root: Path) -> None:
     """Delete every arm's fixture directory and session store for one
-    defect -- called only after every run and retry in its block has
-    finished (Approach > "Cleanup"). Each store is found by a representative
+    defect -- the ordinary end-of-block cleanup (evals/README.md's
+    "Interruption and cleanup" section), called only after every run and
+    retry in its block has finished. Each store is found by a representative
     session ID, never computed from the fixture path."""
     for arm, fixture_dir in spec.arm_fixture_dirs.items():
         session_id = block_result.representative_session_id_by_arm.get(arm)
@@ -1143,13 +1148,13 @@ def run_campaign(
     timeout_s: int = REVIEWER_TIMEOUT_S, launch=msmr._run_claude_to_completion, fault: str | None = None,
     workers: int = run_skill_evals.DEFAULT_WORKERS,
 ) -> CampaignResult:
-    """Runs its blocks one at a time (Approach > Terms > "campaign"). On
-    resume, skips every already-completed block and, first, sweeps whatever
-    an abandoned attempt's write-ahead record left of a partial one
-    (Approach > "Cleanup"). `build_spec(defect_id) -> DefectFixtureSpec`
-    builds that defect's fixtures and arm files -- kept as a caller-supplied
-    callback so this function needs no ConfirmedDefect/source-repo
-    knowledge of its own."""
+    """Runs its blocks one at a time. On resume, skips every
+    already-completed block and, first, sweeps whatever an abandoned
+    attempt's write-ahead record left of a partial one (evals/README.md's
+    "Interruption and cleanup" section). `build_spec(defect_id) ->
+    DefectFixtureSpec` builds that defect's fixtures and arm files -- kept as
+    a caller-supplied callback so this function needs no
+    ConfirmedDefect/source-repo knowledge of its own."""
     run_store.acquire_lock()
     try:
         swept = run_store.sweep_abandoned(projects_root)
@@ -1201,7 +1206,8 @@ def build_defect_fixture_spec(
     (evals/review_bench/arms/<arm>/, written by `snapshot-arms` at freeze
     time) into it. Never re-renders from the live production agent files
     here: a run must exercise the frozen arm body, not whatever production
-    has drifted to since the freeze (Approach > "Freeze and invalidation")."""
+    has drifted to since the freeze (evals/README.md's "Building a later
+    arm" section)."""
     arm_fixture_dirs: dict[str, Path] = {}
     changed_relpaths: tuple[str, ...] = ()
     subject = ""
@@ -1209,8 +1215,9 @@ def build_defect_fixture_spec(
         fixture_dir = msmr._resolved_temp_project_dir(FIXTURE_DIR_PREFIX)
         if run_store is not None:
             # As soon as it exists, before this defect's fixture is even
-            # populated (Approach > "Cleanup") -- no session ID exists yet,
-            # since no run has launched against it.
+            # populated (evals/README.md's "Interruption and cleanup"
+            # section) -- no session ID exists yet, since no run has
+            # launched against it.
             run_store.record_directory(defect.id, fixture_dir, _NO_SESSION_ID_YET)
         fixture = build_defect_fixture(source_repo, defect, fixture_dir)
         changed_relpaths = tuple(stat.path for stat in fixture.changed_files)

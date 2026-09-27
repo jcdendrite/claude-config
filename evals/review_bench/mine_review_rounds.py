@@ -6,9 +6,6 @@ Run this miner before `mine_szz.py`: session transcripts age out after
 `cleanupPeriodDays` (default 30 days), while the git history `mine_szz.py`
 reads does not.
 
-See .claude/plans/measure-review-quality.md's Approach > Defect set >
-"Source 2: later review round" for the full algorithm this module follows.
-
 Reuses transcript_analysis's session-scope, round-window, subagent-dispatch,
 and reviewer-citation helpers rather than re-deriving them -- this module
 never redefines round detection, branch attribution, or path normalization
@@ -37,7 +34,7 @@ from review_bench.defects import Candidate, assert_unique_ids, guess_lens  # noq
 
 def resolve_scoped_sessions(roots: Sequence[Path] | None = None):
     """Sessions for mining, scoped to this repo's own worktrees on exactly
-    one config-dir root (Approach > Defect set > Source 2, step 1).
+    one config-dir root.
 
     Exits 2 when more than one root is in scope -- production always calls
     this with roots=None, which resolves to (scope._projects_dir(),) alone
@@ -122,8 +119,7 @@ def _round_scope(
 ) -> dict[str, str]:
     """Join-key -> raw path for everything Read inside `window`'s round --
     the main thread's own Reads plus every reviewer-typed subagent it
-    dispatched inside the window (Approach > Defect set > Source 2,
-    step 3)."""
+    dispatched inside the window."""
     window_records = _window_records(records, window)
     keys = _read_keys_in_records(window_records)
     for tool_use_id in _reviewer_dispatch_tool_use_ids(window_records):
@@ -428,7 +424,7 @@ def _branch_fingerprint(branch: str) -> str:
 
 def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candidate]:
     """Mine later-review-round candidates from this repo's own session
-    corpus (Approach > Defect set > Source 2)."""
+    corpus."""
     session_iter = resolve_scoped_sessions(roots)
     entries = _collect_round_entries(session_iter)
 

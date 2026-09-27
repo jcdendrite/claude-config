@@ -622,8 +622,8 @@ class TestRoundScopeAndCitations:
 
     def test_round_scope_collects_reviewer_subagent_reads(self, tmp_path):
         """A round's scope covers Reads by any reviewer-typed subagent it
-        dispatched inside the window, not only the main thread's own Reads
-        (Approach > Defect set > Source 2, step 3)."""
+        dispatched inside the window, not only the main thread's own
+        Reads."""
         cited_path = "/repo/other.py"
         agent_dispatch_id = "toolu_agent9"
         records = [

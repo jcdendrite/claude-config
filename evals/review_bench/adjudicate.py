@@ -2,8 +2,6 @@
 tolerant answer parsing, judge-run execution, and the human spot-check for
 A-bench.
 
-See .claude/plans/measure-review-quality.md's Approach > "Runs and
-adjudication" for the full design this module follows.
 `evals/review_bench/judges/bench-judge-recall.md` and
 `bench-judge-precision.md` hold each judge's own prompt and rubric; this
 module builds their per-defect input files, launches their runs, and parses
@@ -55,9 +53,10 @@ PRECISION_DATA_FILE_NAME = "judge-precision.md"
 _BENCH_DIR_NAME = ".bench"
 
 # The directory-creation half of a write-ahead record predates any run
-# launching against it (Approach > "Cleanup"), so no session ID exists yet
-# -- duplicated from runner.py's own private _NO_SESSION_ID_YET for the same
-# small-duplicated-value reason as _BENCH_DIR_NAME above.
+# launching against it (evals/README.md's "Interruption and cleanup"
+# section), so no session ID exists yet -- duplicated from runner.py's own
+# private _NO_SESSION_ID_YET for the same small-duplicated-value reason as
+# _BENCH_DIR_NAME above.
 _NO_SESSION_ID_YET = ""
 
 JUDGE_ARM_RECALL = "judge-recall"
@@ -69,14 +68,14 @@ JUDGE_ARM_PRECISION = "judge-precision"
 _LOCAL_GIT_TIMEOUT_S = 10.0
 
 
-# --- .bench/ path normalization (Approach > "Normalization") -----------------
+# --- .bench/ path normalization -----------------------------------------------
 
 # Matches a `.bench/<path>` artifact reference so it can be replaced with one
 # neutral token before either judge or the spot-check sheet sees it -- arm
 # 2's read clause names `.bench/change-function-context.diff` by name, so an
 # unredacted citation would otherwise hint at its arm. Excludes ':', so a
 # trailing line reference (e.g. ":42") survives normalization unchanged, an
-# accepted residual (Approach > "Normalization").
+# accepted residual.
 _BENCH_PATH_RE = re.compile(r"\.bench/[\w.\-/]+")
 
 # A finding may instead cite a bench artifact's bare filename with no
@@ -100,7 +99,7 @@ def normalize_bench_paths(text: str) -> str:
     return _BENCH_BASENAME_RE.sub(BENCH_PATH_TOKEN, text)
 
 
-# --- Blinding: arm-free seeded ordering (Approach > "Blinding") --------------
+# --- Blinding: arm-free seeded ordering ---------------------------------------
 
 
 def order_by_opaque_id(opaque_ids: Iterable[str], *, seed: int) -> tuple[str, ...]:
@@ -128,9 +127,9 @@ class JudgeInput:
 
 def _completed_findings_by_id(records: Sequence[runner.RunRecord]) -> dict[str, str]:
     """Every STATUS_OK run's own findings text, `.bench/`-normalized -- a
-    missing run has nothing for a judge to label (Approach > Analysis >
-    "Recall": "A missing run counts in neither the numerator nor the
-    denominator"), so it is never included in a judge's input at all."""
+    missing run has nothing for a judge to label, so it is never included in
+    a judge's input at all (analysis.DefectRecallCounts counts it in neither
+    recall's numerator nor its denominator, for the same reason)."""
     return {
         record.opaque_run_id: normalize_bench_paths(record.findings_text or "")
         for record in records
@@ -161,12 +160,11 @@ def changed_relpaths_for(source_repo: Path, defect: ConfirmedDefect) -> tuple[st
 def build_recall_judge_input(
     defect: ConfirmedDefect, records: Sequence[runner.RunRecord], *, source_repo: Path, seed: int,
 ) -> JudgeInput:
-    """`.bench/judge-recall.md`'s own content (Approach > Runs and
-    adjudication > "Recall judge"): the confirmed description, the defect's
-    lines (the introducing commit's own diff -- Source 1 maps head_commit to
-    the introducing commit itself, Approach > Defect set), the fix diff,
-    then every completed run's normalized findings under its opaque ID, in
-    blind order."""
+    """`.bench/judge-recall.md`'s own content: the confirmed description, the
+    defect's lines (the introducing commit's own diff -- the SZZ miner maps
+    head_commit to the introducing commit itself), the fix diff, then every
+    completed run's normalized findings under its opaque ID, in blind
+    order."""
     findings_by_id = _completed_findings_by_id(records)
     order = order_by_opaque_id(findings_by_id, seed=seed)
     text = (
@@ -183,11 +181,10 @@ def build_recall_judge_input(
 
 
 def build_precision_judge_input(records: Sequence[runner.RunRecord], *, seed: int) -> JudgeInput:
-    """`.bench/judge-precision.md`'s own content (Approach > Runs and
-    adjudication > "Precision judge"): every completed run's normalized
-    findings under its opaque ID, in blind order -- no description or diff,
-    since the precision judge inspects the real code through its own
-    Read/Grep/Glob access instead."""
+    """`.bench/judge-precision.md`'s own content: every completed run's
+    normalized findings under its opaque ID, in blind order -- no
+    description or diff, since the precision judge inspects the real code
+    through its own Read/Grep/Glob access instead."""
     findings_by_id = _completed_findings_by_id(records)
     order = order_by_opaque_id(findings_by_id, seed=seed)
     text = "## Runs to label\n\n" + _render_run_sections(order, findings_by_id) + "\n"
@@ -198,8 +195,7 @@ def install_recall_judge_fixture(
     dest_dir: Path, defect: ConfirmedDefect, records: Sequence[runner.RunRecord], *, source_repo: Path, seed: int,
 ) -> JudgeInput:
     """Builds the recall judge's own working directory: no fixture tree, just
-    the judge agent file and `.bench/judge-recall.md` (Approach > "Recall
-    judge")."""
+    the judge agent file and `.bench/judge-recall.md`."""
     fixture_repo.build_recall_judge_dir(dest_dir)
     judge_input = build_recall_judge_input(defect, records, source_repo=source_repo, seed=seed)
     bench_dir = dest_dir / _BENCH_DIR_NAME
@@ -215,8 +211,7 @@ def install_precision_judge_fixture(
     dest_dir: Path, defect: ConfirmedDefect, records: Sequence[runner.RunRecord], *, source_repo: Path, seed: int,
 ) -> JudgeInput:
     """Builds the arm-neutral precision-judge fixture: the real two-commit
-    tree, with no `bench-<lens>.md` installed (Approach > "Precision
-    judge")."""
+    tree, with no `bench-<lens>.md` installed."""
     fixture_repo.build_precision_judge_fixture(source_repo, defect, dest_dir)
     judge_input = build_precision_judge_input(records, seed=seed)
     bench_dir = dest_dir / _BENCH_DIR_NAME
@@ -228,7 +223,7 @@ def install_precision_judge_fixture(
     return judge_input
 
 
-# --- Answer parsing (Approach > "Recall judge" / "Precision judge") ----------
+# --- Answer parsing -----------------------------------------------------------
 
 # Tolerant of markdown emphasis/code-span decoration around a label or ID,
 # following run_skill_evals.parse_disposition_answer's own strip-then-match
@@ -252,10 +247,10 @@ class RecallLabel:
 def parse_recall_answer(
     raw_text: str, *, expected_ids: Sequence[str], normalized_findings_by_id: Mapping[str, str],
 ) -> dict[str, RecallLabel] | None:
-    """None on any invalid condition (Approach > "Recall judge"): a missing
-    ID, a duplicated ID, an ID not in expected_ids, a label other than FOUND
-    or NOT_FOUND, or a FOUND whose quoted opening does not occur verbatim in
-    that ID's own normalized findings."""
+    """None on any invalid condition: a missing ID, a duplicated ID, an ID
+    not in expected_ids, a label other than FOUND or NOT_FOUND, or a FOUND
+    whose quoted opening does not occur verbatim in that ID's own normalized
+    findings."""
     text = _MARKDOWN_DECORATION_RE.sub("", raw_text)
     matches: dict[str, list[RecallLabel]] = defaultdict(list)
     for m in _RECALL_LABEL_LINE_RE.finditer(text):
@@ -319,8 +314,8 @@ def _split_precision_sections(raw_text: str, expected_ids: Sequence[str]) -> dic
 def parse_precision_findings(section_text: str) -> list[PrecisionFinding] | None:
     """The distinct findings one run's own section lists, in order. None
     when a recognized finding line carries no quoted opening -- a made-up
-    or unparseable finding must never enter the pooled-precision denominator
-    (Approach > "Precision judge")."""
+    or unparseable finding must never enter the pooled-precision
+    denominator."""
     text = _MARKDOWN_DECORATION_RE.sub("", section_text)
     findings: list[PrecisionFinding] = []
     for m in _PRECISION_FINDING_RE.finditer(text):
@@ -333,9 +328,9 @@ def parse_precision_findings(section_text: str) -> list[PrecisionFinding] | None
 
 def check_precision_split(findings: Sequence[PrecisionFinding], normalized_run_text: str) -> bool:
     """True when every finding's quoted opening occurs in normalized_run_text
-    in order, each one strictly after the previous (Approach > "Precision
-    judge") -- a repeat of an opening the text contains only once fails
-    here, since the second search starts past the first match's own end."""
+    in order, each one strictly after the previous -- a repeat of an opening
+    the text contains only once fails here, since the second search starts
+    past the first match's own end."""
     cursor = 0
     for finding in findings:
         index = normalized_run_text.find(finding.quoted_opening, cursor)
@@ -365,7 +360,7 @@ def parse_precision_answer(
     return result
 
 
-# --- Judge run execution (Approach > "Judge runs") ---------------------------
+# --- Judge run execution -------------------------------------------------------
 
 JUDGE_INNER_PROMPT_TEMPLATE = (
     "Read `.bench/{data_file_name}` in your working directory and follow "
@@ -404,7 +399,7 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
     """Launch one judge run and evaluate its validity -- mirrors
     runner.execute_run's own shape, with a fixed judge inner prompt in place
     of a rendered review prompt. Never retries; the caller owns
-    retry-then-missing (Approach > "Per-run validity checks")."""
+    retry-then-missing."""
     launch = launch if launch is not None else runner.msmr._run_claude_to_completion
     inner_prompt = build_judge_inner_prompt(ctx.data_file_name)
     dispatch_prompt = runner.build_dispatcher_prompt(ctx.agent_name, inner_prompt)
@@ -452,9 +447,9 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
 
 def _validate_judge_answer(record: runner.RunRecord, ctx: JudgeRunContext) -> runner.RunRecord:
     """Downgrades an otherwise-valid judge run to missing when its answer
-    fails the judge-specific parser (Approach > "Recall judge" / "Precision
-    judge": "An invalid answer from either judge ... fails the judge run
-    under the retry rule, with missing_reason: invalid-answer")."""
+    fails the judge-specific parser -- an invalid answer from either judge
+    fails the judge run under the retry rule, with
+    missing_reason=MISSING_REASON_INVALID_ANSWER."""
     if record.status != runner.STATUS_OK:
         return record
     text = record.findings_text or ""
@@ -482,8 +477,8 @@ def run_judge_with_retry(
     ctx: JudgeRunContext, *, launch=None, run_store: runner.RunStore | None = None,
 ) -> JudgeRunAttempt:
     """Retry-then-missing for one judge run, mirroring
-    runner.run_one_with_retry's own two-attempt shape (Approach > "Per-run
-    validity checks": "A failed run is retried once...")."""
+    runner.run_one_with_retry's own two-attempt shape: a failed run is
+    retried once, then recorded as missing."""
     attempt: JudgeRunAttempt | None = None
     for _try in range(2):
         session_id = str(uuid.uuid4())
@@ -503,8 +498,8 @@ def run_defect_judges(
     judge_records_path: Path | None = None, existing_recall_record: runner.RunRecord | None = None,
 ) -> tuple[runner.RunRecord, runner.RunRecord]:
     """Runs both judges for one defect, once each, over every arm's
-    completed runs together (Approach > "Judge runs": "One judge run per
-    defect"). Returns (recall_record, precision_record).
+    completed runs together -- one judge run per defect, not one per
+    reviewer run. Returns (recall_record, precision_record).
 
     Persists the recall record to judge_records_path as soon as it
     completes, before the precision fixture is built -- so a precision-side
@@ -573,7 +568,7 @@ def run_defect_judges(
     return recall_record, precision_record
 
 
-# --- Human spot-check (Approach > "Human spot-check") ------------------------
+# --- Human spot-check -----------------------------------------------------
 
 SPOT_CHECK_RECALL_SAMPLE_SIZE = 100
 SPOT_CHECK_PRECISION_SAMPLE_SIZE = 100
@@ -591,8 +586,7 @@ _SPAN_CLOSE = "<<<"
 @dataclass(frozen=True)
 class SpotCheckCandidate:
     """One human-spot-checkable item, before sampling. judge_label and arm
-    are never written to the exported sheet (Approach > "Human spot-check":
-    "exported without arm or judge label") -- kept here only so the import
+    are never written to the exported sheet -- kept here only so the import
     step can score the human's answer against them, and the analysis can
     report split agreement per arm, afterward."""
 
@@ -621,9 +615,7 @@ def build_precision_spot_check_candidates(
     normalized_findings_by_id: Mapping[str, str],
 ) -> list[SpotCheckCandidate]:
     """One candidate per finding, its display_text the whole run output with
-    that finding's own span marked (Approach > "Human spot-check": "Each
-    precision item shows its finding inside the whole normalized run
-    output, with the judge's split marked")."""
+    that finding's own span marked."""
     candidates: list[SpotCheckCandidate] = []
     for run_id, findings in findings_by_run_id.items():
         run_text = normalized_findings_by_id.get(run_id, "")
@@ -646,10 +638,9 @@ def select_spot_check_sample(
     candidates: Sequence[SpotCheckCandidate], *, sample_size: int, seed: int,
 ) -> list[SpotCheckCandidate]:
     """A seeded sample stratified by judge_label -- all of them if the pool
-    is smaller than sample_size (Approach > "Human spot-check"). Each label
-    stratum gets a share of sample_size proportional to its own size in the
-    pool, with largest-remainder rounding so the total sample size is
-    exact."""
+    is smaller than sample_size. Each label stratum gets a share of
+    sample_size proportional to its own size in the pool, with
+    largest-remainder rounding so the total sample size is exact."""
     if len(candidates) <= sample_size:
         return list(candidates)
 
@@ -687,7 +678,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def export_spot_check(sample: Sequence[SpotCheckCandidate], path: Path) -> None:
     """Writes the human-facing sheet: item_id, kind, display_text only --
-    never judge_label or arm (Approach > "Human spot-check")."""
+    never judge_label or arm."""
     payload = [{"item_id": c.item_id, "kind": c.kind, "display_text": c.display_text} for c in sample]
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
@@ -729,9 +720,9 @@ def cohens_kappa(labels_a: Sequence[str], labels_b: Sequence[str]) -> float:
 def score_spot_check(
     candidates: Sequence[SpotCheckCandidate], human_labels: Sequence[HumanSpotCheckLabel],
 ) -> dict[str, float]:
-    """Cohen's kappa per item kind (Approach > "Human spot-check": "Cohen's
-    kappa is computed per label type"). Only items present in both the
-    sampled candidates and the human's import are scored."""
+    """Cohen's kappa per item kind, computed separately for recall and
+    precision labels. Only items present in both the sampled candidates and
+    the human's import are scored."""
     candidates_by_id = {c.item_id: c for c in candidates}
     judge_and_human_by_kind: dict[str, tuple[list[str], list[str]]] = defaultdict(lambda: ([], []))
     for human_label in human_labels:
@@ -751,8 +742,8 @@ def split_agreement_by_arm(
     candidates: Sequence[SpotCheckCandidate], human_labels: Sequence[HumanSpotCheckLabel],
 ) -> dict[str, float]:
     """The fraction of precision spot-check items, per arm, where the human
-    confirmed the judge's marked span was exactly one finding (Approach >
-    "Human spot-check", "Split agreement"). Never gates."""
+    confirmed the judge's marked span was exactly one finding. Never
+    gates."""
     candidates_by_id = {c.item_id: c for c in candidates}
     agree_and_total_by_arm: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for human_label in human_labels:

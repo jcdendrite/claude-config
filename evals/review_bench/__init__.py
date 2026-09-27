@@ -2,6 +2,6 @@
 engineer-confirmation gate that promotes a mined candidate into the
 committed evals/review_bench/defects.json.
 
-See .claude/plans/measure-review-quality.md for the harness this package
+See evals/README.md's "Review bench" section for the harness this package
 belongs to.
 """

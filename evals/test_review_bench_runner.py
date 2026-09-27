@@ -402,8 +402,8 @@ class TestConfigDirLeakNotExemptedForSiblingSession:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Two sibling runs of one arm share a per-arm session-store parent
-        directory (Approach > "Cleanup"). own_session_paths must name only
-        this run's own (session_jsonl, subagent_dir). A Read that resolves
+        directory. own_session_paths must name only this run's own
+        (session_jsonl, subagent_dir). A Read that resolves
         into a *different* sibling's subagent_dir must still be
         VALIDITY_FAIL_CONFIG_DIR_LEAK, not exempted -- is_config_dir_leak's
         own docstring names this as the regression it exists to prevent.
@@ -684,9 +684,10 @@ class TestWriteAheadRecordedBeforeLaunch:
     def test_run_one_with_retry_records_session_id_before_launching(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Approach > "Cleanup": "each run's session ID, before that run
-        launches" -- asserts the ordering directly, rather than only
-        inferring it from a passing status."""
+        """Regression guard: each run's session ID must be write-ahead
+        recorded before that run launches (evals/README.md's "Interruption
+        and cleanup" section) -- asserts the ordering directly, rather than
+        only inferring it from a passing status."""
         scenario = _load_scenario(tmp_path, "normal-success")
         _patch_inner_prompt_to_match_build_review_prompt(scenario, "fix: bug")
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl")
@@ -781,9 +782,10 @@ def _build_two_commit_source_repo(repo_dir: Path) -> ConfirmedDefect:
 
 class TestBuildDefectFixtureSpecRecordsDirectoriesImmediately:
     def test_records_each_arms_fixture_directory_before_returning(self, tmp_path: Path) -> None:
-        """Approach > "Cleanup": "each directory it creates, as soon as it
-        exists" -- build_defect_fixture_spec must record it before it
-        returns, not only as a side effect of some later run against it
+        """Regression guard: each directory a run store creates must be
+        recorded as soon as it exists (evals/README.md's "Interruption and
+        cleanup" section) -- build_defect_fixture_spec must record it before
+        it returns, not only as a side effect of some later run against it
         (which never happens if a hard interruption strikes first)."""
         defect = _build_two_commit_source_repo(tmp_path / "source")
         arms_snapshot_root = tmp_path / "arms"
@@ -853,8 +855,9 @@ class TestRunStoreResume:
 
     def test_concurrent_record_directory_calls_never_corrupt_the_write_ahead_log(self, tmp_path: Path) -> None:
         """run_defect_block calls record_directory from every worker-pool
-        thread in a block (Approach > "Cleanup") -- a torn or interleaved
-        write here would corrupt the very log the resume sweep trusts."""
+        thread in a block -- a torn or interleaved write here would corrupt
+        the very log the resume sweep trusts (evals/README.md's
+        "Interruption and cleanup" section)."""
         store = runner.RunStore(tmp_path / "run-store")
         directory = tmp_path / "shared-fixture"
         directory.mkdir()
@@ -914,7 +917,10 @@ class TestRunStoreLock:
         finally:
             proc.send_signal(signal.SIGKILL)
             proc.wait()
-        # Give the OS a moment to reap the zombie/report it gone.
+        # 20x50ms is a generous multiple of typical OS process-reap latency,
+        # bounding worst-case test runtime at 1s while tolerating a loaded CI
+        # runner. Empirical, not vendor-documented -- no OS guarantees a reap
+        # deadline.
         for _ in range(20):
             if not runner.pid_is_alive(proc.pid):
                 break

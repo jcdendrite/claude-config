@@ -4,6 +4,8 @@ campaign. No test launches `claude`.
 """
 from __future__ import annotations
 
+import statistics
+
 import pytest
 from review_bench import analysis, runner
 from review_bench.adjudicate import PrecisionFinding, RecallLabel
@@ -15,15 +17,17 @@ ARM_X = "function-context"
 def _run_record(
     defect_id: str, arm: str, opaque_run_id: str, *, cli_version: str = "2.0.0",
     ambient_config_commit: str = "deadbeef", missing_reason: str | None = None, status: str = "ok",
-    out_of_session_paths: tuple[str, ...] = (),
+    out_of_session_paths: tuple[str, ...] = (), read_tokens_est: int = 10, partial_view_reads: int = 0,
+    paged_followups: int = 0, whole_file_reads_of_changed_files: int = 0,
 ) -> runner.RunRecord:
     return runner.RunRecord(
         campaign_id="c1", defect_id=defect_id, arm=arm, run_index=0, opaque_run_id=opaque_run_id,
         status=status, missing_reason=missing_reason, observed_model="claude-sonnet-5",
         observed_tools=("Read",), out_of_session_paths=out_of_session_paths, findings_text="x",
-        wall_clock_s=1.0, read_calls=1, read_tokens_est=10, partial_view_reads=0, paged_followups=0,
-        whole_file_reads_of_changed_files=0, dispatch_prompt_verbatim=True, cli_version=cli_version,
-        ambient_config_commit=ambient_config_commit,
+        wall_clock_s=1.0, read_calls=1, read_tokens_est=read_tokens_est,
+        partial_view_reads=partial_view_reads, paged_followups=paged_followups,
+        whole_file_reads_of_changed_files=whole_file_reads_of_changed_files, dispatch_prompt_verbatim=True,
+        cli_version=cli_version, ambient_config_commit=ambient_config_commit,
     )
 
 
@@ -307,7 +311,7 @@ class TestOutOfSessionCountsNeverCarryPaths:
         """out_of_session_counts_by_arm only ever keys off `record.arm`, so
         it aggregates a judge campaign's records the same way -- a judge
         RunRecord's own `arm` field holds JUDGE_ARM_RECALL/JUDGE_ARM_PRECISION
-        rather than a reviewer arm (Approach > "Out-of-session reads")."""
+        rather than a reviewer arm."""
         from review_bench.adjudicate import JUDGE_ARM_PRECISION, JUDGE_ARM_RECALL
 
         records = [
@@ -332,3 +336,131 @@ class TestPrecisionCounts:
         }
         counts = analysis.compute_precision_counts(records, labels)
         assert analysis.pooled_precision(counts, ["d1"], ARM_BASELINE) == pytest.approx(2 / 3)
+
+
+class TestSecondaryReportColumns:
+    """Never-gating columns the go/no-go call still reads (README's "Reading
+    the report" section)."""
+
+    def test_read_token_stats_means_per_arm(self) -> None:
+        records = [
+            _run_record("d1", ARM_BASELINE, "r1", read_tokens_est=100),
+            _run_record("d1", ARM_BASELINE, "r2", read_tokens_est=200),
+            _run_record("d1", ARM_X, "r3", read_tokens_est=50),
+        ]
+        assert analysis.read_token_stats(records) == {ARM_BASELINE: 150.0, ARM_X: 50.0}
+
+    def test_read_token_stats_empty_input_returns_empty_mapping(self) -> None:
+        assert analysis.read_token_stats([]) == {}
+
+    def test_partial_and_paged_counts_sums_per_arm(self) -> None:
+        records = [
+            _run_record("d1", ARM_BASELINE, "r1", partial_view_reads=2, paged_followups=1),
+            _run_record("d1", ARM_BASELINE, "r2", partial_view_reads=3, paged_followups=0),
+        ]
+        assert analysis.partial_and_paged_counts(records) == {
+            ARM_BASELINE: {"partial_view_reads": 5, "paged_followups": 1},
+        }
+
+    def test_partial_and_paged_counts_empty_input_returns_empty_mapping(self) -> None:
+        assert analysis.partial_and_paged_counts([]) == {}
+
+    def test_whole_file_read_adherence_means_per_arm(self) -> None:
+        records = [
+            _run_record("d1", ARM_BASELINE, "r1", whole_file_reads_of_changed_files=2),
+            _run_record("d1", ARM_BASELINE, "r2", whole_file_reads_of_changed_files=4),
+        ]
+        assert analysis.whole_file_read_adherence(records) == {ARM_BASELINE: 3.0}
+
+    def test_whole_file_read_adherence_empty_input_returns_empty_mapping(self) -> None:
+        assert analysis.whole_file_read_adherence([]) == {}
+
+    def test_missing_run_counts_by_reason_groups_non_ok_records_per_arm(self) -> None:
+        records = [
+            _run_record("d1", ARM_BASELINE, "r1", status="missing", missing_reason="timeout"),
+            _run_record("d1", ARM_BASELINE, "r2", status="missing", missing_reason="timeout"),
+            _run_record("d1", ARM_BASELINE, "r3", status=runner.STATUS_OK),
+            _run_record("d1", ARM_X, "r4", status="missing", missing_reason=None),
+        ]
+        assert analysis.missing_run_counts_by_reason(records) == {
+            ARM_BASELINE: {"timeout": 2}, ARM_X: {"unknown": 1},
+        }
+
+    def test_missing_run_counts_by_reason_empty_input_returns_empty_mapping(self) -> None:
+        assert analysis.missing_run_counts_by_reason([]) == {}
+
+    def test_recall_by_fix_date_half_splits_at_the_median_fix_date(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 8}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+            "d2": analysis.DefectRecallCounts(
+                defect_id="d2", found_by_arm={ARM_BASELINE: 2}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+        }
+        fix_dates = {"d1": "2024-01-01", "d2": "2024-06-01"}
+        result = analysis.recall_by_fix_date_half(counts, ["d1", "d2"], fix_dates, ARM_BASELINE)
+        assert result == {"earlier_half": pytest.approx(0.8), "later_half": pytest.approx(0.2)}
+
+    def test_recall_by_fix_date_half_empty_kept_defects_returns_zero_both_halves(self) -> None:
+        result = analysis.recall_by_fix_date_half({}, [], {}, ARM_BASELINE)
+        assert result == {"earlier_half": 0.0, "later_half": 0.0}
+
+    def test_recall_by_fix_date_half_odd_count_puts_the_extra_defect_in_the_later_half(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 8}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+            "d2": analysis.DefectRecallCounts(
+                defect_id="d2", found_by_arm={ARM_BASELINE: 5}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+            "d3": analysis.DefectRecallCounts(
+                defect_id="d3", found_by_arm={ARM_BASELINE: 2}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+        }
+        fix_dates = {"d1": "2024-01-01", "d2": "2024-03-01", "d3": "2024-06-01"}
+        result = analysis.recall_by_fix_date_half(counts, ["d1", "d2", "d3"], fix_dates, ARM_BASELINE)
+        assert result == {"earlier_half": pytest.approx(0.8), "later_half": pytest.approx(0.35)}
+
+    def test_recall_diff_over_read_cap_stratum_is_arm_x_minus_baseline_on_the_stratum(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 5, ARM_X: 9}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+            "d2": analysis.DefectRecallCounts(
+                defect_id="d2", found_by_arm={ARM_BASELINE: 5, ARM_X: 5}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+        }
+        diff = analysis.recall_diff_over_read_cap_stratum(counts, ["d1", "d2"], ["d1"], ARM_BASELINE, ARM_X)
+        assert diff == pytest.approx(0.4)
+
+    def test_recall_diff_over_read_cap_stratum_empty_kept_defects_is_zero(self) -> None:
+        diff = analysis.recall_diff_over_read_cap_stratum({}, [], [], ARM_BASELINE, ARM_X)
+        assert diff == 0.0
+
+    def test_observed_sigma_d_matches_stdev_of_per_defect_differences(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 5, ARM_X: 9}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+            "d2": analysis.DefectRecallCounts(
+                defect_id="d2", found_by_arm={ARM_BASELINE: 5, ARM_X: 5}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+            "d3": analysis.DefectRecallCounts(
+                defect_id="d3", found_by_arm={ARM_BASELINE: 2, ARM_X: 6}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+        }
+        result = analysis.observed_sigma_d(counts, ["d1", "d2", "d3"], ARM_BASELINE, ARM_X)
+        assert result == pytest.approx(statistics.stdev([0.4, 0.0, 0.4]))
+
+    def test_observed_sigma_d_single_kept_defect_is_zero(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 5, ARM_X: 9}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+        }
+        result = analysis.observed_sigma_d(counts, ["d1"], ARM_BASELINE, ARM_X)
+        assert result == 0.0
+
+    def test_observed_sigma_d_empty_kept_defects_is_zero(self) -> None:
+        assert analysis.observed_sigma_d({}, [], ARM_BASELINE, ARM_X) == 0.0

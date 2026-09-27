@@ -77,8 +77,8 @@ class TestHashDirectory:
         assert before != after
 
 
-# Every field .claude/plans/measure-review-quality.md's Freeze-and-
-# invalidation section requires cmd_freeze to record in conditions.json.
+# Every field evals/README.md's "Frozen conditions and invalidation" section
+# requires cmd_freeze to record in conditions.json.
 _EXPECTED_FREEZE_CONDITIONS_FIELDS: frozenset[str] = frozenset({
     "reviewer_model_id", "judge_model_id", "k", "delta", "alpha_one_sided", "n_min",
     "planning_variance", "bootstrap_resamples", "bootstrap_seed", "campaign_seed",
@@ -348,9 +348,9 @@ class TestCmdJudgeCampaignIdEchoedBeforeLock:
     def test_prints_the_resolved_campaign_id_and_store_dir_before_acquiring_the_lock(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
-        """Regression guard: an auto-generated --campaign-id was previously
-        echoed only in the final success message, so a crash before that
-        point left the operator with no way to name the store to resume."""
+        """Regression guard: the resolved --campaign-id must be printed
+        before the lock is acquired, so a crash before completion still
+        leaves the operator a store name to resume."""
         defects_path = tmp_path / "defects.json"
         defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
         reviewer_records_path = tmp_path / "reviewer.jsonl"
@@ -454,11 +454,204 @@ class TestCmdAnalyzeOutOfSessionReport:
         exit_code = run_review_bench.cmd_analyze(args)
 
         assert exit_code == 0
-        report = json.loads(out_path.read_text())
+        report_text = out_path.read_text()
+        report = json.loads(report_text)
         assert report["out_of_session_read_counts_per_judge_kind"] == {JUDGE_ARM_RECALL: 1, JUDGE_ARM_PRECISION: 0}
+        assert "secret/path.txt" not in report_text
 
         # The raw path is terminal-only -- the committed --out report above
         # carries only the count.
         stderr = capsys.readouterr().err
         assert f"analyze: out-of-session read in {JUDGE_ARM_RECALL} run j-recall: secret/path.txt" in stderr
-        assert "secret/path.txt" not in out_path.read_text()
+
+
+def _candidate(**overrides) -> defects.Candidate:
+    kwargs = dict(
+        id="c1", source="szz", lens="staff-backend-engineer", base_commit="a" * 40, head_commit="b" * 40,
+        fix_commit="c" * 40, fix_date="2024-01-01", lines_exist_at_introducing_head=True,
+        reviewer_could_have_caught_it=True, file_is_markdown=False,
+    )
+    kwargs.update(overrides)
+    return defects.Candidate(**kwargs)
+
+
+class TestCmdMineSzz:
+    def test_writes_the_mined_candidates_and_passes_base_ref_through(self, tmp_path: Path, monkeypatch) -> None:
+        from review_bench import mine_szz
+
+        candidate = _candidate(id="szz-1")
+        captured_calls: list[tuple[Path, str]] = []
+
+        def fake_mine(repo_root, *, base_ref):
+            captured_calls.append((repo_root, base_ref))
+            return [candidate]
+
+        monkeypatch.setattr(mine_szz, "mine", fake_mine)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", tmp_path / "repo")
+
+        args = argparse.Namespace(base_ref="origin/main", local_dir=str(tmp_path / "local"))
+        exit_code = run_review_bench.cmd_mine_szz(args)
+
+        assert exit_code == 0
+        assert captured_calls == [(tmp_path / "repo", "origin/main")]
+        out_path = tmp_path / "local" / "szz_candidates.json"
+        assert defects.load_candidates(out_path) == [candidate]
+
+    def test_prints_the_written_candidate_count_and_path(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from review_bench import mine_szz
+
+        monkeypatch.setattr(mine_szz, "mine", lambda repo_root, *, base_ref: [_candidate(), _candidate(id="c2")])
+
+        out_path = tmp_path / "local" / "szz_candidates.json"
+        args = argparse.Namespace(base_ref="origin/main", local_dir=str(tmp_path / "local"))
+        exit_code = run_review_bench.cmd_mine_szz(args)
+
+        assert exit_code == 0
+        assert f"mine-szz: wrote 2 candidate(s) to {out_path}" in capsys.readouterr().err
+
+
+class TestCmdMineRounds:
+    def test_writes_the_mined_candidates(self, tmp_path: Path, monkeypatch) -> None:
+        from review_bench import mine_review_rounds
+
+        candidate = _candidate(id="round-1", source="review-round")
+        captured_calls: list[Path] = []
+
+        def fake_mine(repo_root):
+            captured_calls.append(repo_root)
+            return [candidate]
+
+        monkeypatch.setattr(mine_review_rounds, "mine", fake_mine)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", tmp_path / "repo")
+
+        args = argparse.Namespace(local_dir=str(tmp_path / "local"))
+        exit_code = run_review_bench.cmd_mine_rounds(args)
+
+        assert exit_code == 0
+        assert captured_calls == [tmp_path / "repo"]
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        assert defects.load_candidates(out_path) == [candidate]
+
+    def test_prints_the_written_candidate_count_and_path(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from review_bench import mine_review_rounds
+
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [])
+
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        args = argparse.Namespace(local_dir=str(tmp_path / "local"))
+        exit_code = run_review_bench.cmd_mine_rounds(args)
+
+        assert exit_code == 0
+        assert f"mine-rounds: wrote 0 candidate(s) to {out_path}" in capsys.readouterr().err
+
+
+class TestCmdSnapshotArms:
+    def test_writes_both_arms_under_the_given_root_and_reports_each(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        captured_calls: list[tuple[str, Path]] = []
+        monkeypatch.setattr(
+            arms_mod, "write_arm_snapshot", lambda arm, dest_dir: captured_calls.append((arm, dest_dir)),
+        )
+
+        arms_root = tmp_path / "arms"
+        exit_code = run_review_bench.cmd_snapshot_arms(argparse.Namespace(arms_root=str(arms_root)))
+
+        assert exit_code == 0
+        assert captured_calls == [
+            (arms_mod.ARM_CURRENT_RULE, arms_root / arms_mod.ARM_CURRENT_RULE),
+            (arms_mod.ARM_FUNCTION_CONTEXT, arms_root / arms_mod.ARM_FUNCTION_CONTEXT),
+        ]
+        stderr = capsys.readouterr().err
+        lens_count = len(arms_mod.LENS_READ_CLAUSES)
+        assert (
+            f"snapshot-arms: wrote {lens_count} lens file(s) for {arms_mod.ARM_CURRENT_RULE} "
+            f"under {arms_root / arms_mod.ARM_CURRENT_RULE}"
+        ) in stderr
+        assert (
+            f"snapshot-arms: wrote {lens_count} lens file(s) for {arms_mod.ARM_FUNCTION_CONTEXT} "
+            f"under {arms_root / arms_mod.ARM_FUNCTION_CONTEXT}"
+        ) in stderr
+
+
+def _spot_check_args(tmp_path: Path, **overrides) -> argparse.Namespace:
+    kwargs = dict(
+        reviewer_records_path=str(tmp_path / "reviewer.jsonl"), judge_records_path=str(tmp_path / "judge.jsonl"),
+        seed=0,
+    )
+    kwargs.update(overrides)
+    return argparse.Namespace(**kwargs)
+
+
+class TestCmdSpotCheckExport:
+    def test_writes_the_sample_without_judge_label_or_arm_and_reports_counts(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from review_bench import adjudicate
+
+        recall_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1", kind=adjudicate.SPOT_CHECK_KIND_RECALL, judge_label="FOUND",
+                display_text="recall text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        precision_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1:0", kind=adjudicate.SPOT_CHECK_KIND_PRECISION, judge_label="VALID",
+                display_text="precision text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        monkeypatch.setattr(
+            run_review_bench, "_build_spot_check_samples", lambda args: (recall_sample, precision_sample),
+        )
+
+        out_path = tmp_path / "export.json"
+        args = _spot_check_args(tmp_path, out=str(out_path))
+        exit_code = run_review_bench.cmd_spot_check_export(args)
+
+        assert exit_code == 0
+        exported = json.loads(out_path.read_text())
+        assert exported == [
+            {"item_id": "d1:r1", "kind": adjudicate.SPOT_CHECK_KIND_RECALL, "display_text": "recall text"},
+            {"item_id": "d1:r1:0", "kind": adjudicate.SPOT_CHECK_KIND_PRECISION, "display_text": "precision text"},
+        ]
+        stderr = capsys.readouterr().err
+        assert f"spot-check export: wrote 1 recall item(s) and 1 precision item(s) to {out_path}" in stderr
+
+
+class TestCmdSpotCheckImport:
+    def test_scores_kappa_per_kind_and_split_agreement_per_arm(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from review_bench import adjudicate
+
+        recall_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1", kind=adjudicate.SPOT_CHECK_KIND_RECALL, judge_label="FOUND",
+                display_text="recall text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        precision_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1:0", kind=adjudicate.SPOT_CHECK_KIND_PRECISION, judge_label="VALID",
+                display_text="precision text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        monkeypatch.setattr(
+            run_review_bench, "_build_spot_check_samples", lambda args: (recall_sample, precision_sample),
+        )
+
+        labels_path = tmp_path / "labels.json"
+        labels_path.write_text(json.dumps([
+            {"item_id": "d1:r1", "human_label": "FOUND"},
+            {"item_id": "d1:r1:0", "human_label": "VALID", "split_ok": True},
+        ]))
+
+        args = _spot_check_args(tmp_path, labels_path=str(labels_path))
+        exit_code = run_review_bench.cmd_spot_check_import(args)
+
+        assert exit_code == 0
+        stderr = capsys.readouterr().err
+        assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_RECALL} kappa = 1.000 -- validated" in stderr
+        assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_PRECISION} kappa = 1.000 -- validated" in stderr
+        assert f"spot-check import: {arms_mod.ARM_CURRENT_RULE} split agreement = 1.000" in stderr

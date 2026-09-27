@@ -60,13 +60,14 @@ REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
 # evals/review_bench/, and hyphenated review-bench, not review_bench.
 # test_review_bench_runner.py loads its scenarios from here.
 REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
-# Pre-existing but unmatched until now: select-tests mapped only
-# SKILL_EVALS_RUNNER under evals/, so this file's own test never ran under
-# domain selection. Folded into the review_bench predicate below (a shared
-# target set, so a review_bench change over-selects this test too) rather
-# than given its own standalone row -- over-selection is the safe direction.
+# Folded into the review_bench predicate below (shared target set) rather than a
+# standalone row -- over-selection here is the safe direction.
 MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
+# Named explicitly for the same reason as MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
+# above: its "test_run_review_bench" filename doesn't match REVIEW_BENCH_TEST_GLOB's
+# "test_review_bench*" prefix, so the glob alone never selects it.
+REVIEW_BENCH_RUNNER_TEST = "evals/test_run_review_bench.py"
 
 # evals/review_bench/mine_review_rounds.py's own Reuse list -- the
 # transcript_analysis modules it imports by name.
@@ -419,16 +420,15 @@ def _is_test_source_change(path: str) -> bool:
     )
 
 
-# review_bench's own source tree, its fixture tree, its CLI entry point, its
-# own flat test files (matched by glob, not by directory containment, since
-# evals/ keeps test_*.py beside the source it exercises rather than under a
-# tests/ subdirectory), and MEASURE_SUBAGENT_MODEL_RESOLUTION (see its own
-# comment above for why it rides along here).
+# Covers review_bench's source tree, fixture tree, CLI entry point, and its own
+# flat test files (matched by glob, since evals/ keeps test_*.py beside its
+# source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION
+# and REVIEW_BENCH_RUNNER_TEST -- see their own comments above.
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
-        or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION)
+        or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, REVIEW_BENCH_RUNNER_TEST)
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
 
@@ -444,7 +444,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
-    (_is_review_bench_change, (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST)),
+    (_is_review_bench_change, (
+        REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, REVIEW_BENCH_RUNNER_TEST,
+    )),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -557,8 +559,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # dependency.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (lambda p: p in _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES, (REVIEW_BENCH_TEST_GLOB,)),
-    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB,)),
+    (lambda p: p in _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES, (
+        REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST,
+    )),
+    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
@@ -573,7 +577,9 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p in _REVIEW_BENCH_LENS_AGENT_FILES, (REVIEW_BENCH_TEST_GLOB,)),
+    (lambda p: p in _REVIEW_BENCH_LENS_AGENT_FILES, (
+        REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST,
+    )),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),

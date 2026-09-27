@@ -12,11 +12,9 @@ only for a candidate the engineer has already approved. `smoke`, `run`, and
 `judge` launch real `claude -p` sessions against real Claude subscription
 auth.
 
-See .claude/plans/measure-review-quality.md's Approach > Defect set for the
-mining algorithms, Approach > "Fixtures and arms" and "Runs and
-adjudication" for the runner and judge design, and Approach > "Analysis,
-margin, and minimum set size" and "Freeze and invalidation" for
-`analyze`/`freeze`.
+See evals/README.md's "Review bench" section for usage and the operational
+design: frozen conditions and invalidation, building a later arm, reading
+the report, interruption and cleanup, and out-of-session reads.
 """
 from __future__ import annotations
 
@@ -204,8 +202,8 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
     records_path = Path(args.records_dir) / f"{campaign_id}.jsonl"
     # Both live checkouts the per-run validity check must contain a leak
     # into: this harness's own, and the one the ambient config resolves
-    # into -- distinct under worktree isolation (Approach > "Per-run
-    # validity checks").
+    # into -- distinct under worktree isolation (evals/README.md's
+    # "Out-of-session reads" section).
     live_checkout_roots = runner.default_live_checkout_roots()
 
     def build_spec(defect_id: str):
@@ -233,9 +231,9 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
         f"{args.subcommand}: campaign {campaign_id} ran {total} run(s) across {len(result.block_results)} defect(s)",
         file=sys.stderr,
     )
-    # The raw path is terminal-only, for the engineer's own review (Approach
-    # > "Out-of-session reads"); the committed --out report from `analyze`
-    # carries only the per-arm count, never a path.
+    # The raw path is terminal-only, for the engineer's own review
+    # (evals/README.md's "Out-of-session reads" section); the committed --out
+    # report from `analyze` carries only the per-arm count, never a path.
     for record in all_records:
         for path in record.out_of_session_paths:
             print(
@@ -253,9 +251,10 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
 def cmd_smoke(args: argparse.Namespace) -> int:
     result = _run_or_smoke(args, fault=args.inject_fault)
     if result == 0:
-        # `freeze`'s own manifest precondition (Approach > "Freeze
-        # preconditions") checks against "the last passing smoke campaign"'s
-        # manifest -- printed here, at smoke-completion, since args.k is
+        # `freeze`'s own manifest precondition checks against the last
+        # passing smoke campaign's manifest (evals/README.md's "Frozen
+        # conditions and invalidation" section) -- printed here, at
+        # smoke-completion, since args.k is
         # only resolved to its default inside _run_or_smoke above. Passed by
         # hand to `freeze --last-smoke-manifest-hash` rather than read back
         # from a state file, since a smoke campaign's pass/fail judgment
@@ -384,9 +383,10 @@ def cmd_judge(args: argparse.Namespace) -> int:
     finally:
         run_store.release_lock()
 
-    # The raw path is terminal-only, for the engineer's own review (Approach
-    # > "Out-of-session reads"); the committed --out report from `analyze`
-    # carries only the per-judge-kind count below, never a path.
+    # The raw path is terminal-only, for the engineer's own review
+    # (evals/README.md's "Out-of-session reads" section); the committed --out
+    # report from `analyze` carries only the per-judge-kind count below,
+    # never a path.
     for record in judge_records:
         for path in record.out_of_session_paths:
             print(f"judge: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
@@ -401,9 +401,9 @@ def cmd_judge(args: argparse.Namespace) -> int:
 def _build_spot_check_samples(args: argparse.Namespace):
     """Shared by `spot-check export` and `spot-check import`: the same
     (reviewer records, judge records, seed) always produce the same sampled
-    candidate pool (Approach > "Human spot-check"), so `import` re-derives
-    it rather than round-tripping judge_label/arm through the human-facing
-    export file, which must never carry them."""
+    candidate pool, so `import` re-derives it rather than round-tripping
+    judge_label/arm through the human-facing export file, which must never
+    carry them."""
     from review_bench import adjudicate, runner
 
     reviewer_records = runner.read_run_records(Path(args.reviewer_records_path))
@@ -578,9 +578,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         f"analyze: missing runs by reason per arm = {analysis.missing_run_counts_by_reason(reviewer_records)}",
         file=sys.stderr,
     )
-    # The raw path is terminal-only, for the engineer's own review (Approach
-    # > "Out-of-session reads"); the committed --out report below carries
-    # only the per-arm count, never a path.
+    # The raw path is terminal-only, for the engineer's own review
+    # (evals/README.md's "Out-of-session reads" section); the committed --out
+    # report below carries only the per-arm count, never a path.
     for record in reviewer_records:
         for path in record.out_of_session_paths:
             print(f"analyze: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
@@ -589,8 +589,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     # judge_records' own `arm` field holds JUDGE_ARM_RECALL/JUDGE_ARM_PRECISION, not a reviewer
-    # arm, but out_of_session_counts_by_arm keys generically off `record.arm` (Approach >
-    # "Out-of-session reads").
+    # arm, but out_of_session_counts_by_arm keys generically off `record.arm`.
     for record in judge_records:
         for path in record.out_of_session_paths:
             print(f"analyze: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
@@ -618,9 +617,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def _hash_directory(directory: Path) -> str:
     """One combined hash over every file under directory, sorted by relative
-    path -- used for the arm-directory hashes `freeze` records (Approach >
-    "Freeze and invalidation": "sha256 hashes of the harness closure, both
-    arm directories, the judge agent files ...")."""
+    path -- used for the arm-directory hashes `freeze` records
+    (evals/README.md's "Frozen conditions and invalidation" section)."""
     parts = [
         f"{path.relative_to(directory)}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
         for path in sorted(directory.rglob("*"))
@@ -864,7 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_freeze.add_argument(
         "--last-smoke-manifest-hash", required=True,
-        help="The manifest hash `smoke` printed on its last passing campaign (Approach > 'Freeze preconditions').",
+        help="The manifest hash `smoke` printed on its last passing campaign.",
     )
     p_freeze.add_argument(
         "--smoke-full-k", type=int, required=True, help="K of the smoke campaign's own full-K fixture.",

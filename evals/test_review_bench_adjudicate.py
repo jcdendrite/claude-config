@@ -227,6 +227,11 @@ class TestSpotCheckKappaAndSplitAgreement:
     def test_cohens_kappa_perfect_agreement_is_one(self) -> None:
         assert adjudicate.cohens_kappa(["A", "B", "A"], ["A", "B", "A"]) == 1.0
 
+    def test_cohens_kappa_both_raters_unanimous_on_one_category_avoids_division_by_zero(self) -> None:
+        # chance_agreement == 1.0 when every label in both sequences is the
+        # same single category, which would otherwise divide by (1 - 1.0).
+        assert adjudicate.cohens_kappa(["A", "A", "A"], ["A", "A", "A"]) == 1.0
+
     def test_split_agreement_reported_per_arm(self) -> None:
         candidates = [
             adjudicate.SpotCheckCandidate(

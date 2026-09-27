@@ -2,9 +2,6 @@
 candidates by blaming each fix commit's diff back to its introducing
 commit.
 
-See .claude/plans/measure-review-quality.md's Approach > Defect set >
-"Source 1: SZZ-style blame" for the full algorithm this module follows.
-
 stdlib `subprocess` only -- no third-party SZZ implementation.
 """
 from __future__ import annotations
@@ -18,7 +15,7 @@ from pathlib import Path
 
 from review_bench.defects import Candidate, assert_unique_ids, guess_lens
 
-# Approach > Defect set > Source 1, step 1.
+# A candidate fix commit's subject must mention fix/bug/regression to be considered.
 _FIX_SUBJECT_RE = re.compile(r"fix|bug|regression", re.IGNORECASE)
 # `main` is squash-merged with a "(#N)" subject suffix.
 _PR_SUFFIX_RE = re.compile(r"\(#(\d+)\)\s*$")
@@ -196,11 +193,11 @@ def blame_fix_commit(
     """Run this module's own blame algorithm for one (fix_commit, path)
     pair, independent of the full-repo mining sweep.
 
-    This is the reuse point Source 2's own algorithm names directly:
-    "runs source 1's blame helper on the commit that fixed the finding"
-    (Approach > Defect set > Source 2, step 6). `stats` is unset (no
-    counting) for that reuse path, since Source 2's own miner reports
-    through its own ref_status_counts/skipped_unresolved instead.
+    This is the reuse point mine_review_rounds.py's own algorithm relies on
+    directly: it runs source 1's blame helper on the commit that fixed the
+    finding. `stats` is unset (no counting) for that reuse path, since
+    mine_review_rounds.py's own miner reports through its own
+    ref_status_counts/skipped_unresolved instead.
 
     Returns (introducing_shas, is_low_confidence).
     """

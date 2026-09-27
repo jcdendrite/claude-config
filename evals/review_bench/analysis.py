@@ -1,10 +1,8 @@
 """Statistics, freeze/invalidation checks, and the import-closure manifest
 for A-bench. Standard library only (`statistics`, `math`, `random`,
-`hashlib`, `ast`) -- no numerical dependency.
-
-See .claude/plans/measure-review-quality.md's Approach > "Analysis, margin,
-and minimum set size" for the statistics this module implements, and
-Approach > "Freeze and invalidation" for the manifest/precondition checks.
+`hashlib`, `ast`) -- no numerical dependency. evals/README.md's "Frozen
+conditions and invalidation" section documents the manifest/precondition
+checks' observable behavior.
 
 Every check in this module raises HarnessInvalidatedError rather than
 exiting the process directly, so each one is independently testable;
@@ -33,7 +31,7 @@ CONFIG_SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
 STATUS_OK = runner.STATUS_OK
 
-# --- Design constants (Approach > "Analysis, margin, and minimum set size") --
+# --- Design constants -----------------------------------------------------
 
 DELTA = 0.05  # the margin, 5 percentage points absolute, on both recall and pooled precision
 ALPHA_ONE_SIDED = 0.025  # FDA (2016)'s one-sided convention; paired with a two-sided 95% interval
@@ -43,30 +41,29 @@ KAPPA_SUBSTANTIAL_FLOOR = 0.61  # Landis & Koch 1977's "substantial" threshold
 
 # The planning variance's own two components: mean per-defect detection
 # variance v = p(1-p) ~= 0.15, and between-defect true-difference variance
-# tau^2 = 0.01. Never revised by an observed sigma_d (Approach > "The margin").
+# tau^2 = 0.01. Frozen at design time -- never revised by a later campaign's
+# own observed_sigma_d.
 _PLANNING_V = 0.15
 _PLANNING_TAU_SQUARED = 0.01
 
 
 def planning_variance(k: int) -> float:
     """sigma_d^2(K) = 2v/K + tau^2 -- gives 0.04 at K=10, 0.03 at K=15,
-    0.025 at K=20 (Approach > "The margin")."""
+    0.025 at K=20."""
     return (2 * _PLANNING_V) / k + _PLANNING_TAU_SQUARED
 
 
 def n_min(k: int) -> int:
-    """N_min = ceil((z_0.975 + z_0.80)^2 * sigma_d^2(k) / delta^2) (Approach
-    > "The margin"), using statistics.NormalDist for the z-values rather
-    than a hardcoded 7.849 -- n_min(10) == 126, n_min(15) == 95, n_min(20)
-    == 79."""
+    """N_min = ceil((z_0.975 + z_0.80)^2 * sigma_d^2(k) / delta^2), using
+    statistics.NormalDist for the z-values rather than a hardcoded 7.849 --
+    n_min(10) == 126, n_min(15) == 95, n_min(20) == 79."""
     z_alpha = NormalDist().inv_cdf(1 - ALPHA_ONE_SIDED)  # z_0.975
     z_power = NormalDist().inv_cdf(0.80)  # z_0.80, 80% power
     variance = planning_variance(k)
     return math.ceil(((z_alpha + z_power) ** 2) * variance / (DELTA**2))
 
 
-# --- Recall: per-defect detection rates and the sub-K/2 drop (Approach >
-# "Analysis, margin, and minimum set size", "Recall") -----------------------
+# --- Recall: per-defect detection rates and the sub-K/2 drop ---------------
 
 
 @dataclass(frozen=True)
@@ -115,7 +112,7 @@ def kept_recall_defect_ids(
     counts_by_defect: Mapping[str, DefectRecallCounts], arms: Sequence[str], *, k: int,
 ) -> list[str]:
     """A defect with fewer than K/2 completed runs in EITHER arm is dropped
-    from both arms; exactly K/2 is kept (Approach > "Recall")."""
+    from both arms; exactly K/2 is kept."""
     threshold = k / 2
     return sorted(
         defect_id
@@ -126,14 +123,13 @@ def kept_recall_defect_ids(
 
 def arm_recall(counts_by_defect: Mapping[str, DefectRecallCounts], defect_ids: Sequence[str], arm: str) -> float:
     """An arm's recall is the mean of its per-defect detection rates across
-    defect_ids (Approach > "Recall")."""
+    defect_ids."""
     if not defect_ids:
         return 0.0
     return mean(counts_by_defect[defect_id].detection_rate(arm) for defect_id in defect_ids)
 
 
-# --- Precision: pooled ratio per arm (Approach > "Precision non-inferiority
-# for a later arm X") ---------------------------------------------------------
+# --- Precision: pooled ratio per arm ----------------------------------------
 
 
 @dataclass(frozen=True)
@@ -175,11 +171,10 @@ def compute_precision_counts(
 def kept_precision_defect_ids(
     recall_kept_ids: Sequence[str], precision_counts_by_defect: Mapping[str, DefectPrecisionCounts],
 ) -> list[str]:
-    """Precision analysis starts from recall's own kept-defect set (Approach
-    > "Precision non-inferiority for a later arm X": "across every completed
-    run of every defect the recall analysis keeps"), then drops a defect
-    whose precision-judge run is missing entirely -- reported as that drop
-    count by the caller."""
+    """Precision analysis starts from recall's own kept-defect set -- every
+    completed run of every defect the recall analysis keeps -- then drops a
+    defect whose precision-judge run is missing entirely; reported as that
+    drop count by the caller."""
     return [defect_id for defect_id in recall_kept_ids if defect_id in precision_counts_by_defect]
 
 
@@ -187,14 +182,13 @@ def pooled_precision(
     counts_by_defect: Mapping[str, DefectPrecisionCounts], defect_ids: Sequence[str], arm: str,
 ) -> float:
     """VALID findings divided by all adjudicated findings, pooled across
-    every defect in defect_ids (Approach > "Precision non-inferiority for a
-    later arm X")."""
+    every defect in defect_ids."""
     total_valid = sum(counts_by_defect[d].valid_by_arm.get(arm, 0) for d in defect_ids if d in counts_by_defect)
     total_all = sum(counts_by_defect[d].total_by_arm.get(arm, 0) for d in defect_ids if d in counts_by_defect)
     return total_valid / total_all if total_all else 0.0
 
 
-# --- Intervals: paired cluster bootstrap (Approach > "Intervals") ------------
+# --- Intervals: paired cluster bootstrap --------------------------------------
 
 
 def _percentile(sorted_values: Sequence[float], q: float) -> float:
@@ -215,8 +209,8 @@ def bootstrap_interval(
     defect_ids: Sequence[str], statistic_fn: Callable[[Sequence[str]], float], *,
     resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED, confidence: float = 1 - 2 * ALPHA_ONE_SIDED,
 ) -> tuple[float, float]:
-    """A paired cluster bootstrap over defects (Approach > "Intervals"):
-    each of `resamples` draws len(defect_ids) defect IDs with replacement,
+    """A paired cluster bootstrap over defects: each of `resamples` draws
+    len(defect_ids) defect IDs with replacement,
     and statistic_fn computes the wanted statistic over that resampled
     defect list -- carrying both arms' data for each resampled defect
     together, since statistic_fn's own callers (e.g. arm_recall) look both
@@ -231,7 +225,7 @@ def bootstrap_interval(
     return _percentile(stats, lower_q), _percentile(stats, 1 - lower_q)
 
 
-# --- Verdicts (Approach > "Sensitivity verdict...", "Non-inferiority...") ----
+# --- Verdicts ----------------------------------------------------------------
 
 SENSITIVITY_SENSITIVE = "sensitive"
 SENSITIVITY_NOT_SENSITIVE = "not-sensitive"
@@ -247,10 +241,9 @@ def baseline_sensitivity_verdict(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
     arm_1: str, arm_2: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
 ) -> tuple[str, tuple[float, float]]:
-    """ICH E10's assay sensitivity (Approach > "Sensitivity verdict for the
-    baseline"): sensitive when the lower limit of the two-sided 95% interval
-    for recall_1 - recall_2 exceeds delta. Never grounds to revise the
-    defect set."""
+    """ICH E10's assay sensitivity: sensitive when the lower limit of the
+    two-sided 95% interval for recall_1 - recall_2 exceeds delta. Never
+    grounds to revise the defect set."""
 
     def statistic(resample_ids: Sequence[str]) -> float:
         return arm_recall(recall_counts_by_defect, resample_ids, arm_1) - arm_recall(
@@ -268,8 +261,7 @@ def recall_noninferiority_verdict(
     seed: int = BOOTSTRAP_SEED,
 ) -> tuple[str, tuple[float, float]]:
     """Arm X passes when the lower limit of the two-sided 95% interval for
-    recall_X - recall_1 exceeds -delta (Approach > "Non-inferiority for a
-    later arm X")."""
+    recall_X - recall_1 exceeds -delta."""
 
     def statistic(resample_ids: Sequence[str]) -> float:
         return arm_recall(recall_counts_by_defect, resample_ids, arm_x) - arm_recall(
@@ -286,8 +278,7 @@ def precision_noninferiority_verdict(
     arm_baseline: str, arm_x: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
 ) -> tuple[str, tuple[float, float]]:
-    """The same rule as recall_noninferiority_verdict, on pooled precision
-    (Approach > "Precision non-inferiority for a later arm X")."""
+    """The same rule as recall_noninferiority_verdict, on pooled precision."""
 
     def statistic(resample_ids: Sequence[str]) -> float:
         return pooled_precision(precision_counts_by_defect, resample_ids, arm_x) - pooled_precision(
@@ -301,15 +292,15 @@ def precision_noninferiority_verdict(
 
 def certify_later_arm(recall_verdict: str, precision_verdict: str) -> str:
     """A later arm is certified only when both the recall gate and the
-    precision gate pass (Approach > "Precision non-inferiority for a later
-    arm X": "Because both must pass, each gate keeps one-sided alpha =
-    0.025 with no multiplicity adjustment")."""
+    precision gate pass. Because both must pass, each gate keeps one-sided
+    alpha = ALPHA_ONE_SIDED with no multiplicity adjustment."""
     if recall_verdict == NONINFERIORITY_PASS and precision_verdict == NONINFERIORITY_PASS:
         return CERTIFICATION_CERTIFIED
     return CERTIFICATION_NOT_CERTIFIED
 
 
-# --- Secondary columns, never gating (Approach > "Secondary columns...") -----
+# --- Secondary columns, never gating (evals/README.md's "Reading the report"
+# section) -----------------------------------------------------------------
 
 
 def read_token_stats(records: Sequence[runner.RunRecord]) -> dict[str, float]:
@@ -330,7 +321,7 @@ def partial_and_paged_counts(records: Sequence[runner.RunRecord]) -> dict[str, d
 def whole_file_read_adherence(records: Sequence[runner.RunRecord]) -> dict[str, float]:
     """Mean whole-file-reads-of-changed-files per run, per arm -- arm 2's
     reads are the rule-violation diagnostic, arm 1's are the coverage
-    diagnostic (Approach > "Secondary columns")."""
+    diagnostic."""
     totals: dict[str, list[int]] = defaultdict(list)
     for record in records:
         totals[record.arm].append(record.whole_file_reads_of_changed_files)
@@ -346,8 +337,9 @@ def missing_run_counts_by_reason(records: Sequence[runner.RunRecord]) -> dict[st
 
 
 def out_of_session_counts_by_arm(records: Sequence[runner.RunRecord]) -> dict[str, int]:
-    """Per-arm count only -- never the paths themselves (Approach > "Out-of-
-    session reads": "Committed results carry only per-arm counts")."""
+    """Per-arm count only -- never the paths themselves (evals/README.md's
+    "Out-of-session reads" section: committed results carry only the
+    per-arm count, never a path)."""
     counts: dict[str, int] = defaultdict(int)
     for record in records:
         counts[record.arm] += len(record.out_of_session_paths)
@@ -374,7 +366,7 @@ def recall_diff_over_read_cap_stratum(
 ) -> float:
     """recall_X - recall_baseline, restricted to kept defects flagged
     over_read_cap -- files over one Read call, where arm 2's rule changes
-    behavior the most (Approach > "Secondary columns")."""
+    behavior the most."""
     stratum = [defect_id for defect_id in kept_defect_ids if defect_id in set(over_cap_defect_ids)]
     return arm_recall(recall_counts_by_defect, stratum, arm_x) - arm_recall(recall_counts_by_defect, stratum, arm_baseline)
 
@@ -384,8 +376,7 @@ def observed_sigma_d(
     arm_baseline: str, arm_x: str,
 ) -> float:
     """The observed per-defect-difference standard deviation -- reported for
-    the record, never used to revise N_min or delta (Approach > "Secondary
-    columns")."""
+    the record, never used to revise N_min or delta."""
     diffs = [
         recall_counts_by_defect[defect_id].detection_rate(arm_x)
         - recall_counts_by_defect[defect_id].detection_rate(arm_baseline)
@@ -394,7 +385,8 @@ def observed_sigma_d(
     return stdev(diffs) if len(diffs) > 1 else 0.0
 
 
-# --- Harness closure (Approach > "Harness closure") --------------------------
+# --- Harness closure (evals/README.md's "Frozen conditions and invalidation"
+# section) ----------------------------------------------------------------
 
 _CLOSURE_ROOTS: tuple[str, ...] = ("review_bench.runner", "review_bench.adjudicate", "review_bench.analysis")
 
@@ -447,10 +439,10 @@ def _imported_module_names(source_path: Path) -> set[str]:
 
 def compute_harness_closure(*, repo_root: Path = REPO_ROOT) -> dict[str, str]:
     """Every first-party source file reachable once run_review_bench.py's
-    run/judge/analyze paths are imported, limited to files inside the repo
-    (Approach > "Harness closure"). Computed by statically walking the
-    import graph from review_bench.runner/.adjudicate/.analysis -- the
-    modules those subcommands import -- rather than a hand-kept list.
+    run/judge/analyze paths are imported, limited to files inside the repo.
+    Computed by statically walking the import graph from
+    review_bench.runner/.adjudicate/.analysis -- the modules those
+    subcommands import -- rather than a hand-kept list.
     mine_szz.py's/mine_review_rounds.py's own transcript_analysis import is
     never reached, since nothing in this closure imports either of them."""
     visited: set[str] = set()
@@ -474,14 +466,14 @@ def compute_harness_closure(*, repo_root: Path = REPO_ROOT) -> dict[str, str]:
 
 def closure_manifest_hash(closure: Mapping[str, str]) -> str:
     """One combined hash over the whole closure, sorted by path for
-    determinism -- what `freeze`/`analyze` actually compare (Approach >
-    "Freeze and invalidation")."""
+    determinism -- what `freeze`/`analyze` actually compare (evals/README.md's
+    "Frozen conditions and invalidation" section)."""
     canonical = "\n".join(f"{path}:{digest}" for path, digest in sorted(closure.items()))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-# --- Freeze preconditions and invalidation (Approach > "Freeze preconditions",
-# "Drift between mining/confirmation and freeze is accepted, not locked") -----
+# --- Freeze preconditions and invalidation (evals/README.md's "Frozen
+# conditions and invalidation" section) -------------------------------------
 
 
 class HarnessInvalidatedError(Exception):
@@ -492,10 +484,7 @@ class HarnessInvalidatedError(Exception):
 
 def check_manifest_matches(current_closure: Mapping[str, str], frozen_closure: Mapping[str, str]) -> None:
     """Raises HarnessInvalidatedError naming the changed/added/removed
-    path(s) when current_closure's hashes differ from the frozen manifest's
-    (Approach > "Freeze and invalidation": "analyze recomputes every hash.
-    If any frozen field or hash differs, it refuses ... and names the
-    field")."""
+    path(s) when current_closure's hashes differ from the frozen manifest's."""
     if dict(current_closure) == dict(frozen_closure):
         return
     added = sorted(set(current_closure) - set(frozen_closure))
@@ -519,8 +508,7 @@ def check_freeze_preconditions(
     *, current_manifest_hash: str, last_smoke_manifest_hash: str, k_to_freeze: int, smoke_full_k: int,
     provenance_failures: Sequence[tuple[str, str]], local_excerpts_present: bool,
 ) -> None:
-    """Raises HarnessInvalidatedError naming the failing precondition
-    (Approach > "Freeze preconditions")."""
+    """Raises HarnessInvalidatedError naming the failing precondition."""
     if current_manifest_hash != last_smoke_manifest_hash:
         raise HarnessInvalidatedError(
             "freeze: current harness closure manifest does not match the last passing smoke campaign's"
@@ -539,9 +527,8 @@ def check_freeze_preconditions(
 def check_campaign_environment_consistency(records: Sequence[runner.RunRecord]) -> None:
     """Raises HarnessInvalidatedError naming each environment and its
     block(s) when a campaign's own records carry more than one (cli_version,
-    ambient_config_commit) pair (Approach > "Environment record": "A
-    campaign with more than one environment makes analyze exit 2, naming
-    each environment and its blocks")."""
+    ambient_config_commit) pair (evals/README.md's "Frozen conditions and
+    invalidation" section, "Within one campaign, across its blocks")."""
     blocks_by_environment: dict[tuple[str, str], set[str]] = defaultdict(set)
     for record in records:
         blocks_by_environment[(record.cli_version, record.ambient_config_commit)].add(record.defect_id)
@@ -559,7 +546,8 @@ def check_environment_matches_baseline(
 ) -> None:
     """Raises HarnessInvalidatedError as "invalidated -- rerun all arms" when
     a later arm's own campaign environment differs from the baseline's, even
-    when every hash still matches (Approach > "Freeze and invalidation")."""
+    when every hash still matches (evals/README.md's "Frozen conditions and
+    invalidation" section, "Between campaigns")."""
     for record in records:
         if record.cli_version != baseline_cli_version or record.ambient_config_commit != baseline_ambient_config_commit:
             raise HarnessInvalidatedError(

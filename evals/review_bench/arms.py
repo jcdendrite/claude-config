@@ -1,9 +1,6 @@
 """Arm construction for A-bench: the current-rule (arm 1) and
 function-context (arm 2) `bench-<lens>.md` files, snapshotted from
 production and installed into a fixture's `.claude/agents/`.
-
-See .claude/plans/measure-review-quality.md's Approach > Fixtures and arms
-> "Arm" for the design each function below follows.
 """
 from __future__ import annotations
 
@@ -17,8 +14,8 @@ ARM_CURRENT_RULE = "current-rule"
 ARM_FUNCTION_CONTEXT = "function-context"
 KNOWN_ARMS: frozenset[str] = frozenset({ARM_CURRENT_RULE, ARM_FUNCTION_CONTEXT})
 
-# Production's Read/Grep/Glob subset, with Bash and Write removed (Approach
-# > "Arm", arm 1). A `tools:` allowlist withholds an unlisted tool from the
+# Arm 1's own tool allowlist: production's Read/Grep/Glob subset, with Bash
+# and Write removed. A `tools:` allowlist withholds an unlisted tool from the
 # subagent outright. An arm therefore cannot run Bash or Write regardless of
 # ambient CLI permission behavior.
 ARM_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
@@ -33,7 +30,7 @@ ARM_MODEL_FRONTMATTER_VALUE = "inherit"
 # clause verified to occur exactly once in that lens's current production
 # body. Any other duty in the same sentence as the clause (e.g. staff-sdet's
 # "AND the code they test") is not part of the clause, and stays in the body
-# untouched after substitution (Approach > "Arm", arm 2).
+# untouched after arm 2's substitution.
 LENS_READ_CLAUSES: dict[str, str] = {
     "staff-backend-engineer": "Read every changed file fully",
     "staff-frontend-engineer": "Read every changed component and hook (or composable / reactive primitive) fully",
@@ -44,7 +41,8 @@ LENS_READ_CLAUSES: dict[str, str] = {
     "comment-discipline-reviewer": "Read every changed file fully",
 }
 
-# Approach > "Arm", arm 2 -- copied verbatim, character for character.
+# Arm 2's function-context read-rule clause -- kept verbatim, character for
+# character, wherever it's substituted.
 FUNCTION_CONTEXT_CLAUSE = (
     "Read the change through its function-context diff "
     "(`.bench/change-function-context.diff`), not by reading changed files "

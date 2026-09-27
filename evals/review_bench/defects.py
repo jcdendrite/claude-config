@@ -1,10 +1,8 @@
 """Defect-set schema for A-bench: `Candidate` and `ConfirmedDefect` records,
 their validation, JSON load/save, and the description-provenance check
 `confirm` (evals/run_review_bench.py) runs before promoting a candidate into
-the committed evals/review_bench/defects.json.
-
-See .claude/plans/measure-review-quality.md's Approach > Defect set for the
-mining algorithms that produce `Candidate` records.
+the committed evals/review_bench/defects.json. `Candidate` records themselves
+come from mine_szz.py and mine_review_rounds.py.
 """
 from __future__ import annotations
 
