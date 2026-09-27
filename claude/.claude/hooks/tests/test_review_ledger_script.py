@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -584,49 +585,6 @@ class TestReviewLedgerRoundScopedDedup:
         assert agents == {"code-writer", "inline"}
 
 
-def _split_shell_args(statement: str) -> list[str]:
-    """Splits STATEMENT (a single logical shell line, backslash-continuations
-    already joined) into whitespace-separated tokens, honoring single- and
-    double-quoted spans so a quoted argument containing whitespace stays one
-    token. Returns each token with its original quote characters intact.
-    This file's own call sites rely on that to recover the raw
-    single-quoted-literal shape of an argument."""
-    tokens: list[str] = []
-    current = ""
-    in_single = False
-    in_double = False
-    i = 0
-    while i < len(statement):
-        ch = statement[i]
-        if in_single:
-            current += ch
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            current += ch
-            if ch == '"':
-                in_double = False
-            elif ch == "\\" and i + 1 < len(statement):
-                i += 1
-                current += statement[i]
-        elif ch == "'":
-            in_single = True
-            current += ch
-        elif ch == '"':
-            in_double = True
-            current += ch
-        elif ch.isspace():
-            if current:
-                tokens.append(current)
-                current = ""
-        else:
-            current += ch
-        i += 1
-    if current:
-        tokens.append(current)
-    return tokens
-
-
 _LIB_APPEND_JSON_LINE_LOCKED_DEFINITION_RE = re.compile(
     r"^(function\s+)?_lib_append_json_line_locked\s*\(\)"
 )
@@ -674,11 +632,29 @@ def _iter_lib_append_json_line_locked_call_sites(root: Path = CLAUDE_DIR):
                 idx += 1
                 statement_lines.append(lines[idx])
             statement = re.sub(r"\\\s*\n", " ", "".join(statement_lines))
-            tokens = _split_shell_args(statement)
+            # posix=False preserves each token's quote characters, which the
+            # single-quoted-token extraction below depends on — the default
+            # posix=True strips quotes and would break this silently.
+            try:
+                tokens = shlex.split(statement, posix=False)
+            except ValueError as e:
+                raise ValueError(f"{sh_file}: could not tokenize statement: {statement!r}") from e
             assert len(tokens) >= 5, (
                 f"{sh_file}: _lib_append_json_line_locked call has fewer than 4 arguments: {statement!r}"
             )
-            yield sh_file, tokens[4]
+            # The dedup-filter argument is the only positional argument the
+            # contract requires to be single-quoted, so it's identified by
+            # that shape rather than a fixed token index. A fixed index
+            # breaks when an earlier double-quoted argument contains a
+            # backslash-escaped `"`, since shlex.split(posix=False) doesn't
+            # process escapes inside double quotes and splits that argument
+            # into two tokens, shifting every later index by one.
+            quoted_tokens = [t for t in tokens[1:] if t.startswith("'") and t.endswith("'")]
+            assert len(quoted_tokens) == 1, (
+                f"{sh_file}: expected exactly one single-quoted argument (the dedup filter) "
+                f"in _lib_append_json_line_locked call, found {len(quoted_tokens)}: {statement!r}"
+            )
+            yield sh_file, quoted_tokens[0]
 
 
 class TestReviewLedgerDedupFilterIsStaticLiteral:
@@ -819,6 +795,21 @@ class TestIterLibAppendJsonLineLockedCallSitesShapes:
         )
         call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
         assert call_sites == []
+
+    def test_escaped_quote_in_early_argument_does_not_shift_filter_extraction(self, tmp_path: Path) -> None:
+        """A backslash-escaped `"` inside an early (non-filter) double-quoted
+        argument makes shlex.split(posix=False) split that argument into two
+        tokens, since posix=False does no escape processing inside double
+        quotes. This shifts every later token's index by one, so a
+        fixed-position extraction would misidentify the filter argument. The
+        iterator must instead find the filter argument by its own
+        single-quoted shape, which this escape can't disturb."""
+        fixture = tmp_path / "synthetic.sh"
+        fixture.write_text(
+            '_lib_append_json_line_locked "$f" "l\\"iteral" "$line" \'.finding\'\n'
+        )
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
+        assert call_sites == [(fixture, "'.finding'")]
 
 
 class TestReviewLedgerFieldCaps:
