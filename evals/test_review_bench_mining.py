@@ -614,7 +614,7 @@ class TestRoundScopeAndCitations:
             _assistant(ts="2026-01-01T00:01:00Z", content=[_read_use("r1", cited_path)]),
             _user("done", ts="2026-01-01T00:02:00Z"),
         ]
-        windows = review_rounds._detect_round_windows(records)
+        windows = review_rounds.detect_round_windows(records)
         scope_keys = mine_review_rounds._round_scope(records, windows[0], {})
         expected_key = reviewer_yield._normalize_cited_path(cited_path, "/repo")
         assert expected_key in scope_keys
@@ -636,7 +636,7 @@ class TestRoundScopeAndCitations:
         subagent_records = [_assistant(ts="2026-01-01T00:01:15Z", content=[_read_use("r1", cited_path)])]
         _write_subagent_dispatch(tmp_path, "sess-1", "agent-1", agent_dispatch_id, subagent_records)
 
-        windows = review_rounds._detect_round_windows(records)
+        windows = review_rounds.detect_round_windows(records)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         scope_keys = mine_review_rounds._round_scope(records, windows[0], dispatch_index)
         expected_key = reviewer_yield._normalize_cited_path(cited_path, "/repo")

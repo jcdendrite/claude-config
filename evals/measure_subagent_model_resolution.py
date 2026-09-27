@@ -22,6 +22,11 @@ and _dispatch_usage_summary's observed-model walk in
 claude/.claude/scripts/transcript-analysis.py — this harness only
 ever has one dispatch per run to join, so the multi-root/pricing generality
 those functions carry for the full corpus tool doesn't apply here.
+
+Consumed by evals/review_bench/runner.py, which imports
+_run_claude_to_completion, _resolved_temp_project_dir,
+subagent_dir_for_session, parse_subagent_dispatches,
+PER_RUN_BUDGET_CAP_USD, and BUDGET_CAP_MULTIPLIER.
 """
 
 from __future__ import annotations

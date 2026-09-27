@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""A-bench CLI: `mine-szz`, `mine-rounds`, and `confirm` for
-evals/review_bench's known-defect set.
+"""A-bench CLI: `mine-szz`, `mine-rounds`, `confirm` for evals/review_bench's
+known-defect set, plus `snapshot-arms`, `smoke`, and `run` for its fixture
+and runner harness (dispatch 1b).
 
 LOCAL USE ONLY -- never run in CI. `mine-rounds` reads this account's own
 session transcripts; `mine-szz` and `confirm` read this repo's own git
 history. Every miner writes to the gitignored evals/review_bench/.local/;
 only `confirm` writes to the committed evals/review_bench/defects.json, and
-only for a candidate the engineer has already approved.
+only for a candidate the engineer has already approved. `smoke` and `run`
+launch real `claude -p` sessions against real Claude subscription auth.
 
 See .claude/plans/measure-review-quality.md's Approach > Defect set for the
-mining algorithms and Critical files' Dispatch 1a section for this CLI's spec.
+mining algorithms, Approach > "Fixtures and arms" and "Runs and
+adjudication" for the runner design, and Critical files' Dispatch 1a/1b
+sections for this CLI's spec.
 """
 from __future__ import annotations
 
 import argparse
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +28,9 @@ EVALS_DIR = Path(__file__).resolve().parent
 
 DEFAULT_LOCAL_DIR = EVALS_DIR / "review_bench" / ".local"
 DEFAULT_DEFECTS_PATH = EVALS_DIR / "review_bench" / "defects.json"
+DEFAULT_ARMS_ROOT = EVALS_DIR / "review_bench" / "arms"
+DEFAULT_RUN_STORE_DIR = EVALS_DIR / "review_bench" / ".local" / "run-store"
+DEFAULT_RECORDS_DIR = EVALS_DIR / "review_bench" / ".local" / "runs"
 
 
 def cmd_mine_szz(args: argparse.Namespace) -> int:
@@ -128,6 +136,111 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_snapshot_arms(args: argparse.Namespace) -> int:
+    from review_bench import arms
+
+    dest_root = Path(args.arms_root)
+    for arm in (arms.ARM_CURRENT_RULE, arms.ARM_FUNCTION_CONTEXT):
+        arms.write_arm_snapshot(arm, dest_root / arm)
+        print(
+            f"snapshot-arms: wrote {len(arms.LENS_READ_CLAUSES)} lens file(s) for {arm} under {dest_root / arm}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _load_defects_for_run(args: argparse.Namespace) -> list:
+    from review_bench import defects
+
+    all_defects = defects.load_confirmed_defects(Path(args.defects_path))
+    if args.defect_id:
+        all_defects = [d for d in all_defects if d.id in set(args.defect_id)]
+    return all_defects
+
+
+def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
+    import run_skill_evals
+    from review_bench import runner
+
+    if args.k is None:
+        args.k = runner.DEFAULT_K
+    if args.workers is None:
+        args.workers = run_skill_evals.DEFAULT_WORKERS
+
+    selected = _load_defects_for_run(args)
+    if not selected:
+        print("run: no confirmed defects selected -- nothing to run", file=sys.stderr)
+        return 1
+
+    run_store = runner.RunStore(Path(args.run_store_dir))
+    campaign_id = args.campaign_id or f"{args.subcommand}-{uuid.uuid4().hex[:8]}"
+    records_path = Path(args.records_dir) / f"{campaign_id}.jsonl"
+    # Both live checkouts the per-run validity check must contain a leak
+    # into: this harness's own, and the one the ambient config resolves
+    # into -- distinct under worktree isolation (Approach > "Per-run
+    # validity checks").
+    live_checkout_roots = runner.default_live_checkout_roots()
+
+    def build_spec(defect_id: str):
+        defect = next(d for d in selected if d.id == defect_id)
+        return runner.build_defect_fixture_spec(
+            defect, arm_names=(runner.arms_mod.ARM_CURRENT_RULE, runner.arms_mod.ARM_FUNCTION_CONTEXT),
+            source_repo=REPO_ROOT, live_checkout_roots=live_checkout_roots,
+            arms_snapshot_root=Path(args.arms_root), run_store=run_store,
+        )
+
+    result = runner.run_campaign(
+        [d.id for d in selected], build_spec=build_spec,
+        arms=(runner.arms_mod.ARM_CURRENT_RULE, runner.arms_mod.ARM_FUNCTION_CONTEXT),
+        k=args.k, seed=args.seed, campaign_id=campaign_id, run_store=run_store,
+        records_path=records_path, projects_root=runner.config_dir() / "projects",
+        fault=fault, workers=args.workers,
+    )
+    total = sum(len(block.records) for block in result.block_results.values())
+    print(
+        f"{args.subcommand}: campaign {campaign_id} ran {total} run(s) across {len(result.block_results)} defect(s)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def cmd_smoke(args: argparse.Namespace) -> int:
+    return _run_or_smoke(args, fault=args.inject_fault)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    return _run_or_smoke(args, fault=None)
+
+
+def _add_campaign_args(parser: argparse.ArgumentParser) -> None:
+    # build_parser() calls this for every invocation regardless of
+    # subcommand chosen, so it stays import-free. runner.DEFAULT_K and
+    # run_skill_evals.DEFAULT_WORKERS are read lazily in _run_or_smoke
+    # instead, via the None defaults below.
+    parser.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
+    parser.add_argument(
+        "--defect-id", action="append", default=[],
+        help="Restrict the campaign to this defect ID (repeatable); default: every confirmed defect.",
+    )
+    parser.add_argument("--arms-root", default=str(DEFAULT_ARMS_ROOT), help="Root holding <arm>/bench-<lens>.md snapshots.")
+    parser.add_argument(
+        "--run-store-dir", default=str(DEFAULT_RUN_STORE_DIR),
+        help="Local run-store directory (write-ahead record + lock).",
+    )
+    parser.add_argument(
+        "--records-dir", default=str(DEFAULT_RECORDS_DIR), help="Where this campaign's RunRecord JSONL is written.",
+    )
+    parser.add_argument("--campaign-id", default=None, help="Campaign ID (default: <subcommand>-<random>).")
+    parser.add_argument(
+        "--k", type=int, default=None, help="Runs per arm per defect (default: review_bench.runner.DEFAULT_K).",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="Campaign seed for the per-defect block shuffle.")
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help="Worker pool size per block (default: run_skill_evals.DEFAULT_WORKERS).",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="A-bench defect-set mining and confirmation CLI.")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -153,6 +266,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_confirm.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")
     p_confirm.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
     p_confirm.set_defaults(func=cmd_confirm)
+
+    p_snapshot = sub.add_parser(
+        "snapshot-arms",
+        help="Render both arms' bench-<lens>.md files from production at the freeze commit (PR 2).",
+    )
+    p_snapshot.add_argument("--arms-root", default=str(DEFAULT_ARMS_ROOT), help="Where to write <arm>/bench-<lens>.md.")
+    p_snapshot.set_defaults(func=cmd_snapshot_arms)
+
+    p_smoke = sub.add_parser(
+        "smoke",
+        help="Fault-injectable dry-run campaign against the real CLI (gate 6) -- never the baseline campaign.",
+    )
+    _add_campaign_args(p_smoke)
+    p_smoke.add_argument(
+        "--inject-fault", choices=("wrong-agent", "extra-tool-call"), default=None,
+        help="Force a real launch through one named validity-check failure, exercising retry-then-missing.",
+    )
+    p_smoke.set_defaults(func=cmd_smoke)
+
+    # `run` has no --inject-fault: fault injection is smoke-only. Omitting
+    # the flag here is the rejection itself -- argparse exits 2 on an
+    # unrecognized argument (Verification: "run rejects the smoke-only
+    # fault-injection options").
+    p_run = sub.add_parser("run", help="The real reviewer campaign (baseline or a later arm's rerun).")
+    _add_campaign_args(p_run)
+    p_run.set_defaults(func=cmd_run)
 
     return parser
 

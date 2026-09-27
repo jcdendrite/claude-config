@@ -169,7 +169,7 @@ class _RoundEntry:
 def _collect_round_entries(session_iter) -> list[_RoundEntry]:
     entries: list[_RoundEntry] = []
     for jsonl, records in session_iter:
-        windows = review_rounds._detect_round_windows(records)
+        windows = review_rounds.detect_round_windows(records)
         if not windows:
             continue
         branches = review_rounds._session_record_branches(records, windows)
