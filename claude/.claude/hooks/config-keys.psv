@@ -97,6 +97,7 @@ pr_cost_recording|bool|false|config-dir|false|config-dir-and-home|.pr-cost-enabl
 pr_cost_disclosure|enum:dollars|false|config-dir|false|config-dir-and-home|pr-cost-disclosure|content-matches|PR cost disclosure|README.md § PR cost disclosure|
 pr_description_tighten_prose|bool|true|config-dir|false|config-dir|pr-description-tighten-prose-optout|presence-disables|Prose-tightening pass|docs/hooks.md § Prose tightening opt-out|
 handoff_nudge|bool|true|config-dir|false|config-dir|.handoff-nudge-disabled|presence-disables|Handoff-near-cap nudge|docs/handoff-nudge.md|
+memory_audit_nudge|bool|true|config-dir|false|config-dir|.memory-audit-nudge-disabled|presence-disables|Memory-store audit nudge|docs/memory-audit-nudge.md|
 consume_durable_continuity|bool|true|config-dir|false|config-dir|.consume-durable-continuity-disabled|presence-disables|Durable-continuity auto-consume|docs/hooks.md § Utility hooks|
 commit_stall_block|bool|true|config-dir|false|config-dir|.commit-stall-block-disabled|presence-disables|Commit-stall auto-advance|docs/commit-stall-block.md|
 session_title_from_branch|bool|true|config-dir|false|config-dir|.session-title-disabled|presence-disables|Branch-based session-title (machine-wide)|docs/hooks.md § Utility hooks|

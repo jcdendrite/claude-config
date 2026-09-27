@@ -100,6 +100,7 @@
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
+    "memory-store-audit": "name-only",
     "measure-check-output": "name-only",
     "review-loop-cost-audit": "name-only",
     "loop": "name-only",
@@ -149,6 +150,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/set-session-title-from-branch.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-memory-store-audit.sh",
+            "timeout": 10
           }
         ]
       },

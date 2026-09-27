@@ -134,6 +134,20 @@ _lib_capped_for() {
   fi
 }
 
+# _lib_status_consistent_with_cap_kill STATUS
+# Returns 0 when STATUS is one a _lib_capped_for cap kill produces (124, 137,
+# 143), else 1. Prints nothing and returns only 0 or 1, including for an empty,
+# absent, or non-numeric STATUS.
+# Classifies only: each caller owns the disposition (discard, deny, or skip).
+# 137 and 143 also occur as a child's own signal-death status; see
+# _lib_capped_for's "Exit statuses" bullets.
+# A caller under `set -e` must call it in a conditional context, since a bare
+# call that returns 1 aborts the script.
+_lib_status_consistent_with_cap_kill() {
+  case "${1-}" in 124|137|143) return 0 ;; esac
+  return 1
+}
+
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
 # Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
 _lib_realpath_m() {

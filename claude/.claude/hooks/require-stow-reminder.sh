@@ -48,6 +48,10 @@
 #   used — the commit messages on the branch since `main`.
 # - A body source `_lib_is_pseudo_file_path` matches is skipped, not read, so
 #   a marker behind one does not satisfy the gate.
+# - A body source that is not a regular file (device, FIFO, directory) is
+#   likewise skipped, not read.
+# - A body source whose capped read is killed by the timeout (exit 124) is
+#   skipped too, so a marker behind it does not satisfy the gate.
 #
 # Known gaps (documented, not closed):
 # - `gh pr create --body "$(cat file)"` or backtick command substitution
@@ -194,9 +198,15 @@ BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
+    [ ! -f "$body_source_path" ] && continue
     _lib_is_pseudo_file_path "$body_source_path" && continue
     [ ! -r "$body_source_path" ] && continue
-    SCAN_TARGET+=$'\n'"$(cat "$body_source_path" 2>/dev/null || true)"
+    BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null)
+    BODY_CONTENT_STATUS=$?
+    # A cap kill (124/137/143) gets the same disposition as an unreadable
+    # file above: skip this source, don't count it toward the reminder check.
+    _lib_status_consistent_with_cap_kill "$BODY_CONTENT_STATUS" && continue
+    SCAN_TARGET+=$'\n'"$BODY_CONTENT"
   done <<< "$BODY_SOURCES"
 fi
 

@@ -67,7 +67,8 @@
 #
 # Commit-message-source files: `-F <path>` / `--file <path>` are read and
 # scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` / `/proc/*/fd/*` pseudo-files are rejected
-# fail-closed — the hook cannot statically verify what git will read.
+# by literal spelling — the hook cannot statically verify what git will read.
+# A message-source path that is not a readable regular file is rejected too.
 # Both apply only to the spellings the extractor recognises (see Known gaps).
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from
@@ -88,6 +89,15 @@
 #   party even if the developer named the file after an identifier.
 #
 # Known gaps (documented, not closed):
+#  - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
+#    `/dev/fd/*`, `/proc/*/fd/*`), then requires a regular readable file.
+#    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised
+#    and can evade the scan: under /bin/bash 3.2 the `-f` test passes for them
+#    inside the reading loop. Accepted debt shared with
+#    deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
+#  - A capped `cat` of a message-source file that ends in any nonzero status
+#    denies; _lib_status_consistent_with_cap_kill only picks whether the
+#    message says "killed".
 #  - The editor-flow commit (`git commit` / `git commit --amend` with no
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
@@ -391,14 +401,6 @@ extract_commit_message_source_paths() {
   '
 }
 
-# The cap-kill statuses are listed in _lib_capped_for's header in _lib.sh,
-# which also says a status alone cannot prove the cap fired. This only picks
-# the deny message text ("by the scan cap or a signal"): callers deny on any
-# nonzero status either way.
-status_is_killed() {
-  [ "$1" -eq 124 ] || [ "$1" -eq 137 ] || [ "$1" -eq 143 ]
-}
-
 # --- Build the scan target -----------------------------------------------
 # Always exclude this hook's own synthetic-PII test fixtures, plus every
 # user-configured `exclude:` glob. `:(top,exclude)` is repo-root-relative.
@@ -439,7 +441,7 @@ DIFF_PLAIN_FLAGS=(--no-color --no-ext-diff --no-textconv)
 # scan less than the real diff and could let credential content past the gate.
 STAGED_DIFF=$(_lib_capped git -c diff.relative=false diff --cached "${DIFF_PLAIN_FLAGS[@]}" -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
 STAGED_DIFF_STATUS=$?
-if status_is_killed "$STAGED_DIFF_STATUS"; then
+if _lib_status_consistent_with_cap_kill "$STAGED_DIFF_STATUS"; then
   emit_deny "Commit — could not compute the staged diff: git diff --cached was killed (exit ${STAGED_DIFF_STATUS}), by the scan cap or a signal. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
 fi
@@ -462,7 +464,7 @@ if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
   if [ "$HEAD_REV_STATUS" -eq 0 ]; then
     HEAD_DIFF=$(_lib_capped git -c diff.relative=false diff HEAD "${DIFF_PLAIN_FLAGS[@]}" -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
     HEAD_DIFF_STATUS=$?
-    if status_is_killed "$HEAD_DIFF_STATUS"; then
+    if _lib_status_consistent_with_cap_kill "$HEAD_DIFF_STATUS"; then
       emit_deny "Commit — could not compute the HEAD diff: git diff HEAD was killed (exit ${HEAD_DIFF_STATUS}), by the scan cap or a signal. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
     fi
@@ -483,10 +485,20 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
       exit 0
     fi
     if [ ! -f "$msg_path" ] || [ ! -r "$msg_path" ]; then
-      emit_deny "git commit references a message-source file at '${msg_path}', but that path is not a readable regular file from the hook. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards. Create the file, inline the message with -m, or simplify the path if it contains whitespace."
+      emit_deny "git commit references a message-source file at '${msg_path}', but that path is not a readable regular file from the hook. The gate refuses to scan it — unscanned content is the leak vector this hook guards. Create the file, inline the message with -m, or simplify the path if it contains whitespace."
       exit 0
     fi
-    SCAN_TARGET+=$'\n'"$(cat "$msg_path" 2>/dev/null || true)"
+    MSG_CONTENT=$(_lib_capped cat "$msg_path" 2>/dev/null)
+    MSG_CONTENT_STATUS=$?
+    if _lib_status_consistent_with_cap_kill "$MSG_CONTENT_STATUS"; then
+      emit_deny "Commit — could not read message-source file '${msg_path}': the read was killed (exit ${MSG_CONTENT_STATUS}), by the scan cap or a signal. Fail-closed — unscanned content is the leak vector this hook guards."
+      exit 0
+    fi
+    if [ "$MSG_CONTENT_STATUS" -ne 0 ]; then
+      emit_deny "Commit — could not read message-source file '${msg_path}' (exit ${MSG_CONTENT_STATUS}). Fail-closed — unscanned content is the leak vector this hook guards."
+      exit 0
+    fi
+    SCAN_TARGET+=$'\n'"$MSG_CONTENT"
   done <<< "$COMMIT_MSG_SOURCES"
 fi
 
