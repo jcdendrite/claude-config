@@ -50,13 +50,20 @@ one-line compression that keeps the actual constraint — not a shorter
 sentence that drops it.
 
 **Multi-fact comment structure** — several independent, non-obvious facts
-chained into one sentence-cluster via semicolons, dashes, and
-parentheticals, so a reader must parse the whole cluster to find where one
+chained into one run-on sentence via semicolons, dashes, and
+parentheticals, so a reader must parse the whole sentence to find where one
 fact ends and the next begins. Flag the site and name the fix: a separate
 sentence per independent fact, or an explicit one-item-per-fact list when
 the facts are genuinely parallel (a set of gaps, conditions, or
-exclusions). Facts that are tightly coupled — a cause and its direct
-effect — staying in one sentence is not a violation.
+exclusions).
+
+Not a violation:
+- Tightly coupled facts sharing a sentence, such as a cause and its direct
+  effect, or a claim and the hedge that qualifies it.
+- Complete sentences sharing one list item when a later sentence refers
+  back to an earlier one ("that classifier", "this"). They form one item,
+  not parallel facts. Splitting them leaves a list item that can't be read
+  on its own.
 
 **Prose at the wrong altitude** — content placed where its reader doesn't
 match: a feature deep-dive inside a README overview, implementation detail
@@ -79,6 +86,11 @@ external plan document. Flag every occurrence, not just the first.
 **"Used to be X" framing** — "used to be X" / "was Y before" / any
 prior-version comparison inside a comment or durable doc. That rationale
 belongs in the commit message or PR body, not in text meant to outlive them.
+The framing can be implicit. A disclaimer that rules out a mechanism which
+can't apply where the text now lives (for example, a CLAUDE.md section
+saying it isn't `paths:`-gated) answers a question only the prior version
+raised. Flag it when it's added, and don't flag its removal as a
+regression.
 
 **Survives-the-PR self-test on durable-doc content** — for each new or
 substantially rewritten durable-doc paragraph, ask: would this still make
