@@ -431,3 +431,185 @@ live sessions.
 not reproduce interactive Shift+Tab plan mode's escalation to Opus — see
 [`docs/case-studies/plan-mode-model-resolution.md`](../docs/case-studies/plan-mode-model-resolution.md)
 for the measured discrepancy and what a valid re-verification requires.
+
+## Review bench
+
+A-bench (`evals/review_bench/`) measures whether a reviewer read-rule change
+preserves review quality — recall and adjudicated precision on a curated set
+of this repo's own known-defect PRs — before that change is allowed to
+merge. This file's own "Why local only — never CI" section above applies
+here too, with one addition: `smoke`, `run`, and `judge` each price out a
+real reviewer or judge dispatch per sample, not one classification call, so
+the cost scales faster (see "Runtime cost" below).
+
+### Usage
+
+```bash
+# Mine defect candidates (source 2 first -- transcripts age out):
+python evals/run_review_bench.py mine-rounds
+python evals/run_review_bench.py mine-szz
+
+# After hand-editing a candidate's description in .local/, promote it:
+python evals/run_review_bench.py confirm
+
+# Snapshot both frozen arms from production at the freeze commit:
+python evals/run_review_bench.py snapshot-arms
+
+# Dry-run against the real CLI, with optional fault injection:
+python evals/run_review_bench.py smoke --k 2 --inject-fault wrong-agent
+
+# The real campaign (baseline or a later arm's rerun):
+python evals/run_review_bench.py run --k 10 --records-dir evals/review_bench/.local/runs
+
+# Judge a completed reviewer campaign:
+python evals/run_review_bench.py judge --reviewer-records-path evals/review_bench/.local/runs/<campaign>.jsonl
+
+# Export, then import, the human spot-check:
+python evals/run_review_bench.py spot-check export \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl>
+python evals/run_review_bench.py spot-check import \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --labels-path <labels.json>
+
+# Freeze the harness (PR 2, run once, after a passing smoke campaign):
+python evals/run_review_bench.py freeze --k 10 \
+  --last-smoke-manifest-hash <hash from smoke's own output> --smoke-full-k 10
+
+# Compute a campaign's verdicts:
+python evals/run_review_bench.py analyze \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
+```
+
+### Frozen conditions and invalidation
+
+`freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
+model IDs, K, delta, alpha, N_min, the planning variance, the bootstrap's
+resample count and seed, the kappa floor, the retry and missing-run rule, the
+later-arm certification rule, the confirmed defect IDs, and sha256 hashes of
+the harness's own import closure, both arm directories, the judge agent
+files, `defects.json`, and the prompt templates.
+
+`analyze` recomputes every one of those hashes on each run. A mismatch
+against the frozen manifest exits 2, naming the changed, added, or removed
+file. Two further checks sit alongside the hash comparison, and either can
+exit 2 without a single hash differing — this section is their canonical
+home:
+
+- **Within one campaign, across its blocks.** Each block records its own
+  environment (`claude --version` plus the ambient config's own commit) at
+  its own start and end; a block whose two readings disagree reruns whole,
+  before `analyze` ever sees it. `analyze` then checks the whole campaign:
+  every block must agree with every other block. A CLI update landing
+  between two blocks leaves each block internally consistent, so only this
+  cross-block check can see it. A campaign whose blocks disagree makes
+  `analyze` exit 2, naming each environment and the defect IDs of the blocks
+  recorded under it.
+- **Between campaigns.** A later arm's own campaign environment must match
+  the frozen baseline's exactly. A mismatch exits 2 as "invalidated — rerun
+  all arms", even when every hash still matches — an environment drift is a
+  threat to validity a content hash cannot see.
+
+`freeze` itself refuses, exiting 2 and naming the failing precondition,
+unless the current harness closure manifest matches the last smoke campaign
+that passed, K matches that smoke campaign's own full-K fixture (its judge
+caps were sized at that K), and every `defects.json` record still passes the
+description-provenance check against the `.local/` excerpts, which must be
+present.
+
+### Building a later arm
+
+A later arm (#1115's own draft rule, for example) is built by applying its
+read-rule change to the frozen `arms/current-rule/` snapshot, allowlist
+included — never by copying whatever the live production agent bodies have
+drifted to since the freeze. `snapshot-arms` only ever writes the two frozen
+arms; a later arm's own snapshot is a hand-applied diff of
+`current-rule/bench-<lens>.md`.
+
+### Reading the report
+
+`analyze` prints each arm's recall, pooled precision, and non-inferiority
+verdicts, plus every secondary column: Read tokens per run, `PARTIAL
+view`/paged-read counts, whole-file-read adherence, missing-run counts by
+reason, out-of-session read counts, split agreement, and the observed
+standard deviation of the per-defect difference. Two caveats govern how to
+read it:
+
+- **Pairing protects the difference, not the absolute figures.** The
+  reviewer model may have already seen this public repo's later fixes.
+  Pairing within each defect cancels a shared memorization boost out of
+  every arm-vs-arm difference the gates use, but it does nothing for an
+  arm's own absolute recall or precision. Read the absolute per-arm numbers
+  with that caveat, and read recall by fix-date half — a secondary column,
+  never gating — as the closest observable proxy this harness has for that
+  exposure.
+- **The precision verdict assumes arm-independent judge segmentation.** A
+  merge of two findings, or a split of one, moves an arm's pooled precision.
+  That cancels out of `precision_X - precision_1` only if the judge's own
+  segmentation error rate, and the labels the error touches, are the same
+  for both arms. Split agreement per arm, printed beside the precision
+  figures, is where a violation would show; it never gates on its own.
+
+### Interruption and cleanup
+
+`smoke`, `run`, and `judge` each write ahead to their own local run store:
+one entry per directory as soon as it exists, and one per session ID before
+that run launches. Each also holds a lock file naming its own PID while it
+runs. A hard interruption — a killed process, a crash — skips the ordinary
+end-of-block cleanup, but a resumed attempt's own sweep deletes exactly what
+its own abandoned attempt recorded, then reruns that block whole. While a run
+store's lock names a live PID, a resuming attempt refuses to start rather
+than racing the run still in progress.
+
+The one residual this can't close is a directory created in the instant
+before its own write-ahead record is written. List such directories by their
+`review-bench-` prefix, while no lock is held, and inspect each one before
+deleting it.
+
+### Out-of-session reads
+
+A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
+and its own session store is recorded in that run's `out_of_session_paths`
+and does not fail the run on its own. Only a read of the live checkout's own
+copy of a changed file, or of the ambient config's `projects/` root, fails
+the run. `judge` prints every recorded path to the terminal, once per
+completed judge run, for the engineer's own review. `analyze` reports only
+the per-arm and per-judge-kind counts, both to the terminal and in its
+committed `--out` report. The design calls for the engineer to also review
+a printed path list after each smoke campaign and after the baseline
+campaign. `smoke` and `run` do not yet print that list to the terminal,
+so that review step is a known gap rather than implemented behavior.
+Committed results — `analyze`'s own JSON report, `conditions.json`,
+`results/baseline.json` — carry only the per-arm count, never a path,
+because a path can name a private project.
+
+### Runtime cost
+
+- **Reviewer runs:** `2 x N x K`, 2,520 at N = 126 and K = 10. At
+  `measure_subagent_model_resolution.REPRESENTATIVE_DISPATCH_COST_USD`'s
+  $1.15-per-dispatch mean, that is about $2,900. If `--max-budget-usd` bounds
+  only the dispatcher's own overhead rather than the subagent's spend, the
+  ceiling is about $29,000 at
+  `measure_subagent_model_resolution.PER_RUN_BUDGET_CAP_USD`'s $11.50 cap
+  (about $58,000 if every run retried once at the cap).
+- **Judge runs:** one recall and one precision judge run per defect,
+  uncosted until the smoke campaign's own full-K fixture measures them —
+  their caps start at the reviewer's own bootstrap values (see
+  `review_bench/runner.py`'s own `RECALL_JUDGE_BUDGET_CAP_USD` /
+  `PRECISION_JUDGE_BUDGET_CAP_USD` comments) until that measurement exists.
+- **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
+  each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
+  K = 10, so 630 slots at N = 126. Each minute of median run duration adds
+  10.5 hours.
+- **Judge wall-clock:** `judge` dispatches one recall and one precision judge
+  run per defect, fully serially with no worker pool, so wall-clock is
+  `2 x N` run-slots with no division by a worker count — 252 at N = 126.
+  Each minute of median judge-run duration adds 4.2 hours.
+
+### Publication
+
+The `source` breakdown (`szz` vs. `review-round`, in a published defect-set
+summary) is an own-history count: its whole scope is this repository's own
+git history and this account's own session transcripts, on one account, via
+`mine-rounds`, which itself refuses to run against more than one config-dir
+root. Publish it beside that command and its own scope refusal, per
+`docs/private-project-redaction.md` § "This repository, one account" —
+never beside a wider corpus.
