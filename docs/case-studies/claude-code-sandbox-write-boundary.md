@@ -54,7 +54,10 @@ sharing an inode with `<canaries>/t6`) was appended to successfully — the
 canary's hash changed, and `stat` confirmed both paths shared one inode
 (`nlink=2`, size grown by exactly the appended text). A path-based sandbox
 boundary does not protect a pre-existing hard link whose other name lies
-outside the allowed set.
+outside the allowed set. `sandboxing.md` is silent on hard links, so this is
+undocumented behavior disclosed here for the first time — unlike ESC1's
+finding below, which only confirms the operational effect of an
+already-documented default.
 
 **The Write tool: an independent symlink refusal, and hard-link semantics
 that avoid the shared-inode write.** Per `` `sandboxing.md` § "Scope" ``
@@ -68,12 +71,10 @@ entirely (it isn't a Bash subprocess), but it independently refuses to follow
 *any* symlink on its own, so no Write-tool symlink gap exists for GH-1099's
 own shape. (The original W1 attempt was a
 harness confound: the Write tool's own "file has not been read yet" guard
-fired before any sandbox or symlink signal could.) W2 (Write tool appending
-to `<cwd>/prelinked-w2`, pre-linked to `<canaries>/w2`) reported success, but
-`stat` afterward showed a *different* inode at `<cwd>/prelinked-w2`
-(`nlink=1`, size 8 bytes) than at `<canaries>/w2` (`nlink=1`, size 19 bytes,
-unchanged) — the Write tool's replace-on-write semantics broke the
-pre-existing hard link rather than mutating the shared inode, so W2 is
+fired before any sandbox or symlink signal could.) W2 reported success, but
+`stat` showed `<cwd>/prelinked-w2` and `<canaries>/w2` now hold different
+inodes (sizes 8 and 19 bytes) — the Write tool's replace-on-write broke the
+pre-existing hard link instead of mutating the shared inode. W2 is therefore
 blocked in effect, not by an explicit denial. W3 (a session-created hard
 link, then a separate Write tool call) never reached a write step either:
 link creation itself failed with the identical `EXDEV` error T5 got.
