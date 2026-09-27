@@ -433,3 +433,58 @@ def test_transcript_analysis_review_trace_deny_summary_subprocess_finds_seeded_d
 
     assert result.returncode == 0, result.stderr
     assert "code-review" in result.stdout
+
+
+def test_transcript_analysis_read_scope_help_exits_zero():
+    result = _run("transcript-analysis.py", "read-scope", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def _seed_read_scope_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one main-thread Read tool_use and
+    its paired tool_result -- read-scope's own census needs both to count a
+    Read call."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": "2026-05-19T10:00:00.000Z",
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/a.py"}}],
+            "usage": {
+                "input_tokens": 5000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+    result_record = {
+        "type": "user",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "r1", "content": "print('hi')\n"},
+        ]},
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n" + json.dumps(result_record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_read_scope_subprocess_finds_seeded_read(tmp_path):
+    """Proves `from transcript_analysis.read_scope import cmd_read_scope`
+    resolves under a real subprocess -- no in-process `_mod.cmd_read_scope(...)`
+    test can see a broken re-export in the real shim entrypoint. Uses
+    _isolated_config_env rather than a top-level --config-dir: read-scope is a
+    member of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
+    config_dir = _seed_read_scope_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "read-scope", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Read calls: 1" in result.stdout

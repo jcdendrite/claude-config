@@ -13,12 +13,15 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, and `review_trace.py`
-are the only modules the shim imports back into (not just from). Cost-ledger still calls
-`review_trace.py`'s `compute_deny_summary_data` from the shim. The CLI's own `build_parser()` still
-wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the
+package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`, and
+`read_scope.py` are the only modules the shim imports back into (not just from). Cost-ledger still
+calls `review_trace.py`'s `compute_deny_summary_data` from the shim. The CLI's own `build_parser()`
+still wires up `review_trace.py`'s `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the
 `cli.py` phase migrates both. Two still-unmigrated friction/command-shape helpers likewise call
 `denials.py`'s `hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
+`build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
+The still-unmigrated context-composition code separately reads `read_scope.py`'s
+`_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
 `review_trace.py` also imports `reviewer_yield.py`, for its own reviewer-spawn detection
 (`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
 skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
@@ -154,6 +157,15 @@ re-expression pattern `review_rounds.py` uses for `_is_fresh_user_prompt` and `_
 `compute_deny_summary_data` are the three public names here, reached from the still-unmigrated
 `build_parser()`/cost-ledger code in the shim — see the exception noted above.
 
+### `read_scope.py`
+
+The read-scope command family: `cmd_read_scope` and every helper used only by it — the Read-call
+census by cohort and scope (`_scan_read_scope_session`), repeat-whole-file-read detection, and
+per-file-and-sessionId prompt-token growth. Imports `corpus`, `pricing`, `render`, and `scope` all
+by module (attribute access), matching `cost.py`'s convention. `cmd_read_scope` and
+`_READ_SCOPE_CHARS_PER_TOKEN` are the two names reached bare from the shim — see the exception
+noted above.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -168,14 +180,15 @@ Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` i
 through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which
 calls into the shim. Every other package module has its own per-command-group (or, for `denials.py`,
 per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py`'s in
-`tests/test_transcript_denials.py`, and `review_trace.py`'s in
-`tests/test_transcript_review_trace.py`. Each loads its own independent copy of
+`tests/test_transcript_denials.py`, `review_trace.py`'s in
+`tests/test_transcript_review_trace.py`, and `read_scope.py`'s in
+`tests/test_transcript_read_scope.py`. Each loads its own independent copy of
 `transcript-analysis.py` via the same `spec_from_file_location` boilerplate
 `test_transcript_analysis.py` uses, rather than importing that file's `_mod`. Each reaches a moved
 module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_denial_key`,
 `_mod.review_trace.cmd_review_trace`) — the same channel the shim-reimport exception above relies
 on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
-`cost_ledger_file`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`); see its own
-docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's still-independent
-`config_dir` binding.
+`cost_ledger_file`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`, `_compact_boundary_rec`);
+see its own docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's
+still-independent `config_dir` binding.
