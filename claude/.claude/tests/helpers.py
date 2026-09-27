@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import textwrap
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -28,6 +29,22 @@ SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+
+_LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _sourced_value(var_name: str) -> str:
+    """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess
+    -- reads the shell's own definition rather than a hand-copied Python
+    literal that could drift from it."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
@@ -1726,6 +1743,41 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# -- Forced-fallback realpath shim -------------------------------------------
+#
+# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
+# through to the manual ancestor-walk fallback) by shadowing `realpath` on
+# PATH. A non-`-m` invocation still execs the real binary, so the fallback
+# loop's own `realpath --` lookups keep working. Shared by test_lib.py's
+# TestLibRealpathM and test_ask_review_permissions.py, both of which force
+# the same fast-path failure for the same reason.
+
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+
+
+def _forced_fallback_path_env(tmp_path: Path) -> str:
+    """Build a PATH whose `realpath` is the forced-fallback shim
+    (`_FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The shim dir
+    is placed first specifically to exclude any `grealpath` the host might
+    also have on a wider PATH -- `command -v grealpath` succeeding would
+    skip the fallback branch this exists to force. Shared by
+    test_ask_review_permissions.py and test_lib.py's `_run_realpath_m`,
+    both of which force the same fast-path failure for the same reason."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "realpath"
+    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+    shim.chmod(0o755)
+    return f"{shim_dir}:/usr/bin:/bin"
 
 
 # -- Scaled timeout(1) shim for cap-boundary tests ---------------------------
