@@ -667,9 +667,61 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
+        """Also selects REVIEW_BENCH_TEST_GLOB: evals/run_review_bench.py's
+        own runner reuses run_skill_evals.py's launch shape (row 9), so a
+        change here needs review_bench's own tests re-run too."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB}
+
+    def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+        result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
+        result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_test_glob_member_change_selects_itself(self):
+        """A test_review_bench*.py file itself is outside REVIEW_BENCH_DIR
+        (evals/, not evals/review_bench/), so it needs its own glob-matched
+        branch in the predicate to select itself rather than falling open."""
+        result = _mod.select_pytest_targets(["evals/test_review_bench_mining.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
+        """Previously unmatched (row 10) -- falls open to the full suite no
+        longer, now that it rides the review_bench predicate."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
+        """mine_review_rounds.py imports these four transcript_analysis
+        modules by name (Critical files, Dispatch 1a); without this
+        cross-domain exception, the blanket SCRIPTS_DIR rule (plus the
+        generic .py-under-claude/ rule, which every SCRIPTS_DIR .py file
+        also matches -- see test_scripts_change_also_selects_ticket_reference_discipline_test)
+        would claim the path first and review_bench's own tests would
+        never re-run."""
+        for dependency in sorted(_mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES):
+            result = _mod.select_pytest_targets([dependency])
+            assert result.is_full_suite is False, dependency
+            assert set(result.target_paths) == {
+                _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+            }, dependency
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
@@ -1528,14 +1580,15 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.STATUSLINE_COMMAND_SH,
 )
 
-# The three CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than a
-# domain directory. Its only consumer is the fidelity partition below --
-# _expand_target (select-tests.py) partitions on "*" in target and has no
+# The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather
+# than a domain directory. Its only consumer is the fidelity partition below
+# -- _expand_target (select-tests.py) partitions on "*" in target and has no
 # use for this distinction, so it stays a test-only constant.
 _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
