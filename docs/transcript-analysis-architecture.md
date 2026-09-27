@@ -326,11 +326,15 @@ live in `tests/test_author_outcome.py`: most exercise the package module directl
 shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.
 
 The cache-rebuild family splits along thematic seams rather than one file per module:
-`tests/test_transcript_cache_rebuild.py` (core report mechanics), `_attribution.py` (subagent
-idle-gap cause attribution), `_switch_delta.py` (5m-to-1h switch-delta pricing and per-dispatch
-dispersion), `_ttl_rules.py` (`--ttl-verdict` wiring and each verdict rule's own tests),
-`_ttl_accumulation.py` (per-root accumulation and dominance reduction), and `_ttl_footing.py`
-(pure-1h idle-band reads, rate-multiplier footing, and the default-path regression). All six share
+
+- `tests/test_transcript_cache_rebuild.py` — core report mechanics
+- `test_transcript_cache_rebuild_attribution.py` (`_attribution.py`) — subagent idle-gap cause attribution
+- `test_transcript_cache_rebuild_switch_delta.py` (`_switch_delta.py`) — 5m-to-1h switch-delta pricing and per-dispatch dispersion
+- `test_transcript_cache_rebuild_ttl_rules.py` (`_ttl_rules.py`) — `--ttl-verdict` wiring and each verdict rule's own tests
+- `test_transcript_cache_rebuild_ttl_accumulation.py` (`_ttl_accumulation.py`) — per-root accumulation and dominance reduction
+- `test_transcript_cache_rebuild_ttl_footing.py` (`_ttl_footing.py`) — pure-1h idle-band reads, rate-multiplier footing, and the default-path regression
+
+All six share
 `tests/_cache_rebuild_helpers.py` (a plain module, not a test file itself — see
 `.claude/rules/test-tree-packaging.md` for why its own consumers import it as
 `from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
