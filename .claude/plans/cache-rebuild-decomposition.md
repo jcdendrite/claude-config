@@ -309,6 +309,7 @@ Every module starts with `from __future__ import annotations`. Docstrings and co
     - the by-name leaf import and its patch-both-bindings consequence;
     - the three names the shim reaches bare.
   - In the Tests section, list the six files and `_cache_rebuild_helpers.py`. Note that the reconciliation class stays in the legacy file because it spans two commands.
+- **`claude/.claude/scripts/transcript_analysis/__init__.py`**: docstring only. Add `cache_rebuild_rules` to the leaf-modules list and `cache_rebuild` to the command-group-modules list. pr-cost's own review round updated this same docstring in-PR (`0d155589`) rather than deferring it — this phase follows that precedent instead of the "left for the `cli.py` phase" deferral an earlier draft of this plan wrongly attributed to pr-cost.
 
 **Explicitly unchanged:** `select-tests.py`, `test_select_tests.py`, `docs/transcript-analysis.md`, the transcript-analysis `SKILL.md`, the existing package modules, and all cache-efficiency code and tests.
 
@@ -379,7 +380,7 @@ Run everything from the worktree root. `<venv>` is the worktree-relative `.venv`
    - AST equality tolerates wrap-only reflow. Report the reflow count.
    - After the commit, run `git blame -C -C -s` on every new file and put the counts in the PR body.
 10. **Sizes.** Report measured `wc -l` for every new and shrunk file in the PR body. A file over 1,000 lines is flagged there, not split further ad hoc.
-11. **This phase's own revert.** In a throwaway worktree, `git revert --no-commit` the squashed commit. Assert a zero diff against step 0's snapshot of the shim, legacy test file, conftest, `test_transcript_cli_bootstrap.py`, and `docs/transcript-analysis-architecture.md`. Also assert that none of the 8 newly created files (both production modules, the six new test files, and `tests/_cache_rebuild_helpers.py`) remains on disk.
+11. **This phase's own revert.** In a throwaway worktree, `git revert --no-commit` the squashed commit. Assert a zero diff against step 0's snapshot of the shim, legacy test file, conftest, `test_transcript_cli_bootstrap.py`, and `docs/transcript-analysis-architecture.md`. Also assert that none of the 9 newly created files (both production modules, the six new test files, and `tests/_cache_rebuild_helpers.py`) remains on disk.
 
 The governing plan's cross-phase revert rehearsal is omitted. This phase promotes no conftest fixture, and its conftest edit is docstring-only, so no adjacent phase's revert depends on it.
 
@@ -396,5 +397,4 @@ The governing plan's cross-phase revert rehearsal is omitted. This phase promote
 - **`TestRootsThreadingSpy`'s comment (:16653–16655).** It names only cost and cost-trend as examples. The list already omits read-scope and pr-cost.
 - **Re-anchoring the `cache-write-analysis` branch's plan (row 30).** Its absolute shim citations go stale when this lands. It needs a re-read before its own implementation, not a mechanical rebase.
 - **An import-direction guard test for the new modules.** No prior phase added one.
-- **The stale `transcript_analysis/__init__.py` docstring.** It is left for the `cli.py` phase, as pr-cost left it.
 - **Any CLI surface change** (Verification step 3).

@@ -14,8 +14,8 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
-`read_scope.py`, `pr_cost.py`, and `pr_cost_export.py` are the only modules the shim imports back
-into (not just from). Cost-ledger still calls `review_trace.py`'s `compute_deny_summary_data` from
+`read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, and `cache_rebuild.py` are the only modules the
+shim imports back into (not just from). Cost-ledger still calls `review_trace.py`'s `compute_deny_summary_data` from
 the shim. The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -30,6 +30,9 @@ package's first two imports from one command-group module into another.
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
+`build_parser()` likewise wires up `cache_rebuild.py`'s `cmd_cache_rebuild` and its two
+`--since`/`--threshold` default constants (`_CACHE_REBUILD_DEFAULT_SINCE`,
+`_CACHE_REBUILD_DEFAULT_THRESHOLD`) from the shim.
 
 ## The package
 
@@ -257,6 +260,25 @@ one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common
 `redaction`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
 shim.
 
+### `cache_rebuild_rules.py`
+
+A leaf: the cache-rebuild family's pure rules — per-call cause classification against the vendor's
+5m/1h cache tiers, subagent idle-gap cause attribution, per-call priced excess and cacheTtl switch
+deltas, and the `--ttl-verdict` per-root reducers, plus every label constant they emit. Imports
+`corpus` and `pricing` by module (attribute access), matching `cost.py`'s convention. No name here
+is reached bare from the shim.
+
+### `cache_rebuild.py`
+
+The cache-rebuild command family: `cmd_cache_rebuild` and its report. Imports `corpus`, `pricing`,
+`redaction`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s
+convention. Unlike every other command-group module, it also imports `cache_rebuild_rules.py`'s 31
+constants and pure functions by name, since none is reassigned at runtime. A test that
+monkeypatches one of those 31 names must patch both `cache_rebuild_rules`'s own binding and this
+module's separate imported binding to take effect. `cmd_cache_rebuild`,
+`_CACHE_REBUILD_DEFAULT_SINCE`, and `_CACHE_REBUILD_DEFAULT_THRESHOLD` are the three names reached
+bare from the shim.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -302,3 +324,18 @@ not yet moved into the package), plus `ledger_common.config_dir` and `pr_cost_le
 live in `tests/test_author_outcome.py`: most exercise the package module directly
 (`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
 shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.
+
+The cache-rebuild family splits along thematic seams rather than one file per module:
+`tests/test_transcript_cache_rebuild.py` (core report mechanics), `_attribution.py` (subagent
+idle-gap cause attribution), `_switch_delta.py` (5m-to-1h switch-delta pricing and per-dispatch
+dispersion), `_ttl_rules.py` (`--ttl-verdict` wiring and each verdict rule's own tests),
+`_ttl_accumulation.py` (per-root accumulation and dominance reduction), and `_ttl_footing.py`
+(pure-1h idle-band reads, rate-multiplier footing, and the default-path regression). All six share
+`tests/_cache_rebuild_helpers.py` (a plain module, not a test file itself — see
+`.claude/rules/test-tree-packaging.md` for why its own consumers import it as
+`from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
+itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
+`tests/test_transcript_analysis.py` rather than moving with the rest of the family: it spans both
+cache-rebuild and cache-efficiency, and `.claude/plans/transcript-analysis-decomposition.md`'s rule
+for a cross-group test (stated there for `_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the
+legacy file until every group it references has moved.

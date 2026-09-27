@@ -7,8 +7,14 @@ test_context_composition.py, test_transcript_denials.py,
 test_transcript_review_trace.py, test_transcript_read_scope.py,
 test_transcript_ledger_common.py, test_transcript_gh_cli.py,
 test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
-test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py, and
-test_transcript_pr_cost_export_accounts.py (see the extraction rationale on
+test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
+test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
+test_transcript_cache_rebuild_attribution.py,
+test_transcript_cache_rebuild_switch_delta.py,
+test_transcript_cache_rebuild_ttl_rules.py,
+test_transcript_cache_rebuild_ttl_accumulation.py,
+test_transcript_cache_rebuild_ttl_footing.py, and
+tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
