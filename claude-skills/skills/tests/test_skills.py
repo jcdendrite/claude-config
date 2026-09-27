@@ -684,6 +684,33 @@ class TestConventionSkillWiring:
         assert "write the handoff file in the same turn" in body
 
 
+class TestReviewLedgerAuthoringEffortLiteral:
+    """Asserts code-review's `--authoring-effort` literal equals
+    `code-writer`'s own `effort:` frontmatter. Effort is subagent-definition
+    frontmatter, not a per-dispatch parameter, so a literal that drifted from
+    the agent's actual value would silently mislabel every ledger line."""
+
+    def test_authoring_effort_literal_matches_code_writer_frontmatter(self):
+        # Substring check, not a regex extraction -- catches drift on either
+        # side without hand-parsing prose text (test-conventions §9).
+        code_writer_effort = parse_frontmatter(_AGENTS_DIR / "code-writer.md")["effort"]
+        literal = f"--authoring-effort {code_writer_effort}"
+        skill_body = _skill_body("code-review")
+        assert literal in skill_body, (
+            f"code-review/SKILL.md's --authoring-effort literal must match "
+            f"code-writer.md's own effort: frontmatter ({code_writer_effort!r})"
+        )
+        # An exact count, not a bare substring check, catches a stale
+        # literal on any one of the three known call sites even when the
+        # others are correct.
+        assert skill_body.count(literal) == 3, (
+            f"code-review/SKILL.md must carry {literal!r} at exactly its three "
+            "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
+            "main finding append, main-flow CLEAN append) -- found "
+            f"{skill_body.count(literal)}"
+        )
+
+
 class TestMemorySkillSectionOrdinalCrossReferences:
     """Pin every cross-reference this repo rewrote when
     ai-instruction-and-memory-files/SKILL.md's sections were renumbered
@@ -4582,11 +4609,12 @@ class TestNormalizedAnchorText:
 
 _CACHE_RULE_ANCHOR_RE = re.compile(r"<!-- CACHE_RULE:(\S+) (start|end) -->")
 
-# The one anchor region the cumulative-diff review cache introduced.
+# Each anchor region a review-cache feature introduced.
 # Asserted as an exact set for the same reason as _EXPECTED_SCOPE_ANCHORS: a
-# corpus scan alone passes vacuously if the anchor pair is deleted.
+# corpus scan alone passes vacuously if an anchor pair is deleted.
 _EXPECTED_CACHE_ANCHORS = {
     ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"),
+    ("ready-for-review", "CACHE_RULE:ready-for-review-verification-cache"),
 }
 
 
@@ -4629,6 +4657,17 @@ _PINNED_CACHE_CLAUSES: dict[tuple[str, str], str] = {
         "Completion summary, and continue to step 4. Content type is never a "
         "skip reason on its own — on `historical` or `absent`, markdown, skill, "
         "and config diffs get the same pass as everything else."
+    ),
+    ("ready-for-review", "CACHE_RULE:ready-for-review-verification-cache"): (
+        "Before selecting any commands, run `~/.claude/scripts/marker.sh check "
+        "verification`. `match` means this exact tree already passed a clean "
+        "verification pass inside the freshness window. On a match: skip the "
+        "commands below, report the cache hit in the Completion summary, and "
+        "continue to step 3. On `no-match`, run the step normally, then write "
+        "`~/.claude/scripts/marker.sh write verification` only after every "
+        "selected command has run and passed. Do not write it after the "
+        "scope-exception skip below — that path runs no commands, so nothing "
+        "has passed."
     ),
 }
 
@@ -5689,8 +5728,9 @@ _PINNED_COMPLETION_MARKER_CLOSED_COMPLETE_OUTCOMES_CLAUSE = (
     "Any of steps 1–6 did not run, or ended in an outcome its own text does "
     "not define as complete. Only these outcomes count as complete without "
     "full execution: step 2's scope-exception skip, step 2's skip of "
-    "undefined commands, step 3's reported cache hit, step 4's empty-list "
-    "no-op, and step 5's already-in-sync report (see Completion)."
+    "undefined commands, step 2's reported cache hit, step 3's reported "
+    "cache hit, step 4's empty-list no-op, and step 5's already-in-sync "
+    "report (see Completion)."
 )
 _PINNED_COMPLETION_MARKER_NO_BODY_FILE_CLAUSE = (
     "With no PR open, step 5 is also incomplete unless it reported a "

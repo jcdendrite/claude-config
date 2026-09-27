@@ -736,6 +736,55 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+def test_lib_capped_for_uncapped_fallback_emits_stderr_note(tmp_path: Path) -> None:
+    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for's uncapped
+    fallback emits a diagnostic naming the gap, so a caller or log can tell
+    the cap silently didn't apply rather than reading a clean exit as capped."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    # `true` is a bash builtin, so it needs no PATH entry of its own.
+    result = _run_lib_call("_lib_capped_for 0.1 true", env=env)
+
+    assert result.returncode == 0, repr(result)
+    assert "_lib_capped_for" in result.stderr and "uncapped" in result.stderr, repr(result.stderr)
+
+
+def test_lib_capped_for_uncapped_fallback_note_fires_every_call(tmp_path: Path) -> None:
+    """The note above fires on every uncapped-fallback call, not just the
+    first -- each call independently ran without a cap, so each is worth
+    its own diagnostic."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = _run_lib_call(
+        "_lib_capped_for 0.1 true; _lib_capped_for 0.1 true; _lib_capped_for 0.1 true", env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    assert result.stderr.count("_lib_capped_for: neither timeout nor gtimeout") == 3, repr(result.stderr)
+
+
 # Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
 # the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
@@ -2363,6 +2412,297 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
 
     assert result.returncode == 0
     assert result.stdout == "develop"
+
+
+# --- _lib_verification_cache_sentinel_present -------------------------------
+#
+# Pure predicate over local refs, unlike the hash-computing helpers above --
+# tested directly at this layer rather than only through marker.sh's `check
+# verification` arm.
+
+
+def _sentinel_present(repo_root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_verification_cache_sentinel_present "$1"',
+         "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _commit_sentinel_at_ref(repo: Path, ref: str) -> None:
+    """Creates a lone-file commit holding the verification-cache opt-in
+    sentinel and points REF at it, via a throwaway index -- never touches
+    the repo's own checked-out branch, working tree, or real index."""
+    tmp_index = repo / ".git" / "sentinel-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# sentinel\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         f"100644,{blob_oid},.claude/ready-for-review-verification-cache-optin"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_on_origin_default(tmp_path: Path) -> None:
+    """The positive case the opt-in gate depends on: the sentinel committed
+    at origin/<default-branch> reads present."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
+def test_verification_cache_sentinel_absent_from_origin_default(tmp_path: Path) -> None:
+    """origin/<default-branch> exists and resolves, but the sentinel was
+    never committed to it -- the default-off gate's ordinary state."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_absent_when_origin_head_unset(tmp_path: Path) -> None:
+    """No origin/HEAD symbolic ref at all, even though the sentinel is
+    committed somewhere reachable -- fails closed through
+    _lib_default_branch_from_origin_head's own two-outcome contract rather
+    than falling back to guessing a branch name."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def test_verification_cache_sentinel_present_only_on_non_default_branch_reads_absent(
+    tmp_path: Path,
+) -> None:
+    """The sentinel is committed to origin/other, but origin/HEAD points at
+    origin/main, which lacks it -- presence on a non-default branch must not
+    count as opted in."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    _commit_sentinel_at_ref(repo, "refs/remotes/origin/other")
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 1
+
+
+def _commit_sentinel_tree_at_ref(repo: Path, ref: str) -> None:
+    """Same throwaway-index technique as _commit_sentinel_at_ref, but nests a
+    file one level under the sentinel path so the path itself resolves to a
+    git tree (directory) rather than a blob."""
+    tmp_index = repo / ".git" / "sentinel-tree-index"
+    index_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_index)}
+    blob_oid = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="# nested\n", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo",
+         "100644,"
+         f"{blob_oid},"
+         ".claude/ready-for-review-verification-cache-optin/nested-file"],
+        cwd=repo, env=index_env, check=True,
+    )
+    tree_oid = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=index_env,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    tmp_index.unlink()
+    commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    }
+    commit_oid = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-m", "sentinel tree"],
+        cwd=repo, env=commit_env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", ref, commit_oid], cwd=repo, check=True)
+
+
+def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path) -> None:
+    """Pins the `cat-file -e` design choice documented in _lib.sh: it confirms
+    an object exists at the sentinel path but not its type, so a tree
+    (directory) committed there reads as present identically to a blob."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    _commit_sentinel_tree_at_ref(repo, "refs/remotes/origin/main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _sentinel_present(repo)
+
+    assert result.returncode == 0
+
+
+# --- _lib_head_tree_hash -----------------------------------------------
+#
+# Sibling of _lib_verification_cache_sentinel_present above: also read
+# directly at this layer, since marker.sh's write/check verification arms
+# only exercise it as one step inside a larger recipe.
+
+
+def _head_tree_hash_result(
+    repo_root: Path, cap_mode: str = "capped"
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+         "bash", cap_mode, str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_head_tree_hash_capped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """The capped path's stdout is exactly `git rev-parse HEAD^{tree}` --
+    write and check's shared recipe depends on this matching bit-for-bit."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_uncapped_matches_git_rev_parse(tmp_path: Path) -> None:
+    """Same recipe as the capped case, run through the uncapped branch --
+    both cap_mode arguments must compute the identical hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = _head_tree_hash_result(repo, "uncapped")
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+
+
+def test_head_tree_hash_absent_on_commit_less_repo(tmp_path: Path) -> None:
+    """No HEAD to resolve. `git rev-parse HEAD^{tree}` exits 128 but still
+    echoes the literal string "HEAD^{tree}", so the two-outcome contract
+    must check git's own exit status rather than stdout emptiness."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    result = _head_tree_hash_result(repo, "capped")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_head_tree_hash_invalid_cap_mode_exits_2_with_message(tmp_path: Path) -> None:
+    """An unrecognized cap_mode argument is a caller bug, not a git failure --
+    it exits 2 (distinct from the 1 a resolvable-but-absent HEAD returns) and
+    names the bad value in its stderr message."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    result = _head_tree_hash_result(repo, "sideways")
+
+    assert result.returncode == 2
+    assert (
+        "_lib_head_tree_hash: invalid cap_mode sideways (want capped or uncapped)"
+        in result.stderr
+    )
+
+
+@pytest.mark.timing
+def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path) -> None:
+    """A stalled `git rev-parse HEAD^{tree}` must not hang the caller past
+    the 5s _lib_capped cap, and a killed call must fall through to the same
+    absent outcome a commit-less repo gets, never a false hash."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
+    stub_git = stub_dir / "git"
+    stub_git.write_text(
+        '#!/bin/bash\n'
+        'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
+        f'  sleep {scaled_shim_sleep(10)}\n'
+        'fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    stub_git.chmod(0o755)
+
+    with assert_cap_engaged(stub_dir, production_cap=5):
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_head_tree_hash "$1" "$2"',
+             "bash", "capped", str(repo)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
 
 
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
@@ -6720,6 +7060,165 @@ class TestStagedDiffHash:
         result = _staged_diff_hash(repo, "", env=env, timeout=30)
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+class TestLibAcquireAppendLockCalledTwice:
+    """_lib_acquire_append_lock's own docstring documents that calling it
+    twice in the same process orphans the first call's lock file, since the
+    second call's `trap ... EXIT` replaces rather than stacks on the
+    first's. review-ledger.sh and log-reviewer-round.sh each call it at
+    most once per process, so this exercises the primitive directly rather
+    than through either caller."""
+
+    def test_second_call_orphans_the_first_lock_file(self, tmp_path: Path) -> None:
+        first_lock = tmp_path / "first.lock"
+        second_lock = tmp_path / "second.lock"
+        result = subprocess.run(
+            ["bash", "-c",
+             f'. "{_LIB_SH}"; _lib_acquire_append_lock "$1"; _lib_acquire_append_lock "$2"',
+             "_", str(first_lock), str(second_lock)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not second_lock.exists(), "the second call's own lock must be released on exit"
+        assert first_lock.exists(), (
+            "the first call's lock must be left orphaned once the second "
+            "call's EXIT trap replaces the first's"
+        )
+
+
+def _run_ledger_sweep_window_days(settings_file: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{_LIB_SH}"; _ledger_sweep_window_days "$1"', "_", str(settings_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestLedgerSweepWindowDays:
+    """GH-973: _ledger_sweep_window_days derives the ledger's sweep window
+    from Claude Code's own cleanupPeriodDays setting, floored at
+    _LEDGER_SWEEP_FLOOR_DAYS. review-ledger.sh's own
+    TestReviewLedgerSweepWindowFromSettings (test_review_ledger_script.py)
+    covers this value's wiring into clear-stale's `find -mtime +N`; the
+    arithmetic itself is pinned here instead."""
+
+    _MISSING_OR_NON_NUMERIC_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, "
+        "or non-numeric -- using the 30-day floor"
+    )
+    _NINE_PLUS_DIGITS_MESSAGE = (
+        "_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, "
+        "implausibly large -- using the 30-day floor"
+    )
+
+    def test_defaults_to_thirty_when_settings_file_absent(self, tmp_path: Path) -> None:
+        result = _run_ledger_sweep_window_days(tmp_path / "nonexistent-settings.json")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_custom_cleanup_period_days_is_honored(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 60}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "60"
+        assert result.stderr == ""
+
+    def test_value_below_the_floor_is_floored_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert (
+            "_ledger_sweep_window_days: configured value 5 is below the "
+            "30-day floor, using the floor instead"
+        ) in result.stderr
+
+    def test_malformed_settings_json_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{not valid json")
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_non_numeric_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": "60"}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_negative_cleanup_period_days_defaults_to_thirty(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": -5}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    @pytest.mark.parametrize("cleanup_period_days", [90.0, 45.5])
+    def test_fractional_cleanup_period_days_defaults_to_thirty_not_truncated(
+        self, tmp_path: Path, cleanup_period_days: float
+    ) -> None:
+        """jq's `select(type == "number")` passes a whole-number float like
+        90.0 through as the string "90.0", which the digit-only case
+        pattern rejects -- this pins that the result is the floor (30),
+        never the truncated integer (90)."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": cleanup_period_days}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._MISSING_OR_NON_NUMERIC_MESSAGE in result.stderr
+
+    def test_absurdly_large_all_digit_value_floors_to_thirty_without_erroring(
+        self, tmp_path: Path
+    ) -> None:
+        """A 9+-digit all-digit value can exceed bash's signed-integer
+        range, making the `-lt` floor comparison itself error and fall
+        through unfloored instead of returning _LEDGER_SWEEP_FLOOR_DAYS --
+        this pins the digit-count guard added to reject it before that
+        comparison runs."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999999999999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr
+
+    def test_eight_digit_value_below_the_nine_digit_guard_is_not_floored(
+        self, tmp_path: Path
+    ) -> None:
+        """99999999 (8 digits) sits one digit under the 9-digit guard's
+        threshold and is a real, above-floor value -- pins that the guard
+        doesn't fire early and truncate a legitimate large-but-in-range
+        cleanupPeriodDays."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 99999999}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "99999999"
+        assert result.stderr == ""
+
+    def test_nine_digit_value_at_the_guard_threshold_floors_to_thirty(
+        self, tmp_path: Path
+    ) -> None:
+        """100000000 (9 digits) is the guard's exact threshold -- pins that
+        the boundary itself floors, not just values far past it."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"cleanupPeriodDays": 100000000}))
+        result = _run_ledger_sweep_window_days(settings_file)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "30"
+        assert self._NINE_PLUS_DIGITS_MESSAGE in result.stderr
 
 
 # --- _lib_conflict_marker_deny_paths -----------------------------------------
