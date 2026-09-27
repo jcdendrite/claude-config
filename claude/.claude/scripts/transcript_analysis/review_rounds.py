@@ -944,13 +944,11 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     above this line describes the non-pooled path only.
     """
     pooled = bool(getattr(args, "pooled", False))
-    # Backstop for the whole pooled scan-and-render pipeline: everything from
-    # here down, including resolve_scan_roots (and its transitive
-    # declared_roots_matching/.resolve() calls in _config_dir.py, outside
-    # this module) and both refusal layers, runs inside this try, so a
-    # --pooled run never lets an unanticipated exception escape uncaught and
-    # print a raw, account-identifying traceback. See the except clause
-    # below for how a deliberate refusal and a non-pooled run are each handled.
+    # Everything from here down — including resolve_scan_roots and both
+    # refusal layers — runs inside this try. A --pooled run must never let
+    # an unanticipated exception escape uncaught and print a raw,
+    # account-identifying traceback; see the except clause below for how a
+    # deliberate refusal and a non-pooled run are each handled differently.
     try:
         if pooled:
             # Layer 1: before resolve_scan_roots, so a refused run never scans

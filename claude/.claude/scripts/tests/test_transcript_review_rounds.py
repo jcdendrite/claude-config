@@ -1605,6 +1605,82 @@ class TestCmdReviewRoundCostPooled:
         for remainder in degenerate_remainders:
             assert not any(c.isdigit() for c in remainder) or figure_re.match(remainder)
 
+    def test_pooled_render_binds_each_figure_line_to_its_own_stat_key(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The "Round-window spend by skill" section (keyed by
+        skill_spend:*) and the "Rounds by skill" section (keyed by
+        skill_rounds:*) print the same three skill labels back to back. The
+        data-quality-gap section's two labels likewise sit under one header
+        shared by both. Every existing figure-line assertion in this file is
+        `expected_line in out`, which cannot distinguish "right value, right
+        section" from "right value, wrong section" once the label text
+        repeats across sections.
+
+        Stubs _bootstrap_share_intervals with a pairwise-distinct point per
+        _POOLED_STAT_KEYS entry, then asserts the exact ordered
+        (header, label, value) triples _render_pooled_block emits. A
+        key-swap between skill_spend/skill_rounds, or between
+        gap_dangling/gap_unpriced, changes which triple appears under which
+        header even though every individual line stays well-formed.
+
+        Stubbing the bootstrap makes the real per_branch arithmetic
+        irrelevant. This therefore calls _render_pooled_block directly with
+        hand-built rounds/branch_totals, matching
+        test_pool_with_two_roots_but_one_contributing_account_stays_degenerate's
+        own direct-call convention, instead of routing through
+        cmd_review_round_cost's full JSONL scan and pricing pipeline.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {(0, "feat-a"): 0.40, (1, "feat-b"): 1.00}
+        args = _review_round_cost_args(pooled=True)
+
+        intervals = {
+            key: (10.0 + i, 10.0 + i - 0.5, 10.0 + i + 0.5)
+            for i, key in enumerate(review_rounds._POOLED_STAT_KEYS)
+        }
+        assert len({point for point, _, _ in intervals.values()}) == len(intervals)
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        block = capsys.readouterr().out
+        _, sep, after_caption = block.partition(review_rounds._POOLED_CAPTION)
+        assert sep, "_POOLED_CAPTION not found verbatim in the printed block"
+
+        expected_sequence = [
+            ("Share of branch spend", "inside round windows", "spend_inside"),
+            ("Share of branch spend", "outside every round window", "spend_outside"),
+            ("Share of branch spend", "reviewer dispatches only", "spend_reviewer_only"),
+            *(("Round-window spend by skill", skill, f"skill_spend:{skill}") for skill in review_rounds.REVIEW_SKILLS),
+            *(("Rounds by skill", skill, f"skill_rounds:{skill}") for skill in review_rounds.REVIEW_SKILLS),
+            ("Rounds affected by a data-quality gap", "dangling dispatch", "gap_dangling"),
+            ("Rounds affected by a data-quality gap", "unpriced turn", "gap_unpriced"),
+        ]
+        expected_triples = [
+            (header, label, review_rounds._fmt_share_with_ci(*intervals[key]))
+            for header, label, key in expected_sequence
+        ]
+
+        current_header = None
+        actual_triples = []
+        for line in after_caption.splitlines():
+            if not line.strip():
+                continue
+            if not line.startswith("    "):
+                current_header = line.strip()
+                continue
+            label = line[4:_POOLED_FIGURE_LABEL_FIELD_END].strip()
+            value = line[_POOLED_FIGURE_LABEL_FIELD_END:].strip()
+            actual_triples.append((current_header, label, value))
+
+        assert actual_triples == expected_triples
+
     def test_no_mean_rounds_per_branch_or_totals_line(self, tmp_path, monkeypatch, capsys):
         """A branch is declined as a countable or reportable unit entirely
         under --pooled: the existing footer's Mean-rounds-per-branch line,

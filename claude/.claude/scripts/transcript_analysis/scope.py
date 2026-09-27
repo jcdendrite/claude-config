@@ -208,24 +208,11 @@ def _dedup_new_project_dirs(
     prior root is caught too — not just two roots resolving to the same
     directory.
 
-    `is_dir()` raises OSError when a symlink's target, or one of its
-    ancestors, is unreadable. `resolve()` raises RuntimeError on a symlink
-    loop, but its own non-strict path-walking swallows an
-    unreadable-ancestor OSError instead of raising it. Either exception is a
-    scan gap
-    (`scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1` when `scan_gaps` is given),
-    not a silently-excluded candidate, since the entry is neither missing
-    nor a genuine non-directory. `resolve()` runs before `is_dir()` here
-    specifically so a symlink-loop `RuntimeError` is caught before it can
-    reach `is_dir()`: `Path.is_dir()` calls `stat()` internally and treats
-    `ELOOP` as one of its own ignored errnos, so calling it first on a loop
-    would return `False` (a silent "not a directory") rather than raising.
-    A resolvable symlink through an unreadable ancestor (`resolve()` itself
-    only reads link targets, so it can succeed there) still needs its own
-    `is_dir()` guard, since that is where the ancestor's permission denial
-    actually surfaces. `_scan_root_transcripts` passes no `scan_gaps` (its
-    own diagnostic path outside the pooled fail-closed scan), so such a
-    candidate there is still silently skipped, unchanged from before.
+    `resolve()` runs before `is_dir()` because `is_dir()` silently returns
+    `False` (not `True`) on a symlink loop instead of raising. Either call
+    failing with `OSError`/`RuntimeError` on an existing, non-loop entry
+    (e.g. an unreadable ancestor) is recorded as a scan gap, not treated as
+    an excluded candidate.
     """
     for candidate in candidates:
         try:

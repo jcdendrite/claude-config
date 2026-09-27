@@ -172,7 +172,7 @@ this session]`
     - Import them from `test_skills.py` directly. Rejected: `claude-skills/skills/tests/` has no `__init__.py` and isn't on `pyproject.toml`'s `pythonpath`, so the import would depend on pytest's collection order.
     - Copy the normalization into the pooled test. Rejected: two homes for one rule is the finding itself.
 
-    `helpers.py` is already on `pythonpath` and already imported by `test_skills.py`. `heading_texts` doesn't skip fenced code blocks, unlike the hand-rolled scanner. A stale pointer could false-pass only if its cited text appeared as a `#` line inside a fence in the redaction doc — accepted. `[verified: pyproject.toml:18; test_skills.py:54, 3252-3279; test_transcript_review_rounds.py:1638-1669]`
+    `helpers.py` is already on `pythonpath` and already imported by `test_skills.py`. `heading_texts` skips fenced code blocks, matching the hand-rolled scanner. `[verified: pyproject.toml:18; test_skills.py:54, 3252-3279; test_transcript_review_rounds.py:1638-1669]`
 31. `_bootstrap_share_intervals` drops a resample's share when that draw's denominator is zero, so a key can get its CI from fewer than `_BOOTSTRAP_RESAMPLES` values. No test reaches a pool where only some draws hit that. The staff-sdet finding's suggested fixture (zero `agent_dollars`) wouldn't either: `spend_reviewer_only`'s denominator is `branch_dollars`, not `agent_dollars`. The new test gives two of four branches zero `branch_dollars` and zero `round_dollars`, and asserts on the resulting interval's bounds rather than the internal resample count. `[verified: review_rounds.py:603-608, 648-674]`
 32. **Mechanism — a missing path and a non-directory are both an empty scope, not a gap.** `anchors: row21`. `_list_dir_recording_gaps` catches `NotADirectoryError` alongside `FileNotFoundError`. Both return `[]` and record nothing.
     - Without this branch, a scan root that exists as a regular file becomes a permanent root-level gap. `iterdir()` is `os.listdir` with no `except` (`pathlib.py:1052-1059`), so that root raises there. The pre-revision `root.glob(projects_glob)` returned nothing for it, because `_Selector.select_from` checks `is_dir()` before it lists (`pathlib.py:163-170`). The refusal's "restore read access" advice would then misdirect, since nothing is unreadable.
@@ -397,7 +397,7 @@ Batched, not coupled. Its three pieces share no design context: the fail-closed 
   - `test_pooled_run_with_unreadable_declared_root_entry_prints_no_digit_to_stderr` (`:2273-2281`): split into two sentences at "Still-poolable case:".
 
 **Modify — `claude/.claude/tests/helpers.py`**
-- Receive `_HEADING_LINE_RE`, `_HEADING_STRIP_CHARS_RE`, `_normalize_heading`, and `_heading_texts` from `test_skills.py:3252-3279`. Rename the two functions to public `normalize_heading` and `heading_texts`. Behavior is unchanged, including no fenced-code skipping.
+- Receive `_HEADING_LINE_RE`, `_HEADING_STRIP_CHARS_RE`, `_normalize_heading`, and `_heading_texts` from `test_skills.py:3252-3279`. Rename the two functions to public `normalize_heading` and `heading_texts`. Behavior is unchanged, including that fenced code blocks are still skipped.
 
 **Modify — `claude-skills/skills/tests/test_skills.py`**
 - Delete the moved definitions (`:3252-3279`). Add `heading_texts` and `normalize_heading` to the existing `from helpers import ...` line (`:54`). Rename every call site (`:3357, :3401, :3406, :3419, :3821, :4924, :4927, :4939, :4942`) and the comment at `:3908`. `test_normalize_heading` (`:3817`) stays here and now tests the helper.
