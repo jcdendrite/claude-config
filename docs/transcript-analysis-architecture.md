@@ -79,13 +79,17 @@ exception: it's read from a local agent-definition file's own `model:` frontmatt
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
 differs from a remote model/subagent/MCP-tool-result's.
 
-Also owns the `--this-repo` subagent_type disclosure allowlist: `_BUILT_IN_AGENT_TYPES` (the
-Claude Code built-in `subagent_type` values present in every install), `_REPO_AGENT_DEFINITIONS_DIR`
-(this repo's own tracked `agents/` directory), and `_repo_tracked_agent_type_names` (the stems of
-every `agents/*.md` file that directory git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`). The
-shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
+Also owns the `--this-repo` subagent_type disclosure allowlist:
+
+- `_BUILT_IN_AGENT_TYPES` — the Claude Code built-in `subagent_type` values present in every
+  install.
+- `_REPO_AGENT_DEFINITIONS_DIR` — this repo's own tracked `agents/` directory.
+- `_repo_tracked_agent_type_names` — the stems of every `agents/*.md` file that directory
+  git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`.
+
+The shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
 which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
-row — see the exception noted above.
+row — see the one-directional exception noted above.
 
 ### `pricing.py`
 
