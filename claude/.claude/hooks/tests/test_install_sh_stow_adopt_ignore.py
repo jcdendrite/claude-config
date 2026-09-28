@@ -235,13 +235,12 @@ class TestStowAdoptIgnorePattern:
         )
 
     def test_ds_store_conflict_across_packages_is_ignored(self, tmp_path: Path) -> None:
-        """Regression test: Finder drops a .DS_Store into every package
-        directory it's browsed in Finder, and GNU Stow's built-in ignore list
-        doesn't cover it (confirmed against Stow.pm's own default regex
-        list), so a .DS_Store already stowed by the 'claude' package used to
-        make stowing 'claude-skills' fail outright once claude-skills's own
-        tree also picked one up -- both packages' rows target the same
-        $HOME/.claude, so they raced for the same target path."""
+        """A `.DS_Store` present in one package's tree must not collide with
+        a `.DS_Store` in another package's tree when both target the same
+        $HOME/.claude (see install.sh's `ds_store_ignore_arg` comment for why
+        Stow needs help here). Also confirms the --ignore construction
+        doesn't accidentally suppress either package's own ordinary
+        entries."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
@@ -251,7 +250,7 @@ class TestStowAdoptIgnorePattern:
         result = _run_stow_adopt_block(pkg_root, home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not (home / ".claude" / ".DS_Store").exists(), (
+        assert not (home / ".claude" / ".DS_Store").is_symlink(), (
             "a .DS_Store present in a package's tree must never be symlinked "
             f"into the target; stow output: {result.stderr!r}"
         )
@@ -268,22 +267,55 @@ class TestStowAdoptIgnorePattern:
             f"satisfy the .DS_Store assertion above too; stow output: {result.stderr!r}"
         )
 
+    def test_nested_ds_store_below_package_top_level_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        """`ds_store_ignore_arg`'s pattern is unanchored at the front, unlike
+        the fully-anchored entries in `stow_ignore_args` (see install.sh's
+        comment). This pins that a `.DS_Store` nested below a package's top
+        level is ignored too, not just one at the package root."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / "skills" / ".DS_Store").write_text("finder metadata")
+        # Pre-create the target "skills" directory for real, not as a
+        # symlink, so stow must descend into it and link each child
+        # individually instead of folding the whole directory into one
+        # symlink. A nested .DS_Store would otherwise never be considered
+        # on its own.
+        target_skills = home / ".claude" / "skills"
+        target_skills.mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (target_skills / ".DS_Store").is_symlink(), (
+            "a .DS_Store nested below a package's top level must be ignored "
+            f"just like one at the package root; stow output: {result.stderr!r}"
+        )
+        example_link = target_skills / "example"
+        assert example_link.is_symlink(), (
+            "an ordinary sibling entry in the same nested directory must "
+            f"still be symlinked normally; stow output: {result.stderr!r}"
+        )
+
     def test_pre_existing_ds_store_symlink_from_a_prior_partial_run_is_left_alone(
         self, tmp_path: Path
     ) -> None:
-        """Regression test for the affected-user recovery path: pre-fix,
-        stowing 'claude' succeeded and left a real $HOME/.claude/.DS_Store
-        symlink before stowing 'claude-skills' conflicted and aborted, so
-        every user who actually hit this bug is left with that stale symlink
-        in place. Re-running the now-fixed block against it must not treat
-        it as a conflict."""
+        """A pre-existing `.DS_Store` symlink under the stow target, owned by
+        an already-stowed package, must be left alone by a later package's
+        stow run. It must not be treated as a conflict, and it must not be
+        relinked."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
-        dummy_target = tmp_path / "dummy-ds-store-source"
-        dummy_target.write_text("finder metadata, from a prior 'claude' stow run\n")
+        claude_ds_store = pkg_root / "claude" / ".claude" / ".DS_Store"
+        claude_ds_store.write_text("finder metadata")
+        (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
+        # Simulates the state left behind by a prior run of the 'claude' row
+        # alone, before 'claude-skills' is also stowed in the same run below.
+        # Its .DS_Store is already linked into the target.
         target_ds_store = home / ".claude" / ".DS_Store"
         target_ds_store.parent.mkdir(parents=True)
-        target_ds_store.symlink_to(dummy_target)
+        target_ds_store.symlink_to(claude_ds_store)
 
         result = _run_stow_adopt_block(pkg_root, home)
 
@@ -292,9 +324,15 @@ class TestStowAdoptIgnorePattern:
             "a pre-existing .DS_Store symlink left over from a prior partial "
             f"run must be left alone, not removed; stow output: {result.stderr!r}"
         )
-        assert target_ds_store.resolve() == dummy_target.resolve(), (
-            "the pre-existing .DS_Store symlink must still point at its "
-            f"original target, not be relinked; stow output: {result.stderr!r}"
+        assert target_ds_store.resolve() == claude_ds_store.resolve(), (
+            "the pre-existing .DS_Store symlink must still point at the "
+            f"'claude' package's own file, not be relinked; stow output: {result.stderr!r}"
+        )
+        placeholder_link = home / ".claude" / "placeholder"
+        assert placeholder_link.is_symlink(), (
+            "the 'claude-skills' package's own ordinary entry must still be "
+            f"linked, proving its stow row did not abort on the .DS_Store "
+            f"collision; stow output: {result.stderr!r}"
         )
 
 

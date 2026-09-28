@@ -326,8 +326,8 @@ rm -f -- "$untracked_entries_file"
 
 # Finder drops a .DS_Store into every folder it's browsed.
 # GNU Stow's built-in ignore list doesn't cover .DS_Store, so a stray one in
-# one package's tree gets symlinked -- and then collides once a .DS_Store
-# also shows up in another package's tree.
+# one package's tree gets symlinked. It then collides once a .DS_Store also
+# shows up in another package's tree targeting the same path.
 # Applied to every package below, not just "claude", since Finder doesn't
 # respect stow package boundaries either.
 ds_store_ignore_arg='--ignore=\.DS_Store$'
