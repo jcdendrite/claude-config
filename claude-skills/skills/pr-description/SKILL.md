@@ -40,7 +40,8 @@ not something you can resolve. If none match, proceed without a layer.
 - **Lead with why, not what, when the what reads as routine.** A rename, a
   version bump, or any change that looks cosmetic on its own needs the
   motivating risk or bug stated before the mechanical description, or a
-  reviewer discounts it as a nit. When the change closes more than one
+  reviewer discounts it as a nit.
+- **One line per distinct gap closed.** When the change closes more than one
   distinct gap, give each its own line or bullet — a paragraph folding
   several unrelated fixes together hides how many separate problems are
   being closed.
