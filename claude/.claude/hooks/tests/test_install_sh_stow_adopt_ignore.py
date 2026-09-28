@@ -336,6 +336,40 @@ class TestStowAdoptIgnorePattern:
             f"collision; stow output: {result.stderr!r}"
         )
 
+    def test_ds_store_name_is_ignored_without_over_matching_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """'XDS_Store' is a tracked sibling the same length as '.DS_Store',
+        differing only in the first character (the position where
+        '.DS_Store' has its literal dot), that would only start matching
+        `ds_store_ignore_arg`'s pattern if its escaped dot were dropped to
+        an unescaped one -- an unescaped dot in the anchored-at-the-end
+        Perl regex matches any character, so an under-escaped pattern
+        would also sweep in this sibling and leave it un-symlinked."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
+        sibling = pkg_root / "claude" / ".claude" / "XDS_Store"
+        sibling.write_text("# tracked sibling differing only at the dot position\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/XDS_Store"], cwd=pkg_root, check=True
+        )
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (home / ".claude" / ".DS_Store").is_symlink(), (
+            "a .DS_Store present in a package's tree must never be symlinked "
+            f"into the target; stow output: {result.stderr!r}"
+        )
+        sibling_link = home / ".claude" / "XDS_Store"
+        assert sibling_link.is_symlink(), (
+            "a tracked sibling differing only at the escaped dot's position "
+            f"must still be symlinked normally, not swept in by an "
+            f"under-escaped pattern; stow output: {result.stderr!r}"
+        )
+
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted
