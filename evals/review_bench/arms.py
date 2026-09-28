@@ -86,7 +86,7 @@ def _replace_frontmatter_field(frontmatter: str, field: str, value: str) -> str:
     """Replace field's value in place when present, else append it as a new
     line -- preserves every other field's byte-identical text and relative
     order (the "arm files differ from production only in name, model,
-    tools, and the substituted clause" invariant, Verification)."""
+    tools, and the substituted clause" invariant)."""
     pattern = re.compile(rf"(?m)^{re.escape(field)}:.*$")
     if pattern.search(frontmatter):
         return pattern.sub(f"{field}: {value}", frontmatter, count=1)

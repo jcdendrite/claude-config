@@ -114,8 +114,7 @@ class BlockPlan:
 
 def build_block_plan(defect_id: str, arms: tuple[str, ...], k: int, seed: int) -> BlockPlan:
     """Deterministic given (defect_id, arms, k, seed) -- same inputs always
-    produce the same shuffled order (Verification: "Seeded block order is
-    deterministic")."""
+    produce the same shuffled order."""
     combos = [(arm, run_index) for arm in arms for run_index in range(k)]
     random.Random(f"{seed}:{defect_id}").shuffle(combos)
     return BlockPlan(defect_id=defect_id, ordered_runs=tuple(combos))
@@ -252,12 +251,24 @@ def append_run_records(path: Path, records: Sequence[RunRecord]) -> None:
 
 
 def read_run_records(path: Path) -> list[RunRecord]:
+    """Skips (and reports to stderr) a line that fails to parse into a
+    RunRecord -- either invalid JSON or valid JSON shaped wrong for
+    RunRecord.from_dict -- rather than letting one malformed line discard
+    every other already-recorded, already-paid-for run in the file."""
     if not path.exists():
         return []
     records = []
-    for line in path.read_text().splitlines():
-        if line.strip():
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
             records.append(RunRecord.from_dict(json.loads(line)))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            # No cap on consecutive skips: a systemic schema-drift bug could silently
+            # degrade an entire file to zero records instead of a hard failure. Accepted
+            # for a harness run by its own author at a terminal watching stderr, not
+            # unattended -- re-evaluate if this is ever consumed by an unwatched caller.
+            print(f"read_run_records: skipping malformed line {line_number} in {path}: {exc}", file=sys.stderr)
     return records
 
 
@@ -1100,8 +1111,6 @@ def run_defect_block(
 
         env_end = read_environment_record()
         if env_start == env_end:
-            if run_store is not None:
-                run_store.mark_block_complete(spec.defect_id)
             return BlockResult(records=tuple(records), representative_session_id_by_arm=session_id_by_arm)
 
         drift_description = (
@@ -1180,7 +1189,14 @@ def run_campaign(
                 budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, run_store=run_store,
                 launch=launch, fault=fault, workers=workers,
             )
+            # append_run_records lands before mark_block_complete, mirroring
+            # cmd_judge's ordering (evals/run_review_bench.py). A process
+            # kill in this gap leaves the block un-marked-complete, so resume
+            # reruns the whole block and appends its records again -- the
+            # same accepted redo residual cmd_judge's own ordering carries,
+            # not the marked-complete-but-recordless data loss it avoids.
             append_run_records(records_path, result.records)
+            run_store.mark_block_complete(defect_id)
             cleanup_defect_block(spec, result, projects_root=projects_root)
             block_results[defect_id] = result
         return CampaignResult(campaign_id=campaign_id, block_results=block_results)

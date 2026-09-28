@@ -569,6 +569,20 @@ before its own write-ahead record is written. List such directories by their
 `review-bench-` prefix, while no lock is held, and inspect each one before
 deleting it.
 
+A `smoke`/`run` campaign that crashes between one block's `RunRecord`s
+being appended to `records_path` and that block being marked complete
+leaves the block un-marked. The sweep above only removes per-run
+directories and session stores named by a still-pending write-ahead
+entry — it never touches anything already written to `records_path`. A
+resume under the same `--campaign-id` reruns that whole block and appends
+its records a second time into the same file, duplicating that one
+defect's records. This biases `pooled_precision`, which sums additively
+across every defect and so weights the duplicated defect roughly 2x.
+`arm_recall` — a per-defect macro-average — stays largely insensitive to
+the duplication. Before running `analyze` after resuming from an unclean
+interruption, grep `records_path` for a defect with more than `K` records
+per arm.
+
 ### Out-of-session reads
 
 A run's own Read, Grep, or Glob outside its own fixture (or judge) directory

@@ -469,8 +469,9 @@ class TestCmdAnalyzeOutOfSessionReport:
 class TestCmdAnalyzeMalformedBaselineConditions:
     """Mirrors TestRunAndSmokeEnvironmentDriftExceeded's contract: a
     designed invalidation path must surface as exit code 2, not a raw
-    traceback, for a missing file and for each way the file's content can
-    fail to parse into the expected shape."""
+    traceback, for a missing file, for each way the file's content can fail
+    to parse into the expected shape, and for a present-but-wrong-typed
+    harness_closure field."""
 
     def _args(self, tmp_path: Path, defects_path: Path, baseline_conditions_path: Path) -> argparse.Namespace:
         reviewer_records_path = tmp_path / "reviewer.jsonl"
@@ -520,6 +521,28 @@ class TestCmdAnalyzeMalformedBaselineConditions:
         defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
         baseline_conditions_path = tmp_path / "conditions.json"
         baseline_conditions_path.write_text(json.dumps(["not", "a", "dict"]))
+
+        exit_code = run_review_bench.cmd_analyze(
+            self._args(tmp_path, defects_path, baseline_conditions_path),
+        )
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert str(baseline_conditions_path) in stderr
+        assert "unreadable or missing an expected field" in stderr
+
+    def test_non_dict_harness_closure_returns_exit_code_2_and_names_the_path(self, tmp_path: Path, capsys) -> None:
+        """A non-dict harness_closure value, with an otherwise well-formed
+        environment object, is caught at extraction time -- this is the
+        wrong-shaped-value branch, not the missing-key branch the
+        environment-only case above hits."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        baseline_conditions_path = tmp_path / "conditions.json"
+        baseline_conditions_path.write_text(json.dumps({
+            "environment": {"cli_version": "2.0.0", "ambient_config_commit": "deadbeef"},
+            "harness_closure": "corrupt",
+        }))
 
         exit_code = run_review_bench.cmd_analyze(
             self._args(tmp_path, defects_path, baseline_conditions_path),

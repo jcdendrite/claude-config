@@ -42,6 +42,20 @@ class TestNMin:
         assert analysis.n_min(20) == 79
 
 
+class TestPercentile:
+    def test_non_boundary_quantile_interpolates_linearly(self) -> None:
+        """Matches numpy's documented "linear" method, which the docstring
+        claims to mirror: index = 0.25 * (4 - 1) = 0.75, so the result is
+        1.0 + (2.0 - 1.0) * 0.75."""
+        assert analysis._percentile([1.0, 2.0, 3.0, 4.0], 0.25) == 1.75
+
+    def test_quantile_landing_exactly_on_an_element_skips_interpolation(self) -> None:
+        """q=0.0 makes index = 0, so lower_index == upper_index -- the
+        short-circuit branch, exercised here against a non-constant list so
+        an off-by-one index couldn't still return the right value by luck."""
+        assert analysis._percentile([1.0, 2.0, 3.0, 4.0], 0.0) == 1.0
+
+
 class TestRecallCountsAndDropRule:
     def test_detection_rate_is_found_over_found_plus_not_found(self) -> None:
         records = [

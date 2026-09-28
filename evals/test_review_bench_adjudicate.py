@@ -54,11 +54,8 @@ class TestBlindOrdering:
 
     def test_carries_no_arm_signal_no_bench_path_in_recall_or_precision_input(self, tmp_path) -> None:
         # Permuting which arm produced which opaque ID must never change the
-        # order the runs are presented in (Verification: "Permuting the arm
-        # fields of a defect's runs leaves both judges' input order
-        # unchanged"), and neither judge's input names an arm or a `.bench/`
-        # path (Verification: "No arm name and no .bench path appears in
-        # either judge's input").
+        # order the runs are presented in. Neither judge's input names an
+        # arm or a `.bench/` path.
         records_a = [
             _run_record("d1", "current-rule", "run-a", "Found it, see .bench/change.diff."),
             _run_record("d1", "function-context", "run-b", "No issues."),

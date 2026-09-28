@@ -500,6 +500,13 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 baseline_cli_version = baseline_environment["cli_version"]
                 baseline_ambient_config_commit = baseline_environment["ambient_config_commit"]
                 baseline_harness_closure = baseline_conditions["harness_closure"]
+                # check_manifest_matches's dict() call would otherwise raise
+                # a raw ValueError/TypeError on a wrong-shaped closure,
+                # outside this guarding try.
+                if not isinstance(baseline_harness_closure, dict):
+                    raise TypeError(
+                        f"harness_closure must be an object, got {type(baseline_harness_closure).__name__}"
+                    )
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 raise analysis.HarnessInvalidatedError(
                     f"invalidated -- rerun all arms: baseline conditions file "
@@ -813,8 +820,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # `run` has no --inject-fault: fault injection is smoke-only. Omitting
     # the flag here is the rejection itself -- argparse exits 2 on an
-    # unrecognized argument (Verification: "run rejects the smoke-only
-    # fault-injection options").
+    # unrecognized argument.
     p_run = sub.add_parser("run", help="The real reviewer campaign (baseline or a later arm's rerun).")
     _add_campaign_args(p_run)
     p_run.set_defaults(func=cmd_run)

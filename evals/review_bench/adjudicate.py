@@ -106,8 +106,7 @@ def order_by_opaque_id(opaque_ids: Iterable[str], *, seed: int) -> tuple[str, ..
     """Deterministic given (the set of opaque_ids, seed) alone -- no arm
     input, so a run's position in a judge's or the spot-check's input
     carries no arm signal. Permuting which arm produced which ID therefore
-    leaves this order unchanged (Verification: "Permuting the arm fields of
-    a defect's runs leaves both judges' input order unchanged")."""
+    leaves this order unchanged."""
     ordered = sorted(set(opaque_ids))
     random.Random(f"{seed}:{'|'.join(ordered)}").shuffle(ordered)
     return tuple(ordered)

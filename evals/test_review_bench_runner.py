@@ -759,6 +759,69 @@ class TestRunCampaignResume:
         assert run_store.completed_block_ids() == {"defect-done", "defect-pending"}
 
 
+class TestRunCampaignRecordDurabilityOrdering:
+    def test_records_are_durable_before_the_block_is_marked_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression guard for a data-loss ordering bug: a block's
+        RunRecords must be durably appended to records_path before (not
+        after) run_store.mark_block_complete lands, since a crash between
+        the two must leave the block rerunnable rather than permanently
+        marked complete with its records never written. The invariant lives
+        entirely in run_campaign's own loop body, so run_defect_block is
+        stubbed to return a canned BlockResult directly (the same
+        substitution technique used above for read_environment_record) --
+        nothing about how a block's result is produced bears on this
+        ordering. Asserts the records are already on disk at the moment
+        mark_block_complete runs, not just that the two calls happen in some
+        order."""
+        fake_record = runner.RunRecord(
+            campaign_id="c1", defect_id="defect-1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read",), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=1.0, read_calls=1, read_tokens_est=10, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=0, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        monkeypatch.setattr(
+            runner, "run_defect_block",
+            lambda *a, **kw: runner.BlockResult(records=(fake_record,), representative_session_id_by_arm={}),
+        )
+
+        def build_spec(defect_id: str) -> runner.DefectFixtureSpec:
+            return runner.DefectFixtureSpec(
+                defect_id=defect_id, subject="fix: bug", arm_fixture_dirs={},
+                arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
+                live_checkout_roots=(), changed_relpaths=("changed_file.py",), over_read_cap=False,
+            )
+
+        run_store = runner.RunStore(tmp_path / "run-store")
+        records_path = tmp_path / "records.jsonl"
+        real_mark_block_complete = run_store.mark_block_complete
+        events: list[str] = []
+
+        def recording_mark_block_complete(defect_id: str) -> None:
+            # If append_run_records ran first, this defect's records are
+            # already durable by the time mark_block_complete is called --
+            # the property that makes a crash in this gap safe to resume
+            # rather than a silent, permanent loss of already-run results.
+            assert any(record.defect_id == defect_id for record in runner.read_run_records(records_path))
+            events.append("mark_block_complete")
+            real_mark_block_complete(defect_id)
+
+        monkeypatch.setattr(run_store, "mark_block_complete", recording_mark_block_complete)
+
+        runner.run_campaign(
+            ["defect-1"], build_spec=build_spec, arms=("current-rule",), k=1, seed=1,
+            campaign_id="c1", run_store=run_store, records_path=records_path,
+            projects_root=tmp_path / "projects", launch=lambda cmd, cwd, timeout_s: ([], False), workers=1,
+        )
+
+        assert events == ["mark_block_complete"]  # ran, and only after the assertion above held
+        assert run_store.completed_block_ids() == {"defect-1"}
+        assert runner.read_run_records(records_path)
+
+
 def _build_two_commit_source_repo(repo_dir: Path, *, changed_file_content: str = "x = 2\n") -> ConfirmedDefect:
     """A throwaway real git repo with exactly base_commit then head_commit,
     for build_defect_fixture_spec (never a real evals/review_bench source)."""
@@ -1044,6 +1107,56 @@ class TestRunRecordJsonlRoundTrip:
         path = tmp_path / "records.jsonl"
         runner.append_run_records(path, ())
         assert not path.exists()
+
+    def test_read_run_records_skips_one_malformed_trailing_line_and_keeps_the_rest(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Regression guard: a single truncated/malformed JSONL line -- e.g.
+        a partial write from a hard kill mid-append -- must not discard every
+        other already-recorded run in the same file."""
+        path = tmp_path / "records.jsonl"
+        record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        runner.append_run_record(path, record)
+        with open(path, "a") as fh:
+            fh.write('{"defect_id": "d1", "arm": "current-rule"\n')  # truncated JSON, no closing brace
+
+        loaded = runner.read_run_records(path)
+
+        assert loaded == [record]
+        assert "skipping malformed line 2" in capsys.readouterr().err
+
+    def test_read_run_records_skips_a_valid_json_line_missing_a_required_field(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A line can be syntactically valid JSON and still fail to parse
+        into a RunRecord -- e.g. a required field dropped by a hand-edited
+        fixture or a future schema-drift line. RunRecord.from_dict raises
+        TypeError in that case, not json.JSONDecodeError, so it must be
+        skipped-and-reported the same way rather than crashing the read."""
+        path = tmp_path / "records.jsonl"
+        record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        runner.append_run_record(path, record)
+        with open(path, "a") as fh:
+            fh.write(json.dumps({"defect_id": "d2", "arm": "current-rule"}) + "\n")  # missing campaign_id, etc.
+
+        loaded = runner.read_run_records(path)
+
+        assert loaded == [record]
+        assert "skipping malformed line 2" in capsys.readouterr().err
 
     def test_from_dict_defaults_missing_over_read_cap_to_false(self) -> None:
         """A reviewer.jsonl/judge.jsonl line written before over_read_cap

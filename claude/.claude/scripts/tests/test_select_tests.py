@@ -730,8 +730,8 @@ class TestSelectPytestTargets:
         }
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
-        """Previously unmatched -- falls open to the full suite no longer,
-        now that it rides the review_bench predicate."""
+        """Falls under the review_bench predicate, so this selects its own
+        test rather than the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
