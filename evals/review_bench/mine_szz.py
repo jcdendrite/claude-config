@@ -1,6 +1,5 @@
-"""SZZ-style blame miner (Source 1, durable): finds evals/review_bench
-candidates by blaming each fix commit's diff back to its introducing
-commit.
+"""SZZ-style blame miner: finds evals/review_bench candidates by blaming
+each fix commit's diff back to its introducing commit.
 
 stdlib `subprocess` only -- no third-party SZZ implementation.
 """
@@ -161,10 +160,10 @@ def _blame_file_diff(
     """Blame every eligible hunk in one file's diff at `<fix_commit>^`.
 
     Returns (confident, low_confidence): confident holds introducing SHAs
-    from a modified/removed-line hunk (Source 1, step 3); low_confidence
-    holds introducing SHAs from an addition-only hunk's adjacent context
-    (step 4) -- disjoint sets, since a real removal always outranks an
-    addition-only guess for the same file (ranking rule, step 6).
+    from a modified/removed-line hunk; low_confidence holds introducing
+    SHAs from an addition-only hunk's adjacent context -- disjoint sets,
+    since a real removal always outranks an addition-only guess for the
+    same file.
     """
     parent = f"{fix_commit}^"
     confident: set[str] = set()
@@ -194,9 +193,9 @@ def blame_fix_commit(
     pair, independent of the full-repo mining sweep.
 
     This is the reuse point mine_review_rounds.py's own algorithm relies on
-    directly: it runs source 1's blame helper on the commit that fixed the
-    finding. `stats` is unset (no counting) for that reuse path, since
-    mine_review_rounds.py's own miner reports through its own
+    directly: it runs this module's own blame helper on the commit that
+    fixed the finding. `stats` is unset (no counting) for that reuse path,
+    since mine_review_rounds.py's own miner reports through its own
     ref_status_counts/skipped_unresolved instead.
 
     Returns (introducing_shas, is_low_confidence).
@@ -217,7 +216,7 @@ def blame_fix_commit(
 
 def _iter_fix_commits(repo_dir: Path, base_ref: str, *, stats: _MineStats | None = None) -> list[tuple[str, str]]:
     """First-parent commits on `base_ref` whose subject matches
-    fix|bug|regression (Source 1, step 1)."""
+    fix|bug|regression."""
     log = _run_git(["log", "--first-parent", "--format=%H\x1f%s", base_ref], cwd=repo_dir)
     commits = []
     for line in log.splitlines():
@@ -282,9 +281,9 @@ def _build_candidate(
 
 
 def _rank(repo_dir: Path, candidates: list[Candidate], *, stats: _MineStats | None = None) -> list[Candidate]:
-    """Ranking rule (Source 1, step 6): modified-line hits before
-    adjacent-line hits; a single introducer before several; files over one
-    Read call first. Age is deliberately not a ranking key."""
+    """Ranking rule: modified-line hits before adjacent-line hits; a
+    single introducer before several; files over one Read call first. Age
+    is deliberately not a ranking key."""
 
     def key(candidate: Candidate) -> tuple[bool, bool, bool]:
         tokens = _estimate_tokens(repo_dir, candidate.head_commit, candidate.evidence["path"], stats=stats)

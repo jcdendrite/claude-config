@@ -1016,6 +1016,105 @@ class TestRunStoreResume:
         assert {p["session_id"] for p in parsed} == {f"session-{i}" for i in range(50)}
 
 
+class TestPendingEntriesTornTailTolerance:
+    def test_pending_entries_tolerates_a_torn_final_line(self, tmp_path: Path) -> None:
+        """The read-side tolerance for a torn final line applies to
+        pending_entries directly, independent of whether sweep_abandoned's
+        on-disk repair has run yet -- mirrors read_run_records' own
+        truncated-final-line tolerance."""
+        store = runner.RunStore(tmp_path / "run-store")
+        store.record_directory("defect-1", tmp_path / "review-bench-a", runner._NO_SESSION_ID_YET)
+        store.record_directory("defect-2", tmp_path / "review-bench-b", runner._NO_SESSION_ID_YET)
+        with open(store.write_ahead_path, "a") as fh:
+            fh.write('{"defect_id": "defect-3", "directory": "')  # torn mid-write, no closing brace, no newline
+
+        pending = store.pending_entries()
+
+        assert {entry.defect_id for entry in pending} == {"defect-1", "defect-2"}
+
+    def test_sweep_abandoned_repairs_the_write_ahead_tail_before_the_next_append(self, tmp_path: Path) -> None:
+        """sweep_abandoned must repair the write-ahead log's torn tail on
+        disk, not merely tolerate it in memory -- record_directory's next
+        append glues its new bytes onto whatever the file's last line
+        already is, so an unrepaired torn tail would corrupt that append
+        into a permanently malformed mid-file line that pending_entries
+        would then raise on instead of parsing cleanly."""
+        store = runner.RunStore(tmp_path / "run-store")
+        store.record_directory("defect-1", tmp_path / "review-bench-a", runner._NO_SESSION_ID_YET)
+        store.record_directory("defect-2", tmp_path / "review-bench-b", runner._NO_SESSION_ID_YET)
+        with open(store.write_ahead_path, "a") as fh:
+            fh.write('{"defect_id": "defect-3", "directory": "')  # torn mid-write, no closing brace, no newline
+
+        store.sweep_abandoned(tmp_path / "projects")
+        store.record_directory("defect-4", tmp_path / "review-bench-d", runner._NO_SESSION_ID_YET)
+
+        pending = store.pending_entries()
+        assert {entry.defect_id for entry in pending} == {"defect-1", "defect-2", "defect-4"}
+
+    def test_pending_entries_raises_on_a_malformed_line_that_is_not_the_last_one(self, tmp_path: Path) -> None:
+        """The truncated-final-line tolerance is positional, not blanket:
+        a JSON-syntax failure earlier in the file is a genuine corruption,
+        mirroring read_run_records' own non-final-line behavior."""
+        store = runner.RunStore(tmp_path / "run-store")
+        with open(store.write_ahead_path, "w") as fh:
+            fh.write('{"defect_id": "defect-1", "directory": "d1"\n')  # truncated JSON, not the last line
+            fh.write(json.dumps({"defect_id": "defect-2", "directory": "d2", "session_id": ""}) + "\n")
+
+        with pytest.raises(runner.HarnessInvalidatedError, match="malformed line 1"):
+            store.pending_entries()
+
+    @pytest.mark.parametrize(
+        "missing_field, position",
+        [
+            ("defect_id", "mid_file"),
+            ("defect_id", "final_line"),
+            ("directory", "mid_file"),
+            ("directory", "final_line"),
+        ],
+    )
+    def test_pending_entries_raises_at_the_malformed_lines_own_line_number(
+        self, tmp_path: Path, missing_field: str, position: str
+    ) -> None:
+        """WriteAheadEntry(**data) raises TypeError when either required field
+        is missing. pending_entries must reach that raise whether the
+        malformed line sits mid-file or is the log's own final line. A
+        sole-content fixture proves only line 1, not every position."""
+        store = runner.RunStore(tmp_path / "run-store")
+        well_formed = {"defect_id": "defect-well-formed", "directory": "d", "session_id": ""}
+        malformed = {k: v for k, v in well_formed.items() if k != missing_field}
+        lines = [well_formed, malformed, well_formed] if position == "mid_file" else [well_formed, well_formed, malformed]
+        malformed_line_number = lines.index(malformed) + 1
+        with open(store.write_ahead_path, "w") as fh:
+            for line in lines:
+                fh.write(json.dumps(line) + "\n")
+
+        with pytest.raises(runner.HarnessInvalidatedError, match=rf"malformed line {malformed_line_number} in "):
+            store.pending_entries()
+
+    def test_pending_entries_raises_on_a_malformed_line_for_an_already_completed_defect_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed line whose defect_id is already completed must still
+        raise. pending_entries validates every line's shape before filtering
+        out already-completed blocks, so an already-complete defect_id can't
+        mask a shape defect. This fails against pre-fix code, which indexed
+        data["defect_id"] before constructing WriteAheadEntry, so it never
+        reached the shape check for an already-completed id."""
+        store = runner.RunStore(tmp_path / "run-store")
+        store.mark_block_complete("defect-1")
+        lines = [
+            {"defect_id": "defect-1", "directory": "d1", "session_id": ""},
+            {"defect_id": "defect-1"},  # missing directory, but defect-1 is already completed
+            {"defect_id": "defect-2", "directory": "d2", "session_id": ""},
+        ]
+        with open(store.write_ahead_path, "w") as fh:
+            for line in lines:
+                fh.write(json.dumps(line) + "\n")
+
+        with pytest.raises(runner.HarnessInvalidatedError, match="malformed line 2"):
+            store.pending_entries()
+
+
 class TestRunStoreLock:
     def test_refuses_to_start_under_a_live_pid(self, tmp_path: Path) -> None:
         store = runner.RunStore(tmp_path / "run-store")

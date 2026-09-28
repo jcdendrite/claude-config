@@ -263,28 +263,22 @@ def append_run_records(path: Path, records: Sequence[RunRecord]) -> None:
 
 
 def _repair_torn_tail(path: Path) -> None:
-    """Repair a file a prior process left without a trailing newline
-    before this append glues new bytes onto that tail. Left unrepaired,
-    the glued line becomes permanently invalid JSON that's no longer the
-    file's last line. read_run_records' truncated-final-line tolerance
-    only forgives corruption on the last line, so it would raise
-    HarnessInvalidatedError on every read from then on, even after a
-    successful rerun. A tail that still parses as complete JSON (the
-    kill landed between the closing brace and the newline) keeps its
-    record and gets the missing newline appended. A tail that doesn't
-    parse (the kill landed mid-record) is truncated back to the last
-    newline -- the same bytes read_run_records already discards as a
-    tolerated truncated-final-line on read, so truncating on write is
-    consistent with that, not a new behavior. This parse check is
-    JSON-syntax-only, unlike read_run_records' own final-line tolerance,
-    which additionally requires the parsed JSON to shape-match
-    RunRecord.from_dict -- a tail that parses as JSON but not as a
-    RunRecord is still treated here as a complete record to keep.
-
-    Each branch below touches only the minimum bytes needed -- the tail
-    alone, never the file's earlier bytes -- so a second process kill
-    mid-repair can destroy at most the torn tail, never an
-    already-durable record."""
+    """Repairs a JSONL log's torn final line, left by a prior process
+    killed mid-append, before that log is next read or appended to.
+    Two call sites use this: append_run_records repairs the RunRecord log
+    before every append, and RunStore.sweep_abandoned repairs the
+    write-ahead log once before its first read.
+    A tail that still parses as complete JSON keeps its record and gets
+    its missing trailing newline appended.
+    A tail that doesn't parse as JSON is truncated back to the last newline.
+    Those truncated bytes are exactly what _read_jsonl_tolerating_torn_tail
+    also discards as a tolerated torn final line, so truncating on write
+    is consistent with that read-side tolerance.
+    This parse check is JSON-syntax-only: it does not also require the
+    parsed JSON to shape-match RunRecord or WriteAheadEntry.
+    Each branch touches only the tail's own bytes, never the file's
+    earlier bytes, so a second process kill mid-repair can destroy at
+    most the torn tail, never an already-durable record."""
     if not path.exists():
         return
     data = path.read_bytes()
@@ -308,26 +302,23 @@ def _run_record_identity(record: RunRecord) -> tuple[str, str, str, int]:
     return (record.campaign_id, record.defect_id, record.arm, record.run_index)
 
 
-def read_run_records(path: Path) -> list[RunRecord]:
-    """Dedups by (campaign_id, defect_id, arm, run_index): a later record for
-    that identity replaces an earlier one instead of both existing, so a
-    block rerun after a crash between append_run_records and
-    mark_block_complete (run_campaign's own comment on that ordering) does
-    not double-count that defect's runs downstream. Raises
-    HarnessInvalidatedError on a line that fails to parse into a RunRecord --
-    invalid JSON syntax anywhere but the final line, or valid JSON shaped
-    wrong for RunRecord.from_dict anywhere including the final line. A
-    JSON-syntax failure on the final line alone is tolerated: the ordinary
-    signature of a process killed mid-append is an incomplete trailing
-    write, not a bad-shaped-but-complete one, so only that specific failure
-    is silently dropped rather than raised. The returned list orders a
-    superseded identity's replacement at its first-seen position, not at
-    write-recency, since dict key overwrite preserves original insertion
-    order."""
+def _read_jsonl_tolerating_torn_tail(path: Path, *, caller: str) -> list[tuple[int, dict]]:
+    """Shared by read_run_records and RunStore.pending_entries, this
+    module's two append-only-JSONL-log readers.
+    Skips blank lines.
+    Tolerates a JSON-syntax failure on the final line only -- the
+    ordinary signature of a process killed mid-append -- and silently
+    drops that line.
+    Raises HarnessInvalidatedError, naming caller, path, and line
+    number, on a JSON-syntax failure anywhere but the final line.
+    Returns each remaining line's (line_number, parsed) pair; each
+    caller converts the parsed dict into its own record shape and
+    raises HarnessInvalidatedError itself on a shape mismatch,
+    including on the final line."""
     if not path.exists():
         return []
     lines = path.read_text().splitlines()
-    records_by_identity: dict[tuple[str, str, str, int], RunRecord] = {}
+    parsed_lines: list[tuple[int, dict]] = []
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
@@ -336,7 +327,25 @@ def read_run_records(path: Path) -> list[RunRecord]:
         except json.JSONDecodeError as exc:
             if line_number == len(lines):
                 continue  # truncated final line -- the ordinary kill-mid-write case
-            raise HarnessInvalidatedError(f"read_run_records: malformed line {line_number} in {path}: {exc}") from exc
+            raise HarnessInvalidatedError(f"{caller}: malformed line {line_number} in {path}: {exc}") from exc
+        parsed_lines.append((line_number, parsed))
+    return parsed_lines
+
+
+def read_run_records(path: Path) -> list[RunRecord]:
+    """Dedups by (campaign_id, defect_id, arm, run_index).
+    A later record for that identity replaces an earlier one instead of
+    both existing, so a block rerun after a crash between
+    append_run_records and mark_block_complete (run_campaign's own
+    comment on that ordering) does not double-count that defect's runs
+    downstream.
+    The returned list orders a superseded identity's replacement at its
+    first-seen position, not at write-recency, since dict key overwrite
+    preserves original insertion order.
+    Raises HarnessInvalidatedError on a line whose JSON parses but
+    doesn't shape-match RunRecord.from_dict, including the final line."""
+    records_by_identity: dict[tuple[str, str, str, int], RunRecord] = {}
+    for line_number, parsed in _read_jsonl_tolerating_torn_tail(path, caller="read_run_records"):
         try:
             record = RunRecord.from_dict(parsed)
         except (TypeError, ValueError) as exc:
@@ -909,22 +918,36 @@ class RunStore:
         _atomic_write_text(self.completed_blocks_path, json.dumps(sorted(completed)))
 
     def pending_entries(self) -> list[WriteAheadEntry]:
-        if not self.write_ahead_path.exists():
-            return []
+        """Validates every line's shape against WriteAheadEntry before
+        filtering out already-completed blocks, so a malformed line for a
+        defect_id that's already complete still raises instead of being
+        silently skipped."""
         completed = self.completed_block_ids()
         entries = []
-        for line in self.write_ahead_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            data = json.loads(line)
-            if data["defect_id"] not in completed:
-                entries.append(WriteAheadEntry(**data))
+        for line_number, data in _read_jsonl_tolerating_torn_tail(self.write_ahead_path, caller="pending_entries"):
+            try:
+                entry = WriteAheadEntry(**data)
+            except TypeError as exc:
+                raise HarnessInvalidatedError(
+                    f"pending_entries: malformed line {line_number} in {self.write_ahead_path}: {exc}"
+                ) from exc
+            if entry.defect_id not in completed:
+                entries.append(entry)
         return entries
 
     def sweep_abandoned(self, projects_root: Path) -> list[WriteAheadEntry]:
         """Delete every directory and session store a still-pending
         write-ahead entry names, then return the entries swept -- the
         caller reruns each swept defect's block whole."""
+        # Repairs the write-ahead log's torn tail here, once, not
+        # per-append in record_directory. sweep_abandoned runs
+        # single-threaded under the store lock, before record_directory's
+        # ThreadPoolExecutor workers start, so no concurrent in-flight
+        # append can race this repair.
+        # A discarded torn entry's own mkdtemp'd directory is never swept,
+        # leaking one empty temp dir per crash -- the same order of
+        # severity as acquire_lock's own orphaned tmp-<uuid> residual.
+        _repair_torn_tail(self.write_ahead_path)
         swept = self.pending_entries()
         for entry in swept:
             directory = Path(entry.directory)

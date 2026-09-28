@@ -1,6 +1,6 @@
-"""Later-review-round miner (Source 2): finds evals/review_bench candidates
-where a later review round cited a path that an earlier round on the same
-branch had already read.
+"""Later-review-round miner: finds evals/review_bench candidates where a
+later review round cited a path that an earlier round on the same branch
+had already read.
 
 Run this miner before `mine_szz.py`: session transcripts age out after
 `cleanupPeriodDays` (default 30 days), while the git history `mine_szz.py`
@@ -137,8 +137,8 @@ def _later_round_citations(
     scans: dict[str, reviewer_yield._ReviewerTranscriptScan], tool_use_ids: list[str],
 ) -> dict[str, _CitationHit]:
     """Join-key -> (raw path, excerpt) for every path a later round's
-    reviewer dispatches cited, from their final text and Write blobs
-    (step 4). First occurrence of a key wins the excerpt."""
+    reviewer dispatches cited, from their final text and Write blobs.
+    First occurrence of a key wins the excerpt."""
     hits: dict[str, _CitationHit] = {}
     for tool_use_id in tool_use_ids:
         scan = scans.get(tool_use_id)
@@ -184,9 +184,9 @@ def _main_thread_edited_between(earlier: _RoundEntry, later: _RoundEntry, key: s
     """Whether the main thread wrote to the cited path -- identified by its
     normalized join key, the same `key` `mine()`'s own citation/scope
     intersection matched on -- between the two rounds' windows: evidence
-    the cited code is new rather than missed (step 5, second evidence
-    bullet). Cross-session timing isn't comparable, so this is always False
-    when the two rounds come from different transcripts.
+    the cited code is new rather than missed. Cross-session timing isn't
+    comparable, so this is always False when the two rounds come from
+    different transcripts.
 
     Each write target is normalized with its own record's `cwd` before
     comparison, matching every other path-matching site in this module. A
@@ -212,7 +212,7 @@ def _main_thread_edited_between(earlier: _RoundEntry, later: _RoundEntry, key: s
     return False
 
 
-# --- Fixture-commit resolution (step 6) -------------------------------------
+# --- Fixture-commit resolution -----------------------------------------------
 
 @dataclass
 class _CommitResolution:
@@ -373,19 +373,22 @@ def _commit_date(repo_dir: Path, commit: str) -> str | None:
 
 
 def resolve_defect_commits(
-    repo_dir: Path, *, branch: str, raw_path: str, after_ts: float, pr_number: int | None,
+    repo_dir: Path, *, raw_path: str, after_ts: float, branch_ref: tuple[str, str | None],
 ) -> _CommitResolution:
     """Resolve one review-round candidate's base/head/fix commits.
 
     The fix commit is the first branch commit touching `raw_path` after
     the later round's own timestamp -- the author's own response to that
     round. `head_commit` is derived by blaming the fix commit backward with
-    `mine_szz.blame_fix_commit`, reusing Source 1's own helper (step 6);
-    `base_commit` is that introducing commit's own parent. A candidate this
-    can't fully resolve is left for the engineer to complete by hand and is
-    not emitted by `mine()`.
+    `mine_szz.blame_fix_commit`; `base_commit` is that introducing commit's
+    own parent. A candidate this can't fully resolve is left for the
+    engineer to complete by hand and is not emitted by `mine()`.
+
+    branch_ref is this branch's own (ref_status, ref) pair from
+    `resolve_branch_ref`, which `mine()` resolves once per branch -- this
+    function itself never fetches.
     """
-    ref_status, ref = resolve_branch_ref(repo_dir, branch, pr_number)
+    ref_status, ref = branch_ref
     if ref is None:
         return _CommitResolution(ref_status=ref_status)
 
@@ -446,7 +449,7 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
         ordered = sorted(branch_entries, key=lambda e: e.ts if e.ts is not None else float("inf"))
         scopes = [_round_scope(e.records, e.window, e.dispatch_index) for e in ordered]
         scan_cache: dict[Path, dict[str, reviewer_yield._ReviewerTranscriptScan]] = {}
-        pr_number_cache: dict[str, int | None] = {}
+        branch_ref_cache: dict[str, tuple[str, str | None]] = {}
 
         for later_idx, later in enumerate(ordered):
             if later.jsonl not in scan_cache:
@@ -462,13 +465,12 @@ def mine(repo_dir: Path, *, roots: Sequence[Path] | None = None) -> list[Candida
                     continue
                 for key in citations.keys() & scopes[earlier_idx].keys():
                     hit = citations[key]
-                    if branch not in pr_number_cache:
-                        pr_number_cache[branch] = (
-                            None if _local_branch_exists(repo_dir, branch) else resolve_pr_number(repo_dir, branch)
-                        )
+                    if branch not in branch_ref_cache:
+                        pr_number = None if _local_branch_exists(repo_dir, branch) else resolve_pr_number(repo_dir, branch)
+                        branch_ref_cache[branch] = resolve_branch_ref(repo_dir, branch, pr_number)
                     resolution = resolve_defect_commits(
-                        repo_dir, branch=branch, raw_path=hit.raw_path, after_ts=later.ts,
-                        pr_number=pr_number_cache[branch],
+                        repo_dir, raw_path=hit.raw_path, after_ts=later.ts,
+                        branch_ref=branch_ref_cache[branch],
                     )
                     ref_status_counts[resolution.ref_status] = ref_status_counts.get(resolution.ref_status, 0) + 1
                     if resolution.base_commit is None or resolution.head_commit is None or resolution.fix_commit is None:

@@ -386,9 +386,9 @@ class TestMineSzz:
 
 class TestRank:
     def test_orders_by_confidence_introducer_count_then_size(self, tmp_path):
-        """_rank's documented priority (Source 1, step 6): modified-line
-        (confident) hits before adjacent-line (low-confidence) hits; a
-        single introducer before several; files over one Read call first."""
+        """_rank's documented priority: modified-line (confident) hits
+        before adjacent-line (low-confidence) hits; a single introducer
+        before several; files over one Read call first."""
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "small.py", "x = 1\n")
         _write(repo, "large.py", "y = 1\n" * 20_000)  # bytes // 4 > _READ_CAP_TOKENS
@@ -525,8 +525,8 @@ class TestResolvePrNumber:
 
 
 class TestResolveDefectCommits:
-    """resolve_defect_commits (Source 2's commit-resolution core), against
-    real-git fixtures rather than the stubbed return value
+    """resolve_defect_commits (mine_review_rounds.py's own commit-resolution
+    core), against real-git fixtures rather than the stubbed return value
     TestMineReviewRoundsCandidates uses to isolate the rest of mine()."""
 
     def _repo_with_branch_and_bug_fix(self, tmp_path):
@@ -546,7 +546,8 @@ class TestResolveDefectCommits:
         fix_ts = corpus._parse_ts(mine_review_rounds._commit_date(repo, fix_sha))
 
         resolution = mine_review_rounds.resolve_defect_commits(
-            repo, branch="feat", raw_path="app.py", after_ts=fix_ts + 1000, pr_number=None,
+            repo, raw_path="app.py", after_ts=fix_ts + 1000,
+            branch_ref=mine_review_rounds.resolve_branch_ref(repo, "feat", None),
         )
         assert resolution.ref_status == "local-branch"
         assert resolution.fix_commit is None
@@ -567,7 +568,8 @@ class TestResolveDefectCommits:
         fix_ts = corpus._parse_ts(mine_review_rounds._commit_date(repo, fix_sha))
 
         resolution = mine_review_rounds.resolve_defect_commits(
-            repo, branch="feat", raw_path="app.py", after_ts=fix_ts - 1000, pr_number=None,
+            repo, raw_path="app.py", after_ts=fix_ts - 1000,
+            branch_ref=mine_review_rounds.resolve_branch_ref(repo, "feat", None),
         )
         assert resolution.ref_status == "local-branch"
         # An unresolved branch's _CommitResolution carries only ref_status
@@ -583,13 +585,34 @@ class TestResolveDefectCommits:
         fix_ts = corpus._parse_ts(mine_review_rounds._commit_date(repo, fix_sha))
 
         resolution = mine_review_rounds.resolve_defect_commits(
-            repo, branch="feat", raw_path="app.py", after_ts=fix_ts - 1000, pr_number=None,
+            repo, raw_path="app.py", after_ts=fix_ts - 1000,
+            branch_ref=mine_review_rounds.resolve_branch_ref(repo, "feat", None),
         )
         assert resolution.ref_status == "local-branch"
         assert resolution.head_commit == introducing_sha
         assert resolution.base_commit == main_sha
         assert resolution.fix_commit == fix_sha
         assert resolution.fix_date is not None
+
+    @pytest.mark.parametrize("ref_status", ["pr-unknown", "fetch-failed"])
+    def test_ref_is_none_returns_bare_resolution_without_touching_git(self, tmp_path, ref_status):
+        """resolve_branch_ref returns a None ref for both pr-unknown (no PR
+        found) and fetch-failed (PR head fetch errored) -- either way
+        resolve_defect_commits must short-circuit before its first git call
+        rather than crash on an unresolvable ref. Uses the class's real-git
+        fixture, not a bare tmp_path, so a mutant substituting a fallback ref
+        for the short-circuit would resolve real commits and fail the
+        all-None assertions below."""
+        repo, _main_sha, _introducing_sha, _fix_sha = self._repo_with_branch_and_bug_fix(tmp_path)
+        resolution = mine_review_rounds.resolve_defect_commits(
+            repo, raw_path="app.py", after_ts=0.0, branch_ref=(ref_status, None),
+        )
+        assert resolution.ref_status == ref_status
+        assert resolution.base_commit is None
+        assert resolution.head_commit is None
+        assert resolution.fix_commit is None
+        assert resolution.fix_date is None
+        assert resolution.branch_commits == []
 
 
 # --- mine_review_rounds: session-scope guard ---------------------------------
@@ -710,6 +733,30 @@ class TestMineReviewRoundsCandidates:
         _write_subagent_dispatch(proj, session_stem, "agent-1", agent_dispatch_id, subagent_records)
         return tmp_path
 
+    def _build_one_later_round_matching_two_earlier_rounds_session(self, tmp_path) -> None:
+        proj = tmp_path / "projects" / "test-slug"
+        proj.mkdir(parents=True)
+        session_stem = "sess-1"
+        jsonl = proj / f"{session_stem}.jsonl"
+
+        agent_dispatch_id = "toolu_agent1"
+        records = [
+            _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
+            _assistant(ts="2026-01-01T00:01:00Z", content=[_read_use("r1", self._CITED_PATH)]),
+            _user("looks fine", ts="2026-01-01T00:02:00Z"),
+            _assistant(ts="2026-01-02T00:00:00Z", content=[_skill_use("s2", "code-review")]),
+            _assistant(ts="2026-01-02T00:01:00Z", content=[_read_use("r2", self._CITED_PATH)]),
+            _user("still fine", ts="2026-01-02T00:02:00Z"),
+            _assistant(ts="2026-01-03T00:00:00Z", content=[_skill_use("s3", "code-review")]),
+            _assistant(ts="2026-01-03T00:01:00Z", content=[_agent_use(agent_dispatch_id, "staff-backend-engineer")]),
+            _user("thanks", ts="2026-01-03T00:02:00Z"),
+        ]
+        _write_jsonl(jsonl, records)
+
+        finding_text = f"Reviewer finding: {self._CITED_PATH}:12 has a bug in the loop."
+        subagent_records = [_assistant(ts="2026-01-03T00:01:30Z", cwd="/repo", content=[{"type": "text", "text": finding_text}])]
+        _write_subagent_dispatch(proj, session_stem, "agent-1", agent_dispatch_id, subagent_records)
+
     def _mine(self, tmp_path, monkeypatch):
         monkeypatch.setattr(mine_review_rounds.scope, "_repo_scoped_project_slugs", lambda label: ["test-slug"])
         monkeypatch.setattr(mine_review_rounds, "resolve_pr_number", lambda *a, **k: None)
@@ -810,32 +857,50 @@ class TestMineReviewRoundsCandidates:
         """A later round whose citation matches more than one earlier round's scope
         on the same path must get a distinct id per match, since each match carries
         its own earlier_round_ts/main_thread_edited_between evidence."""
-        proj = tmp_path / "projects" / "test-slug"
-        proj.mkdir(parents=True)
-        session_stem = "sess-1"
-        jsonl = proj / f"{session_stem}.jsonl"
-
-        agent_dispatch_id = "toolu_agent1"
-        records = [
-            _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
-            _assistant(ts="2026-01-01T00:01:00Z", content=[_read_use("r1", self._CITED_PATH)]),
-            _user("looks fine", ts="2026-01-01T00:02:00Z"),
-            _assistant(ts="2026-01-02T00:00:00Z", content=[_skill_use("s2", "code-review")]),
-            _assistant(ts="2026-01-02T00:01:00Z", content=[_read_use("r2", self._CITED_PATH)]),
-            _user("still fine", ts="2026-01-02T00:02:00Z"),
-            _assistant(ts="2026-01-03T00:00:00Z", content=[_skill_use("s3", "code-review")]),
-            _assistant(ts="2026-01-03T00:01:00Z", content=[_agent_use(agent_dispatch_id, "staff-backend-engineer")]),
-            _user("thanks", ts="2026-01-03T00:02:00Z"),
-        ]
-        _write_jsonl(jsonl, records)
-
-        finding_text = f"Reviewer finding: {self._CITED_PATH}:12 has a bug in the loop."
-        subagent_records = [_assistant(ts="2026-01-03T00:01:30Z", cwd="/repo", content=[{"type": "text", "text": finding_text}])]
-        _write_subagent_dispatch(proj, session_stem, "agent-1", agent_dispatch_id, subagent_records)
+        self._build_one_later_round_matching_two_earlier_rounds_session(tmp_path)
 
         candidates = self._mine(tmp_path, monkeypatch)
         assert len(candidates) == 2
         assert len({c.id for c in candidates}) == 2
+
+    def test_resolve_branch_ref_is_called_once_per_branch_not_once_per_matching_triple(self, tmp_path, monkeypatch):
+        """resolve_branch_ref can perform a real `git fetch`, so a later round
+        matching two earlier rounds on the same branch must not repeat that
+        lookup once per (later, earlier, key) triple."""
+        self._build_one_later_round_matching_two_earlier_rounds_session(tmp_path)
+
+        calls: list[str] = []
+        real_resolve_branch_ref = mine_review_rounds.resolve_branch_ref
+
+        def counting_resolve_branch_ref(repo_dir, branch, pr_number):
+            calls.append(branch)
+            return real_resolve_branch_ref(repo_dir, branch, pr_number)
+
+        monkeypatch.setattr(mine_review_rounds, "resolve_branch_ref", counting_resolve_branch_ref)
+
+        candidates = self._mine(tmp_path, monkeypatch)
+
+        assert len(candidates) == 2  # two matching (later, earlier, key) triples on the same branch
+        assert calls == ["feat"]  # resolve_branch_ref called once, not once per triple
+
+    def test_branch_ref_cache_caches_a_fetch_failed_result_not_retried_per_triple(self, tmp_path, monkeypatch):
+        """branch_ref_cache caches resolve_branch_ref's result unconditionally,
+        including a fetch-failed outcome. A branch whose fetch keeps failing
+        must not be re-fetched once per matching (later, earlier, key)
+        triple."""
+        self._build_one_later_round_matching_two_earlier_rounds_session(tmp_path)
+
+        calls: list[str] = []
+
+        def failing_resolve_branch_ref(repo_dir, branch, pr_number):
+            calls.append(branch)
+            return "fetch-failed", None
+
+        monkeypatch.setattr(mine_review_rounds, "resolve_branch_ref", failing_resolve_branch_ref)
+
+        self._mine(tmp_path, monkeypatch)
+
+        assert calls == ["feat"]  # resolve_branch_ref called once despite two matching triples
 
 
 # --- confirm CLI --------------------------------------------------------------

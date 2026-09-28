@@ -29,8 +29,8 @@ KNOWN_LENSES: frozenset[str] = frozenset(LENS_READ_CLAUSES)
 
 KNOWN_SOURCES: frozenset[str] = frozenset({"szz", "review-round"})
 
-# Source 2, step 6's four possible outcomes for resolving a review round's
-# branch to a reachable ref.
+# mine_review_rounds.resolve_branch_ref's four possible outcomes for
+# resolving a review round's branch to a reachable ref.
 KNOWN_REF_STATUSES: frozenset[str] = frozenset({"local-branch", "fetched", "fetch-failed", "pr-unknown"})
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -284,6 +284,10 @@ def check_description_provenance(
     Checked against every candidate's excerpt in `excerpts_by_candidate_id`,
     not only the one this description confirms, since the drafting session
     saw the whole shortlist.
+
+    Scoped to phrase reuse, not secret-shaped strings -- this repo's
+    commit-time secret-scanning hooks (`redact-credential-values.sh` and
+    related) remain the control of record for verbatim secret leakage.
     """
     description_tokens = _tokenize(description)
     if not description_tokens:

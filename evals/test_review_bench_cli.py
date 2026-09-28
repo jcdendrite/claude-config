@@ -166,6 +166,49 @@ class TestCmdFreezeManifestFields:
             "judge_inner_prompt": hashlib.sha256(adjudicate.JUDGE_INNER_PROMPT_TEMPLATE.encode()).hexdigest(),
         }
 
+    def test_cli_flags_reach_cmd_freeze_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "app.py", "x = 1\n")
+        head_sha = _commit(repo, "introduce x")
+        _write(repo, "app.py", "x = 2\n")
+        fix_sha = _commit(repo, "fix x value")
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
+
+        defects_path = tmp_path / "defects.json"
+        confirmed = [
+            ConfirmedDefect(
+                id="d1", source="szz", lens="staff-backend-engineer", base_commit=head_sha, head_commit=head_sha,
+                fix_commit=fix_sha, fix_date="2024-01-01", description="x changed its stale initial value.",
+            ),
+        ]
+        defects.save_confirmed_defects(defects_path, confirmed)
+
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        (local_dir / "szz_candidates.json").write_text("[]")
+
+        arms_root = tmp_path / "arms"
+        for arm in (arms_mod.ARM_CURRENT_RULE, arms_mod.ARM_FUNCTION_CONTEXT):
+            arm_dir = arms_root / arm
+            arm_dir.mkdir(parents=True)
+            (arm_dir / "bench-staff-backend-engineer.md").write_text(f"{arm} agent body\n")
+
+        from review_bench import analysis
+
+        manifest_hash = analysis.closure_manifest_hash(analysis.compute_harness_closure())
+        out_path = tmp_path / "conditions.json"
+        args = run_review_bench.build_parser().parse_args([
+            "freeze", "--defects-path", str(defects_path), "--local-dir", str(local_dir),
+            "--arms-root", str(arms_root), "--k", "10", "--campaign-seed", "7",
+            "--last-smoke-manifest-hash", manifest_hash, "--smoke-full-k", "10", "--out", str(out_path),
+        ])
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 0
+        conditions = json.loads(out_path.read_text())
+        assert conditions["campaign_seed"] == 7
+
 
 class TestBuildSpotCheckSamples:
     def test_joins_reviewer_and_judge_records_by_defect_and_filters_missing_status(self, tmp_path: Path) -> None:
@@ -644,6 +687,43 @@ class TestCmdAnalyzeReportCompleteness:
         assert report["recall_diff_over_read_cap_stratum"] == 1.0
 
 
+class TestCmdAnalyzeCliFlags:
+    def test_cli_flags_reach_cmd_analyze_via_build_parser(self, tmp_path: Path) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        runner.append_run_records(reviewer_records_path, [
+            _run_record("d1", arms_mod.ARM_CURRENT_RULE, "run-a", "Leaks a connection on error."),
+            _run_record("d1", arms_mod.ARM_FUNCTION_CONTEXT, "run-b", "Nothing to report."),
+        ])
+        judge_records_path = tmp_path / "judge.jsonl"
+        runner.append_run_records(judge_records_path, [
+            _run_record("d1", JUDGE_ARM_RECALL, "j-recall", 'run-a: FOUND -- "Leaks a connection"\nrun-b: NOT_FOUND'),
+            _run_record(
+                "d1", JUDGE_ARM_PRECISION, "j-precision", '### Run run-a\n1. VALID -- "Leaks a connection"\n### Run run-b\n',
+            ),
+        ])
+
+        out_path = tmp_path / "report.json"
+        args = run_review_bench.build_parser().parse_args([
+            "analyze", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_records_path),
+            "--judge-records-path", str(judge_records_path), "--k", "1", "--out", str(out_path),
+        ])
+
+        exit_code = run_review_bench.cmd_analyze(args)
+
+        assert exit_code == 0
+        report = json.loads(out_path.read_text())
+        # kept_defect_ids requires joining reviewer_records against
+        # judge_records by arm (JUDGE_ARM_RECALL) -- a swapped
+        # --reviewer-records-path/--judge-records-path destination leaves
+        # that join empty. It also requires args.k's completed-runs
+        # threshold (1 completed run >= k/2) to gate d1 in rather than out,
+        # so a --k not reaching that comparison as an int fails the test too.
+        assert report["kept_defect_ids"] == ["d1"]
+
+
 def _candidate(**overrides) -> defects.Candidate:
     kwargs = dict(
         id="c1", source="szz", lens="staff-backend-engineer", base_commit="a" * 40, head_commit="b" * 40,
@@ -688,6 +768,26 @@ class TestCmdMineSzz:
         assert exit_code == 0
         assert f"mine-szz: wrote 2 candidate(s) to {out_path}" in capsys.readouterr().err
 
+    def test_cli_flags_reach_cmd_mine_szz_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
+        from review_bench import mine_szz
+
+        captured_calls: list[tuple[Path, str]] = []
+
+        def fake_mine(repo_root, *, base_ref):
+            captured_calls.append((repo_root, base_ref))
+            return []
+
+        monkeypatch.setattr(mine_szz, "mine", fake_mine)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", tmp_path / "repo")
+
+        args = run_review_bench.build_parser().parse_args(
+            ["mine-szz", "--base-ref", "some-ref", "--local-dir", str(tmp_path / "local")],
+        )
+        exit_code = run_review_bench.cmd_mine_szz(args)
+
+        assert exit_code == 0
+        assert captured_calls == [(tmp_path / "repo", "some-ref")]
+
 
 class TestCmdMineRounds:
     def test_writes_the_mined_candidates(self, tmp_path: Path, monkeypatch) -> None:
@@ -723,6 +823,24 @@ class TestCmdMineRounds:
         assert exit_code == 0
         assert f"mine-rounds: wrote 0 candidate(s) to {out_path}" in capsys.readouterr().err
 
+    def test_cli_flags_reach_cmd_mine_rounds_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
+        from review_bench import mine_review_rounds
+
+        captured_calls: list[Path] = []
+
+        def fake_mine(repo_root):
+            captured_calls.append(repo_root)
+            return []
+
+        monkeypatch.setattr(mine_review_rounds, "mine", fake_mine)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", tmp_path / "repo")
+
+        args = run_review_bench.build_parser().parse_args(["mine-rounds", "--local-dir", str(tmp_path / "local")])
+        exit_code = run_review_bench.cmd_mine_rounds(args)
+
+        assert exit_code == 0
+        assert captured_calls == [tmp_path / "repo"]
+
 
 class TestCmdSnapshotArms:
     def test_writes_both_arms_under_the_given_root_and_reports_each(
@@ -751,6 +869,22 @@ class TestCmdSnapshotArms:
             f"snapshot-arms: wrote {lens_count} lens file(s) for {arms_mod.ARM_FUNCTION_CONTEXT} "
             f"under {arms_root / arms_mod.ARM_FUNCTION_CONTEXT}"
         ) in stderr
+
+    def test_cli_flags_reach_cmd_snapshot_arms_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
+        captured_calls: list[tuple[str, Path]] = []
+        monkeypatch.setattr(
+            arms_mod, "write_arm_snapshot", lambda arm, dest_dir: captured_calls.append((arm, dest_dir)),
+        )
+
+        arms_root = tmp_path / "arms"
+        args = run_review_bench.build_parser().parse_args(["snapshot-arms", "--arms-root", str(arms_root)])
+        exit_code = run_review_bench.cmd_snapshot_arms(args)
+
+        assert exit_code == 0
+        assert captured_calls == [
+            (arms_mod.ARM_CURRENT_RULE, arms_root / arms_mod.ARM_CURRENT_RULE),
+            (arms_mod.ARM_FUNCTION_CONTEXT, arms_root / arms_mod.ARM_FUNCTION_CONTEXT),
+        ]
 
 
 def _spot_check_args(tmp_path: Path, **overrides) -> argparse.Namespace:
@@ -797,6 +931,30 @@ class TestCmdSpotCheckExport:
         stderr = capsys.readouterr().err
         assert f"spot-check export: wrote 1 recall item(s) and 1 precision item(s) to {out_path}" in stderr
 
+    def test_cli_flags_reach_cmd_spot_check_export_via_build_parser(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import adjudicate
+
+        recall_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1", kind=adjudicate.SPOT_CHECK_KIND_RECALL, judge_label="FOUND",
+                display_text="recall text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        monkeypatch.setattr(run_review_bench, "_build_spot_check_samples", lambda args: (recall_sample, []))
+
+        out_path = tmp_path / "export.json"
+        args = run_review_bench.build_parser().parse_args([
+            "spot-check", "export", "--reviewer-records-path", str(tmp_path / "reviewer.jsonl"),
+            "--judge-records-path", str(tmp_path / "judge.jsonl"), "--out", str(out_path),
+        ])
+        exit_code = run_review_bench.cmd_spot_check_export(args)
+
+        assert exit_code == 0
+        exported = json.loads(out_path.read_text())
+        assert exported == [{"item_id": "d1:r1", "kind": adjudicate.SPOT_CHECK_KIND_RECALL, "display_text": "recall text"}]
+
 
 class TestCmdSpotCheckImport:
     def test_scores_kappa_per_kind_and_split_agreement_per_arm(
@@ -835,6 +993,32 @@ class TestCmdSpotCheckImport:
         assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_PRECISION} kappa = 1.000 -- validated" in stderr
         assert f"spot-check import: {arms_mod.ARM_CURRENT_RULE} split agreement = 1.000" in stderr
 
+    def test_cli_flags_reach_cmd_spot_check_import_via_build_parser(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from review_bench import adjudicate
+
+        recall_sample = [
+            adjudicate.SpotCheckCandidate(
+                item_id="d1:r1", kind=adjudicate.SPOT_CHECK_KIND_RECALL, judge_label="FOUND",
+                display_text="recall text", arm=arms_mod.ARM_CURRENT_RULE,
+            ),
+        ]
+        monkeypatch.setattr(run_review_bench, "_build_spot_check_samples", lambda args: (recall_sample, []))
+
+        labels_path = tmp_path / "labels.json"
+        labels_path.write_text(json.dumps([{"item_id": "d1:r1", "human_label": "FOUND"}]))
+
+        args = run_review_bench.build_parser().parse_args([
+            "spot-check", "import", "--reviewer-records-path", str(tmp_path / "reviewer.jsonl"),
+            "--judge-records-path", str(tmp_path / "judge.jsonl"), "--labels-path", str(labels_path),
+        ])
+        exit_code = run_review_bench.cmd_spot_check_import(args)
+
+        assert exit_code == 0
+        stderr = capsys.readouterr().err
+        assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_RECALL} kappa = 1.000 -- validated" in stderr
+
 
 class TestMainCatchesHarnessInvalidatedErrorForEveryCommand:
     """`cmd_judge` and `_build_spot_check_samples` (unlike `cmd_analyze`) have
@@ -860,3 +1044,60 @@ class TestMainCatchesHarnessInvalidatedErrorForEveryCommand:
         stderr = capsys.readouterr().err
         assert "malformed line 1" in stderr
         assert str(reviewer_records_path) in stderr
+
+    def test_judge_with_a_malformed_judge_records_file_releases_the_lock_and_exits_2_via_main(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        """cmd_judge reads judge_records_path inside the try/finally that
+        holds run_store's lock -- unlike reviewer_records_path, read
+        before acquire_lock. Proves the lock still releases when the
+        exception fires from inside that block."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        runner.append_run_record(reviewer_records_path, _run_record("d1", "current-rule", "run-1", "No findings."))
+
+        judge_records_dir = tmp_path / "judge-runs"
+        judge_records_dir.mkdir()
+        campaign_id = "judge-test"
+        judge_records_path = judge_records_dir / f"{campaign_id}.jsonl"
+        # Missing campaign_id/arm/etc. -- a schema failure, not a
+        # truncated-write one, so read_run_records raises even as the last line.
+        judge_records_path.write_text(json.dumps({"defect_id": "d1"}) + "\n")
+        judge_run_store_dir = tmp_path / "judge-run-store"
+
+        exit_code = run_review_bench.main([
+            "judge", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_records_path),
+            "--judge-records-dir", str(judge_records_dir), "--campaign-id", campaign_id,
+            "--judge-run-store-dir", str(judge_run_store_dir),
+        ])
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "malformed line 1" in stderr
+        assert str(judge_records_path) in stderr
+        assert not (judge_run_store_dir / runner._LOCK_FILENAME).exists()
+
+    def test_spot_check_export_with_a_malformed_judge_records_file_exits_2_via_main(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        """_build_spot_check_samples' two runner.read_run_records calls
+        have no local try/except in either cmd_spot_check_export or
+        cmd_spot_check_import -- both rely entirely on main's top-level
+        handler."""
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        runner.append_run_record(reviewer_records_path, _run_record("d1", "current-rule", "run-1", "No findings."))
+        judge_records_path = tmp_path / "judge.jsonl"
+        # Missing campaign_id/arm/etc. -- a schema failure, not a
+        # truncated-write one, so read_run_records raises even as the last line.
+        judge_records_path.write_text(json.dumps({"defect_id": "d1"}) + "\n")
+
+        exit_code = run_review_bench.main([
+            "spot-check", "export", "--reviewer-records-path", str(reviewer_records_path),
+            "--judge-records-path", str(judge_records_path), "--out", str(tmp_path / "sheet.json"),
+        ])
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "malformed line 1" in stderr
+        assert str(judge_records_path) in stderr
