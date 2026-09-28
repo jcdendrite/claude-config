@@ -87,7 +87,7 @@ def _make_package(tmp_path: Path) -> Path:
     claude_skills.mkdir(parents=True)
     (claude_skills / "content.md").write_text("# placeholder claude-skills content\n")
 
-    subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
     # `git add`, deliberately no `git commit`: `git ls-files` (default, no
     # flags) reads the index, not HEAD, so staged-but-uncommitted is already
     # "tracked" for stow_untracked_package_entries's purposes -- skipping
@@ -96,6 +96,7 @@ def _make_package(tmp_path: Path) -> Path:
         ["git", "add", "claude/.claude/skills", "claude/.claude/scripts"],
         cwd=pkg_root,
         check=True,
+        timeout=10,
     )
     return pkg_root
 
@@ -114,6 +115,7 @@ def _run_stow_adopt_block(pkg_root: Path, home: Path) -> subprocess.CompletedPro
         text=True,
         check=False,
         env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
+        timeout=30,
     )
 
 
@@ -213,7 +215,7 @@ class TestStowAdoptIgnorePattern:
         sibling = pkg_root / "claude" / ".claude" / ".claudexjson"
         sibling.write_text("# tracked sibling differing only at the dot position\n")
         subprocess.run(
-            ["git", "add", "claude/.claude/.claudexjson"], cwd=pkg_root, check=True
+            ["git", "add", "claude/.claude/.claudexjson"], cwd=pkg_root, check=True, timeout=10
         )
         target_dotted = home / ".claude" / ".claude.json"
         target_dotted.parent.mkdir(parents=True)
@@ -306,6 +308,7 @@ def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) 
         text=True,
         check=False,
         env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
+        timeout=30,
     )
 
 

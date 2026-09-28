@@ -286,16 +286,9 @@ fi
 # repeating that line here, which confuses shellcheck's forward-reference
 # analysis for the calls above.
 #
-# A stray real claude/.claude/settings.json can appear via write-through: a
-# Claude Code session that opens the pre-rename $HOME/.claude/settings.json
-# symlink after it dangles (git pull renamed the tracked file to
-# settings.base.json, but this checkout hasn't re-installed yet) recreates
-# its old checkout-relative target with O_CREAT.
-# Removed here to mechanize the manual cleanup README.md's migration note
-# otherwise asks consumers to do by hand.
-# settings.base.json is the only tracked file post-rename, so nothing
-# besides this stray-write path could have put a real file back at the old
-# settings.json path.
+# Removes a stray settings.json left by the write-through migration hazard
+# described in README.md's "Migration notes" section; settings.base.json is
+# the only tracked file post-rename, so nothing else can recreate it here.
 if [ -e "$REPO_DIR/claude/.claude/settings.json" ] && [ ! -L "$REPO_DIR/claude/.claude/settings.json" ]; then
   rm -f -- "$REPO_DIR/claude/.claude/settings.json"
   echo "[install] removed a stray $REPO_DIR/claude/.claude/settings.json left behind by a pre-migration write-through -- settings.base.json is the tracked file now" >&2
@@ -586,7 +579,14 @@ ensure_settings_render
 # Deliberately not warn-and-continue like the rest of this script: settings.json
 # carries the security hard-floor deny rules and hook registrations, so a
 # broken render must abort rather than leave those silently unenforced.
-CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh"
+#
+# Same portable timeout/gtimeout wrapper as ensure-settings-render.sh, shared
+# via _capped-for-lib.sh -- see that file for the probe order, -k escalation,
+# and D-state/no-binary caveats. Bounds only a CPU-bound hang or a child that
+# honors SIGTERM: a genuine render failure, including a timeout kill, still
+# exits non-zero and aborts under set -e.
+. "$REPO_DIR/claude/.claude/scripts/_capped-for-lib.sh"
+_capped_for 5 env CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh"
 # INSTALL_TEST_FIXTURE: render-settings-invoke — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE

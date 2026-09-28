@@ -74,22 +74,24 @@ def _write_stow_packages_stub(scripts_dir: Path) -> None:
 def _make_package(pkg_root: Path, base_content: dict) -> None:
     """A throwaway stow package mirroring this repo's real shape closely
     enough to exercise the stow + render sequence: a tracked
-    settings.base.json plus the real _stow_migration_lib.sh and
-    render-settings.sh (symlinked, not reimplemented, so the test exercises
+    settings.base.json plus the real _stow_migration_lib.sh, render-settings.sh,
+    and _capped-for-lib.sh (symlinked, not reimplemented, so the test exercises
     the actual scripts under review, not a copy of them), plus a stub
     stow-packages.sh (see _write_stow_packages_stub)."""
     scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "_stow_migration_lib.sh").symlink_to(SCRIPTS_DIR / "_stow_migration_lib.sh")
     (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+    (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
     _write_stow_packages_stub(scripts_dir)
     (pkg_root / "claude" / ".claude" / "settings.base.json").write_text(json.dumps(base_content))
 
-    subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
     subprocess.run(
         ["git", "add", "claude/.claude/scripts", "claude/.claude/settings.base.json"],
         cwd=pkg_root,
         check=True,
+        timeout=10,
     )
 
 
@@ -117,6 +119,7 @@ def _run_stow_and_render(pkg_root: Path, home: Path) -> subprocess.CompletedProc
             "REPO_DIR": str(pkg_root),
             "CLAUDE_CONFIG_DIR": str(home / "decoy-config-dir"),
         },
+        timeout=30,
     )
 
 
@@ -170,6 +173,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         scripts_dir = repo_dir / "claude" / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
 
@@ -183,6 +187,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
             text=True,
             check=False,
             env={**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)},
+            timeout=30,
         )
 
         assert result.returncode != 0, (
@@ -208,11 +213,12 @@ class TestAbortsOnRenderFailure:
             SCRIPTS_DIR / "_stow_migration_lib.sh"
         )
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         _write_stow_packages_stub(scripts_dir)
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
-        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
-        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
+        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True, timeout=10)
 
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -238,11 +244,12 @@ class TestAbortsOnRenderFailure:
             SCRIPTS_DIR / "_stow_migration_lib.sh"
         )
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         _write_stow_packages_stub(scripts_dir)
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render, after hardening has run.
-        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
-        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
+        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True, timeout=10)
 
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -264,6 +271,7 @@ class TestAbortsOnRenderFailure:
             text=True,
             check=False,
             env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
+            timeout=30,
         )
 
         assert result.returncode != 0, "the render step must still abort"
@@ -313,6 +321,7 @@ class TestRcInvocationPrecedesRenderCall:
         scripts_dir = repo_dir / "claude" / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         # No settings.base.json -- render-settings.sh's own missing-base
         # check fails the render.
 
@@ -323,6 +332,7 @@ class TestRcInvocationPrecedesRenderCall:
             text=True,
             check=False,
             env={**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)},
+            timeout=30,
         )
 
         assert result.returncode != 0, "the render step must still abort"

@@ -47,6 +47,7 @@ def _run_script(
         cwd=cwd,
         env=env,
         check=False,
+        timeout=15,
     )
 
 
@@ -70,6 +71,7 @@ def _rule4_dotted_paths_from_render_settings() -> list[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=15,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -769,6 +771,58 @@ class TestDirectoryAtTarget:
         assert list(target.iterdir()) == []
 
 
+class TestWritePathFailures:
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unwritable_config_dir_fails_loudly_with_no_partial_settings_json(
+        self, tmp_path: Path
+    ) -> None:
+        """A read-only config_dir can't hold the mktemp temp file the render
+        writes ahead of its atomic rename into settings.json -- this must
+        fail loudly with render-settings.sh's own diagnostic convention, not
+        mktemp's raw stderr. Covers only the total pre-write failure (no
+        settings.json exists yet, so mktemp itself is the first thing that
+        fails); see test_unwritable_config_dir_leaves_a_pre_existing_settings_json_untouched
+        below for the failed-re-render-over-a-working-file case."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        config_dir.chmod(0o500)
+        try:
+            result = _run_script(config_dir=config_dir)
+        finally:
+            config_dir.chmod(0o755)
+
+        assert result.returncode != 0
+        assert "render-settings.sh:" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unwritable_config_dir_leaves_a_pre_existing_settings_json_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """The more realistic production shape: a machine that already has a
+        working settings.json, then loses write access to config_dir (a
+        permissions change, a full disk, a cross-device mv failure) before
+        the next render. mktemp fails the same way as the no-prior-file case
+        above, but here there's a valid file at risk of being clobbered --
+        this pins that the failed render leaves it byte-identical rather
+        than truncating or partially overwriting it."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        prior_content = json.dumps({"otherKey": "base-value", "theme": "dark"})
+        (config_dir / "settings.json").write_text(prior_content)
+        config_dir.chmod(0o500)
+        try:
+            result = _run_script(config_dir=config_dir)
+        finally:
+            config_dir.chmod(0o755)
+
+        assert result.returncode != 0
+        assert "render-settings.sh:" in result.stderr
+        assert (config_dir / "settings.json").read_text() == prior_content
+
+
 class TestBaseValidation:
     def test_base_valid_json_but_not_object_is_rejected(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -808,6 +862,57 @@ class TestIdempotency:
         second_hash = _sha256(config_dir / "settings.json")
 
         assert first_hash == second_hash
+
+    def test_concurrent_renders_of_different_overlays_yield_one_racers_full_output(
+        self, tmp_path: Path
+    ) -> None:
+        """Two real render-settings.sh subprocesses racing against the same
+        config_dir -- the two-terminal-tabs-opening-at-once scenario
+        ensure-settings-render.sh's rc hook can trigger -- each given its own
+        overlay so the two computed merges genuinely differ. A byte-identical
+        race (both racers given the same inputs) can't distinguish an atomic
+        replace from a non-atomic one, since either racer's output would be
+        indistinguishable from the other's; giving each racer a different
+        overlay means only a truly atomic mktemp+mv can leave settings.json
+        matching one racer's full output rather than an interleaved or
+        truncated mix of both."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        base = {"otherKey": "base-value"}
+        _write_json(config_dir / "settings.base.json", base)
+
+        overlay_a = tmp_path / "overlay-a.json"
+        overlay_b = tmp_path / "overlay-b.json"
+        _write_json(overlay_a, {"autoMode": {"environment": ["racer-a"]}})
+        _write_json(overlay_b, {"autoMode": {"environment": ["racer-b"]}})
+        expected_a = {**base, "autoMode": {"environment": ["racer-a"]}}
+        expected_b = {**base, "autoMode": {"environment": ["racer-b"]}}
+
+        env = dict(os.environ)
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        procs = [
+            subprocess.Popen(
+                [str(_SCRIPT), str(overlay)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            for overlay in (overlay_a, overlay_b)
+        ]
+        results = [proc.communicate(timeout=30) for proc in procs]
+
+        for proc, (_, stderr) in zip(procs, results):
+            assert proc.returncode == 0, stderr
+
+        # Whichever racer's mv wins, the result must be that racer's own
+        # full merge output, never a hybrid -- the assertion a non-atomic
+        # write (e.g. a `>` redirect to a shared temp name) would fail.
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered in (expected_a, expected_b), (
+            "settings.json must match exactly one racer's full merge "
+            f"output, not a hybrid of both; got {rendered!r}"
+        )
 
 
 class TestThemeTuiPreservation:
@@ -1160,6 +1265,7 @@ class TestRuleFourGuardedKeysCrossCheck:
             capture_output=True,
             text=True,
             check=False,
+            timeout=15,
         )
         assert result.returncode == 0, result.stderr
         guarded_keys = json.loads(result.stdout)

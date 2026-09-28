@@ -394,7 +394,7 @@ fi
 #                                 a vendor brand, not a technical constant,
 #                                 so it accepts the same unbounded-digit
 #                                 tradeoff as GH/BUG rather than a fixed set)
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF, UTC
 #   happen to match [A-Z]{2,}-\d+:
 #   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
 #                                 as GH/BUG/GPT above rather than a fixed set.

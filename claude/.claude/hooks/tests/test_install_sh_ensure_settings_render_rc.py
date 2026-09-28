@@ -92,6 +92,7 @@ def _run_settings_render_rc_block(test_home: Path) -> subprocess.CompletedProces
         text=True,
         check=False,
         env=env,
+        timeout=15,
     )
 
 
@@ -177,6 +178,7 @@ def _run_ensure_script(test_home: Path) -> subprocess.CompletedProcess:
         text=True,
         check=False,
         env=env,
+        timeout=15,
     )
 
 
@@ -398,13 +400,13 @@ class TestEnsureSettingsRenderStalenessCache:
         env.pop("CLAUDE_CONFIG_DIR", None)
 
         first = subprocess.run(
-            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env
+            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
         )
         assert first.returncode == 0, f"stderr={first.stderr!r}"
         assert invocations.read_text().count("invoked\n") == 1
 
         second = subprocess.run(
-            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env
+            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
         )
 
         assert second.returncode == 0, f"stderr={second.stderr!r}"

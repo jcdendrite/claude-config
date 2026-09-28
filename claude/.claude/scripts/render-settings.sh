@@ -280,7 +280,15 @@ fi
 # mktemp in $target's own directory so the final mv is a same-filesystem
 # rename, and so mv-onto-target replaces a symlink instead of writing
 # through it (see header comment).
-tmp_target="$(mktemp "$target.XXXXXX")"
+if ! tmp_target="$(mktemp "$target.XXXXXX" 2>&1)"; then
+  # mktemp writes only the path to stdout on success and only its own
+  # diagnostic to stderr on failure, never both. Merging the streams here is
+  # therefore safe: on this failure branch, $tmp_target holds mktemp's own
+  # error text (permission denied, ENOSPC, missing parent dir) instead of a
+  # temp path.
+  echo "render-settings.sh: could not create a temp file next to $target -- $tmp_target -- refusing to render" >&2
+  exit 1
+fi
 trap 'rm -f "$tmp_target"' EXIT
 printf '%s\n' "$merged_json" > "$tmp_target"
 

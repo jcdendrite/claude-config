@@ -576,10 +576,11 @@ evolves. Set the chosen values under `env` in
 namespace are accepted — see
 [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) for
 that namespace rule — or enforce the values via managed settings, below.
-Hand-editing `env` values directly in the tracked
-`claude/.claude/settings.json` produces an uncommitted change that blocks
-`git pull` — see the "Existing users" remedy under
-[Requirements](../README.md#requirements).
+Hand-editing `env` values directly in the generated, gitignored
+`~/.claude/settings.json` doesn't block `git pull`, but is silently
+overwritten automatically on the very next new shell, since
+`ensure-settings-render.sh` re-renders it on every shell startup — see the
+"Migration notes" section under [Requirements](../README.md#requirements).
 
 **`permissions.allow` review.** Audit the allow rules in every
 `settings.json` / `settings.local.json` in scope. Each rule widens what
