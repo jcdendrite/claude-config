@@ -102,9 +102,12 @@ SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py
 
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
-# grep of import statements, not derived by a test -- an importer added
-# later, or one outside that grep's limits, needs its own manual addition to
-# the matching *_IMPORTING_* constant below.
+# grep of static `import`/`from` statements, not derived by a test, so the
+# lists may be incomplete: string imports (importlib.import_module,
+# __import__), relative imports, modules loaded by file path, and imports
+# resolved through other sys.path entries all escape it. Such an importer, or
+# one added later, needs its own manual addition to the matching *_IMPORTING_*
+# constant below.
 
 # Import dependency of HOOKS_TESTS_IMPORTING_CONFIG's test files.
 CONFIG_MODULE = "claude/.claude/scripts/_config.py"

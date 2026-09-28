@@ -1261,19 +1261,27 @@ class TestSelectPytestTargets:
 
     @pytest.mark.parametrize(
         "changed_path",
-        ["claude/.claude/hooks/tests/__init__.py", "claude/.claude/hooks/tests/conftest.py"],
+        [
+            "claude/.claude/hooks/__init__.py",
+            "claude/.claude/hooks/tests/__init__.py",
+            "claude/.claude/hooks/tests/conftest.py",
+        ],
     )
     def test_remaining_hooks_tests_modules_select_scripts_tests_importers(self, changed_path):
-        """The other two HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
-        members -- hooks/__init__.py is covered by the containment-collision
-        test above, and test_config_lib.py by its own dedicated test above.
-        Without this coverage, a typo or path drift in either untested
-        member would select the wrong path and go undetected by every other
-        test here. Both parametrized paths resolve to the same target set,
-        contributed by three rules:
-        - the packaging predicate's __init__.py/conftest.py legs add HOOKS_TESTS_DIR and CLAUDE_TESTS_DIR
-        - HOOKS_TESTS_DIR's own domain rules add TICKET_REFERENCE_DISCIPLINE_TEST_PATH and the transcript-analysis pair
-        - SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's cross-domain row adds its own two files
+        """The three HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS members
+        other than test_config_lib.py, which has its own dedicated test,
+        test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers.
+        Without this coverage, a member dropped from the row or retyped to a
+        different existing file would change what these paths select with no
+        dedicated test noticing. All three parametrized paths resolve to the same target set,
+        contributed by five rows:
+        - DOMAIN_RULES' HOOKS_DIR entry adds HOOKS_TESTS_DIR
+        - CROSS_DOMAIN_EXCEPTIONS' _is_hooks_or_skills_change row adds the transcript-analysis pair
+        - CROSS_DOMAIN_EXCEPTIONS' _is_py_source_under_claude_or_plugins row adds TICKET_REFERENCE_DISCIPLINE_TEST_PATH
+        - CROSS_DOMAIN_EXCEPTIONS' _is_test_tree_packaging_change row adds only CLAUDE_TESTS_DIR
+          (hooks/__init__.py matches that predicate through its __init__.py leg alone)
+        - CROSS_DOMAIN_EXCEPTIONS' HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS row adds
+          SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files
         """
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
