@@ -12,7 +12,7 @@
 - `tier-b:[<stale-pr>]` becomes `tier-b:reachable:[<stale-pr>]`.
 - The new case is `tier-b:pr-head-descendant:<pr>:<merged-date>:<ahead-count>`.
 
-The Step 4 option text suggested a new `tier-b-descendant:` token. The forward-direction plan already rejected that shape for Tier A (`.claude/plans/classify-branch-ancestor-merged-head.md`, M2):
+An earlier proposal in this plan's drafting suggested a new `tier-b-descendant:` token. The forward-direction plan already rejected that shape for Tier A (`.claude/plans/classify-branch-ancestor-merged-head.md`, M2):
 - The glob `tier-b:*` does not match `tier-b-descendant:…`.
 - Neither verdict `case` statement has a `*)` default arm.
 - So a forgotten arm drops the branch from the sweep silently.
@@ -32,7 +32,7 @@ The BASIS values are the verdict's own basis names, so the helper, the verdicts,
 
 The reverse direction therefore has no "PR ref aged out" failure mode of its own. A `headRefOid` whose object is not local cannot be an ancestor of the tip, so the scan misses and falls through to today's verdict. The existing unfetchable-ref tests now run through the new scan with missing objects, so they keep guarding it with no new fetch-path tests.
 
-**Count: `git rev-list --count "$tip" "^${oid}" "^refs/remotes/origin/${DEFAULT_BRANCH}"`, with `?` as the fallback.** The Step 4 option text proposed `<oid>..<tip>`. That formula also counts default-branch commits that a merge resync pulled onto the branch. The Context names resyncs as one way this shape arises, so one follow-up commit plus a resync could read as dozens of commits. Excluding `origin/<default>` counts only the commits a `y` would remove from every ref this script can see.
+**Count: `git rev-list --count "$tip" "^${oid}" "^refs/remotes/origin/${DEFAULT_BRANCH}"`, with `?` as the fallback.** An earlier proposal in this plan's drafting proposed `<oid>..<tip>`. That formula also counts default-branch commits that a merge resync pulled onto the branch. The Context names resyncs as one way this shape arises, so one follow-up commit plus a resync could read as dozens of commits. Excluding `origin/<default>` counts only the commits a `y` would remove from every ref this script can see.
 - **Always at least 1.** Reachability runs first and returns early, so a descendant hit means the tip is not on `origin/<default>`.
 - **`?` fallback.** It keeps the verdict well-formed if `rev-list` fails, for example when `refs/remotes/origin/<default>` is missing. That matches `classify_branch`'s contract of always returning 0.
 - **Computed in `classify_branch`.** That is the only place that holds the oid. The count travels in the verdict, so the detection loop makes no git call.
@@ -51,7 +51,7 @@ Over-powered-primitive check: nothing here is heavier than what the script alrea
 
 **Rows**
 1. The descendant case lands in Tier B: `TIER_VALUES` "B", with the TTY prompt, the non-TTY skip, and the dry-run section reused. `[engineer-verified: "Fold into Tier B (Recommended)"]`
-2. Two specifics in the Step 4 option description are the dispatching session's proposal, not the engineer's words: a new verdict label such as `tier-b-descendant`, and reusing Tier B's output verbatim. This plan keeps the output surfaces verbatim but does not add the new token (M2). `[unverified]`
+2. Two specifics in that earlier proposal are the dispatching session's own wording, not the engineer's: a new verdict label such as `tier-b-descendant`, and reusing Tier B's output verbatim. This plan keeps the output surfaces verbatim but does not add the new token (M2). `[unverified]`
 3. The prompt and the dry-run text state a commit count. `[engineer-verified: "Show the count (Recommended)"]`
 4. The option description's formula, `git rev-list --count <oid>..<tip>`, is the dispatching session's proposal. This plan narrows it to exclude `origin/<default>` (M4). `[unverified]`
 5. On the `stale:` path no merged row's oid equals the tip, so a successful `--is-ancestor <oid> <tip>` means a strict descendant. `[verified: cleanup-merged-branches.sh:450-452 emits matched: on any equality; case arms :486-502]`

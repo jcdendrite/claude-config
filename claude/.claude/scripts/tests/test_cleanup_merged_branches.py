@@ -2209,9 +2209,9 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
 
     @pytest.mark.parametrize("reply", [b"y\n", b"Y\n"], ids=["lowercase-y", "uppercase-Y"])
     def test_pty_reply_y_deletes_local_and_remote(self, tmp_path, fake_gh, reply):
-        """The one basis where a `y` discards commits that exist nowhere
-        else -- mirrors TestTierBReachableNoMergedPR's TTY-`y` coverage for
-        plain Tier B, with an added remote-deletion check since this
+        """This is the one basis where a `y` discards commits that exist
+        nowhere else. It mirrors TestTierBReachableNoMergedPR's TTY-`y`
+        coverage for plain Tier B, adding a remote-deletion check since this
         branch's commits are otherwise unrecoverable."""
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
@@ -2352,7 +2352,7 @@ class TestMalformedDescendantVerdictFieldsFailClosed:
         merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/count-fails", 813)
 
         # Fails only the ahead-count's own `rev-list --count ...
-        # ^refs/remotes/origin/<default>` call; the ancestry check that
+        # ^refs/remotes/origin/<default>` call. The ancestry check that
         # must still succeed for a descendant verdict never passes that
         # argument shape.
         real_git = shutil.which("git")
