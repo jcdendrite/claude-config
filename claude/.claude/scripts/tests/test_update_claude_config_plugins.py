@@ -63,6 +63,7 @@ def _make_claude_shim(
     installed_plugins: list[dict],
     update_log: Path,
     fail_for_plugin_ids: frozenset[str] = frozenset(),
+    install_log: Path | None = None,
 ) -> None:
     """Write a fake claude executable to bin_dir.
 
@@ -71,11 +72,27 @@ def _make_claude_shim(
       claude plugin marketplace update claude-config
       claude plugin list --json
       claude plugin update <plugin> --scope <scope>
+      claude plugin install <plugin> [-s|--scope <scope>] [-- ...]
 
     update_log records each "plugin update" invocation as a JSON line
     (plugin id, scope, cwd at call time, and outcome "success"/"failure").
     Plugin ids in fail_for_plugin_ids still get an update_log entry but the
     shim exits 1 instead of 0, simulating a failed update for that entry.
+
+    install_log, when given, records each "plugin install" invocation as a
+    JSON line carrying the same fields plus the full raw args list (not
+    just the extracted plugin/scope/cwd fields) -- reconcile-project-
+    plugins.sh's own tests need the raw args to assert on `-s local`/no-`-y`
+    argv content, which the extracted fields alone can't show. `-s` is
+    accepted as a synonym for `--scope`, matching the reconciler's `-s
+    local` call shape (M6), unlike "plugin update"'s long-form-only
+    parsing above. The plugin id is found positionally as the first
+    non-flag, non-`--` token, tolerating either `<id> -s <scope>` or `-s
+    <scope> -- <id>` ordering. Plugin ids in fail_for_plugin_ids fail here
+    too, the same as for "plugin update". With no install_log, "plugin
+    install" still succeeds silently, matching
+    test_register_marketplace.py's `_make_claude_full_shim` default, for
+    callers that only care about other subcommands.
     """
     installed_json = json.dumps(installed_plugins)
     marketplace_list_json = json.dumps([{
@@ -83,6 +100,7 @@ def _make_claude_shim(
         "source": "directory",
         "installLocation": str(marketplace_location),
     }])
+    install_log_repr = repr(str(install_log)) if install_log else "None"
 
     shim = textwrap.dedent(f"""\
         #!/usr/bin/env python3
@@ -90,6 +108,7 @@ def _make_claude_shim(
 
         args = sys.argv[1:]
         FAIL_FOR_PLUGIN_IDS = {repr(sorted(fail_for_plugin_ids))}
+        install_log = {install_log_repr}
 
         def is_subcommand(*parts):
             return args[:len(parts)] == list(parts)
@@ -121,6 +140,42 @@ def _make_claude_shim(
                 }}) + "\\n")
             if fails:
                 print(f"ERROR: update failed for {{plugin_id}}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(0)
+
+        if is_subcommand("plugin", "install"):
+            rest = args[2:]
+            plugin_id = ""
+            scope = ""
+            skip_next = False
+            for i, tok in enumerate(rest):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if tok == "--":
+                    continue
+                if tok in ("-s", "--scope"):
+                    if i + 1 < len(rest):
+                        scope = rest[i + 1]
+                    skip_next = True
+                    continue
+                if tok.startswith("-"):
+                    continue
+                if not plugin_id:
+                    plugin_id = tok
+            fails = plugin_id in FAIL_FOR_PLUGIN_IDS
+            outcome = "failure" if fails else "success"
+            if install_log:
+                with open(install_log, "a") as f:
+                    f.write(json.dumps({{
+                        "plugin": plugin_id,
+                        "scope": scope,
+                        "cwd": os.getcwd(),
+                        "args": args,
+                        "outcome": outcome,
+                    }}) + "\\n")
+            if fails:
+                print(f"ERROR: install failed for {{plugin_id}}", file=sys.stderr)
                 sys.exit(1)
             sys.exit(0)
 

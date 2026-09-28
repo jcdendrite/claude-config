@@ -10779,3 +10779,201 @@ def test_shared_closure_function_is_identical_across_stowed_and_plugin_lib(
     assert _declared_function_body(_LIB_SH, function_name) == _declared_function_body(
         _SKILL_MANAGEMENT_PLUGIN_LIB, function_name
     )
+
+
+# ---------------------------------------------------------------------------
+# _lib_validate_plugin_id / _lib_missing_plugin_ids (project-plugin-registry-
+# bootstrap.md's M3/M1/M5) -- direct unit coverage independent of either
+# caller (bootstrap-project-plugins.sh's hook, not yet written, and
+# reconcile-project-plugins.sh's own tests in
+# claude/.claude/scripts/tests/test_reconcile_project_plugins.py), so neither
+# caller can silently diverge from the other on this shared seam.
+# ---------------------------------------------------------------------------
+
+class TestLibValidatePluginId:
+    @pytest.mark.parametrize(
+        "plugin_id",
+        ["foo@bar", "a@b", "foo.bar@my-marketplace", "foo_bar@marketplace_1"],
+    )
+    def test_accepts_well_formed_id(self, plugin_id: str) -> None:
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+        assert result.returncode == 0, repr(result)
+
+    def test_accepts_marketplace_name_containing_npm_as_a_substring(self) -> None:
+        """The `npm` exclusion is an exact match on the marketplace half, not
+        a substring match -- a marketplace merely named similarly must still
+        pass."""
+        result = _run_lib_call("_lib_validate_plugin_id foo@npmxyz", env=dict(os.environ))
+        assert result.returncode == 0, repr(result)
+
+    @pytest.mark.parametrize(
+        "plugin_id",
+        ["-foo@bar", ".foo@bar", "_foo@bar"],
+    )
+    def test_rejects_leading_punctuation_before_the_marketplace_separator(
+        self, plugin_id: str
+    ) -> None:
+        """Both halves must start with an alphanumeric character --
+        `[A-Za-z0-9._-]+` alone would admit a leading `-`, `.`, or `_`, which
+        would defeat the anti-flag-injection purpose of validating at all."""
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+        assert result.returncode == 1, repr(result)
+
+    @pytest.mark.parametrize(
+        "plugin_id",
+        ["foo@-bar", "foo@.bar", "foo@_bar"],
+    )
+    def test_rejects_leading_punctuation_after_the_marketplace_separator(
+        self, plugin_id: str
+    ) -> None:
+        """Mirrors test_rejects_leading_punctuation_before_the_marketplace_
+        separator above -- the marketplace half is anchored on the same
+        alphanumeric-first requirement as the name half, not just the name
+        half."""
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+        assert result.returncode == 1, repr(result)
+
+    def test_rejects_reserved_npm_pseudo_marketplace(self) -> None:
+        """The CLI treats `<pkg>@npm` as a real install form; `npm` would
+        otherwise pass the regex and be blocked only by happening not to
+        appear in the registered-marketplace list."""
+        result = _run_lib_call("_lib_validate_plugin_id foo@npm", env=dict(os.environ))
+        assert result.returncode == 1, repr(result)
+
+    def test_rejects_missing_marketplace_half(self) -> None:
+        result = _run_lib_call("_lib_validate_plugin_id foo", env=dict(os.environ))
+        assert result.returncode == 1, repr(result)
+
+
+def _missing_plugin_ids(settings_file: Path, registry_file: Path) -> subprocess.CompletedProcess:
+    return _run_lib_call(
+        f"_lib_missing_plugin_ids {shlex.quote(str(settings_file))} {shlex.quote(str(registry_file))}",
+        env=dict(os.environ),
+    )
+
+
+def _write_registry(path: Path, plugins: dict[str, list[dict]], version: int = 2) -> None:
+    path.write_text(json.dumps({"version": version, "plugins": plugins}))
+
+
+class TestLibMissingPluginIds:
+    def test_reports_every_true_valued_id_when_registry_is_absent(self, tmp_path: Path) -> None:
+        """Matches install.sh:732-735's own "proceeding as if none are
+        installed" -- a missing registry is treated as an empty one."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True, "baz@qux": True}}))
+        registry_file = tmp_path / "installed_plugins.json"
+
+        result = _missing_plugin_ids(settings_file, registry_file)
+
+        assert result.returncode == 0, repr(result)
+        assert sorted(result.stdout.split()) == ["baz@qux", "foo@bar"]
+
+    def test_prints_nothing_when_settings_file_is_absent(self, tmp_path: Path) -> None:
+        result = _missing_plugin_ids(tmp_path / "no-such-settings.json", tmp_path / "no-such-registry.json")
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_prints_nothing_when_enabled_plugins_is_absent(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{}")
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_skips_false_valued_entries(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": False}}))
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_id_already_in_registry_is_not_reported_missing(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        registry_file = tmp_path / "installed_plugins.json"
+        _write_registry(registry_file, {"foo@bar": [{"scope": "local", "installPath": "x", "projectPath": "/repo-a"}]})
+
+        result = _missing_plugin_ids(settings_file, registry_file)
+
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_resolution_is_name_keyed_not_path_keyed(self, tmp_path: Path) -> None:
+        """A registry entry recorded under a different projectPath than the
+        settings file's own repo still counts as installed (row 10's
+        name-keyed design) -- this must not regress toward install.sh's own
+        projectPath-strict idempotence (row 22), which would silently
+        reintroduce a reinstall-per-worktree."""
+        settings_file = tmp_path / "repo-b" / ".claude" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        registry_file = tmp_path / "installed_plugins.json"
+        _write_registry(registry_file, {"foo@bar": [{"scope": "local", "installPath": "x", "projectPath": "/repo-a"}]})
+
+        result = _missing_plugin_ids(settings_file, registry_file)
+
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_registry_present_but_unparseable_fails_closed(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        registry_file = tmp_path / "installed_plugins.json"
+        registry_file.write_text("{not valid json")
+
+        result = _missing_plugin_ids(settings_file, registry_file)
+
+        assert result.returncode == 2, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_registry_version_mismatch_fails_closed(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        registry_file = tmp_path / "installed_plugins.json"
+        _write_registry(registry_file, {}, version=1)
+
+        result = _missing_plugin_ids(settings_file, registry_file)
+
+        assert result.returncode == 2, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_skipped_when_settings_file_is_a_symlink(self, tmp_path: Path) -> None:
+        real_target = tmp_path / "real-settings.json"
+        real_target.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}))
+        settings_file = tmp_path / "settings.json"
+        settings_file.symlink_to(real_target)
+
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+
+        assert result.returncode == 1, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_skipped_when_settings_file_is_not_a_regular_file(self, tmp_path: Path) -> None:
+        """A directory in place of the settings file -- the non-symlink half
+        of M1's "regular file, not a symlink" guard."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.mkdir()
+
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+
+        assert result.returncode == 1, repr(result)
+        assert result.stdout.strip() == ""
+
+    def test_skipped_when_settings_file_exceeds_size_cap(self, tmp_path: Path) -> None:
+        settings_file = tmp_path / "settings.json"
+        oversized_padding = " " * (5 * 1024 * 1024 + 1)
+        settings_file.write_text(
+            json.dumps({"enabledPlugins": {"foo@bar": True}, "padding": oversized_padding})
+        )
+
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+
+        assert result.returncode == 1, repr(result)
+        assert result.stdout.strip() == ""

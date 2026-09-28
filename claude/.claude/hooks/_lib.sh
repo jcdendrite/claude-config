@@ -3452,6 +3452,107 @@ _lib_worktree_collision_guard() {
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
+# _lib_validate_plugin_id PLUGIN_ID
+# Validates PLUGIN_ID against the "<name>@<marketplace>" shape a plugin
+# install/enable argv sink accepts, before it ever reaches a command line.
+# Both halves must start with an alphanumeric character -- `[A-Za-z0-9._-]+`
+# alone would admit a leading `-`, `.`, or `_`, which would defeat the
+# anti-flag-injection purpose of validating at all. Also rejects the
+# reserved pseudo-marketplace name `npm`: the CLI treats `<pkg>@npm` as a
+# real install form, and `npm` would otherwise pass this regex and be
+# blocked only by happening not to appear in the registered-marketplace
+# list.
+# Returns 0 for a valid id, 1 otherwise. Prints nothing.
+# Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so
+# neither can silently diverge from the other if this regex is ever
+# tightened again.
+_lib_validate_plugin_id() {
+  local plugin_id="$1"
+  [[ "$plugin_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [ "${plugin_id##*@}" = "npm" ] && return 1
+  return 0
+}
+
+# _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
+# Prints, one per line, every `true`-valued `enabledPlugins` id in
+# SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object.
+# Presence is name-keyed only -- an id counts as installed regardless of
+# which `projectPath` its registry entry(ies) carry.
+#
+# Before any jq invocation, SETTINGS_FILE is checked against the same
+# symlink-and-size-cap guard this repo already applies to untrusted file
+# content in deny-data-file-reads.sh and ask-new-dependency-disclosure.sh --
+# a repo-controlled path that resolves to a symlink or exceeds
+# _LIB_SIZE_THRESHOLD_BYTES is never read by jq. REGISTRY_FILE gets no such
+# guard: it is per-account CLI-managed state written only by `claude plugin
+# install`, not repo-controlled input, so it carries none of the trust-
+# boundary risk SETTINGS_FILE does. A future caller passing a REGISTRY_FILE
+# value derived from something less trusted than the fixed per-account
+# registry path must add its own guard -- this function does not.
+#
+# Every printed id is a raw `enabledPlugins` key, not validated against
+# _lib_validate_plugin_id's `<name>@<marketplace>` shape. Every caller must
+# revalidate an id against that function before using it in a CLI argv or
+# any other sink.
+#
+# Exit 0: success. Stdout holds each missing id, one per line (empty when
+# none -- including when SETTINGS_FILE is absent or has no true-valued
+# enabledPlugins). A missing REGISTRY_FILE is treated as an empty registry,
+# matching install.sh:732-735's "proceeding as if none are installed", so
+# every enabled id is reported missing.
+# Exit 1: SETTINGS_FILE is a symlink, not a regular file, or exceeds
+# _LIB_SIZE_THRESHOLD_BYTES. Stdout is empty. Both callers treat this
+# identically to a missing SETTINGS_FILE (nothing to install), but it is a
+# status distinguishable from exit 0 so a caller or test can tell "skipped"
+# apart from "genuinely nothing missing".
+# Exit 2: REGISTRY_FILE exists but is unparseable JSON, or its top-level
+# `version` is not 2 -- fail closed, distinct from a missing REGISTRY_FILE
+# (exit 0, empty registry). Stdout is empty.
+_lib_missing_plugin_ids() {
+  local settings_file="$1" registry_file="$2"
+
+  if [ -L "$settings_file" ]; then
+    return 1
+  fi
+  if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
+    return 1
+  fi
+  if [ -f "$settings_file" ]; then
+    local settings_size
+    settings_size=$(stat -c%s -- "$settings_file" 2>/dev/null) \
+      || settings_size=$(stat -f%z -- "$settings_file" 2>/dev/null) \
+      || settings_size=$(wc -c < "$settings_file" 2>/dev/null | tr -d '[:space:]') \
+      || settings_size=""
+    if [ -n "$settings_size" ] && [ "$settings_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
+      return 1
+    fi
+  fi
+
+  local enabled_ids=""
+  if [ -f "$settings_file" ]; then
+    enabled_ids=$(_lib_jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' -- "$settings_file" 2>/dev/null) || enabled_ids=""
+  fi
+  [ -z "$enabled_ids" ] && return 0
+
+  local registry_ids=""
+  if [ -f "$registry_file" ]; then
+    local registry_version
+    registry_version=$(_lib_jq -r '.version // empty' -- "$registry_file" 2>/dev/null) || registry_version=""
+    if [ "$registry_version" != "2" ]; then
+      return 2
+    fi
+    registry_ids=$(_lib_jq -r '.plugins // {} | keys[]' -- "$registry_file" 2>/dev/null) || return 2
+  fi
+
+  local id
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! printf '%s\n' "$registry_ids" | grep -qFx -- "$id"; then
+      printf '%s\n' "$id"
+    fi
+  done <<< "$enabled_ids"
+}
+
 # _lib_config_lines FILE
 # Prints each non-blank, non-comment line of a per-user config file
 # (credential-file-guard.md, data-file-read-guard.md, pii-patterns.md,
