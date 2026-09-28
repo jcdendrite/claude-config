@@ -330,7 +330,11 @@ rm -f -- "$untracked_entries_file"
 # shows up in another package's tree targeting the same path.
 # Applied to every package below, not just "claude", since Finder doesn't
 # respect stow package boundaries either.
-ds_store_ignore_arg='--ignore=\.DS_Store$'
+# The (^|/) alternation is required because stow's --ignore match is
+# unanchored at the front, so without it the pattern would also match any
+# tracked file whose name merely ends in the literal substring ".DS_Store"
+# (e.g. "notes.DS_Store"), silently dropping it from being symlinked.
+ds_store_ignore_arg='--ignore=(^|/)\.DS_Store$'
 
 # stow-packages.sh is the single source of truth for the package list (see
 # its own header comment).

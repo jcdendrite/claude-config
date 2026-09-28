@@ -270,11 +270,11 @@ class TestStowAdoptIgnorePattern:
     def test_nested_ds_store_below_package_top_level_is_ignored(
         self, tmp_path: Path
     ) -> None:
-        """`ds_store_ignore_arg`'s pattern is unanchored at the front, unlike
-        the fully-anchored entries in `stow_ignore_args` (compare the two
-        regex literals in install.sh). This pins that a `.DS_Store` nested
-        below a package's top level is ignored too, not just one at the
-        package root."""
+        """`ds_store_ignore_arg`'s pattern matches a `.DS_Store` path segment
+        at any depth. The entries in `stow_ignore_args` are instead anchored
+        to the package root. This pins that a `.DS_Store` nested below a
+        package's top level is ignored too, not just one at the package
+        root."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         (pkg_root / "claude" / ".claude" / "skills" / ".DS_Store").write_text("finder metadata")
@@ -304,7 +304,7 @@ class TestStowAdoptIgnorePattern:
     ) -> None:
         """A pre-existing `.DS_Store` symlink under the stow target, owned by
         an already-stowed package, must be left alone by a later package's
-        stow run. It must not be treated as a conflict, and it must not be
+        stow run. It must not be treated as a conflict. It must not be
         relinked."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
@@ -368,6 +368,35 @@ class TestStowAdoptIgnorePattern:
             "a tracked sibling differing only at the escaped dot's position "
             f"must still be symlinked normally, not swept in by an "
             f"under-escaped pattern; stow output: {result.stderr!r}"
+        )
+
+    def test_name_merely_ending_in_ds_store_is_not_swept_in(
+        self, tmp_path: Path
+    ) -> None:
+        """'notes.DS_Store' is a tracked file whose name ends in the literal
+        substring '.DS_Store' without being an exact '.DS_Store' path segment.
+        An unanchored pattern would still match it via the substring, since
+        the pattern is only anchored at the end. This pins that the `(^|/)`
+        anchor added to `ds_store_ignore_arg` restricts the match to an exact
+        `.DS_Store` segment, so this sibling must still be symlinked
+        normally."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        notes = pkg_root / "claude" / ".claude" / "notes.DS_Store"
+        notes.write_text("# tracked file whose name merely ends in .DS_Store\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/notes.DS_Store"], cwd=pkg_root, check=True
+        )
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        notes_link = home / ".claude" / "notes.DS_Store"
+        assert notes_link.is_symlink(), (
+            "a tracked file whose name merely ends in the '.DS_Store' "
+            f"substring must still be symlinked normally, not swept in by "
+            f"the anchored pattern; stow output: {result.stderr!r}"
         )
 
 
