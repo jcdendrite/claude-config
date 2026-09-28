@@ -90,14 +90,17 @@ below) rather than hand-editing the generated `~/.claude/settings.json`:
 above still applies regardless of how auto mode is activated. This repo's
 render currently accepts `default` and `plan` for `defaultMode` — `"auto"`,
 this cohort's actual documented activation target, is not currently accepted,
-pending verification of auto mode's classifier layer (see
-[`docs/security-hardening.md`](security-hardening.md)'s WebFetch
-allowlisting discussion for that open item). Until `auto` is accepted, start
-auto mode for this cohort with per-session `claude --permission-mode auto`
-instead (see "Activating" above). `bypassPermissions` and `acceptEdits` are
-refused outright for `permissions.defaultMode` in the overlay — use
-per-session `claude --permission-mode <mode>` or project-scope
-`.claude/settings.local.json` for those.
+pending verification of auto mode's classifier layer. Live-session testing
+found an `ask` rule's prompt rendering inconsistent, and at least one
+ordinary, unhooked file edited silently after "Allowed by auto mode
+classifier." `bypassPermissions` for the rule, MultiEdit, and Bash-mediated
+writes remain untested (`docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the full observations and untested list).
+Until `auto` is accepted, start auto mode for this cohort with per-session
+`claude --permission-mode auto` instead (see "Activating" above).
+`bypassPermissions` and `acceptEdits` are refused outright for
+`permissions.defaultMode` in the overlay — use per-session `claude
+--permission-mode <mode>` or project-scope `.claude/settings.local.json` for
+those.
 
 A hand-set `permissions.defaultMode` in `~/.claude/settings.json` is silently
 replaced by base's value (none) on the first render, with no warning. If
@@ -161,7 +164,10 @@ The overlay's top-level keys are a closed set: `autoMode`, `env`,
 silently dropped. An `env` key's name must fall in a vendor-recognized
 configuration namespace (`CLAUDE_CODE_`, `ANTHROPIC_`, or `DISABLE_`) with a
 string value — see [`docs/security-hardening.md`](security-hardening.md) for
-the telemetry vars this covers.
+the telemetry vars this covers. The same namespace also accepts
+`ANTHROPIC_BASE_URL` (endpoint redirection) and `ANTHROPIC_AUTH_TOKEN`
+(a credential value), so a pasted-in overlay snippet setting either is not
+rejected by this check.
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:

@@ -40,6 +40,7 @@ GUARDED_KEYS_JSON='[
   "disableBypassPermissionsMode",
   "theme",
   "tui",
+  "agentPushNotifEnabled",
   "env.CLAUDE_CODE_EFFORT_LEVEL",
   "env.ANTHROPIC_MODEL"
 ]'
@@ -121,10 +122,8 @@ fi
 # _lib_default_branch_or_guess (#54).
 if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
 STAGED_CONTENT=$(_lib_capped git -C "$CWD" show :"$SETTINGS_REPO_PATH" 2>/dev/null)
-if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then
+if [ -z "$DEFAULT_BRANCH" ] || ! MAIN_CONTENT=$(_lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" 2>/dev/null); then
   MAIN_CONTENT=""
-else
-  MAIN_CONTENT=$(_lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
 
 # Name the guarded keys whose staged value differs from the default branch. Notes:

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import SCRIPTS_DIR, symlink_hooks_lib_chain
 
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _STOW = shutil.which("stow")
@@ -77,18 +77,28 @@ def _make_package(pkg_root: Path, base_content: dict) -> None:
     settings.base.json plus the real _stow_migration_lib.sh, render-settings.sh,
     and _capped-for-lib.sh (symlinked, not reimplemented, so the test exercises
     the actual scripts under review, not a copy of them), plus a stub
-    stow-packages.sh (see _write_stow_packages_stub)."""
+    stow-packages.sh (see _write_stow_packages_stub). _capped-for-lib.sh
+    sources hooks/_lib.sh (BASH_SOURCE-relative to its own package-root
+    location, not the real repo's), so the hooks/_lib.sh chain must be
+    present in the package too -- see symlink_hooks_lib_chain."""
     scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "_stow_migration_lib.sh").symlink_to(SCRIPTS_DIR / "_stow_migration_lib.sh")
     (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
     (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
+    symlink_hooks_lib_chain(pkg_root / "claude" / ".claude" / "hooks")
     _write_stow_packages_stub(scripts_dir)
     (pkg_root / "claude" / ".claude" / "settings.base.json").write_text(json.dumps(base_content))
 
     subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
     subprocess.run(
-        ["git", "add", "claude/.claude/scripts", "claude/.claude/settings.base.json"],
+        [
+            "git",
+            "add",
+            "claude/.claude/scripts",
+            "claude/.claude/hooks",
+            "claude/.claude/settings.base.json",
+        ],
         cwd=pkg_root,
         check=True,
         timeout=10,

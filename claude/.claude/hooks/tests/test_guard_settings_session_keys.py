@@ -1375,8 +1375,7 @@ class TestGuardSettingsSessionKeys:
 
     def test_env_key_removed_relative_to_main_denies(self, settings_repo):
         """A non-enumerated env key present on main and dropped from staged
-        must deny -- the "removed" leg of the namespace-wide contract,
-        previously untested."""
+        must deny -- the "removed" leg of the namespace-wide contract."""
         repo, settings_file = settings_repo
         stage_settings(
             repo, settings_file,
@@ -1403,8 +1402,7 @@ class TestGuardSettingsSessionKeys:
 
     def test_existing_non_enumerated_env_key_value_changed_denies(self, settings_repo):
         """A non-enumerated env key present on both sides with a changed
-        value must deny -- the "changed" leg of the namespace-wide contract,
-        previously untested."""
+        value must deny -- the "changed" leg of the namespace-wide contract."""
         repo, settings_file = settings_repo
         stage_settings(
             repo, settings_file,

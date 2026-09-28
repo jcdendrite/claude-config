@@ -6,27 +6,18 @@
 # marker block. Not executable on its own; source it, do not invoke it
 # directly.
 #
-# Probes timeout(1) first, then gtimeout(1) -- Homebrew coreutils'
-# g-prefixed name.
-# `-k 2` sends SIGKILL 2s after the SIGTERM deadline if the child hasn't
-# exited yet, the same escalation _lib_capped_for uses in
-# claude/.claude/hooks/_lib.sh.
-# A child stuck in an uninterruptible (D-state) syscall -- e.g. a
-# network-mounted $HOME stalled on I/O -- doesn't respond to either signal,
-# so this wrapper only bounds a CPU-bound hang or a child that honors
-# SIGTERM.
-# Falls back to running the command fully uncapped, silently, when neither
-# timeout nor gtimeout is on PATH (stock macOS included).
-# Each caller's own contract governs what happens next on a genuine
-# failure; this wrapper only ever affects whether a hang gets bounded.
+# _capped_for is a thin alias over hooks/_lib.sh's _lib_capped_for -- see that
+# function's own doc comment for the probe order, -k escalation, exit-status
+# contract, and D-state/no-binary caveats. scripts/marker.sh already sources
+# hooks/_lib.sh directly, the same cross-directory dependency as here.
+# The reverse direction is not viable: marketplace plugins (e.g.
+# plugins/skill-management/hooks/_lib.sh) carry standalone copies of this
+# closure with no scripts/ sibling to source, and
+# test_shared_closure_function_is_identical_across_stowed_and_plugin_lib pins
+# _lib_capped_for's body byte-identical across every copy.
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
+
 _capped_for() {
-  local seconds="$1"
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k 2 "$seconds" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -k 2 "$seconds" "$@"
-  else
-    "$@"
-  fi
+  _lib_capped_for "$@"
 }

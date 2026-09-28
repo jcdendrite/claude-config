@@ -18,9 +18,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, build_path_without
+from helpers import (
+    SCRIPTS_DIR,
+    assert_cap_engaged,
+    build_path_without,
+    scaled_shim_sleep,
+    write_scaled_timeout_shim,
+)
 
-from .conftest import TIMEOUT_SHIM_SLEEP_SECONDS, assert_cap_engaged
+from .conftest import TIMEOUT_SHIM_SLEEP_SECONDS
 
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _ENSURE_SCRIPT = SCRIPTS_DIR / "ensure-settings-render.sh"
@@ -168,10 +174,14 @@ def _make_home_with_base(tmp_path: Path, base_content: dict) -> Path:
     return home
 
 
-def _run_ensure_script(test_home: Path) -> subprocess.CompletedProcess:
+def _run_ensure_script(
+    test_home: Path, extra_path_dir: Path | None = None
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["HOME"] = str(test_home)
     env.pop("CLAUDE_CONFIG_DIR", None)
+    if extra_path_dir is not None:
+        env["PATH"] = f"{extra_path_dir}:{env['PATH']}"
     return subprocess.run(
         [str(_ENSURE_SCRIPT)],
         capture_output=True,
@@ -299,13 +309,16 @@ class TestEnsureSettingsRenderTimeoutGuard:
         home = tmp_path / "home"
         scripts_dir = home / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_scaled_timeout_shim(bin_dir)
         stub = scripts_dir / "render-settings.sh"
-        stub.write_text(f"#!/bin/bash\nsleep {TIMEOUT_SHIM_SLEEP_SECONDS}\n")
+        stub.write_text(f"#!/bin/bash\nsleep {scaled_shim_sleep(TIMEOUT_SHIM_SLEEP_SECONDS)}\n")
         stub.chmod(0o755)
         (home / ".claude" / "settings.base.json").write_text(json.dumps({"otherKey": "v"}))
 
-        with assert_cap_engaged():
-            result = _run_ensure_script(home)
+        with assert_cap_engaged(bin_dir, production_cap=5, command="render-settings.sh"):
+            result = _run_ensure_script(home, extra_path_dir=bin_dir)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "settings.json render failed" in result.stderr, (
