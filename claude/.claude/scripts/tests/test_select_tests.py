@@ -1240,7 +1240,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
-            _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
+            *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
         }
 
     def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
@@ -1677,7 +1677,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-    _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
+    *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
     *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,

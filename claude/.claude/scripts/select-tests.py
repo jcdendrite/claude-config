@@ -142,6 +142,11 @@ HOOKS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({
 # Imports transcript_analysis.author_outcome by name.
 REVIEW_LEDGER_SCRIPT_TEST_PATH = "claude/.claude/hooks/tests/test_review_ledger_script.py"
 
+# HOOKS_TESTS_DIR test files that import TRANSCRIPT_ANALYSIS_PACKAGE_DIR by name.
+HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS: frozenset[str] = frozenset({
+    REVIEW_LEDGER_SCRIPT_TEST_PATH,
+})
+
 # HOOKS_TESTS_DIR test files that import SKILL_STRUCTURE_VALIDATOR_MODULE by name.
 HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_agent_roster.py",
@@ -494,8 +499,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # - HOOKS_TESTS_IMPORTING_CONFIG, via _config
 # - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope
 # - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER, via run_skill_evals
-# TRANSCRIPT_ANALYSIS_PACKAGE_DIR: REVIEW_LEDGER_SCRIPT_TEST_PATH imports
-# transcript_analysis.author_outcome, a module inside this package.
+# TRANSCRIPT_ANALYSIS_PACKAGE_DIR: HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS's
+# member imports transcript_analysis.author_outcome, a module inside this
+# package.
 # SKILL_STRUCTURE_VALIDATOR_MODULE: every
 # HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR member imports it by name.
 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: every
@@ -585,7 +591,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
             | SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER
         )),
     ),
-    (lambda p: _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR), (REVIEW_LEDGER_SCRIPT_TEST_PATH,)),
+    (lambda p: _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR), tuple(sorted(HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS))),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
