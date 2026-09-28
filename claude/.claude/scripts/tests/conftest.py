@@ -13,7 +13,8 @@ test_transcript_cache_rebuild_attribution.py,
 test_transcript_cache_rebuild_switch_delta.py,
 test_transcript_cache_rebuild_ttl_rules.py,
 test_transcript_cache_rebuild_ttl_accumulation.py,
-test_transcript_cache_rebuild_ttl_footing.py, and
+test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
+test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
@@ -437,6 +438,23 @@ def _opus(
     return rec
 
 
+def _priced_opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    model: str = "claude-opus-5", request_id: str | None = None,
+) -> dict:
+    """Build a priced-Opus assistant record (default claude-opus-5, in
+    _MODEL_BASE_INPUT_RATES) for audit-routing's dollar-headline tests —
+    _opus()'s claude-opus-4-7 is deliberately unpriced."""
+    rec = _asst(model, branch="main", ts=ts, content=content, request_id=request_id)
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
 def _priced(
     model: str,
     *,
@@ -814,6 +832,19 @@ def _review_trace_args(
 
 def _skill_use(tool_id: str, skill: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
+def _read_use(tool_id: str, file_path: str) -> dict:
+    """Build a Read tool_use block with the given file_path."""
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
+
+
+def _exit_plan_mode(tool_id: str = "epm1") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
+
+
+def _thinking_block() -> dict:
+    return {"type": "thinking", "thinking": "some thought"}
 
 
 @pytest.fixture()
