@@ -29,7 +29,7 @@ def isolated_home(tmp_path):
 
 
 def _worktree_dir(repo: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER) -> Path:
-    return repo / ".claude" / "worktrees" / f"review-pr-{owner_repo.replace('/', '-')}-{pr_number}"
+    return repo / ".claude" / "worktrees" / f"review-pr-{owner_repo.replace('/', '%')}-{pr_number}"
 
 
 def _build_repo_with_review_worktree(

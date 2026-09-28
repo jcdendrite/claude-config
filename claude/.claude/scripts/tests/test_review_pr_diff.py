@@ -247,7 +247,7 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
         assert lines[3] == "diff-only"
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
-        worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '-')}-{PR_NUMBER}"
+        worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '%')}-{PR_NUMBER}"
         assert not worktree_dir.exists()
         assert not Path(f"{worktree_dir}.lock").exists()
 

@@ -31,7 +31,9 @@ def _write_provenance(
     active_dir = home / ".claude" / ".review-pr-active.d"
     active_dir.mkdir(parents=True, exist_ok=True)
     provenance = active_dir / f"{session_id}.provenance"
-    provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{mode}\n{pid}\n")
+    # Field order matches the completion marker's own (PR identity,
+    # headRefOid, PID, mode): PID is the third field, not mode.
+    provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{pid}\n{mode}\n")
     return provenance
 
 

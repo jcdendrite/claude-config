@@ -44,6 +44,15 @@ class TestAcquireLockUnit:
             fcntl.flock(holder_f, fcntl.LOCK_UN)
             holder_f.close()
 
+    def test_raises_oserror_for_a_symlink_at_the_lock_path_rather_than_following_it(
+        self, tmp_path: Path
+    ) -> None:
+        real = tmp_path / "real.lock"
+        link = tmp_path / "x.lock"
+        link.symlink_to(real)
+        with pytest.raises(OSError):
+            acquire_lock(str(link), 5.0)
+
 
 class TestRemoveWorktreeRuntimeErrors:
     """remove_worktree's two failure-surfacing paths: unlike

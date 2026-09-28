@@ -46,11 +46,18 @@ def read_no_follow(path: str) -> bytes | None:
 
 def pid_alive(pid_text: str | None) -> bool:
     """True only for a well-formed positive-integer PID whose process
-    currently exists (signal 0 raises ESRCH/EPERM-free OSError otherwise)."""
+    currently exists. ProcessLookupError (ESRCH) means the PID is genuinely
+    dead. PermissionError (EPERM) means the process exists but is owned by
+    another user, so it reports alive rather than being misread as an
+    eviction candidate."""
     if not re.match(r"^[0-9]+$", pid_text or ""):
         return False
     try:
         os.kill(int(pid_text), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     except OSError:
         return False
     return True

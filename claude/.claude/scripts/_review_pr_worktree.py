@@ -28,12 +28,19 @@ GIT_OP_TIMEOUT_SECONDS = 30
 
 def acquire_lock(lock_path: str, deadline_seconds: float):
     """Returns an open, locked file object, or None on a timed-out
-    acquisition. The file is opened "a+" (create if absent, never
-    truncate) since its only purpose is to be an inode `flock` can key on."""
+    acquisition. The file is opened create-if-absent, never truncate, since
+    its only purpose is to be an inode `flock` can key on.
+
+    O_NOFOLLOW: refuses a symlink at the predictable lock path atomically
+    with the open, the same discipline every other session/PR-keyed
+    artifact in this module's callers applies (see
+    review-pr-worktree-replace.py's owner-sidecar write).
+    """
     # A `with` block (SIM115) would close the file, releasing the lock,
     # before the caller -- who owns it past this function's return -- ever
     # uses it.
-    lock_f = open(lock_path, "a+")  # noqa: SIM115
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW)
+    lock_f = os.fdopen(lock_fd, "a+")  # noqa: SIM115
     deadline = time.monotonic() + deadline_seconds
     while True:
         try:

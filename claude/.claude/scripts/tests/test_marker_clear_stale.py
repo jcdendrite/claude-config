@@ -52,6 +52,17 @@ class TestPidAlive:
     def test_false_for_none(self):
         assert _clear_stale.pid_alive(None) is False
 
+    def test_true_for_eperm_a_live_process_owned_by_another_user(self, monkeypatch):
+        """os.kill raising PermissionError means the process exists and is
+        merely inaccessible -- not the same as ProcessLookupError's genuinely
+        dead PID, so it must not be misread as an eviction candidate."""
+
+        def fake_kill(pid, sig):
+            raise PermissionError("synthetic EPERM")
+
+        monkeypatch.setattr(_clear_stale.os, "kill", fake_kill)
+        assert _clear_stale.pid_alive("1") is True
+
     def test_false_for_non_numeric_text(self):
         assert _clear_stale.pid_alive("not-a-pid") is False
 

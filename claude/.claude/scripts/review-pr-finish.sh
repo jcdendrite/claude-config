@@ -121,6 +121,12 @@ if [[ "$MODE" == "checkout" ]]; then
           # contract is remove-THEN-add, which a cleanup call must never
           # trigger -- the two share only the lock-acquire and
           # remove-worktree primitives (_review_pr_worktree.py).
+          # remove_worktree's own 3 git/rm calls x 30s
+          # (_review_pr_worktree.py's GIT_OP_TIMEOUT_SECONDS) bound this
+          # cleanup-only branch's worst case at 90s. review-pr-worktree-
+          # remove.py never re-invokes remove_worktree, so unlike
+          # review-pr-checkout.sh's sibling constant there is no rollback
+          # path adding a second call.
           WORKTREE_REMOVE_LOCK_WAIT_DEADLINE_SECONDS=120
           if REMOVE_OUTPUT=$(python3 "$(dirname "$0")/review-pr-worktree-remove.py" "$MAIN_REPO_ROOT" "$WORKTREE_DIR" "$SESSION_ID" "$WORKTREE_REMOVE_LOCK_WAIT_DEADLINE_SECONDS" 2>&1); then
             :
