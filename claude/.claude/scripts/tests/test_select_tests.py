@@ -1250,9 +1250,7 @@ class TestSelectPytestTargets:
         files by module path -- invisible to path-constant scanning. Both
         sit under SCRIPTS_TESTS_DIR, which nothing else here selects, so
         they survive as their own file targets alongside the other rules
-        this HOOKS_TESTS_DIR path already matches (its own domain rule,
-        _is_hooks_or_skills_change, the broad and packaging predicates, and
-        _is_test_source_change)."""
+        this HOOKS_TESTS_DIR path already matches."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/test_config_lib.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -2256,9 +2254,8 @@ class TestMainComposition:
                 # it lives inside HOOKS_TESTS_DIR and is dropped by the
                 # containment filter -- see the assertion below. CLAUDE_TESTS_DIR
                 # is a sibling directory, not contained by anything else
-                # selected here, so it survives that filter -- it comes from
-                # _is_test_tree_packaging_change's __init__.py leg, not the
-                # broad predicate. This path is also a
+                # selected here, so it survives that filter, contributed by
+                # _is_test_tree_packaging_change's __init__.py leg. This path is also a
                 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member, so
                 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files also
                 # survive: they sit under SCRIPTS_TESTS_DIR, which nothing
