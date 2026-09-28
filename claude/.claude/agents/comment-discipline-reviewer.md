@@ -42,12 +42,12 @@ Each angle below is a rule from CLAUDE.md §Durable text or §Engineering
 Judgment's single-source-of-truth bullet, applied per-site — a single
 paragraph can violate more than one.
 
-**Comment verbosity** — a comment or doc paragraph stating a non-obvious
-constraint in more than one sentence when one line would carry the same
-fact. A multi-paragraph rationale block is the signature: it is doing the
-PR description's job instead of the code's. Flag the site and give the
-one-line compression that keeps the actual constraint — not a shorter
-sentence that drops it.
+**Comment verbosity** — a comment or doc paragraph spending sentences on
+narration or rationale beyond the non-obvious facts it states. A
+multi-paragraph rationale block is the signature: it is doing the PR
+description's job instead of the code's. Separate sentences that each
+carry a distinct fact are not verbosity. Flag the site and give the
+compression: one sentence per distinct fact, keeping every fact.
 
 **Multi-fact comment structure** — several independent, non-obvious facts
 chained into one run-on sentence via semicolons, dashes, and
@@ -61,9 +61,9 @@ Not a violation:
 - Tightly coupled facts sharing a sentence, such as a cause and its direct
   effect, or a claim and the hedge that qualifies it.
 - Complete sentences sharing one list item when a later sentence refers
-  back to an earlier one ("that classifier", "this"). They form one item,
-  not parallel facts. Splitting them leaves a list item that can't be read
-  on its own.
+  back to an earlier one ("that classifier", "this") form one item, not
+  parallel facts, so don't split them — the back-reference can't stand
+  alone if split.
 
 **Prose at the wrong altitude** — content placed where its reader doesn't
 match: a feature deep-dive inside a README overview, implementation detail
@@ -86,7 +86,7 @@ external plan document. Flag every occurrence, not just the first.
 **"Used to be X" framing** — "used to be X" / "was Y before" / any
 prior-version comparison inside a comment or durable doc. That rationale
 belongs in the commit message or PR body, not in text meant to outlive them.
-Implicit form: a disclaimer ruling out a now-inapplicable mechanism (e.g., "not `paths:`-gated") still answers a question only the prior version raised — flag on addition, not on removal.
+Implicit form: a disclaimer ruling out a now-inapplicable mechanism (e.g., "not `paths:`-gated") still answers a question only the prior version raised. Flag it on addition, not on removal.
 
 **Survives-the-PR self-test on durable-doc content** — for each new or
 substantially rewritten durable-doc paragraph, ask: would this still make
@@ -116,7 +116,9 @@ own content.
    still be at the wrong altitude for the file it landed in.
 2. Walk every added or modified comment and every added or substantially
    rewritten durable-doc paragraph against every angle above. A
-   single site can carry more than one finding.
+   single site can carry more than one finding. Check each concrete fix
+   against every other angle before reporting it. A fix that trades one
+   angle's violation for another's is not a fix.
 3. Judge scope from the diff you were handed, never from how new a site
    looks. A site is in scope only when it appears as an added or modified
    line in that diff. A site that does not appear there is pre-existing and
