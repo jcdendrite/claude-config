@@ -42,11 +42,11 @@ class TestMachineIdentity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         content = (cfg_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).read_text()
         assert _mod.ledger_common._MACHINE_IDENTITY_RE.match(content)
-        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert rows[0]["machine"] == content
 
     def test_generate_on_first_use_pr_cost_record(self, fake_projects, tmp_path, monkeypatch):
@@ -80,11 +80,11 @@ class TestMachineIdentity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         after = identity_path.read_bytes()
         assert before == after
-        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert rows[0]["machine"] == before.decode()
 
     def test_reuse_across_two_record_invocations_pr_cost(self, fake_projects, tmp_path, monkeypatch):
@@ -156,17 +156,17 @@ class TestMachineIdentity:
         (tmp_path / ".pr-cost-enabled").touch()
         # _cost_ledger_report's own sentinel check reads config_dir()
         # directly via _config.py's own binding, not through fake_projects'
-        # mod.config_dir patch above. pr-cost's own gate check instead
+        # mod.cost_ledger.config_dir patch above. pr-cost's own gate check instead
         # derives its config_dir_override from `roots`, independent of
-        # mod.config_dir. The two only agree here because fake_projects'
+        # mod.cost_ledger.config_dir. The two only agree here because fake_projects'
         # tmp_path/"projects" root's parent is this same tmp_path.
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z", branch="feature-a"),
         ])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
-        _preamble, cost_ledger_rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _preamble, cost_ledger_rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         cost_ledger_identity = cost_ledger_rows[0]["machine"]
 
         merged_prs = [{
@@ -341,13 +341,13 @@ class TestMachineIdentity:
         ]
         cost_ledger_file.write_text(
             cost_ledger_file.read_text()
-            + "".join(_mod._format_cost_ledger_row(r) + "\n" for r in seeded_legacy_rows)
+            + "".join(_mod.cost_ledger._format_cost_ledger_row(r) + "\n" for r in seeded_legacy_rows)
         )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         err = capsys.readouterr().err
         assert f"{len(seeded_legacy_rows)} existing row" in err
@@ -360,7 +360,7 @@ class TestMachineIdentity:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-08T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 10))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 10))
         assert "safe to sum" not in capsys.readouterr().err
 
     def test_cross_machine_notice_names_row_count_and_stops_after_first_matching_row_pr_cost(
@@ -407,7 +407,7 @@ class TestMachineIdentity:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert "safe to sum" not in capsys.readouterr().err
 
     def test_identity_path_independent_of_overridden_ledger_path_cost_ledger(
@@ -424,7 +424,7 @@ class TestMachineIdentity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
 
-        _mod._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         assert (cfg_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).exists()
         assert not (overridden_ledger_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).exists()
