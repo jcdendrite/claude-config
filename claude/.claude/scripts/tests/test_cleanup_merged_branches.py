@@ -2072,8 +2072,10 @@ class TestAncestorCheckFallsBackWhenRefUnfetchable:
 
 class TestGenuineReuseNotAncestorStaysStale:
     """A merged row's headRefOid is a real, already-present commit that the
-    local tip shares no ancestry with -- a genuine name reuse, not a
-    merged-but-behind branch. The ancestor check must not misclassify it."""
+    local tip shares no ancestry with in either direction -- a genuine name
+    reuse, not a merged-but-behind or merged-but-ahead branch. This is the
+    negative case for both the pr-head-ancestor and pr-head-descendant
+    bases: neither must misclassify it."""
 
     def test_unrelated_merged_head_stays_stale(self, tmp_path, fake_gh):
         local, remote = _make_repo_with_remote(tmp_path)
@@ -2101,14 +2103,16 @@ class TestGenuineReuseNotAncestorStaysStale:
         assert ref_check.returncode == 0, "a fetchable but non-ancestor merged head must not be Tier A"
 
 
-class TestDescendantOfMergedHeadStaysStale:
+class TestDescendantOfMergedHeadPromptsAsTierB:
     """The local tip is a strict descendant of the PR's actual merged head
-    -- real, unmerged commits on top of what GitHub actually merged. This
-    is the direction where misclassification would delete real work, so
-    the ancestor check must not fire for it: the branch must fall through
-    to skip-stale-name exactly as it does today."""
+    -- real, unmerged commits on top of what GitHub actually merged. The
+    branch is offered for a Tier B prompt naming the PR, the merge date,
+    and how many commits are ahead; it is never auto-deleted, and it is
+    never reported as `skip-stale-name` ("likely a reused branch name") --
+    that diagnosis is wrong, since the branch's merged content really is
+    part of the PR."""
 
-    def test_descendant_tip_not_deleted(self, tmp_path, fake_gh):
+    def test_non_tty_run_skips_with_probable_merge_message(self, tmp_path, fake_gh):
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
 
@@ -2118,12 +2122,363 @@ class TestDescendantOfMergedHeadStaysStale:
         result = _run_script(local, env)
 
         assert result.returncode == 0
-        assert "likely a reused branch name" in result.stdout
+        assert result.stderr == ""
+        assert "Skipped 1 probable-merge branch(es) (no TTY for prompt): feat/ahead-of-merge" in result.stdout
+        assert "likely a reused branch name" not in result.stdout
         ref_check = subprocess.run(
             ["git", "rev-parse", "--verify", "refs/heads/feat/ahead-of-merge"],
             cwd=local, capture_output=True,
         )
-        assert ref_check.returncode == 0, "a tip ahead of the merged head must not be deleted as Tier A"
+        assert ref_check.returncode == 0, "a tip ahead of the merged head must survive a non-TTY run"
+
+    def test_dry_run_shows_descendant_prompt_with_pr_and_count(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Probable merges (would prompt):" in result.stdout
+        assert (
+            "PR #801, merged 2026-06-01; local tip is 1 commit(s) ahead of that PR's merged head and origin/main"
+            in result.stdout
+        )
+        assert "Would clean up (confirmed merged):" not in result.stdout
+        assert "likely a reused branch name" not in result.stdout
+
+    def test_pty_reply_n_survives(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"n\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        stdout = proc.stdout.read().decode()
+        assert "[y/N]" in stdout
+        assert "1 commit(s) ahead of that PR's merged head" in stdout
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "feat/ahead-of-merge" in branches
+
+    def test_checked_out_branch_reports_skip_and_survives(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+        # A second, ordinary Tier-A candidate keeps the run past the early
+        # "nothing to clean" exit so checked_out_skip_line() at the end of
+        # the real-run path actually runs, as TestCheckedOutTierBBranchReportsSkip does.
+        _make_feature_branch(local, "feat/other-merged")
+        subprocess.run(["git", "branch", "-D", "feat/other-merged"], cwd=remote, check=True)
+        subprocess.run(["git", "checkout", "-q", "feat/ahead-of-merge"], cwd=local, check=True)
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+            "feat/other-merged": {"number": 71, "mergedAt": "2026-05-02"},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "Skipped: feat/ahead-of-merge (currently checked out)" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/ahead-of-merge"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "checked-out branch must never be deleted regardless of verdict"
+
+    def test_pty_reply_y_deletes_local_and_remote(self, tmp_path, fake_gh):
+        """The one basis where a `y` discards commits that exist nowhere
+        else -- mirrors TestTierBReachableNoMergedPR's TTY-`y` coverage for
+        plain Tier B, with an added remote-deletion check since this
+        branch's commits are otherwise unrecoverable."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+
+        remote_refs_before = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "feat/ahead-of-merge"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "feat/ahead-of-merge" in remote_refs_before
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.write(master_fd, b"y\n")
+            proc.wait(timeout=30)
+            os.close(master_fd)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "feat/ahead-of-merge" not in branches, (
+            "a y reply must delete the local branch even though it discards unique commits"
+        )
+        remote_refs_after = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "feat/ahead-of-merge"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert remote_refs_after.strip() == "", "a y reply must also delete the remote branch"
+
+
+class TestMalformedDescendantVerdictFieldsFailClosed:
+    """Mirrors TestClassifierValidatesMergedRowFields for the new
+    tier-b:pr-head-descendant:<pr>:<merged-date>:<ahead-count> token: a
+    malformed field degrades rather than corrupting the parse or crashing."""
+
+    def test_malformed_merged_at_blanks_date_without_crashing(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/bad-date-ahead", 812)
+
+        env = fake_gh({
+            "feat/bad-date-ahead": {"number": 812, "mergedAt": "2026 06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Probable merges (would prompt):" in result.stdout
+        assert "PR #812, merged ; local tip is 1 commit(s) ahead" in result.stdout, (
+            "a malformed mergedAt must degrade to a blank date, not corrupt or crash the row parse"
+        )
+
+    def test_ahead_count_fallback_shows_question_mark_when_rev_list_fails(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/count-fails", 813)
+
+        # Fails only the ahead-count's own `rev-list --count ...
+        # ^refs/remotes/origin/<default>` call; the ancestry check that
+        # must still succeed for a descendant verdict never passes that
+        # argument shape.
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            '    ^refs/remotes/origin/*) exit 1 ;;\n'
+            '  esac\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        env = fake_gh({
+            "feat/count-fails": {"number": 813, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "? commit(s) ahead of that PR's merged head" in result.stdout, (
+            "a failed rev-list --count must degrade to '?', not a raw error or an empty field"
+        )
+
+
+class TestReusedNameInMergeCommitRepoGetsPromptNotStaleSkip:
+    """.claude/plans/tip-descendant-of-merge.md's assumption ledger, row 15:
+    in a repo that merges PRs via a real merge commit
+    (not squash), a genuinely unrelated branch that reuses an old,
+    already-merged PR's name also carries that PR's head in its history
+    purely through merge-commit topology -- ancestry alone cannot tell it
+    apart from a branch that was continued and merge-resynced. Both draw
+    the same non-destructive pr-head-descendant prompt rather than the
+    misleading stale-name skip, and the reported count reflects only the
+    reused branch's own commit(s)."""
+
+    def _build_reused_name_in_merge_commit_repo(self, tmp_path):
+        local, remote = _make_repo_with_remote(tmp_path)
+
+        # PR #601 merges via a real merge commit, not squash.
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/old-pr"], cwd=local, check=True)
+        _commit(local, "old PR's own work")
+        old_pr_head = _rev_parse(local, "feat/old-pr")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+        subprocess.run(["git", "merge", "-q", "--no-ff", "--no-edit", "feat/old-pr"], cwd=local, check=True)
+        subprocess.run(["git", "branch", "-D", "feat/old-pr"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+
+        # A genuinely unrelated branch reuses the same head-branch name,
+        # branched from main after PR #601's merge commit landed.
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/old-pr"], cwd=local, check=True)
+        _commit(local, "unrelated new work under a reused name")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+
+        return local, remote, old_pr_head
+
+    def test_dry_run_shows_descendant_prompt_with_own_commit_count(self, tmp_path, fake_gh):
+        local, _remote, old_pr_head = self._build_reused_name_in_merge_commit_repo(tmp_path)
+
+        env = fake_gh({
+            "feat/old-pr": {"number": 601, "mergedAt": "2026-06-01", "headRefOid": old_pr_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Probable merges (would prompt):" in result.stdout
+        assert (
+            "PR #601, merged 2026-06-01; local tip is 1 commit(s) ahead of that PR's merged head and origin/main"
+            in result.stdout
+        )
+        assert "likely a reused branch name" not in result.stdout
+        assert "Would clean up (confirmed merged):" not in result.stdout
+
+    def test_non_tty_run_survives_without_auto_delete(self, tmp_path, fake_gh):
+        local, _remote, old_pr_head = self._build_reused_name_in_merge_commit_repo(tmp_path)
+
+        env = fake_gh({
+            "feat/old-pr": {"number": 601, "mergedAt": "2026-06-01", "headRefOid": old_pr_head},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "Skipped 1 probable-merge branch(es) (no TTY for prompt): feat/old-pr" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/old-pr"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, (
+            "a merge-commit-topology false positive must be a non-destructive prompt, never auto-deleted"
+        )
+
+
+class TestDescendantAheadCountExcludesDefaultBranchCommits:
+    """The only test that tells the ahead-count formula
+    (`rev-list --count tip ^oid ^origin/<default>`) apart from the simpler
+    `<oid>..<tip>` alternative: a resync merge from main onto the
+    descendant branch pulls main's own commit along too, and that commit
+    must not inflate the reported count."""
+
+    def test_dry_run_shows_two_not_three_commits_ahead(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/resynced-ahead", 850)
+
+        # A follow-up commit on main, using a distinct filename -- _commit
+        # overwrites file.txt, which would make the resync merge below
+        # conflict.
+        (local / "other-file.txt").write_text("a follow-up change on main\n")
+        subprocess.run(["git", "add", "other-file.txt"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "follow-up change on main"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+
+        subprocess.run(["git", "checkout", "-q", "feat/resynced-ahead"], cwd=local, check=True)
+        subprocess.run(["git", "merge", "-q", "--no-edit", "main"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+
+        env = fake_gh({
+            "feat/resynced-ahead": {"number": 850, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert (
+            "local tip is 2 commit(s) ahead of that PR's merged head and origin/main" in result.stdout
+        ), "the follow-up commit and the resync merge commit are both ahead, but main's own commit must be excluded"
+        assert "3 commit(s)" not in result.stdout
+
+
+class TestAncestorBasisOutranksDescendantBasis:
+    """When one merged row's head is already a locally-present strict
+    ancestor of the tip, and another row's head is a strict descendant of
+    the tip but exists only on the remote, the forward pr-head-ancestor
+    scan must still get to fetch and confirm the second row before the
+    descendant scan has a chance to claim the first. It would survive (as
+    Tier B, not Tier A) if the descendant scan ran before the fetch loop
+    or row by row instead of strictly after the whole forward scan."""
+
+    def test_non_tty_run_still_deletes_as_tier_a(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        main_tip = _rev_parse(local, "main")
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/ancestor-outranks-descendant", 902)
+
+        env = fake_gh({
+            "feat/ancestor-outranks-descendant": [
+                {"number": 901, "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": main_tip},
+                {"number": 902, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": merged_head},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/ancestor-outranks-descendant"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, (
+            "the forward ancestor basis must win once its ref is fetched, not lose to an "
+            "already-local descendant-basis row"
+        )
+
+
+class TestTwoDescendantRowsFirstHitWins:
+    """merged_row_by_tip_ancestry()'s own header comment states its
+    contract: "Scans every row, first hit wins." Two merged PRs both have
+    headRefOids that independently satisfy pr-head-descendant against the
+    same tip -- gh's row order, not recency or PR number, decides which
+    one is reported."""
+
+    def test_first_row_reported_when_both_rows_are_ancestors_of_tip(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/two-descendant-rows")
+        subprocess.run(["git", "checkout", "-q", "feat/two-descendant-rows"], cwd=local, check=True)
+        older_head = _rev_parse(local, "feat/two-descendant-rows")
+        _commit(local, "second merged PR's own head")
+        newer_head = _rev_parse(local, "feat/two-descendant-rows")
+        _commit(local, "unmerged follow-up work")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+
+        env = fake_gh({
+            "feat/two-descendant-rows": [
+                {"number": 901, "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": older_head},
+                {"number": 902, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": newer_head},
+            ],
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert (
+            "PR #901, merged 2026-05-01; local tip is 2 commit(s) ahead of that PR's merged head and origin/main"
+            in result.stdout
+        ), "the first row in gh's return order must win even though the second row's oid also qualifies"
+        assert "PR #902" not in result.stdout
 
 
 class TestPerRowFetchLoopSurvivesOneUnresolvableRef:
