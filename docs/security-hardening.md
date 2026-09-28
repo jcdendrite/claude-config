@@ -884,6 +884,18 @@ to hold PII/PHI or live credentials:
   over-broad, accepted-false-positive deny (never a missed detection),
   consistent with this hook family's existing false-positive tolerance
   (e.g. the `grep "id_rsa" .` search-pattern residual above).
+- Every hook trusts whatever binary its PATH resolves, including the
+  `timeout`/`gtimeout` that `_lib_capped`/`_lib_capped_for` (`_lib.sh`)
+  themselves depend on to bound other calls. PATH-write access to the hook
+  process therefore defeats every gate's timeout-based protections
+  uniformly, not just the specific call a reviewer happens to name. Per-call
+  capping cannot close this, because the cap mechanism shares the same
+  trust boundary it would be capping against. `_lib_realpath_m`'s fallback
+  loop illustrates this: its `basename`/`dirname` calls run uncapped, and
+  capping them through `_lib_capped_for` would gain nothing, because an
+  attacker able to substitute `basename`/`dirname` on PATH can substitute
+  `timeout` too. The defense here has to come from PATH and filesystem
+  integrity outside this repo's hooks.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not
