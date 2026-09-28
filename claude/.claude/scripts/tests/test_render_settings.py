@@ -902,7 +902,7 @@ class TestIdempotency:
         ]
         results = [proc.communicate(timeout=30) for proc in procs]
 
-        for proc, (_, stderr) in zip(procs, results):
+        for proc, (_, stderr) in zip(procs, results, strict=True):
             assert proc.returncode == 0, stderr
 
         # Whichever racer's mv wins, the result must be that racer's own
