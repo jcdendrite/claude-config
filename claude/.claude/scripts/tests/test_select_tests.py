@@ -1134,7 +1134,7 @@ class TestSelectPytestTargets:
     def test_repo_root_conftest_py_falls_open_to_full_suite(self):
         """A repo-root conftest.py matches neither _is_py_source_under_claude_or_plugins's
         three roots nor any domain rule, so it still takes the
-        unmatched-path fallback -- unchanged by this predicate split."""
+        unmatched-path fallback."""
         result = _mod.select_pytest_targets(["conftest.py"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
