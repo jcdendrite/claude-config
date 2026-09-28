@@ -234,6 +234,69 @@ class TestStowAdoptIgnorePattern:
             f"under-escaped pattern; stow output: {result.stderr!r}"
         )
 
+    def test_ds_store_conflict_across_packages_is_ignored(self, tmp_path: Path) -> None:
+        """Regression test: Finder drops a .DS_Store into every package
+        directory it's browsed in Finder, and GNU Stow's built-in ignore list
+        doesn't cover it (confirmed against Stow.pm's own default regex
+        list), so a .DS_Store already stowed by the 'claude' package used to
+        make stowing 'claude-skills' fail outright once claude-skills's own
+        tree also picked one up -- both packages' rows target the same
+        $HOME/.claude, so they raced for the same target path."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
+        (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (home / ".claude" / ".DS_Store").exists(), (
+            "a .DS_Store present in a package's tree must never be symlinked "
+            f"into the target; stow output: {result.stderr!r}"
+        )
+        skills_link = home / ".claude" / "skills"
+        assert skills_link.is_symlink(), (
+            "an --ignore construction bug broad enough to also suppress the "
+            f"'claude' package's own ordinary entries would trivially satisfy "
+            f"the .DS_Store assertion above too; stow output: {result.stderr!r}"
+        )
+        placeholder_link = home / ".claude" / "placeholder"
+        assert placeholder_link.is_symlink(), (
+            "an --ignore construction bug broad enough to also suppress the "
+            f"'claude-skills' package's own ordinary entries would trivially "
+            f"satisfy the .DS_Store assertion above too; stow output: {result.stderr!r}"
+        )
+
+    def test_pre_existing_ds_store_symlink_from_a_prior_partial_run_is_left_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test for the affected-user recovery path: pre-fix,
+        stowing 'claude' succeeded and left a real $HOME/.claude/.DS_Store
+        symlink before stowing 'claude-skills' conflicted and aborted, so
+        every user who actually hit this bug is left with that stale symlink
+        in place. Re-running the now-fixed block against it must not treat
+        it as a conflict."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        dummy_target = tmp_path / "dummy-ds-store-source"
+        dummy_target.write_text("finder metadata, from a prior 'claude' stow run\n")
+        target_ds_store = home / ".claude" / ".DS_Store"
+        target_ds_store.parent.mkdir(parents=True)
+        target_ds_store.symlink_to(dummy_target)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target_ds_store.is_symlink(), (
+            "a pre-existing .DS_Store symlink left over from a prior partial "
+            f"run must be left alone, not removed; stow output: {result.stderr!r}"
+        )
+        assert target_ds_store.resolve() == dummy_target.resolve(), (
+            "the pre-existing .DS_Store symlink must still point at its "
+            f"original target, not be relinked; stow output: {result.stderr!r}"
+        )
+
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted

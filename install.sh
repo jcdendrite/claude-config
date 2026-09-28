@@ -324,6 +324,14 @@ else
 fi
 rm -f -- "$untracked_entries_file"
 
+# Finder drops a .DS_Store into every folder it's browsed.
+# GNU Stow's built-in ignore list doesn't cover .DS_Store, so a stray one in
+# one package's tree gets symlinked -- and then collides once a .DS_Store
+# also shows up in another package's tree.
+# Applied to every package below, not just "claude", since Finder doesn't
+# respect stow package boundaries either.
+ds_store_ignore_arg='--ignore=\.DS_Store$'
+
 # stow-packages.sh is the single source of truth for the package list (see
 # its own header comment).
 # stow_ignore_args above is attached only to the row named "claude", matched
@@ -345,11 +353,11 @@ while IFS=$'\t' read -r package_dir stow_target_rel; do
   [ "$stow_target_rel" != "." ] && stow_target="$HOME/$stow_target_rel"
   if [ "$package_dir" = "claude" ]; then
     claude_package_seen=1
-    stow -v "${stow_ignore_args[@]}" -t "$stow_target" "$package_dir"
+    stow -v "${stow_ignore_args[@]}" "$ds_store_ignore_arg" -t "$stow_target" "$package_dir"
   elif [ "$package_dir" = "claude-skills" ] && [ -n "$skills_migration_blocks_adopt" ]; then
     echo "[install] skipping stow of claude-skills -- ~/.claude/skills is real, non-stow-managed content (see the warning above); move or remove it, then re-run install.sh" >&2
   else
-    stow -v -t "$stow_target" "$package_dir"
+    stow -v "$ds_store_ignore_arg" -t "$stow_target" "$package_dir"
   fi
 done < "$stow_packages_file"
 if [ -z "$claude_package_seen" ]; then
