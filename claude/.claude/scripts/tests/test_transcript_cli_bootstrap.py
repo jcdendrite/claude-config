@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from helpers import REPO_ROOT
@@ -495,3 +496,52 @@ def test_transcript_analysis_read_scope_subprocess_finds_seeded_read(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Read calls: 1" in result.stdout
+
+
+def test_transcript_analysis_cache_rebuild_help_exits_zero():
+    result = _run("transcript-analysis.py", "cache-rebuild", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "30d" in result.stdout
+    assert "100,000" in result.stdout
+
+
+def _seed_cache_rebuild_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one priced main-thread call
+    timestamped an hour before now -- falls inside the default --since 30d
+    window without depending on a fixed calendar date."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    ts = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": ts,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_cache_rebuild_subprocess_finds_seeded_call(tmp_path):
+    """Proves `from transcript_analysis.cache_rebuild import cmd_cache_rebuild`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cache_rebuild(...)`
+    test can see a broken re-export in the real shim entrypoint. Uses
+    _isolated_config_env rather than a top-level --config-dir: cache-rebuild is a
+    member of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
+    config_dir = _seed_cache_rebuild_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "cache-rebuild", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Calls scanned: 1" in result.stdout
