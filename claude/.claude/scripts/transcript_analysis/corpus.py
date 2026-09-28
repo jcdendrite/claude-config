@@ -181,8 +181,18 @@ def iter_sessions(
     what keeps their output order deterministic and reproducible across runs.
     See read_session_file for the per-file read and the include_subagents
     merge behavior.
+
+    A match that resolves outside `projects_dir` is discarded before it is
+    opened. Unlike the multi-root fnmatch branches, `projects_glob` here is
+    not restricted to one path segment (see scope.py's
+    `_single_level_projects_glob`). A `..` component is a real
+    parent-directory step for `Path.glob`, not a no-op, so an unvalidated
+    value could otherwise walk outside this scan root.
     """
+    resolved_root = projects_dir.resolve()
     for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
+        if resolved_root not in jsonl.resolve().parents:
+            continue
         records = read_session_file(jsonl, include_subagents)
         if records:
             yield jsonl, records

@@ -480,6 +480,12 @@ _POOLED_PUBLICATION_POINTER = (
     "shares were not designed to be composed with a figure outside this block."
 )
 
+_POOLED_SHOW_WITHHELD_BANNER = (
+    "DO NOT PUBLISH — --show-withheld prints figures the dominance-precision\n"
+    "floor would otherwise withhold from a plain --pooled run. Internal\n"
+    "insight only. Never cite this run; cite a plain --pooled run instead."
+)
+
 _POOLED_CAPTION = (
     "Pooled across every scan root in scope, machine-wide, whole period. Every\n"
     "figure below is a share of list-price compute, never of billed spend. No\n"
@@ -559,6 +565,21 @@ _POOLED_STAT_KEYS: tuple[str, ...] = (
     *(f"skill_rounds:{s}" for s in REVIEW_SKILLS),
     "gap_dangling", "gap_unpriced",
 )
+
+# Each share's own _PooledBranchTotals denominator field, used only by the
+# dominance-precision floor below (_pooled_dominance_breach) to weigh a
+# contributing account against the same total the share itself divides by.
+# Keys must match _POOLED_STAT_KEYS exactly -- see
+# test_pooled_share_denominator_field_covers_exactly_pooled_stat_keys.
+_POOLED_SHARE_DENOMINATOR_FIELD: dict[str, str] = {
+    "spend_inside": "branch_dollars",
+    "spend_outside": "branch_dollars",
+    "spend_reviewer_only": "branch_dollars",
+    **{f"skill_spend:{s}": "round_dollars" for s in REVIEW_SKILLS},
+    **{f"skill_rounds:{s}": "round_count" for s in REVIEW_SKILLS},
+    "gap_dangling": "round_count",
+    "gap_unpriced": "round_count",
+}
 
 
 def _pooled_scope_refusal(
@@ -718,6 +739,63 @@ def _bootstrap_share_intervals(
     return intervals
 
 
+def _single_account_within_stated_precision(
+    w_max: float, p_estimate: float, ci_lo: float, ci_hi: float,
+) -> bool:
+    """True when one contributing account's own weight in a share's
+    denominator makes that share functionally a single-account figure, at
+    the precision its own already-computed 95% CI claims.
+
+    Every pooled share is a sum of per-branch sums each belonging to one
+    account, so P = Σ_a w_a·p_a. Swapping every non-dominant account's
+    combined true share `p_r` to the opposite extreme (0% or 100%)
+    therefore moves P by at most `(1 - w_max) * 100` percentage points
+    from the dominant account's own share `p_dominant`. A breach happens
+    when that worst-case swing still lands inside `[ci_lo, ci_hi]`. That
+    means the published CI contains `p_dominant` at the CI's own stated
+    precision. That is a true positive for exactly the per-account
+    dimension CLAUDE.md's redaction rule bars.
+    """
+    if not (ci_lo <= p_estimate <= ci_hi):
+        # Fail-closed backstop: a percentile bootstrap over few branches can
+        # place the point estimate outside its own resampled interval, which
+        # makes p_estimate - ci_lo or ci_hi - p_estimate negative and the
+        # swing-bound test below can never trip on a nonnegative bound.
+        return True
+    max_swing = (1.0 - w_max) * 100.0
+    return max_swing <= min(p_estimate - ci_lo, ci_hi - p_estimate)
+
+
+def _pooled_dominance_breach(
+    intervals: dict[str, tuple[float | None, float | None, float | None]],
+    account_denominator_totals: dict[int | None, dict[str, float]],
+) -> bool:
+    """True when any one share in `intervals` fails the dominance-precision
+    floor (_single_account_within_stated_precision) against its own
+    contributing accounts' weights in `account_denominator_totals`.
+
+    A hit on any single share withholds the whole pooled block -- see
+    _render_pooled_block's own comment for why a partial withhold would
+    itself leak which share is dominated.
+    """
+    pooled_denominator_totals: dict[str, float] = defaultdict(float)
+    for totals in account_denominator_totals.values():
+        for field, value in totals.items():
+            pooled_denominator_totals[field] += value
+    for key in _POOLED_STAT_KEYS:
+        point, lo, hi = intervals[key]
+        if lo is None:
+            continue  # zero-denominator share: no figure printed to leak
+        field = _POOLED_SHARE_DENOMINATOR_FIELD[key]
+        denom_total = pooled_denominator_totals[field]
+        if denom_total <= 0:
+            continue
+        w_max = max(totals[field] for totals in account_denominator_totals.values()) / denom_total
+        if _single_account_within_stated_precision(w_max, point, lo, hi):
+            return True
+    return False
+
+
 def _fmt_share_with_ci(point: float | None, lo: float | None, hi: float | None) -> str:
     """Render one pooled share line as `P.P% (95% CI L.L-H.H%)`.
 
@@ -772,11 +850,22 @@ def _render_pooled_block(
         print(refusal, file=sys.stderr)
         sys.exit(2)
 
+    # show_withheld-requires-pooled is enforced only at cmd_review_round_cost's
+    # own CLI boundary, not re-checked here. See `docs/transcript-analysis.md`
+    # § "review-round-cost" for the --show-withheld flag's own contract.
+    show_withheld = bool(getattr(args, "show_withheld", False))
+
     by_branch: dict[tuple[int | None, str], list[dict]] = defaultdict(list)
     for entry in rounds:
         by_branch[entry["branch_key"]].append(entry)
 
     per_branch: list[_PooledBranchTotals] = []
+    # Per-account totals of every field _POOLED_SHARE_DENOMINATOR_FIELD
+    # names, used only by the dominance-precision floor below.
+    denominator_fields = set(_POOLED_SHARE_DENOMINATOR_FIELD.values())
+    account_denominator_totals: dict[int | None, dict[str, float]] = defaultdict(
+        lambda: dict.fromkeys(denominator_fields, 0.0)
+    )
     # Sorted so bootstrap resampling draws from a content-derived order,
     # never raw rounds-list (file-scan) order. Mirrors the non-pooled
     # renderer's own sorted(by_branch, key=_branch_label) a few hundred
@@ -789,7 +878,7 @@ def _render_pooled_block(
         for e in branch_rounds:
             skill_round_counts[e["skill"]] += 1
             skill_round_dollars[e["skill"]] += e["main_dollars"] + e["agent_dollars"]
-        per_branch.append(_PooledBranchTotals(
+        branch_pooled_totals = _PooledBranchTotals(
             round_dollars=sum(e["main_dollars"] + e["agent_dollars"] for e in branch_rounds),
             agent_dollars=sum(e["agent_dollars"] for e in branch_rounds),
             branch_dollars=branch_totals.get(branch_key, 0.0),
@@ -798,23 +887,37 @@ def _render_pooled_block(
             rounds_with_dangling=sum(1 for e in branch_rounds if e["dangling"] > 0),
             rounds_with_unpriced=sum(1 for e in branch_rounds if e["unpriced_turns"] > 0),
             round_count=len(branch_rounds),
-        ))
+        )
+        per_branch.append(branch_pooled_totals)
+        account_totals = account_denominator_totals[branch_key[0]]
+        for field in denominator_fields:
+            account_totals[field] += getattr(branch_pooled_totals, field)
 
-    # A resolved-root count >= 2 only proves two accounts exist, not that
-    # more than one of them actually contributed a branch to this pool.
+    # Two independent floors collapse to the same degenerate wording below:
+    # `contributing_roots` bounds contributing-account count,
+    # `_pooled_dominance_breach` bounds relative weight. See
+    # `docs/transcript-analysis.md` § "review-round-cost" for both floors'
+    # own residual.
     contributing_roots = {branch_key[0] for branch_key in by_branch}
+    too_few_for_bootstrap = len(per_branch) < 4 or len(contributing_roots) < 2
     intervals = (
         dict.fromkeys(_POOLED_STAT_KEYS, (None, None, None))
-        if len(per_branch) < 2 or len(contributing_roots) < 2
+        if too_few_for_bootstrap
         else _bootstrap_share_intervals(per_branch)
     )
+    if not show_withheld and not too_few_for_bootstrap and _pooled_dominance_breach(
+        intervals, account_denominator_totals
+    ):
+        intervals = dict.fromkeys(_POOLED_STAT_KEYS, (None, None, None))
 
     def fmt(key: str) -> str:
         return _fmt_share_with_ci(*intervals[key])
 
     print(_pooled_resolved_scope_header(scope_label))
     print()
-    print(_POOLED_PUBLICATION_POINTER)
+    print(_POOLED_SHOW_WITHHELD_BANNER if show_withheld else _POOLED_PUBLICATION_POINTER)
+    if show_withheld:
+        print(_POOLED_SHOW_WITHHELD_BANNER, file=sys.stderr)
     print()
     print(_POOLED_CAPTION)
     print()
@@ -944,6 +1047,13 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     above this line describes the non-pooled path only.
     """
     pooled = bool(getattr(args, "pooled", False))
+    show_withheld = bool(getattr(args, "show_withheld", False))
+    if show_withheld and not pooled:
+        print(
+            "review-round-cost --show-withheld requires --pooled." + _POOLED_REFUSAL_DOC_POINTER,
+            file=sys.stderr,
+        )
+        sys.exit(2)
     # Everything from here down — including resolve_scan_roots and both
     # refusal layers — runs inside this try. A --pooled run must never let
     # an unanticipated exception escape uncaught and print a raw,

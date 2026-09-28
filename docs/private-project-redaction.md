@@ -227,7 +227,7 @@ composition in the proposal. "New figures against the grandfathered
 set" below is the mechanical half of that check. It does not, on its
 own, cover composition against a prior authorization.
 
-An authorization releases the corpus-scope bar and nothing else. Four
+An authorization releases the corpus-scope bar and nothing else. Five
 things stay barred alongside it:
 
 - A figure carrying a per-project, per-account, or per-engagement
@@ -241,6 +241,12 @@ things stay barred alongside it:
   two-point before/after split) drawn from a wider corpus — barred
   even as a single authorized figure, since no split mechanism
   exists here to sanction one.
+- `review-round-cost --pooled --show-withheld` output — it exists so
+  the account owner can see a figure the dominance-precision floor
+  withholds from a plain `--pooled` run; it stays barred outright,
+  never a candidate for owner authorization, since the floor's own
+  breach means the figure is functionally a single-account disclosure
+  (`docs/transcript-analysis.md` § "review-round-cost").
 
 ### Own-history counts were never inside this class
 

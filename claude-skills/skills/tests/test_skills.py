@@ -4053,6 +4053,23 @@ def test_normalize_heading(raw_heading: str, normalized: str) -> None:
     assert normalize_heading(raw_heading) == normalized
 
 
+def test_heading_texts_excludes_headings_inside_a_fenced_code_block() -> None:
+    """A stale citation could otherwise coincidentally string-match a
+    fenced shell comment or sample-output line and pass despite citing
+    nothing real -- the exact regression this helper's fence tracking
+    exists to prevent, in _citation_report's own resolution check."""
+    markdown = (
+        "# Real heading\n"
+        "\n"
+        "```bash\n"
+        "# Not a heading, just a fenced comment\n"
+        "```\n"
+        "\n"
+        "## Another real heading\n"
+    )
+    assert heading_texts(markdown) == {"Real heading", "Another real heading"}
+
+
 def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
     for relative_path, content in files.items():
         file_path = tmp_path / relative_path

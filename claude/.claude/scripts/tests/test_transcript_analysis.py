@@ -3539,6 +3539,20 @@ class TestScanRootTranscripts:
         scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
 
+    def test_glob_mode_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in `projects_glob` is a real parent-directory step
+        for Path.glob, not a no-op: this function's own containment check
+        must discard a project dir that resolves outside `root` instead of
+        counting a sibling account's own transcripts -- the same guarantee
+        corpus.iter_sessions gives its own glob match."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        (sibling / "secret.jsonl").write_text("{}\n")
+        scanned, skipped = _mod._scan_root_transcripts(root, "../acct-b")
+        assert (scanned, skipped) == (0, 0)
+
     def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
         """_scan_root_transcripts has no scan_gaps counter of its own, and
         its two callers in cost.py only catch PermissionError. It keeps
@@ -10216,6 +10230,16 @@ class TestIterScopedSessionsUnreadableRoot:
         assert "skipping" in err
 
 
+def _assert_scan_error_chain_suppressed(excinfo) -> None:
+    """`_path_stripped_scan_error`'s callers raise `from None` so the raw
+    path-bearing original exception never surfaces via Python's implicit
+    exception-chain printer when the new exception reaches a CLI's
+    uncaught top level. Both attributes must hold for `from None` to be
+    doing that job."""
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
 class TestScanGapCounter:
     """scope.py's opt-in scan-gap counter (_list_dir_recording_gaps,
     _failed_transcript_read_is_gap, _iter_project_dir_sessions). Each level
@@ -10288,13 +10312,18 @@ class TestScanGapCounter:
         _iter_glob_scoped_sessions when called without scan_gaps) passes
         scan_gaps=None. Unlike the test above, _dedup_new_project_dirs must
         let resolve()'s RuntimeError propagate uncaught rather than
-        recording a gap that nothing here would ever read."""
+        recording a gap that nothing here would ever read -- with the raw
+        loop_link path stripped from the propagated message (pathlib's own
+        RuntimeError embeds it, unlike _iter_scoped_sessions' own
+        account-labeled root-level diagnostic)."""
         root = tmp_path / "acct-a"
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError) as excinfo:
             list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+        assert str(loop_link) not in str(excinfo.value)
+        _assert_scan_error_chain_suppressed(excinfo)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
@@ -10329,7 +10358,8 @@ class TestScanGapCounter:
     def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
         """Mirrors test_project_dir_symlink_loop_without_scan_gaps_propagates_
         the_exception for the OSError branch: a non-pooled caller passing no
-        scan_gaps must see is_dir()'s PermissionError propagate uncaught."""
+        scan_gaps must see is_dir()'s PermissionError propagate uncaught,
+        with the raw proj_through_sealed path stripped from the message."""
         root = tmp_path / "acct-a"
         root.mkdir(parents=True)
         sealed_ancestor = tmp_path / "sealed-ancestor"
@@ -10339,8 +10369,10 @@ class TestScanGapCounter:
         proj_through_sealed.symlink_to(target)
         os.chmod(sealed_ancestor, 0o000)
         try:
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError) as excinfo:
                 list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
         finally:
             os.chmod(sealed_ancestor, 0o755)
 
@@ -10349,13 +10381,15 @@ class TestScanGapCounter:
         test_project_dir_symlink_loop_without_scan_gaps_propagates_the_exception:
         _iter_scoped_sessions selects project dirs by exact slug match rather
         than glob, but shares _dedup_new_project_dirs, so it gets the same
-        propagate-on-scan_gaps=None behavior."""
+        propagate-on-scan_gaps=None behavior, raw path stripped too."""
         root = tmp_path / "acct-a"
         root.mkdir(parents=True)
         loop_link = root / "-repo-loop"
         loop_link.symlink_to(loop_link)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError) as excinfo:
             list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root]))
+        assert str(loop_link) not in str(excinfo.value)
+        _assert_scan_error_chain_suppressed(excinfo)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
@@ -10365,7 +10399,7 @@ class TestScanGapCounter:
         test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_
         the_exception: _iter_scoped_sessions shares _dedup_new_project_dirs, so a
         non-pooled caller passing no scan_gaps must see is_dir()'s PermissionError
-        propagate uncaught here too."""
+        propagate uncaught here too, raw path stripped too."""
         root = tmp_path / "acct-a"
         root.mkdir(parents=True)
         sealed_ancestor = tmp_path / "sealed-ancestor"
@@ -10375,8 +10409,10 @@ class TestScanGapCounter:
         proj_through_sealed.symlink_to(target)
         os.chmod(sealed_ancestor, 0o000)
         try:
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError) as excinfo:
                 list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
         finally:
             os.chmod(sealed_ancestor, 0o755)
 
@@ -10631,10 +10667,16 @@ class TestScanGapCounter:
 
 
 class TestSingleLevelProjectsGlob:
-    """_single_level_projects_glob: the argparse type= that rejects a
+    """_single_level_projects_glob: the runtime validator that rejects a
     --projects value Path.glob would read as more than one directory-name
     match, or a different shape entirely, than the root-level fnmatch
-    matching in _iter_glob_scoped_sessions selects for."""
+    matching in _iter_glob_scoped_sessions selects for. Called only from a
+    multi-root branch (_resolve_project_scope's own, and cmd_skill_invocation's
+    inline equivalent) -- never wired as an argparse type=, since whether the
+    restriction applies depends on how many roots this invocation resolves at
+    runtime, not on the flag's syntax alone. A single-root invocation reads
+    corpus.iter_sessions, whose own Path.glob supports a nested-directory
+    pattern and must keep accepting one unchanged."""
 
     @pytest.mark.parametrize("value", ["*", "-home-user-repo*", "feat-?", "[ab]*", ""])
     def test_accepts_single_level_glob_values_unchanged(self, value):
@@ -10650,50 +10692,112 @@ class TestSingleLevelProjectsGlob:
         [["buckets", "--projects", "a/b"], ["skill-invocation", "--projects", "a/b"]],
         ids=["buckets", "skill-invocation"],
     )
-    def test_cli_rejects_a_multi_segment_projects_value(self, cli_args, capsys):
+    def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
+        """No subcommand's --projects carries an argparse type= any more, so
+        parsing alone never rejects a nested-directory value -- rejection, when
+        it applies, happens later, only under multi-root scope."""
         parser = _mod.build_parser()
-        with pytest.raises(SystemExit) as exc:
-            parser.parse_args(cli_args)
-        assert exc.value.code == 2
-        assert "--projects" in capsys.readouterr().err
+        args = parser.parse_args(cli_args)
+        assert args.projects == "a/b"
 
-    def test_every_projects_registration_across_every_subcommand_uses_the_validator(self):
-        """Walks every subparser build_parser() registers, not just the two
-        cli_args cases above, so a future subcommand that adds --projects
-        without threading type=_single_level_projects_glob fails here
-        instead of silently admitting a multi-segment or '**' value.
-        user-input is exempted: it reads only scope.PROJECTS_DIR through
-        corpus.iter_sessions, whose Path.glob handles a multi-segment or
-        '**' value correctly, unlike the fnmatch-based multi-root matcher
-        the validator protects."""
+    def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
+        """Walks every subparser build_parser() registers: --projects's
+        one-level restriction must never be reinstated as an argparse type=,
+        since whether it applies depends on how many roots this invocation
+        resolves at runtime, not on the flag's syntax alone."""
         parser = _mod.build_parser()
         subparsers_action = next(
             action for action in parser._actions
             if isinstance(action, argparse._SubParsersAction)
         )
-        missing = [
+        typed = [
             subcommand
             for subcommand, subparser in subparsers_action.choices.items()
             for action in subparser._actions
-            if action.dest == "projects"
-            and subcommand != "user-input"
-            and action.type is not _mod.scope._single_level_projects_glob
+            if action.dest == "projects" and action.type is not None
         ]
-        assert missing == []
-        user_input_parser = subparsers_action.choices["user-input"]
-        user_input_projects_action = next(
-            action for action in user_input_parser._actions if action.dest == "projects"
-        )
-        assert user_input_projects_action.type is None
+        assert typed == []
 
-    def test_user_input_accepts_a_multi_segment_projects_value(self):
-        """user-input's own --projects stays unwired: it reads only
-        scope.PROJECTS_DIR through corpus.iter_sessions's genuine
-        Path.glob, which handles a multi-segment value correctly, unlike
-        the fnmatch-based matcher the validator protects elsewhere."""
-        parser = _mod.build_parser()
-        args = parser.parse_args(["user-input", "--projects", "foo/bar"])
-        assert args.projects == "foo/bar"
+    def test_multi_root_scope_rejects_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """_resolve_project_scope's own multi-root branch is where the
+        restriction now lives: a nested-directory --projects value under two
+        roots exits 2, the same user-facing error _single_level_projects_glob
+        always raised, just moved from parse time to scope-resolution time."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(this_repo=False, projects="a/b")
+        with pytest.raises(SystemExit) as exc:
+            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        assert exc.value.code == 2
+
+    def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """The single-root branch reads corpus.iter_sessions, whose own
+        Path.glob supports a nested-directory pattern -- this must keep
+        working exactly as it did before the validator existed."""
+        root = tmp_path / "acct-a"
+        nested = root / "sub" / "-repo-main"
+        nested.mkdir(parents=True)
+        _write_jsonl(nested / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-nested")])
+        args = argparse.Namespace(this_repo=False, projects="sub/-repo-main")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-nested"}
+
+    def test_single_root_scope_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in --projects is a real parent-directory step for
+        Path.glob, not a no-op: iter_sessions' own containment check must
+        discard a match that resolves outside the scan root instead of
+        yielding a sibling account's own session file."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        _write_jsonl(sibling / "secret.jsonl", [_asst("claude-sonnet-4-6", branch="from-sibling")])
+        args = argparse.Namespace(this_repo=False, projects="../acct-b")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        assert list(session_iter) == []
+
+    def test_cost_scan_diagnostic_rejects_a_parent_traversing_projects_value(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cost's own per-root scan diagnostic (scope._scan_root_transcripts)
+        is reached with the raw, unvalidated --projects value, a separate
+        path from _resolve_project_scope's already-guarded iter_sessions
+        call above: a '..' value must not count a sibling account's own
+        transcripts there either."""
+        default_config = tmp_path / "default-account"
+        default_proj = default_config / "projects" / "-home-user-repo-a"
+        default_proj.mkdir(parents=True)
+        _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+
+        sibling_proj = tmp_path / "secret-account" / "projects" / "-home-secret-repo"
+        sibling_proj.mkdir(parents=True)
+        _write_jsonl(sibling_proj / "secret.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        _mod.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+
+    def test_skill_invocation_multi_root_rejects_a_multi_segment_projects_value_at_runtime(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cmd_skill_invocation inlines the same len(roots) > 1 /
+        _iter_glob_scoped_sessions branch _resolve_project_scope's own
+        multi-root branch does, so it needs the identical runtime check."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
+        monkeypatch.setattr(_mod, "_resolve_scan_roots", lambda _args: [root_a, root_b])
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_skill_invocation(args)
+        assert exc.value.code == 2
+        assert "--projects" in capsys.readouterr().err
 
 
 class TestPoisonedProjectsDirGlobal:

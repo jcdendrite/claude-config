@@ -40,6 +40,7 @@ def _review_round_cost_args(
     until: str | None = None,
     skill: str | None = None,
     pooled: bool = False,
+    show_withheld: bool = False,
     config_dir: str | None = None,
 ) -> object:
     return type("A", (), {
@@ -50,6 +51,7 @@ def _review_round_cost_args(
         "until": until,
         "skill": skill,
         "pooled": pooled,
+        "show_withheld": show_withheld,
         "config_dir": config_dir,
     })()
 
@@ -1430,6 +1432,34 @@ class TestBootstrapShareIntervals:
         assert zero_denom == "(95% CI not computed — no priced branch spend)"
         assert not any(c.isdigit() for c in zero_denom.rsplit("—", 1)[-1])
 
+    def test_pooled_share_denominator_field_covers_exactly_pooled_stat_keys(self):
+        """A key added to _POOLED_STAT_KEYS with no matching
+        _POOLED_SHARE_DENOMINATOR_FIELD entry would raise KeyError inside
+        _pooled_dominance_breach the first time a pool reaches it."""
+        assert set(review_rounds._POOLED_SHARE_DENOMINATOR_FIELD) == set(review_rounds._POOLED_STAT_KEYS)
+
+    def test_pooled_share_denominator_field_maps_every_key_to_its_correct_group(self):
+        """Every _pooled_dominance_breach integration test in this file stubs
+        _bootstrap_share_intervals to return the same tuple for all 11
+        _POOLED_STAT_KEYS, so _pooled_dominance_breach's short-circuit (it
+        returns on the first breaching key) only ever exercises the first key
+        of whichever denominator group a fixture skews: spend_inside,
+        skill_spend:code-review, and skill_rounds:code-review. A copy-paste
+        typo on any of the other 8 keys' mapped value would pass every such
+        test undetected. This test asserts each value individually instead
+        of going through the short-circuit."""
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_inside"] == "branch_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_outside"] == "branch_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_reviewer_only"] == "branch_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:code-review"] == "round_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:plan-review"] == "round_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:ready-for-review"] == "round_dollars"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:code-review"] == "round_count"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:plan-review"] == "round_count"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:ready-for-review"] == "round_count"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["gap_dangling"] == "round_count"
+        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["gap_unpriced"] == "round_count"
+
 
 def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
     """Two declared roots, two branches each (four total), one
@@ -1475,59 +1505,123 @@ def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
 
 
 def _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch) -> list[Path]:
-    """Root A all code-review, root B all plan-review, so the correct
-    pooled share (50%) differs from either root's own share (100%/0%),
-    catching a one-root-only regression an equal-mix fixture would miss.
+    """Root A mostly code-review (3 branches) plus one plan-review branch,
+    root B the mirror image, so the correct pooled share (50%) differs
+    from either root's own share (75%/25%) -- catching a one-root-only
+    regression an equal-mix fixture would miss. Four branches per root,
+    not one, to clear the dominance-precision floor
+    (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
+    Every code-review branch costs $1.00 (500,000 input tokens) and every
+    plan-review branch $2.00 (1,000,000 input tokens), so skill_spend's
+    dollar-weighted share (33.3/66.7) can never coincide with
+    skill_rounds's count-weighted share (50.0/50.0) this test means to
+    match.
     """
     roots = _two_declared_roots(tmp_path, monkeypatch)
+    input_tokens_for_skill = {"code-review": 500_000, "plan-review": 1_000_000}
     proj_a = roots[0] / "-home-user-repo-a"
     proj_a.mkdir(parents=True)
-    _write_jsonl(proj_a / "sess-a.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s1", "code-review")],
-        ),
-        _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
-    ])
+    for i, skill in enumerate(["code-review", "code-review", "code-review", "plan-review"]):
+        branch = f"feat-a{i}"
+        _write_jsonl(proj_a / f"sess-a{i}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=input_tokens_for_skill[skill], branch=branch,
+                ts="2026-08-01T10:00:00.000Z", content=[_skill_block(f"sa{i}", skill)],
+            ),
+            _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
+        ])
     proj_b = roots[1] / "-home-user-repo-b"
     proj_b.mkdir(parents=True)
-    _write_jsonl(proj_b / "sess-b.jsonl", [
-        _priced(
-            "claude-sonnet-5", input=100_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s2", "plan-review")],
-        ),
-        _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
-    ])
+    for i, skill in enumerate(["plan-review", "plan-review", "plan-review", "code-review"]):
+        branch = f"feat-b{i}"
+        _write_jsonl(proj_b / f"sess-b{i}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=input_tokens_for_skill[skill], branch=branch,
+                ts="2026-08-01T10:00:00.000Z", content=[_skill_block(f"sb{i}", skill)],
+            ),
+            _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
+        ])
     return roots
 
 
 def _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch) -> list[Path]:
-    """Two declared roots, one branch each, each round's only turn priced
-    via an unrecognized model id -- branch_dollars sums to zero across the
-    pool, so every dollar-based pooled share degenerates to "no priced
-    branch spend" while the round-count-based shares stay numeric, since
-    the rounds themselves still open.
+    """Two declared roots, four branches each, every round's only turn
+    priced via an unrecognized model id -- branch_dollars sums to zero
+    across the pool, so every dollar-based pooled share degenerates to "no
+    priced branch spend" while the round-count-based shares stay numeric,
+    since the rounds themselves still open.
+
+    Root A splits its four branches between code-review and plan-review
+    (two apiece); root B's four are all ready-for-review. Four branches
+    per account, not one, to clear the dominance-precision floor
+    (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
     """
     roots = _two_declared_roots(tmp_path, monkeypatch)
     proj_a = roots[0] / "-home-user-repo-a"
     proj_a.mkdir(parents=True)
-    _write_jsonl(proj_a / "sess-a.jsonl", [
-        _priced(
-            "some-unrecognized-model-id", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s1", "code-review")],
-        ),
-        _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
-    ])
+    for i, skill in enumerate(["code-review", "code-review", "plan-review", "plan-review"]):
+        branch = f"feat-a{i}"
+        _write_jsonl(proj_a / f"sess-a{i}.jsonl", [
+            _priced(
+                "some-unrecognized-model-id", input=100_000, branch=branch, ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block(f"sa{i}", skill)],
+            ),
+            _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
+        ])
     proj_b = roots[1] / "-home-user-repo-b"
     proj_b.mkdir(parents=True)
-    _write_jsonl(proj_b / "sess-b.jsonl", [
-        _priced(
-            "some-unrecognized-model-id", input=100_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
-            content=[_skill_block("s2", "plan-review")],
-        ),
-        _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
-    ])
+    for i in range(4):
+        branch = f"feat-b{i}"
+        _write_jsonl(proj_b / f"sess-b{i}.jsonl", [
+            _priced(
+                "some-unrecognized-model-id", input=100_000, branch=branch, ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block(f"sb{i}", "ready-for-review")],
+            ),
+            _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
+        ])
     return roots
+
+
+class TestSingleAccountWithinStatedPrecision:
+    """Direct calls to _single_account_within_stated_precision -- no
+    fixture, no corpus. TestCmdReviewRoundCostPooled below covers wiring
+    this check into _pooled_dominance_breach and _render_pooled_block."""
+
+    @pytest.mark.parametrize("w_max", [0.5, 0.99])
+    def test_point_outside_ci_breaches_regardless_of_swing_bound_formula(self, w_max):
+        """p_estimate=100.0 sits strictly outside [85.0, 95.0]: the
+        fail-closed backstop returns True before the swing-bound formula
+        runs at all. w_max=0.5 gives max_swing=50.0, which the swing-bound
+        formula alone would also call a breach here. w_max=0.99 gives
+        max_swing=1.0, which the swing-bound formula alone would call
+        *not* a breach -- parametrized to prove the backstop fires
+        independently of what that formula alone would say.
+        """
+        assert review_rounds._single_account_within_stated_precision(w_max, 100.0, 85.0, 95.0) is True
+
+    @pytest.mark.parametrize("p_estimate,ci_lo,ci_hi", [(85.0, 85.0, 95.0), (95.0, 85.0, 95.0)])
+    def test_point_exactly_on_ci_boundary_falls_through_to_the_primary_formula(
+        self, p_estimate, ci_lo, ci_hi,
+    ):
+        """p_estimate exactly at ci_lo or ci_hi is non-strictly inside
+        [ci_lo, ci_hi], so the backstop does not fire. w_max=0.99 makes the
+        swing-bound formula alone return False, since max_swing=1.0 is not
+        <= the boundary's own min(p_estimate - ci_lo, ci_hi - p_estimate),
+        which is 0.0 here.
+        """
+        assert review_rounds._single_account_within_stated_precision(0.99, p_estimate, ci_lo, ci_hi) is False
+
+    def test_primary_formula_breaches_at_its_own_exact_swing_bound_equality(self):
+        """The fail-closed backstop's own boundary case above
+        (p_estimate exactly on ci_lo/ci_hi) can't distinguish the primary
+        swing-bound formula's `<=` from a hypothetical `<`, since it never
+        puts max_swing anywhere near min(p_estimate - ci_lo, ci_hi -
+        p_estimate). p_estimate=50.0 sits strictly inside [30.0, 90.0], so
+        the backstop doesn't fire; min(50.0 - 30.0, 90.0 - 50.0) = 20.0, and
+        w_max=0.8 gives max_swing=(1 - 0.8)*100 = 20.0 -- exact equality on
+        the primary formula's own `<=`, which must still resolve to breach.
+        """
+        assert review_rounds._single_account_within_stated_precision(0.8, 50.0, 30.0, 90.0) is True
 
 
 # _render_pooled_block's own figure-line format is `f"    {label:<30}{value}"`
@@ -1632,13 +1726,23 @@ class TestCmdReviewRoundCostPooled:
         cmd_review_round_cost's full JSONL scan and pricing pipeline.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
+        # feat-a-filler/feat-b-filler: zero branch_dollars each, needed only
+        # to clear the four-branch bootstrap floor -- _bootstrap_share_intervals
+        # is stubbed below, so their content doesn't otherwise matter.
         rounds = [
             {"branch_key": (0, "feat-a"), "skill": "code-review",
              "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
             {"branch_key": (1, "feat-b"), "skill": "plan-review",
              "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
         ]
-        branch_totals = {(0, "feat-a"): 0.40, (1, "feat-b"): 1.00}
+        branch_totals = {
+            (0, "feat-a"): 0.40, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 1.00, (1, "feat-b-filler"): 0.0,
+        }
         args = _review_round_cost_args(pooled=True)
 
         intervals = {
@@ -1681,6 +1785,15 @@ class TestCmdReviewRoundCostPooled:
 
         assert actual_triples == expected_triples
 
+        # A key added to _POOLED_STAT_KEYS with no matching fmt() call would
+        # compute a stat that's silently never printed -- checked here
+        # against the actual rendered text, not parsed source, so a
+        # behavior-preserving refactor of _render_pooled_block never forces
+        # a rewrite of this test.
+        for key in review_rounds._POOLED_STAT_KEYS:
+            formatted_value = review_rounds._fmt_share_with_ci(*intervals[key])
+            assert formatted_value in block, f"formatted value for {key!r} missing from the rendered block"
+
     def test_no_mean_rounds_per_branch_or_totals_line(self, tmp_path, monkeypatch, capsys):
         """A branch is declined as a countable or reportable unit entirely
         under --pooled: the existing footer's Mean-rounds-per-branch line,
@@ -1701,6 +1814,21 @@ class TestCmdReviewRoundCostPooled:
         _mod.cmd_review_round_cost(_review_round_cost_args())
         unpooled_out = capsys.readouterr().out
         assert _mod._DO_NOT_PUBLISH_BANNER in unpooled_out
+
+    def test_publication_pointer_present_and_show_withheld_banner_absent_without_the_flag(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Plain --pooled with no --show-withheld: the publication pointer
+        prints exactly once, and the --show-withheld banner is absent from
+        both streams. TestPooledShowWithheld pins the banner's presence
+        when the flag is passed; this is that test's negative case.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out, err = capsys.readouterr()
+        assert out.count(review_rounds._POOLED_PUBLICATION_POINTER) == 1
+        assert review_rounds._POOLED_SHOW_WITHHELD_BANNER not in out
+        assert review_rounds._POOLED_SHOW_WITHHELD_BANNER not in err
 
     def test_no_branch_name_leak(self, tmp_path, monkeypatch, capsys):
         """A distinctively-named fixture branch does not appear in pooled
@@ -1757,54 +1885,43 @@ class TestCmdReviewRoundCostPooled:
                 "exist in docs/private-project-redaction.md"
             )
 
-    def test_heading_texts_excludes_headings_inside_a_fenced_code_block(self):
-        """A stale citation could otherwise coincidentally string-match a
-        fenced shell comment or sample-output line and pass despite citing
-        nothing real -- the exact regression this helper's fence tracking
-        exists to prevent, in the doc-pointer test directly above."""
-        markdown = (
-            "# Real heading\n"
-            "\n"
-            "```bash\n"
-            "# Not a heading, just a fenced comment\n"
-            "```\n"
-            "\n"
-            "## Another real heading\n"
-        )
-        assert heading_texts(markdown) == {"Real heading", "Another real heading"}
-
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
     ):
         """rounds under two roots produce one block with no account- label,
         and a code-review rounds-by-skill share reflecting the pool
-        (50.0%) rather than either root's own share alone (100.0% for the
-        code-review-only root, 0.0% for the plan-review-only root)."""
+        (50.0%) rather than either root's own share alone (75.0% for the
+        code-review-majority root, 25.0% for the plan-review-majority
+        root)."""
         _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "account-" not in out
 
-        # One code-review round, one plan-review round, each its branch's
-        # only round. skill_rounds:* depends only on round_count and
-        # skill_round_counts, not on dollar amounts, so this pair is
-        # numerically equivalent to the fixture's real per-branch totals
-        # for the two keys checked below. Dollar fields are deliberately
-        # asymmetric (3.0/7.0) so a skill_spend:* line can never coincide
-        # with the skill_rounds:* line this test means to match.
-        branch_a = review_rounds._PooledBranchTotals(
-            round_dollars=3.0, agent_dollars=0.0, branch_dollars=3.0,
-            skill_round_counts={"code-review": 1, "plan-review": 0, "ready-for-review": 0},
-            skill_round_dollars={"code-review": 3.0, "plan-review": 0.0, "ready-for-review": 0.0},
-            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
-        )
-        branch_b = review_rounds._PooledBranchTotals(
-            round_dollars=7.0, agent_dollars=0.0, branch_dollars=7.0,
-            skill_round_counts={"code-review": 0, "plan-review": 1, "ready-for-review": 0},
-            skill_round_dollars={"code-review": 0.0, "plan-review": 7.0, "ready-for-review": 0.0},
-            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
-        )
-        intervals = review_rounds._bootstrap_share_intervals([branch_a, branch_b])
+        # Eight branches, one round each, matching the fixture's real
+        # per-branch totals in the same sorted branch order
+        # _render_pooled_block itself iterates (root 0's four branches,
+        # then root 1's). skill_rounds:* depends only on round_count and
+        # skill_round_counts, not on dollar amounts, so this reproduces the
+        # fixture's real skill_rounds:* CI exactly.
+        branch_dollars_for_skill = {"code-review": 1.0, "plan-review": 2.0}
+
+        def single_round_branch(skill: str) -> review_rounds._PooledBranchTotals:
+            dollars = branch_dollars_for_skill[skill]
+            skill_counts = {"code-review": 0, "plan-review": 0, "ready-for-review": 0}
+            skill_counts[skill] = 1
+            skill_dollars = {"code-review": 0.0, "plan-review": 0.0, "ready-for-review": 0.0}
+            skill_dollars[skill] = dollars
+            return review_rounds._PooledBranchTotals(
+                round_dollars=dollars, agent_dollars=0.0, branch_dollars=dollars,
+                skill_round_counts=skill_counts, skill_round_dollars=skill_dollars,
+                rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+            )
+
+        root_a_skills = ["code-review", "code-review", "code-review", "plan-review"]
+        root_b_skills = ["plan-review", "plan-review", "plan-review", "code-review"]
+        per_branch = [single_round_branch(s) for s in root_a_skills + root_b_skills]
+        intervals = review_rounds._bootstrap_share_intervals(per_branch)
         for skill, key in (
             ("code-review", "skill_rounds:code-review"), ("plan-review", "skill_rounds:plan-review"),
         ):
@@ -1872,6 +1989,43 @@ class TestCmdReviewRoundCostPooled:
             _mod.cmd_review_round_cost(args)
         assert exc.value.code == 2
         assert "--config-dir" in capsys.readouterr().err
+
+    def test_pooled_and_show_withheld_parse_together_through_the_real_parser(self):
+        """--pooled and --show-withheld are independent store_true flags on
+        the same subparser: confirms both attributes come back True from one
+        parse, with no mutually-exclusive-group wiring blocking the pair."""
+        args = _mod.build_parser().parse_args(
+            ["review-round-cost", "--pooled", "--show-withheld"]
+        )
+        assert args.pooled is True
+        assert args.show_withheld is True
+
+    def test_show_withheld_without_pooled_refuses_through_the_real_parser(self, capsys):
+        """Real-parser counterpart to
+        test_show_withheld_without_pooled_refuses_before_any_scan: proves the
+        requires-pooled refusal fires when --show-withheld reaches
+        cmd_review_round_cost via build_parser() + parse_args, not only
+        through the hand-rolled Namespace stand-in."""
+        args = _mod.build_parser().parse_args(["review-round-cost", "--show-withheld"])
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(args)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "--show-withheld" in err
+        assert "--pooled" in err
+
+    def test_refuses_branches_flag_through_the_real_parser(self, fake_projects, capsys):
+        """Real-parser counterpart to test_refuses_branches_flag: proves the
+        --branches refusal fires when the flag reaches cmd_review_round_cost
+        via build_parser() + parse_args, not only through the hand-rolled
+        Namespace stand-in every other refusal test in this class uses."""
+        args = _mod.build_parser().parse_args(
+            ["review-round-cost", "--pooled", "--branches", "feat"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(args)
+        assert exc.value.code == 2
+        assert "--branches" in capsys.readouterr().err
 
     def test_refuses_this_repo_on_single_root_fixture(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -2371,6 +2525,13 @@ class TestCmdReviewRoundCostPooled:
                 content=[_skill_block("s1", "code-review")],
             ),  # round: $0.20
             _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+            # feat-a-filler: a zero-dollar round, needed only to clear the
+            # four-branch bootstrap floor without moving feat-a's own totals.
+            _priced(
+                "claude-sonnet-5", branch="feat-a-filler", ts="2026-08-01T11:00:00.000Z",
+                content=[_skill_block("f1", "code-review")],
+            ),  # round: $0.00
+            _user_msg("thanks", branch="feat-a-filler", ts="2026-08-01T11:01:00.000Z"),
         ])
         proj_b = roots[1] / "-home-user-repo-b"
         proj_b.mkdir(parents=True)
@@ -2378,9 +2539,16 @@ class TestCmdReviewRoundCostPooled:
             _priced("claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.40
             _priced(
                 "claude-sonnet-5", input=300_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s2", "plan-review")],
+                content=[_skill_block("s2", "code-review")],
             ),  # round: $0.60
             _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+            # feat-b-filler: a zero-dollar round, needed only to clear the
+            # four-branch bootstrap floor without moving feat-b's own totals.
+            _priced(
+                "claude-sonnet-5", branch="feat-b-filler", ts="2026-08-01T11:00:00.000Z",
+                content=[_skill_block("f2", "code-review")],
+            ),  # round: $0.00
+            _user_msg("thanks", branch="feat-b-filler", ts="2026-08-01T11:01:00.000Z"),
         ])
 
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
@@ -2390,12 +2558,29 @@ class TestCmdReviewRoundCostPooled:
         mean_of_shares = round((50.0 + 60.0) / 2, 1)  # 55.0 -- the regression this fixture rules out
         assert share_of_sums != mean_of_shares
 
+        # Both branches share the same code-review skill (matching
+        # _asymmetric_two_branch_pooled_totals below) to clear the
+        # dominance-precision floor
+        # (_pooled_dominance_breach/_single_account_within_stated_precision).
+        #
         # This JSONL fixture's dollar amounts are numerically identical to
-        # _asymmetric_two_branch_pooled_totals's, in the same branch order.
-        # The real production bootstrap over that equivalent fixture
-        # therefore reproduces exactly what the CLI run above computed.
+        # _asymmetric_two_branch_pooled_totals's, plus the two zero-dollar
+        # filler rounds above. The real production bootstrap over that
+        # equivalent fixture therefore reproduces exactly what the CLI run
+        # above computed -- including branch order, since
+        # _bootstrap_share_intervals's resample draws are order-sensitive:
+        # _render_pooled_block sorts by (str(root_idx), branch_name), which
+        # places each filler immediately after its own account's real branch
+        # ("feat-a" before "feat-a-filler", "feat-b" before "feat-b-filler").
+        filler_branch = review_rounds._PooledBranchTotals(
+            round_dollars=0.0, agent_dollars=0.0, branch_dollars=0.0,
+            skill_round_counts={"code-review": 1, "plan-review": 0, "ready-for-review": 0},
+            skill_round_dollars={"code-review": 0.0, "plan-review": 0.0, "ready-for-review": 0.0},
+            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+        )
+        branch_a, branch_b = _asymmetric_two_branch_pooled_totals()
         point, lo, hi = review_rounds._bootstrap_share_intervals(
-            _asymmetric_two_branch_pooled_totals()
+            [branch_a, filler_branch, branch_b, filler_branch]
         )["spend_inside"]
         assert round(point, 1) == share_of_sums
         expected_line = f"    {'inside round windows':<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
@@ -2406,25 +2591,40 @@ class TestCmdReviewRoundCostPooled:
     ):
         """feat-a has two in-scope code-review rounds with distinct dollar
         amounts; skill_round_counts/skill_round_dollars must sum both, not
-        retain only the last one -- no other pooled fixture gives any
-        branch more than one in-scope round, so an `=`-instead-of-`+=`
-        accumulation regression would otherwise go uncaught. Hand-built
-        rounds/branch_totals via a direct _render_pooled_block call, matching
+        retain only the last one -- no other branch in this pooled fixture
+        gives any branch more than one in-scope round, so an
+        `=`-instead-of-`+=` accumulation regression would otherwise go
+        uncaught. Hand-built rounds/branch_totals via a direct
+        _render_pooled_block call, matching
         test_bootstrap_ci_bounds_are_invariant_to_branch_insertion_order's own
         convention -- the accumulation loop under test needs no corpus scan
         or pricing table, so going through cmd_review_round_cost's full JSONL
         pipeline would only add incidental coupling to those independently-
-        churning subsystems."""
+        churning subsystems. Four padding branches, split across both
+        accounts and skills, keep the pool clear of the dominance-precision
+        floor (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
+        """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
             {"branch_key": (0, "feat-a"), "skill": "code-review",
              "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
             {"branch_key": (0, "feat-a"), "skill": "code-review",
              "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a2"), "skill": "plan-review",
+             "main_dollars": 0.10, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a3"), "skill": "ready-for-review",
+             "main_dollars": 0.10, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
             {"branch_key": (1, "feat-b"), "skill": "plan-review",
              "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b2"), "skill": "code-review",
+             "main_dollars": 0.10, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b3"), "skill": "ready-for-review",
+             "main_dollars": 0.10, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
         ]
-        branch_totals = {(0, "feat-a"): 0.80, (1, "feat-b"): 0.20}
+        branch_totals = {
+            (0, "feat-a"): 0.80, (0, "feat-a2"): 0.10, (0, "feat-a3"): 0.10,
+            (1, "feat-b"): 0.20, (1, "feat-b2"): 0.10, (1, "feat-b3"): 0.10,
+        }
         args = _review_round_cost_args(pooled=True)
 
         review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
@@ -2432,20 +2632,31 @@ class TestCmdReviewRoundCostPooled:
 
         # Sums both of feat-a's code-review rounds ($0.20 + $0.60 = $0.80,
         # count 2), not just the second one -- what an `=`-instead-of-`+=`
-        # regression would leave behind.
+        # regression would leave behind. The padding branches each hold a
+        # single round of a distinct skill, matching `rounds` above.
+        def _single_round_branch(dollars: float, skill: str) -> review_rounds._PooledBranchTotals:
+            skill_counts = {"code-review": 0, "plan-review": 0, "ready-for-review": 0}
+            skill_counts[skill] = 1
+            skill_dollars = {"code-review": 0.0, "plan-review": 0.0, "ready-for-review": 0.0}
+            skill_dollars[skill] = dollars
+            return review_rounds._PooledBranchTotals(
+                round_dollars=dollars, agent_dollars=0.0, branch_dollars=dollars,
+                skill_round_counts=skill_counts, skill_round_dollars=skill_dollars,
+                rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
+            )
+
         branch_a = review_rounds._PooledBranchTotals(
             round_dollars=0.80, agent_dollars=0.0, branch_dollars=0.80,
             skill_round_counts={"code-review": 2, "plan-review": 0, "ready-for-review": 0},
             skill_round_dollars={"code-review": 0.80, "plan-review": 0.0, "ready-for-review": 0.0},
             rounds_with_dangling=0, rounds_with_unpriced=0, round_count=2,
         )
-        branch_b = review_rounds._PooledBranchTotals(
-            round_dollars=0.20, agent_dollars=0.0, branch_dollars=0.20,
-            skill_round_counts={"code-review": 0, "plan-review": 1, "ready-for-review": 0},
-            skill_round_dollars={"code-review": 0.0, "plan-review": 0.20, "ready-for-review": 0.0},
-            rounds_with_dangling=0, rounds_with_unpriced=0, round_count=1,
-        )
-        intervals = review_rounds._bootstrap_share_intervals([branch_a, branch_b])
+        per_branch = [
+            branch_a, _single_round_branch(0.10, "plan-review"), _single_round_branch(0.10, "ready-for-review"),
+            _single_round_branch(0.20, "plan-review"), _single_round_branch(0.10, "code-review"),
+            _single_round_branch(0.10, "ready-for-review"),
+        ]
+        intervals = review_rounds._bootstrap_share_intervals(per_branch)
         for label, key in (
             ("code-review", "skill_spend:code-review"), ("code-review", "skill_rounds:code-review"),
         ):
@@ -2547,6 +2758,300 @@ class TestCmdReviewRoundCostPooled:
         # roots[1] (acct-b) resolves but contributes no branch at all.
         branch_totals = {(0, "feat-a1"): 0.20, (0, "feat-a2"): 0.20}
         args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
+
+    def test_pool_with_exactly_three_branches_across_two_roots_stays_degenerate(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Pins the bootstrap-validity floor's own threshold
+        (len(per_branch) < 4): three branches across two contributing roots
+        clear the contributing-roots floor (>= 2) but must still trip the
+        branch-count floor, since no other test in this file exercises
+        exactly three branches with two contributing roots -- every existing
+        "too few branches" test uses one branch or two same-root branches,
+        and every real-CI-computed test uses four or more branches.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a1"), "skill": "code-review",
+             "main_dollars": 10.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a2"), "skill": "plan-review",
+             "main_dollars": 10.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b1"), "skill": "ready-for-review",
+             "main_dollars": 10.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a1"): 10.0, (0, "feat-a2"): 10.0, (1, "feat-b1"): 10.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
+
+    def test_dominance_precision_floor_withholds_the_whole_block_on_an_extreme_split(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A 99/1 split between two contributing accounts clears the
+        `contributing_roots` count floor (two roots, two branches), but
+        must still be withheld by the dominance-precision floor: even a
+        CI as wide as (85, 95) around a point of 90 can't rule out that
+        the dominant account (99% of this share's own denominator) alone
+        drives the figure -- (1 - 0.99) * 100 = 1.0 percentage point of
+        possible swing is well inside that 10-point-wide CI. Stubs
+        _bootstrap_share_intervals so the CI is exact and deterministic,
+        matching test_pooled_render_binds_each_figure_line_to_its_own_stat_key's
+        own stubbing convention; the account weights come from the real
+        branch_totals/rounds this call is given.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        # feat-a-filler/feat-b-filler: zero branch_dollars each, so they clear
+        # the four-branch bootstrap floor without moving either account's
+        # w_max away from the 99/1 split this test pins.
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 99.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 99.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 1.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
+
+    def test_dominance_precision_floor_does_not_fire_on_a_moderate_balanced_split(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A 60/40 split is nowhere near the dominance-precision floor at
+        this share's own stubbed CI width -- (1 - 0.6) * 100 = 40
+        percentage points of possible swing is well outside the stubbed
+        CI's own 20-point half-width, so real figures must still print
+        rather than degrade to the extreme-split test's wording above."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        # feat-a-filler/feat-b-filler: zero branch_dollars each, so they clear
+        # the four-branch bootstrap floor without moving either account's
+        # w_max away from the 60/40 split this test pins.
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 60.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 40.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 60.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 40.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 30.0, 70.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        assert "too few branches" not in out
+        assert "50.0% (95% CI 30.0-70.0%)" in out
+
+    def test_dominance_precision_floor_extreme_split_depends_on_the_new_check(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Mutation-style guard for the extreme-split test above: bypasses
+        _pooled_dominance_breach (forcing it to never fire) and reruns
+        the identical fixture and CI stub, confirming the block prints
+        real figures once the new check is removed. This proves the
+        extreme-split test's withheld assertion is pinned to this new
+        floor specifically -- the fixture already clears the
+        `contributing_roots` count floor on its own (two roots, two
+        branches), so that pre-existing floor alone cannot be what makes
+        the extreme-split test pass.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        # feat-a-filler/feat-b-filler: zero branch_dollars each, so they clear
+        # the four-branch bootstrap floor without moving either account's
+        # w_max away from the 99/1 split this test pins.
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 99.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 99.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 1.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        assert "too few branches" not in out
+        assert "90.0% (95% CI 85.0-95.0%)" in out
+
+    def test_dominance_precision_floor_withholds_on_a_round_dollars_imbalance_alone(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Every dominance test above builds its 99/1 or 60/40 imbalance
+        only in branch_dollars (the spend_inside/outside/reviewer_only
+        denominator). This fixture holds branch_dollars perfectly balanced
+        (50/50 between the two accounts) while splitting round_dollars --
+        the skill_spend:* denominator -- 99/1, proving
+        _pooled_dominance_breach also catches an imbalance that shows up
+        only in a share other than the three spend-of-branch shares.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 99.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        # branch_dollars: 50/50 within each account (100.0 total each), so
+        # w_max=0.5 for spend_inside/outside/reviewer_only -- balanced.
+        # round_dollars (main_dollars + agent_dollars, above): 99/1 between
+        # accounts -- the only imbalanced field in this fixture.
+        branch_totals = {
+            (0, "feat-a"): 50.0, (0, "feat-a-filler"): 50.0,
+            (1, "feat-b"): 50.0, (1, "feat-b-filler"): 50.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
+
+    def test_dominance_precision_floor_withholds_on_a_round_count_imbalance_alone(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """_POOLED_STAT_KEYS iterates branch_dollars-keyed shares and
+        round_dollars-keyed shares before the round_count-keyed shares
+        (skill_rounds:*, gap_dangling, gap_unpriced), and
+        _pooled_dominance_breach returns on the first breaching key --
+        every dominance fixture above imbalances branch_dollars or
+        round_dollars, so none of them ever let the loop reach a
+        round_count-keyed key. This fixture holds branch_dollars and
+        round_dollars perfectly balanced (50/50 between the two accounts)
+        while skewing round_count 99-vs-2 via zero-dollar filler rounds on
+        account 0 alone, proving _pooled_dominance_breach also catches an
+        imbalance that shows up only in a round_count-keyed share.
+
+        account 0 contributes 99 of 101 total rounds (feat-a's own round
+        plus 98 zero-dollar filler rounds on feat-a-filler); account 1
+        contributes 2 (feat-b's own round plus 1 filler on feat-b-filler).
+        w_max = 99/101 ~= 0.9802, so max_swing = (1 - w_max) * 100 ~= 1.98
+        percentage points -- well inside the stubbed CI's 5-point
+        half-width, so the round_count-keyed shares breach on their own.
+        A misattributed or skipped round_count accumulation would leave
+        every key's w_max at the balanced 0.5 that branch_dollars and
+        round_dollars share here, so no key would breach and the block
+        would print real figures instead of withholding.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 50.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            *(
+                {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+                 "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0}
+                for _ in range(98)
+            ),
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 50.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        # branch_dollars: 50/50 within each account (100.0 total each) --
+        # balanced, mirroring the round_dollars-imbalance fixture above.
+        # round_dollars (main_dollars + agent_dollars, above): 50/50
+        # between accounts -- also balanced.
+        # round_count: 99 (feat-a's 1 real round + 98 fillers) vs 2
+        # (feat-b's 1 real round + 1 filler) -- the only imbalanced field.
+        branch_totals = {
+            (0, "feat-a"): 50.0, (0, "feat-a-filler"): 50.0,
+            (1, "feat-b"): 50.0, (1, "feat-b-filler"): 50.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out = capsys.readouterr().out
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
+
+    def test_dominance_precision_floor_extreme_split_generalizes_past_root_zero(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Every dominance-floor fixture above puts the larger dollar figure
+        on branch_key[0] (root 0), which is also always the first account
+        _render_pooled_block inserts into account_denominator_totals (that
+        insertion loop walks branches in sorted branch_key order, so root 0
+        is first regardless of dollar amounts) -- so "true max over every
+        account" and "always read the first-inserted account" coincide in
+        every existing fixture. Reruns the extreme-split
+        shape with the dollar split reversed -- root 1 dominant (99), root 0
+        minor (1) -- which the two computations disagree on: a
+        first-inserted-account bug would read root 0's 1% weight and never
+        breach, while a true max correctly reads root 1's 99% weight and
+        still withholds, exactly like the un-reversed extreme-split test
+        above. The moderate-split shape can't make this distinction here,
+        since even its full 60% weight doesn't breach against its own
+        stubbed CI, so root 0 vs root 1 makes no observable difference there.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 99.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 1.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 99.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
         review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         out = capsys.readouterr().out
@@ -2727,3 +3232,136 @@ class TestCmdReviewRoundCostPooled:
         non_pooled_err = capsys.readouterr().err
         assert "<placeholder-diagnostic>" in non_pooled_err
         assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in non_pooled_err
+
+
+class TestPooledShowWithheld:
+    """--show-withheld: the account owner's own view of a share the
+    dominance-precision floor would otherwise withhold. Reuses
+    TestCmdReviewRoundCostPooled's dominance-floor fixtures above."""
+
+    def test_show_withheld_prints_the_real_figure_on_an_extreme_split(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The 99/1-split fixture from
+        test_dominance_precision_floor_withholds_the_whole_block_on_an_extreme_split,
+        with --show-withheld: the banner replaces the publication pointer
+        on both streams, and the real figure prints instead of being
+        blanked."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 99.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 99.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 1.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out, err = capsys.readouterr()
+        assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        assert review_rounds._POOLED_PUBLICATION_POINTER not in out
+        assert "90.0% (95% CI 85.0-95.0%)" in out
+
+    def test_show_withheld_banner_prints_even_on_a_non_breaching_split(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The 60/40-split fixture from
+        test_dominance_precision_floor_does_not_fire_on_a_moderate_balanced_split,
+        with --show-withheld: the banner still prints on both streams and
+        the publication pointer is still absent, even though this fixture
+        never breaches -- pins that the banner depends on the flag alone,
+        not on _pooled_dominance_breach's own result.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 60.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (0, "feat-a-filler"), "skill": "code-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 40.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b-filler"), "skill": "plan-review",
+             "main_dollars": 0.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {
+            (0, "feat-a"): 60.0, (0, "feat-a-filler"): 0.0,
+            (1, "feat-b"): 40.0, (1, "feat-b-filler"): 0.0,
+        }
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 30.0, 70.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out, err = capsys.readouterr()
+        assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        assert review_rounds._POOLED_PUBLICATION_POINTER not in out
+
+    def test_show_withheld_without_pooled_refuses_before_any_scan(self, monkeypatch, capsys):
+        """--show-withheld requires --pooled; refuses before
+        resolve_scan_roots runs at all."""
+        def _fail_if_called(*_args, **_kwargs):
+            raise AssertionError("resolve_scan_roots must not run")
+
+        monkeypatch.setattr(scope, "resolve_scan_roots", _fail_if_called)
+
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(show_withheld=True))
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "--show-withheld" in err
+        assert "--pooled" in err
+
+    def test_show_withheld_never_bypasses_an_existing_scope_narrowing_refusal(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """--show-withheld plus --pooled plus --branches still exits 2 on
+        the pre-existing --branches refusal, not a --show-withheld-specific
+        one -- proves --show-withheld never bypasses an existing
+        scope-narrowing refusal."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(
+                _review_round_cost_args(pooled=True, show_withheld=True, branches="feat-a")
+            )
+        assert exc.value.code == 2
+        assert "--branches" in capsys.readouterr().err
+
+    def test_show_withheld_never_manufactures_a_figure_under_the_too_few_branches_floor(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """--show-withheld skips only the `_pooled_dominance_breach` blank;
+        `too_few_for_bootstrap` blanks both ways unaffected by the flag. Reuses
+        test_degenerate_single_branch_prints_too_few_branches_wording_with_no_digit's
+        fixture: two declared roots (clears the root-count refusal) but only one
+        branch with an in-scope round (trips too_few_for_bootstrap)."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        out, err = capsys.readouterr()
+        assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
+        too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
+        assert too_few_lines
+        assert all(line.strip().endswith("(95% CI not computed — too few branches in scope)") for line in too_few_lines)
+        assert not any(c.isdigit() for line in too_few_lines for c in line.rsplit("—", 1)[-1])

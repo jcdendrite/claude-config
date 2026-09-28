@@ -1313,6 +1313,14 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     projects_arg = getattr(args, "projects", None)
     if projects_arg:
         if len(roots) > 1:
+            # Same one-level restriction as _resolve_project_scope's own
+            # multi-root branch; see _single_level_projects_glob's docstring
+            # for why.
+            try:
+                projects_arg = _single_level_projects_glob(projects_arg)
+            except argparse.ArgumentTypeError as exc:
+                print(f"skill-invocation: --projects: {exc}", file=sys.stderr)
+                sys.exit(2)
             session_iter = _iter_glob_scoped_sessions(roots, projects_arg, include_subagents)
         else:
             session_iter = iter_sessions(roots[0], projects_arg, include_subagents=include_subagents)
@@ -6851,7 +6859,7 @@ def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
     machine-wide glob default ("*") so no existing invocation's behavior changes.
     """
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--projects", default="*", type=_single_level_projects_glob, metavar="GLOB")
+    group.add_argument("--projects", default="*", metavar="GLOB")
     group.add_argument(
         "--this-repo", action="store_true",
         help="Scope to this repo's own worktrees only (see docs/transcript-analysis.md).",
@@ -7080,7 +7088,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
     p_skill_inv_scope.add_argument(
-        "--projects", default=None, type=_single_level_projects_glob, metavar="GLOB",
+        "--projects", default=None, metavar="GLOB",
         help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
              "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
     )
@@ -7670,6 +7678,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Print only a cross-account pooled block of shares (no dollar amounts, no"
             " raw counts, no per-branch rows). Refuses every scope-narrowing flag; see"
             " docs/private-project-redaction.md."
+        ),
+    )
+    p_review_round_cost.add_argument(
+        "--show-withheld", action="store_true",
+        help=(
+            "With --pooled: print the figures the dominance-precision floor would"
+            " otherwise withhold, under a DO NOT PUBLISH banner. Never publish this"
+            " output; cite a plain --pooled run instead."
         ),
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
