@@ -271,9 +271,10 @@ class TestStowAdoptIgnorePattern:
         self, tmp_path: Path
     ) -> None:
         """`ds_store_ignore_arg`'s pattern is unanchored at the front, unlike
-        the fully-anchored entries in `stow_ignore_args` (see install.sh's
-        comment). This pins that a `.DS_Store` nested below a package's top
-        level is ignored too, not just one at the package root."""
+        the fully-anchored entries in `stow_ignore_args` (compare the two
+        regex literals in install.sh). This pins that a `.DS_Store` nested
+        below a package's top level is ignored too, not just one at the
+        package root."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         (pkg_root / "claude" / ".claude" / "skills" / ".DS_Store").write_text("finder metadata")
