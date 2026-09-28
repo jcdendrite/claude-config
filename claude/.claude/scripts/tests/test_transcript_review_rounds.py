@@ -1621,14 +1621,12 @@ class TestSingleAccountWithinStatedPrecision:
         """
         assert review_rounds._single_account_within_stated_precision(0.8, 50.0, 37.5, 62.5) is True
 
-    def test_exact_interval_catches_a_tight_ci_a_loose_swing_bound_would_miss(self):
+    def test_exact_interval_catches_a_non_boundary_breach(self):
         """w_max=0.9, p_estimate=50.0 against CI [44.0, 56.0]: the exact
         consistent-value interval for the dominant account is
         [(50.0 - 10.0) / 0.9, 50.0 / 0.9] = [44.44..., 55.55...], which sits
-        entirely inside [44.0, 56.0], a real breach. A weaker,
-        symmetric-swing sufficient condition (breach iff
-        `max_swing <= min(p_estimate - ci_lo, ci_hi - p_estimate)`, i.e.
-        `10.0 <= min(6.0, 6.0)`) misses this case as a false negative.
+        entirely inside [44.0, 56.0] without touching either edge exactly --
+        a real breach distinct from the exact-equality boundary case above.
         """
         assert review_rounds._single_account_within_stated_precision(0.9, 50.0, 44.0, 56.0) is True
 
