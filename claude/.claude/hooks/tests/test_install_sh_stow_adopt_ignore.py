@@ -340,12 +340,12 @@ class TestStowAdoptIgnorePattern:
         self, tmp_path: Path
     ) -> None:
         """'XDS_Store' is a tracked sibling the same length as '.DS_Store',
-        differing only in the first character (the position where
-        '.DS_Store' has its literal dot), that would only start matching
-        `ds_store_ignore_arg`'s pattern if its escaped dot were dropped to
-        an unescaped one -- an unescaped dot in the anchored-at-the-end
-        Perl regex matches any character, so an under-escaped pattern
-        would also sweep in this sibling and leave it un-symlinked."""
+        differing only in the first character -- the position where
+        '.DS_Store' has its literal dot. It would only start matching
+        `ds_store_ignore_arg`'s pattern if the escaped dot were dropped to an
+        unescaped one, since an unescaped dot in the anchored-at-the-end Perl
+        regex matches any character. An under-escaped pattern would therefore
+        sweep in this sibling and leave it un-symlinked."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
