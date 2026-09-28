@@ -61,7 +61,9 @@ _lib_capped() {
 # that doesn't redirect stderr can tell the cap silently didn't apply rather
 # than reading a clean exit as capped. Many current hook callers under
 # claude/.claude/hooks/*.sh redirect stderr to /dev/null, so this note is
-# unobservable from those.
+# unobservable from those. _lib_realpath_m's fallback-loop test -e/-L calls
+# are one such caller: their own 2>/dev/null (added to suppress a cap-firing
+# timeout's "Terminated"/"Killed" line) also swallows this note.
 #
 # Bound:
 #  - `-k 2` escalates to SIGKILL 2s after the SIGTERM, so under GNU timeout
@@ -134,8 +136,31 @@ _lib_capped_for() {
   fi
 }
 
+# _lib_status_consistent_with_cap_kill STATUS
+# Returns 0 when STATUS is one a _lib_capped_for cap kill produces (124, 137,
+# 143), else 1. Prints nothing and returns only 0 or 1, including for an empty,
+# absent, or non-numeric STATUS.
+# Classifies only: each caller owns the disposition (discard, deny, or skip).
+# 137 and 143 also occur as a child's own signal-death status; see
+# _lib_capped_for's "Exit statuses" bullets.
+# A caller under `set -e` must call it in a conditional context, since a bare
+# call that returns 1 aborts the script.
+_lib_status_consistent_with_cap_kill() {
+  case "${1-}" in 124|137|143) return 0 ;; esac
+  return 1
+}
+
+# Caps the fallback loop, which takes one iteration per not-yet-existing trailing component of the target plus one for the existing ancestor it stops at.
+# A target with 64 or more missing components therefore fails closed.
+# 64 is an arbitrary ceiling far above the few missing components a legitimate target has, not a value derived from a latency budget or an external spec.
+_LIB_REALPATH_M_FALLBACK_MAX_DEPTH=64
+
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
-# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+# The loop's own basename/dirname calls run uncapped, unlike the test -e/-L calls below.
+# They never touch the filesystem, so there is no legitimate stall for them to hang on to.
+# A PATH-substituted basename/dirname that blocks is a separate, accepted concern recorded in docs/security-hardening.md's Limitations section.
+# Each call's own `|| return 1` is therefore sufficient.
+# That's a categorical guarantee, unlike _lib_marker_value_present's uncapped note further down this file, which relies on today's usage rather than a filesystem-independent property.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -149,8 +174,29 @@ _lib_realpath_m() {
     return 0
   fi
   local suffix="" current="$target" suffix_component
+  local depth=0
   while true; do
-    if [ -e "$current" ]; then
+    depth=$((depth + 1))
+    if [ "$depth" -gt "$_LIB_REALPATH_M_FALLBACK_MAX_DEPTH" ]; then
+      return 1  # fail closed: a chain this deep is not a realistic ancestor walk.
+    fi
+    # Unlike basename/dirname/realpath in this loop, `test -e` and `test -L` omit `--`.
+    # GNU coreutils' external `test` binary treats a 3-argument `test -e -- PATH` as its
+    # binary-operator form and rejects it.
+    # Both calls' `2>/dev/null` suppresses a cap-firing timeout's "Terminated"/"Killed"
+    # line from leaking to the hook's own stderr, matching this function's realpath/
+    # grealpath calls above.
+    # Deliberately not routed through _lib_status_consistent_with_cap_kill above: that
+    # helper recognizes only 124/137/143, while this loop fails closed on any status
+    # other than 0 (exists) or 1 (does not exist) -- a strictly broader, more
+    # conservative partition that a shared helper would need to special-case for.
+    local test_e_status
+    if _lib_capped test -e "$current" 2>/dev/null; then
+      test_e_status=0
+    else
+      test_e_status=$?
+    fi
+    if [ "$test_e_status" -eq 0 ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
       [ -n "$resolved" ] || return 1
       if [ -z "$suffix" ]; then
@@ -161,17 +207,34 @@ _lib_realpath_m() {
         printf '%s/%s\n' "$resolved" "$suffix"
       fi
       return 0
+    elif [ "$test_e_status" -ne 1 ]; then
+      return 1  # a cap-fired timeout or test's own error is not a clean "does not exist"; fail closed instead of falling through to the decomposition logic below
     fi
-    if [ -L "$current" ]; then
-      return 1  # dangling symlink: [ -e ] reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    local test_l_status
+    if _lib_capped test -L "$current" 2>/dev/null; then
+      test_l_status=0
+    else
+      test_l_status=$?
+    fi
+    if [ "$test_l_status" -eq 0 ]; then
+      return 1  # dangling symlink: the existence check above reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    elif [ "$test_l_status" -ne 1 ]; then
+      return 1  # same ambiguity as test -e above: a cap-fired or errored status is not a clean "not a symlink", so fail closed here too
     fi
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(basename -- "$current")
+    # This basename/dirname trio's `2>/dev/null` is uniform hygiene with the
+    # test -e/-L calls above, not cap-timeout suppression. These calls run
+    # uncapped, so there is no cap-firing "Terminated"/"Killed" line to suppress here.
+    suffix_component=$(basename -- "$current" 2>/dev/null) || return 1
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
+        ;;
+      .)
+        current=$(dirname -- "$current" 2>/dev/null) || return 1
+        continue  # a lone `.` contributes nothing to the resolved path and, unlike `..`, can never defeat a same-prefix boundary check.
         ;;
     esac
     if [ -z "$suffix" ]; then
@@ -179,7 +242,7 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(dirname -- "$current")
+    current=$(dirname -- "$current" 2>/dev/null) || return 1
   done
 }
 
@@ -237,6 +300,24 @@ _lib_advance_offset_past_complete_lines() {
 # _lib_config_dir is defined in _config.sh (sourced above) — see that
 # file for the function's own contract comment. This comment stays as the
 # pointer a reader searching this file for it would otherwise miss.
+
+# POSIX ERE-escapes every regex metacharacter this sed expression's own
+# class covers, for ask-review-permissions.sh's config-dir-anchored settings-
+# file match (gap (c)).
+# `]` is placed first inside the bracket expression, where it loses its
+# closing-bracket meaning and is instead a literal member of the class --
+# POSIX bracket-expression syntax.
+# Known limitation: `\ ^ $ ( )` in this escape class remain untested, since
+# CLAUDE_CONFIG_DIR/HOME are session-level trusted config rather than
+# attacker-controlled input. `[`, `{`, `+`, `*`, `?`, `|` have dedicated
+# near-miss test cases in test_ask_review_permissions.py -- see
+# test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
+# `]` and `}` cannot form a near-miss fixture case, since neither has an
+# unescaped-vs-escaped ask/allow distinction to pin.
+# test_config_dir_escape_class_backslash_escapes_bracket_and_brace_directly
+# covers both directly instead, asserting on the sed script's own output.
+# shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
+_LIB_CONFIG_DIR_ESCAPE_SED_EXPR='s/[].[\*^$(){}+?|]/\\&/g'
 
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently

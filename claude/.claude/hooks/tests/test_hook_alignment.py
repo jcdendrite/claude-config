@@ -344,6 +344,47 @@ def test_record_session_end_timeout_stays_within_ceiling() -> None:
     )
 
 
+def test_nudge_memory_store_audit_timeout_stays_within_bounds() -> None:
+    """The declared config-value bounding nudge-memory-store-audit.sh's whole
+    process at session start.
+
+    Pins the declaration, not the harness's runtime behavior: exactly one
+    SessionStart entry ends in `nudge-memory-store-audit.sh`, and it carries
+    an integer `timeout` from 8 to 20, so a later settings edit cannot drop
+    the field and restore the 600 s command-hook default. The floor sits
+    above the 7 s single-cap worst case (5 s cap plus 2 s kill grace), so an
+    inner kill resolves before the registration cancels; it covers a single
+    inner-cap kill only, not the cumulative worst case. The ceiling of 20
+    is a chosen bound on the accepted first-response wait.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    session_start_entries = [
+        entry
+        for group in settings.get("hooks", {}).get("SessionStart", [])
+        if isinstance(group, dict)
+        for entry in group.get("hooks", [])
+        if isinstance(entry, dict)
+    ]
+    matching_entries = [
+        entry
+        for entry in session_start_entries
+        if entry.get("command", "").endswith("nudge-memory-store-audit.sh")
+    ]
+    assert len(matching_entries) == 1, (
+        "expected exactly one SessionStart entry with a command ending in "
+        f"'nudge-memory-store-audit.sh', found {len(matching_entries)}"
+    )
+    timeout = matching_entries[0].get("timeout")
+    # bool is an int subclass in Python, so a corrupted "timeout": true would
+    # otherwise pass a bare isinstance(x, int) check.
+    assert isinstance(timeout, int) and not isinstance(timeout, bool), (
+        f"nudge-memory-store-audit.sh's SessionStart 'timeout' is not an int: {timeout!r}"
+    )
+    assert 8 <= timeout <= 20, (
+        f"nudge-memory-store-audit.sh's SessionStart 'timeout' {timeout} is outside the [8, 20] range"
+    )
+
+
 # Review skills whose descriptions advertise a gate, paired with the hook that
 # enforces it. Each of these skills states a gate fact in its own frontmatter
 # description; that claim is only true while the named hook still exists under

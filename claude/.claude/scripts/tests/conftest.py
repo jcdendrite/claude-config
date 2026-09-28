@@ -4,8 +4,18 @@ plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
 test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
 test_context_composition.py, test_transcript_denials.py,
-test_transcript_review_trace.py, and test_transcript_read_scope.py (see the
-extraction rationale on _write_jsonl below).
+test_transcript_review_trace.py, test_transcript_read_scope.py,
+test_transcript_ledger_common.py, test_transcript_gh_cli.py,
+test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
+test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
+test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
+test_transcript_cache_rebuild_attribution.py,
+test_transcript_cache_rebuild_switch_delta.py,
+test_transcript_cache_rebuild_ttl_rules.py,
+test_transcript_cache_rebuild_ttl_accumulation.py,
+test_transcript_cache_rebuild_ttl_footing.py, and
+tests/_cache_rebuild_helpers.py (see the extraction rationale on
+_write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -28,7 +38,7 @@ from pathlib import Path
 
 import pytest
 from helpers import SKILLS_DIR, head_sha
-from transcript_analysis import pricing
+from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -745,6 +755,56 @@ def _cost_args(
     })()
 
 
+def _cost_ledger_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    record: bool = False,
+    force: bool = False,
+    note: str = "",
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "record": record,
+        "force": force,
+        "note": note,
+    })()
+
+
+def _cost_ledger_row(**overrides) -> dict:
+    """A complete, valid row dict with sensible defaults, overridden per test."""
+    row = {
+        "week": "2026-W20", "machine": "m1", "rates": "2026-08-02", "usd": 12.5,
+        "context_pct": 10.0, "opus_pct": 5.0, "ge200k_pct": 10.0,
+        "denials": 2, "reviewer_gap_pp": 3.5, "note": "baseline",
+    }
+    row.update(overrides)
+    return row
+
+
+def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
+    """Active profile (acct-a) plus one declared root (acct-b, via
+    TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal multi-root setup where a call
+    site that forgot to thread `roots` is distinguishable from one that
+    threaded it correctly (both look identical at one root, since
+    _resolve_project_scope's own internal default is also (PROJECTS_DIR,)).
+    Pins both PROJECTS_DIR (_resolve_scan_roots' base, used by 18 of the 19
+    funnel subcommands) and CLAUDE_CONFIG_DIR (config_dir(), which
+    _resolve_cost_roots reads independently for cost/context-distribution) at
+    the same acct-a, so every subcommand agrees on the same two-root list."""
+    acct_a = tmp_path / "acct-a"
+    (acct_a / "projects").mkdir(parents=True)
+    acct_b = tmp_path / "acct-b"
+    (acct_b / "projects").mkdir(parents=True)
+    monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{acct_b}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    return [acct_a / "projects", acct_b / "projects"]
+
+
 def _cost_trend_args(
     *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
 ) -> object:
@@ -912,11 +972,12 @@ def fake_projects(tmp_path, monkeypatch, request):
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. cost-ledger,
-    spend-over-threshold, and rearm-backtest stay in the shim (not yet moved into
-    the package) and call config_dir() via their own separate import, so
-    mod.config_dir is patched too -- two bindings of the same initial value,
-    each the sole read path for its own still-independent call sites.
+    config dir instead of this fixture's isolated tmp_path. cost-ledger, spend-over-threshold,
+    and rearm-backtest stay in the shim (not yet moved into the package) and call config_dir()
+    via their own separate import, so mod.config_dir is patched too. ledger_common and
+    pr_cost_ledger each bind config_dir by name from _config_dir, mirroring scope.py's own
+    binding, so both are patched too -- four bindings of the same initial value, each the sole
+    read path for its own still-independent call sites.
     """
     mod = request.module._mod
     projects = tmp_path / "projects"
@@ -925,6 +986,8 @@ def fake_projects(tmp_path, monkeypatch, request):
     monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
     monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
 
 
@@ -958,6 +1021,40 @@ def cost_ledger_file(tmp_path, monkeypatch, request):
     )
     monkeypatch.setattr(mod, "_cost_ledger_path", lambda: ledger_path)
     return ledger_path
+
+
+@pytest.fixture()
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects, request):
+    """Isolated config dir carrying the cost-ledger opt-in sentinel and a
+    seeded machine identity. Shared by test_transcript_analysis.py's own
+    cost-ledger section and test_transcript_ledger_common.py's
+    TestMachineIdentity (see fake_projects above for why
+    `request.module._mod`).
+
+    - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
+      `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
+      `_cost_ledger_report`'s sentinel check resolves `config_dir` through
+      `_config.py`'s own binding, not `_mod`'s, so patching
+      `_mod.config_dir` alone has no effect on it.
+    - The env var alone is not sufficient either. `fake_projects`
+      monkeypatches `_mod.config_dir` to its own `tmp_path`, which wins over
+      the env var since it never re-reads the environment.
+    - Declaring `fake_projects` as this fixture's own parameter (not just
+      requested alongside it) makes pytest's fixture graph run it first,
+      regardless of a test's own parameter order.
+    - `mod.config_dir` and `mod.ledger_common.config_dir` are both patched
+      again here so they and `_config.config_enabled()`'s env-var-based
+      resolution all agree on the same directory.
+    """
+    mod = request.module._mod
+    cfg_dir = tmp_path / "isolated-claude-config"
+    cfg_dir.mkdir()
+    (cfg_dir / ".cost-ledger-enabled").touch()
+    (cfg_dir / mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(mod, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: cfg_dir)
+    return cfg_dir
 
 
 @pytest.fixture(autouse=True)

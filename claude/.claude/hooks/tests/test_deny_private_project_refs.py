@@ -1558,6 +1558,47 @@ class TestDenyPrivateProjectRefs:
     def test_gh_issue_clean_or_allowlisted_allowed(self, claude_config_repo, command):
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
 
+    def test_gh_issue_create_skill_filing_shape_with_tracker_in_body_file_denied(self, claude_config_repo, tmp_path):
+        """The memory-store-audit skill's filing shape (`--body-file` before
+        `--title`, regular file at an absolute path): the tracker literal
+        lives only in the body file, and the deny reason names it, so an
+        unrelated fail-closed deny cannot satisfy the case."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("## Summary\n\nFixes WIDGET-4242 regression.\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh issue create --body-file {body_file} --title 'Tidy the audit summary'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "WIDGET-4242" in reason
+
+    def test_gh_issue_create_skill_filing_shape_with_clean_body_file_allowed(self, claude_config_repo, tmp_path):
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("## Summary\n\nNo tracker references here.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue create --body-file {body_file} --title 'Tidy the audit summary'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_issue_create_skill_filing_shape_with_allowlisted_prefix_allowed(self, claude_config_repo, tmp_path):
+        """PROJ is on the hook's OSS_ALLOWLIST, so a PROJ-<digits> body file
+        passes; a deny assertion must use a non-allowlisted prefix instead."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("## Summary\n\nSee PROJ-123 for context.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue create --body-file {body_file} --title 'Tidy the audit summary'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_gh_issue_body_file_allowlisted_only_allowed(self, claude_config_repo, tmp_path):
         """A body file that references only allowlisted tokens passes,
         mirroring test_gh_pr_body_file_allowlisted_only_allowed above for
@@ -4239,7 +4280,8 @@ class TestDenyPrivateProjectRefs:
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
         assert reason is not None
-        assert "did not finish reading within the timeout" in reason
+        assert "killed (exit 124)" in reason
+        assert "did not finish reading within the timeout" not in reason
 
     @pytest.mark.timing
     def test_git_commit_F_cat_timeout_denies(self, claude_config_repo, tmp_path):
@@ -4265,7 +4307,8 @@ class TestDenyPrivateProjectRefs:
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
         assert reason is not None
-        assert "did not finish reading within the timeout" in reason
+        assert "killed (exit 124)" in reason
+        assert "did not finish reading within the timeout" not in reason
 
     @pytest.mark.timing
     def test_gh_api_input_cat_timeout_denies(self, claude_config_repo, tmp_path):
@@ -4291,7 +4334,8 @@ class TestDenyPrivateProjectRefs:
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
         assert reason is not None
-        assert "did not finish reading within the timeout" in reason
+        assert "killed (exit 124)" in reason
+        assert "did not finish reading within the timeout" not in reason
 
     @pytest.mark.timing
     def test_gh_api_field_at_cat_timeout_denies(self, claude_config_repo, tmp_path):
@@ -4317,7 +4361,51 @@ class TestDenyPrivateProjectRefs:
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
         assert reason is not None
-        assert "did not finish reading within the timeout" in reason
+        assert "killed (exit 124)" in reason
+        assert "did not finish reading within the timeout" not in reason
+
+    @pytest.mark.parametrize("cat_status", [124, 137, 1])
+    @pytest.mark.parametrize(
+        ("command_template", "file_content"),
+        [
+            ("git commit -F {path}", "Fixes WIDGET-123\n"),
+            ("gh pr create --body-file {path}", "Fixes WIDGET-123\n"),
+            ("gh issue create --body-file {path}", "Fixes WIDGET-123\n"),
+            ("gh api repos/x/y/pulls/1/comments -X POST --input {path}", '{"body": "Fixes WIDGET-123"}\n'),
+            ("gh api repos/x/y/pulls/1/comments -X POST -F body=@{path}", "Fixes WIDGET-123\n"),
+        ],
+        ids=["commit-F", "pr-body-file", "issue-body-file", "api-input", "api-field-at"],
+    )
+    def test_capped_cat_deny_text_reflects_the_captured_status(
+        self, claude_config_repo, tmp_path, command_template, file_content, cat_status
+    ):
+        """At each of the five capped-`cat` sites the deny is unconditional on
+        any nonzero status, and the reason is status-accurate: a status a cap
+        kill produces (124, 137) says "killed" with the captured status, and a
+        plain read failure (1) reports the failure and never claims a kill or
+        a timeout. The shim exits with the status at once, so no cap engages."""
+        real_cat = shutil.which("cat")
+        assert real_cat, "test host must have a real cat binary on PATH"
+        source_file = tmp_path / "source.txt"
+        source_file.write_text(file_content)
+        shim_dir = tmp_path / "cat-status-shim"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(
+            shim_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(source_file))} ]', exit_status=cat_status
+        )
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command_template.format(path=source_file)),
+            cwd=claude_config_repo,
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert f"(exit {cat_status})" in reason
+        assert "within the timeout" not in reason
+        if cat_status in (124, 137):
+            assert "killed" in reason
+        else:
+            assert "killed" not in reason
 
     def test_gh_non_gated_subcommand_mentioning_pr_allowed(self, claude_config_repo):
         """A non-gated gh subcommand whose argument text merely contains the
@@ -4487,3 +4575,66 @@ class TestDenyPrivateProjectRefs:
         assert result.returncode == 2, f"expected hard-block exit 2, got {result.returncode}"
         assert not result.stdout.strip(), f"expected no stdout, got {result.stdout!r}"
         assert "_lib.sh" in result.stderr
+
+    # -- Non-regular-file targets at each of the 5 read sites ---------------
+    # The 5 sites below were tightened from `[ ! -r "$path" ]` to
+    # `[ ! -f "$path" ] || [ ! -r "$path" ]`. A directory passes the
+    # readability check but not the regular-file check, so it proves the
+    # new `[ ! -f ]` branch is reachable and fails closed rather than only
+    # theoretically present. Command templates shared with the FIFO variant
+    # below so the 5 read sites stay defined in one place.
+    _NON_REGULAR_FILE_READ_SITE_COMMANDS = [
+        "git commit -F {path}",
+        "gh pr create --body-file {path}",
+        "gh issue create --body-file {path}",
+        "gh api repos/x/y/pulls/1/comments -X POST --input {path}",
+        "gh api repos/x/y/pulls/1/comments -X POST -F body=@{path}",
+    ]
+    _NON_REGULAR_FILE_READ_SITE_IDS = [
+        "git-commit-F",
+        "gh-pr-body-file",
+        "gh-issue-body-file",
+        "gh-api-input",
+        "gh-api-field-at",
+    ]
+
+    @pytest.mark.parametrize(
+        "command_template",
+        _NON_REGULAR_FILE_READ_SITE_COMMANDS,
+        ids=_NON_REGULAR_FILE_READ_SITE_IDS,
+    )
+    def test_directory_target_denied_as_non_regular_file(
+        self, claude_config_repo, tmp_path, command_template,
+    ):
+        target_dir = tmp_path / "not-a-regular-file"
+        target_dir.mkdir()
+        command = command_template.format(path=target_dir)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None, f"expected deny for {command!r}"
+        assert "is not a regular file, or is not readable" in reason
+
+    # A FIFO is the other non-regular-file shape the header comment above
+    # `[ ! -f ] || [ ! -r ]` names as motivating: a FIFO with no writer used
+    # to hang the read at each site until the `_lib_capped` timeout(1) cap
+    # killed it (deny-private-project-refs.sh's header, "Every body/message-
+    # source file read in this hook is timeout-capped"). The `[ ! -f ]`
+    # branch now denies before any read is attempted, since a FIFO isn't a
+    # regular file either — so this test proves that fast-fail path, not the
+    # timeout cap, and does not need its own wall-clock backstop: `[ -f ]` is
+    # a stat(2)-only check that never blocks on an unopened FIFO, and even if
+    # a regression dropped the `[ ! -f ]` branch, `_lib_capped`'s 5-second cap
+    # (`_lib.sh`'s `_lib_capped_for`) still bounds the fallback read.
+    @pytest.mark.parametrize(
+        "command_template",
+        _NON_REGULAR_FILE_READ_SITE_COMMANDS,
+        ids=_NON_REGULAR_FILE_READ_SITE_IDS,
+    )
+    def test_fifo_target_denied_as_non_regular_file(
+        self, claude_config_repo, tmp_path, command_template,
+    ):
+        target_fifo = tmp_path / "not-a-regular-file"
+        os.mkfifo(target_fifo)
+        command = command_template.format(path=target_fifo)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None, f"expected deny for {command!r}"
+        assert "is not a regular file, or is not readable" in reason

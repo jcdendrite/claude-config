@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -29,6 +30,8 @@ from helpers import (
     run_hook,
     run_hook_reason,
 )
+
+from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 DENY_PII_IN_COMMITS_HOOK = HOOKS_DIR / "deny-pii-in-commits.sh"
 
@@ -1231,6 +1234,111 @@ class TestDenyPiiInCommits:
         msg_file = git_repo / "msg.txt"
         msg_file.write_text("a clean commit summary\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo) == "allow"
+
+    def test_F_device_file_denied_not_hung(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """`-F /dev/zero` must deny without `cat` ever touching it: /dev/zero
+        passes the `[ -r ]` readability check but is not a regular file, so
+        the `[ ! -f ]` guard rejects it before the capped read. A `cat` shim
+        records any invocation on the device and never reads it, so removing
+        the guard fails the test (rather than hanging or being masked by the
+        cat-kill deny)."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        invocation_log = tmp_path / "cat-on-device.log"
+        fake_cat = stub_dir / "cat"
+        fake_cat.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = /dev/zero ]; then\n'
+            f"  echo invoked >> {shlex.quote(str(invocation_log))}\n"
+            "  exit 0\n"
+            "fi\n"
+            f'exec {real_cat} "$@"\n'
+        )
+        fake_cat.chmod(0o755)
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        decision = run_hook(
+            DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F /dev/zero"), cwd=git_repo, extra_env=env
+        )
+        assert decision == "deny"
+        assert not invocation_log.exists(), "cat was invoked on the non-regular message source"
+
+    def _stage_message_file_with_ssn(self, git_repo, pii_patterns):
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text(f"commit summary\n\nseen SSN {SSN}\n")
+        return msg_file
+
+    @pytest.mark.timing
+    def test_F_file_cat_timeout_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """A `cat` of the `-F` message file killed by the 5s cap (exit 124)
+        denies rather than scanning partial content and letting the SSN through."""
+        msg_file = self._stage_message_file_with_ssn(git_repo, pii_patterns)
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(msg_file))} ]')
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        with assert_cap_engaged(stub_dir, production_cap=5, command="cat"):
+            reason = run_hook_reason(
+                DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo, extra_env=env
+            )
+        assert reason is not None and "killed (exit 124)" in reason, reason
+
+    @pytest.mark.timing
+    def test_F_file_cat_sigterm_immune_kill_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """A `cat` that ignores SIGTERM is SIGKILLed by the cap's `-k` grace
+        (exit 137, not 124); that status denies too."""
+        msg_file = self._stage_message_file_with_ssn(git_repo, pii_patterns)
+
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        if not _real_timeout_is_gnu_coreutils():
+            pytest.skip("scaled sub-second -k grace is truncated to 0 by a non-GNU timeout, so SIGKILL never fires")
+
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(
+            stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(msg_file))} ]', sigterm_immune=True
+        )
+
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo, extra_env=env
+        )
+        assert reason is not None and "killed (exit 137)" in reason, reason
+
+    def test_F_file_cat_nonzero_exit_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """A `cat` of the `-F` message file that exits 1 (a read error after
+        the readability check) denies rather than scanning empty content."""
+        msg_file = self._stage_message_file_with_ssn(git_repo, pii_patterns)
+        real_cat = shutil.which("cat")
+        if not real_cat:
+            pytest.skip("cat not found in PATH")
+        stub_dir = tmp_path / "stub-bin-cat"
+        stub_dir.mkdir()
+        _write_conditional_sleep_shim(
+            stub_dir, "cat", real_cat, f'[ "$1" = {shlex.quote(str(msg_file))} ]', exit_status=1
+        )
+        env = {"PATH": f"{stub_dir}:{os.environ['PATH']}"}
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo, extra_env=env
+        )
+        assert reason is not None and "(exit 1)" in reason, reason
+        assert "killed" not in reason, reason
 
     # ------------------------------------------------------------------ #
     # Self-exclusion: built-in PATHSPEC_EXCLUDES                          #
