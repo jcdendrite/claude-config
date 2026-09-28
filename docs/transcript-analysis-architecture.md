@@ -14,8 +14,8 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
-`read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, and `cache_rebuild.py` are the only modules the
-shim imports back into (not just from). Cost-ledger still calls `review_trace.py`'s `compute_deny_summary_data` from
+`read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, and `audit_routing.py`
+are the only modules the shim imports back into (not just from). Cost-ledger still calls `review_trace.py`'s `compute_deny_summary_data` from
 the shim. The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -33,6 +33,8 @@ package's first two imports from one command-group module into another.
 `build_parser()` likewise wires up `cache_rebuild.py`'s `cmd_cache_rebuild` and its two
 `--since`/`--threshold` default constants (`_CACHE_REBUILD_DEFAULT_SINCE`,
 `_CACHE_REBUILD_DEFAULT_THRESHOLD`) from the shim.
+`build_parser()` likewise wires up `audit_routing.py`'s `cmd_audit_routing`,
+`cmd_audit_routing_shape`, and `cmd_audit_routing_samples` from the shim.
 
 ## The package
 
@@ -78,6 +80,18 @@ disclosure gating described above. The model-mix table's `Declared` column is a 
 exception: it's read from a local agent-definition file's own `model:` frontmatter, not from
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
 differs from a remote model/subagent/MCP-tool-result's.
+
+Also owns the `--this-repo` subagent_type disclosure allowlist:
+
+- `_BUILT_IN_AGENT_TYPES` — the Claude Code built-in `subagent_type` values present in every
+  install.
+- `_REPO_AGENT_DEFINITIONS_DIR` — this repo's own tracked `agents/` directory.
+- `_repo_tracked_agent_type_names` — the stems of every `agents/*.md` file that directory
+  git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`.
+
+The shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
+which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
+row.
 
 ### `pricing.py`
 
@@ -134,10 +148,7 @@ above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both 
 the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
 membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
 skill name before `_round_skill_name` normalizes it.
-`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than
-moving into the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type
-disclosure allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the
-package may not import back from the shim. `detect_round_windows` is public (no leading
+`detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
 
@@ -279,6 +290,13 @@ module's separate imported binding to take effect. `cmd_cache_rebuild`,
 `_CACHE_REBUILD_DEFAULT_SINCE`, and `_CACHE_REBUILD_DEFAULT_THRESHOLD` are the three names reached
 bare from the shim.
 
+### `audit_routing.py`
+
+The audit-routing command family: the three `cmd_*` functions (`cmd_audit_routing`,
+`cmd_audit_routing_shape`, `cmd_audit_routing_samples`) and every helper only they use. Imports
+`corpus`, `pricing`, `redaction`, `render`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. The three `cmd_*` functions are the only names reached bare from the shim.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -316,7 +334,8 @@ module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_
 on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
-`_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`); see its own
+`_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
+`_exit_plan_mode`, `_priced_opus`, `_read_use`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir` and the
 shim's still-independent `config_dir` (for cost-ledger, spend-over-threshold, and rearm-backtest,
 not yet moved into the package), plus `ledger_common.config_dir` and `pr_cost_ledger.config_dir`
@@ -343,3 +362,14 @@ itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
 cache-rebuild and cache-efficiency, and `.claude/plans/transcript-analysis-decomposition.md`'s rule
 for a cross-group test (stated there for `_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the
 legacy file until every group it references has moved.
+
+The audit-routing family splits along its three subcommands rather than one file per module:
+`tests/test_transcript_audit_routing.py` (`cmd_audit_routing`),
+`test_transcript_audit_routing_shape.py` (`cmd_audit_routing_shape`), and
+`test_transcript_audit_routing_samples.py` (`cmd_audit_routing_samples`). All three share
+`tests/_audit_routing_helpers.py`, a plain module, not a test file itself. Its own consumers
+import it as `from ._audit_routing_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. Each file keeps its own family-only helpers
+local to itself. `TestMultiRootFormatOutliers` stays in `tests/test_transcript_analysis.py`
+rather than moving with the rest of the family: it spans cost, audit-routing-samples, and
+judgment-pair.
