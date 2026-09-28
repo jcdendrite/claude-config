@@ -11,6 +11,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcript** — one session log file under `<config-dir>/projects/<project-dir>/*.jsonl`. A session's subagent records are merged into their parent's file by `read_session_file`, never counted as their own transcript.
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
+- **project directory that fails to resolve** (a symlink loop, or otherwise unreadable) — aborts the whole invocation with an uncaught error on every subcommand except `review-round-cost --pooled`, which records it as a scan gap instead.
 - **turn** — one assistant reply record.
 - **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
 - **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.
@@ -19,7 +20,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 ## Scoping to this repo: `--this-repo`
 
-Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine. When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax.
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
@@ -1132,6 +1133,8 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--branches B1,B2,...` -- filter to specific branches (default: all)
 - `--since DATE` / `--until DATE` -- inclusive absolute date bounds (`YYYY-MM-DD`) on each round's own opening timestamp, matching `judgment-pair`'s convention. These narrow which *rounds* are counted, not which turns are priced -- a branch's "branch $" denominator in the reconciliation line below is always its full, unwindowed corpus total, so a `--since`-narrowed run compares in-window round dollars against all-time branch spend.
 - `--skill NAME` -- an output filter over already-detected rounds to one of `code-review`/`plan-review`/`ready-for-review` (default: all three), applied after detection exactly like `--branches`/`--since`/`--until`. It never narrows round-window detection itself, so a round's own `main $`/`agent $`/`agents` figures are invariant to which `--skill` value is passed -- only which rounds are printed and aggregated changes. `branch_totals` (the reconciliation line's denominator, below) is likewise never narrowed by `--skill`, so a filtered run's lower round-share percentage reflects an unchanged denominator against a smaller numerator, not a regression.
+- `--pooled` -- render a pooled cross-account share block instead of the per-branch table and footer, publishable only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". See "Pooled mode" below.
+- `--show-withheld` -- requires `--pooled`; also prints the figures the dominance-precision floor would otherwise withhold, under a `DO NOT PUBLISH` banner on both stdout and stderr. Never publishable -- see "Pooled mode" below.
 
 **Round detection caveats.**
 - **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
@@ -1166,6 +1169,58 @@ Unpriced turns inside round windows: 0
 ```
 
 `#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
+
+**Pooled mode.** `--pooled` renders a completely different, fixed output instead: a cross-account pooled block of dimensionless shares with bootstrap confidence intervals, in place of every per-branch row and the footer above. It refuses every scope-narrowing flag and requires more than one resolved scan root, exiting 2 with a message naming the flag on refusal. That root-count floor alone doesn't guarantee more than one account actually contributed a branch to the pool -- a pool short of that still degrades to the same "too few branches" wording (below) rather than a real percentage. A second, independent floor bounds relative weight rather than count. For any computed share, when even the most extreme possible swing from every non-dominant contributing account still lands inside that share's own 95% CI, the dominant account's weight in that share's denominator makes the figure functionally a single-account disclosure at the CI's own stated precision. The whole block then degrades to the same "too few branches" wording instead of printing a lopsided figure. Rerun with `--show-withheld` to see the figures this floor withholds -- that output is never publishable, regardless of whether the figures it shows happen to be balanced:
+
+- `--branches` -- names branches; a branch-scoped figure is a per-deliverable figure
+- a non-default `--projects` glob -- a named glob is a per-project dimension
+- `--skill` -- narrows the numerator against an un-narrowed denominator and degenerates the per-skill lines
+- `--since` / `--until` -- whole period only, never a time series
+- the top-level `--config-dir` -- collapses the pool to one named account
+- `--this-repo` -- not implemented as a pooled scope (a product decision, not a policy bar)
+- exactly one resolved scan root -- a single-account figure is a per-account figure. The refusal names `~/.claude/transcript-config-dirs`
+- a resolved scan root, or a directory or transcript under one, that exists but cannot be read -- that part of the corpus would silently drop out of the pool. Checked only after the full scan. The refusal names neither the path nor a count
+- an unexpected error interrupts the corpus scan or the pooled render -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it. Resolve the underlying problem before retrying `--pooled`
+
+The block never emits a dollar amount, a raw count, or a per-account/per-project/per-branch split. Each figure is a share of list-price compute. Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you. Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
+
+**Sample output** (every figure below is illustrative filler, not derived from any real run):
+```
+REVIEW ROUND COST SOURCES (*; pooled)
+
+POOLED — publishable only under docs/private-project-redaction.md
+§ "The owner can authorize one figure, case by case". Propose the figure, this exact
+command, and the destination artifact to the owner, then cite the owner's
+approval in that artifact. Nothing here checks that for you. Before citing
+this alongside any rate or count already published elsewhere (e.g. a $/PR
+rate or a branch count), name that composition in the proposal — these
+shares were not designed to be composed with a figure outside this block.
+
+Pooled across every scan root in scope, machine-wide, whole period. Every
+figure below is a share of list-price compute, never of billed spend. No
+dollar amount, no raw count, and no per-account, per-project, or per-branch
+split is emitted. Each interval is a 2,000-resample percentile bootstrap
+resampled over branches, so it reflects branch-to-branch variation, treating
+the branches in scope as a sample of ongoing work.
+
+  Share of branch spend
+    inside round windows          40.0% (95% CI 35.0-45.0%)
+    outside every round window    60.0% (95% CI 55.0-65.0%)
+    reviewer dispatches only      22.0% (95% CI 17.0-27.0%)
+  Round-window spend by skill
+    code-review                   50.0% (95% CI 45.0-55.0%)
+    plan-review                   30.0% (95% CI 25.0-35.0%)
+    ready-for-review              20.0% (95% CI 15.0-25.0%)
+  Rounds by skill
+    code-review                   55.0% (95% CI 50.0-60.0%)
+    plan-review                   25.0% (95% CI 20.0-30.0%)
+    ready-for-review              20.0% (95% CI 15.0-25.0%)
+  Rounds affected by a data-quality gap
+    dangling dispatch              5.0% (95% CI 0.0-10.0%)
+    unpriced turn                  0.0% (95% CI 0.0-0.0%)
+```
+
+Fewer than four branches in scope prints `(95% CI not computed — too few branches in scope)` for every share. A share with a zero-dollar denominator (a branch with a round but no priced spend) prints `(95% CI not computed — no priced branch spend)` for that share alone. Neither wording's own reason clause contains a digit.
 
 **When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
 

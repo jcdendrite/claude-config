@@ -51,7 +51,16 @@ from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
-from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
+from helpers import (
+    CLAUDE_DIR,
+    REPO_ROOT,
+    SCRIPTS_DIR,
+    SKILLS_DIR,
+    extract_skill_command,
+    heading_texts,
+    normalize_heading,
+    run_skill_command,
+)
 
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
@@ -3483,36 +3492,6 @@ def _extract_citations(markdown_text: str) -> list[_Citation]:
     return citations
 
 
-_HEADING_LINE_RE = re.compile(r"^#{1,6}\s+.+$")
-_HEADING_STRIP_CHARS_RE = re.compile(r"[`*_]")
-
-
-def _normalize_heading(text: str) -> str:
-    """Normalize a heading for citation comparison.
-
-    Strips leading/trailing `#`, strips every backtick/`*`/`_` character
-    anywhere in the text (so a heading containing inline code or emphasis is
-    citable in plain text), collapses whitespace runs, then strips the ends.
-    Both sides of a comparison run through this before the exact-equality
-    check, so `### Debug-investigation probe → \\`general-purpose\\` or
-    \\`Explore\\`` is citable as "Debug-investigation probe → general-purpose
-    or Explore".
-    """
-    text = text.strip("#")
-    text = _HEADING_STRIP_CHARS_RE.sub("", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def _heading_texts(markdown_text: str) -> set[str]:
-    """Every normalized ATX heading in a markdown document."""
-    return {
-        _normalize_heading(line)
-        for line in markdown_text.split("\n")
-        if _HEADING_LINE_RE.match(line)
-    }
-
-
 def _resolve_citation_target(
     target: str | None,
     *,
@@ -3588,7 +3567,7 @@ def _citation_report(skill_md_paths: Iterable[Path], *, repo_root: Path) -> list
                         f"unresolvable target {citation.target!r}"
                     )
                     continue
-                if _normalize_heading(citation.heading) not in _heading_texts(resolved.read_text()):
+                if normalize_heading(citation.heading) not in heading_texts(resolved.read_text()):
                     violations.append(
                         f"{relative_source}:{citation.line} -> target "
                         f"{citation.target!r} resolved to "
@@ -3632,12 +3611,12 @@ def _assert_citation_resolves_to_heading(
     """Shared body for the doc → SKILL.md-heading citation tests below:
     find the citation, resolve its target file, and confirm the target
     heading actually exists there."""
-    expected_heading = _normalize_heading(expected_heading_raw)
+    expected_heading = normalize_heading(expected_heading_raw)
     citations = [
         citation
         for citation in _extract_citations(doc_path.read_text())
         if citation.target == expected_target
-        and _normalize_heading(citation.heading) == expected_heading
+        and normalize_heading(citation.heading) == expected_heading
     ]
     assert citations, (
         f"{doc_path} no longer cites {expected_target}'s "
@@ -3650,7 +3629,7 @@ def _assert_citation_resolves_to_heading(
     assert resolved is not None, (
         f"{doc_path}'s citation target {expected_target!r} failed to resolve"
     )
-    assert expected_heading in _heading_texts(resolved.read_text()), (
+    assert expected_heading in heading_texts(resolved.read_text()), (
         f"{doc_path}'s citation resolved to {resolved} but it has no "
         f"heading matching {expected_heading!r}"
     )
@@ -3836,6 +3815,25 @@ def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
         REPO_ROOT / "docs" / "cost-levers-considered.md",
         "docs/private-project-redaction.md",
         "The owner can authorize one figure, case by case",
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_review_round_cost_citation_resolves_to_real_heading() -> None:
+    """docs/private-project-redaction.md's worked-instrument pointer for
+    `review-round-cost --pooled` cites `docs/transcript-analysis.md`
+    § "review-round-cost" as the canonical home for that mode's refusal
+    list, contributing-account floor, and output grammar — resolves to a
+    real heading there.
+
+    The redaction doc defers to that section instead of restating the
+    contract, so a heading rename there would otherwise orphan the pointer
+    with no reader-visible symptom.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "private-project-redaction.md",
+        "docs/transcript-analysis.md",
+        "review-round-cost",
         repo_root=REPO_ROOT,
     )
 
@@ -4052,7 +4050,24 @@ def test_normalize_heading(raw_heading: str, normalized: str) -> None:
     """The real heading at subagent-delegation/SKILL.md:120 pins the
     mid-heading-backtick case; the rest are synthetic but exercise the same
     normalization independently."""
-    assert _normalize_heading(raw_heading) == normalized
+    assert normalize_heading(raw_heading) == normalized
+
+
+def test_heading_texts_excludes_headings_inside_a_fenced_code_block() -> None:
+    """A stale citation could otherwise coincidentally string-match a
+    fenced shell comment or sample-output line and pass despite citing
+    nothing real -- the exact regression this helper's fence tracking
+    exists to prevent, in _citation_report's own resolution check."""
+    markdown = (
+        "# Real heading\n"
+        "\n"
+        "```bash\n"
+        "# Not a heading, just a fenced comment\n"
+        "```\n"
+        "\n"
+        "## Another real heading\n"
+    )
+    assert heading_texts(markdown) == {"Real heading", "Another real heading"}
 
 
 def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
@@ -4139,7 +4154,7 @@ def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
                 ),
                 "example-skill/sibling.md": "## Duplicate Heading\n\nFirst copy.\n\n## Duplicate Heading\n",
             },
-            # Would be 1 if _heading_texts started requiring headings to be
+            # Would be 1 if heading_texts started requiring headings to be
             # unique — today it returns a set, so two identical normalized
             # headings in the target file still resolve.
             0,
@@ -5167,10 +5182,10 @@ class TestHandoffWarrantCheckCanonicalSection:
         `test_skill_citations_resolve_to_real_headings`'s job.
         """
         citations = _extract_citations(_skill_file("plan-it").read_text())
-        expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+        expected_heading = normalize_heading("Before writing: is a handoff warranted?")
         assert any(
             citation.target == "handoff/SKILL.md"
-            and _normalize_heading(citation.heading) == expected_heading
+            and normalize_heading(citation.heading) == expected_heading
             for citation in citations
         ), "plan-it/SKILL.md no longer cites handoff/SKILL.md's warrant-check section"
 
@@ -5182,10 +5197,10 @@ class TestHandoffWarrantCheckCanonicalSection:
         `test_skill_citations_resolve_to_real_headings`'s job.
         """
         citations = _extract_citations(_skill_file("ready-for-review").read_text())
-        expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+        expected_heading = normalize_heading("Before writing: is a handoff warranted?")
         assert any(
             citation.target == "handoff/SKILL.md"
-            and _normalize_heading(citation.heading) == expected_heading
+            and normalize_heading(citation.heading) == expected_heading
             for citation in citations
         ), "ready-for-review/SKILL.md no longer cites handoff/SKILL.md's warrant-check section"
 
