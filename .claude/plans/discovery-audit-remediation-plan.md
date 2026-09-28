@@ -1,5 +1,15 @@
 # Discovery-audit remediation plan
 
+> **Superseded in part — 2026-09-28.** The plan was not executed as phased: Phase 1's Dispatch 1a landed as #863, and Phase 2's finding was fixed by #790.
+>
+> Per-finding status and tracking issues now live in `docs/reports/2026-08-22-discovery-audit/findings.md` § "Status — updated 2026-09-28", which is authoritative. The phase text below stays as reference design, and each tracking issue cites the phase it draws from.
+>
+> Dispatch 1b's bare-`&` and inline-alias prerequisites are now recorded as documented known gaps with pinning tests instead of being fixed: bare-`&` is tracked by #1063, and inline-alias by #1162.
+>
+> Phase 6's `limit_for()` exception for `review-permissions/SKILL.md` is replaced by trimming that file under its 200-line cap (#1160), and the same trim rule extends to `skill-review/SKILL.md` (#1173), replacing that file's proposed exception too.
+>
+> Dispatch 1b's other plan-originated items — not report findings — go to #1156: `GIT_DIR` stripping at `_lib_capped_for`, fail-closed-on-any-nonzero-exit handling at content-bearing sites, and the `gtimeout` probe in the plugin `_lib_jq` copies.
+
 ## Context
 
 Remediate the 85 findings in `docs/reports/2026-08-22-discovery-audit/findings.md`
