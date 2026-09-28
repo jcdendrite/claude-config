@@ -490,10 +490,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # module, and that import is invisible to path-constant scanning.
 # CONFIG_MODULE: every HOOKS_TESTS_IMPORTING_CONFIG member imports it by name.
 # CONFIG_DIR_MODULE: same shape as CONFIG_MODULE's row, but each group
-# depends on it transitively rather than by direct name-import --
-# HOOKS_TESTS_IMPORTING_CONFIG via _config, REVIEW_LEDGER_SCRIPT_TEST_PATH via
-# transcript_analysis.author_outcome -> scope, and
-# SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER via run_skill_evals.
+# depends on it transitively rather than by direct name-import:
+# - HOOKS_TESTS_IMPORTING_CONFIG, via _config
+# - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope
+# - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER, via run_skill_evals
 # TRANSCRIPT_ANALYSIS_PACKAGE_DIR: REVIEW_LEDGER_SCRIPT_TEST_PATH imports
 # transcript_analysis.author_outcome, a module inside this package.
 # SKILL_STRUCTURE_VALIDATOR_MODULE: every

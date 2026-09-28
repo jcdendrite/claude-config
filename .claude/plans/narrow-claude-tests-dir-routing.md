@@ -5,7 +5,7 @@
 `select-tests.py`'s `_is_py_source_under_claude_or_plugins` predicate
 (`claude/.claude/scripts/select-tests.py:352-360`) routes every tracked
 `.py` file under `claude/`, `claude-skills/`, or `plugins/` to
-`CLAUDE_TESTS_DIR`, but only two test classes in
+`CLAUDE_TESTS_DIR`. Only two test classes in
 `claude/.claude/tests/test_pytest_collection_config.py`
 (`TestConftestModuleNamesAreUnique` and `TestNoBareSameDirectorySiblingImports`)
 actually depend on file-name or directory shape rather than content
@@ -14,10 +14,10 @@ tax on frequently-edited files with no relationship to what those two
 test classes check — `claude/.claude/scripts/transcript-analysis.py`
 alone has paid this tax on 98 historical commits. The intended outcome
 is to narrow `CLAUDE_TESTS_DIR` routing to only the inputs that can
-actually affect those two test classes, while declaring the coverage
-this narrowing would otherwise silently drop for five test files that
-import a module from another domain by name — coverage today's broad
-routing gives only incidentally, via a `pytest claude/.claude/
+actually affect those two test classes. The plan also declares the
+coverage this narrowing would otherwise silently drop, for five test
+files that import a module from another domain by name. That coverage
+exists today only incidentally, via a `pytest claude/.claude/
 --collect-only` collection check two other test classes happen to run.
 
 ## Approach
