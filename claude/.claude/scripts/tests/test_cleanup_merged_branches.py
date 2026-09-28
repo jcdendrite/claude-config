@@ -2106,11 +2106,10 @@ class TestGenuineReuseNotAncestorStaysStale:
 class TestDescendantOfMergedHeadPromptsAsTierB:
     """The local tip is a strict descendant of the PR's actual merged head
     -- real, unmerged commits on top of what GitHub actually merged. The
-    branch is offered for a Tier B prompt naming the PR, the merge date,
-    and how many commits are ahead; it is never auto-deleted, and it is
-    never reported as `skip-stale-name` ("likely a reused branch name") --
-    that diagnosis is wrong, since the branch's merged content really is
-    part of the PR."""
+    branch draws a Tier B prompt naming the PR, the merge date, and the
+    ahead-count. It is never auto-deleted and never reported as
+    `skip-stale-name` -- that label would be wrong, since the branch's
+    merged content really is part of the PR."""
 
     def test_non_tty_run_skips_with_probable_merge_message(self, tmp_path, fake_gh):
         local, remote = _make_repo_with_remote(tmp_path)
@@ -2208,7 +2207,8 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
         )
         assert ref_check.returncode == 0, "checked-out branch must never be deleted regardless of verdict"
 
-    def test_pty_reply_y_deletes_local_and_remote(self, tmp_path, fake_gh):
+    @pytest.mark.parametrize("reply", [b"y\n", b"Y\n"], ids=["lowercase-y", "uppercase-Y"])
+    def test_pty_reply_y_deletes_local_and_remote(self, tmp_path, fake_gh, reply):
         """The one basis where a `y` discards commits that exist nowhere
         else -- mirrors TestTierBReachableNoMergedPR's TTY-`y` coverage for
         plain Tier B, with an added remote-deletion check since this
@@ -2234,7 +2234,7 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
                 stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             os.close(slave_fd)
-            os.write(master_fd, b"y\n")
+            os.write(master_fd, reply)
             proc.wait(timeout=30)
             os.close(master_fd)
         except Exception:
@@ -2256,6 +2256,75 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
             cwd=local, capture_output=True, text=True,
         ).stdout
         assert remote_refs_after.strip() == "", "a y reply must also delete the remote branch"
+
+    def test_eof_on_prompt_keeps_descendant_branch_and_its_commits(self, tmp_path, fake_gh):
+        """A closed pty master before any reply reaches read() (EOF, e.g.
+        Ctrl-D) resolves the pr-head-descendant prompt to "keep" via the same
+        `read -r _REPLY || _REPLY=""` fallback that
+        TestTierBPromptEOFDoesNotAbortPendingTierADeletes exercises for the
+        reachable-tier-b basis."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+        expected_tip = _rev_parse(local, "feat/ahead-of-merge")
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                [str(_SCRIPT)], cwd=local,
+                env=env,
+                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            os.close(slave_fd)
+            os.close(master_fd)  # EOF before any reply is sent
+            proc.wait(timeout=30)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
+            raise
+
+        assert proc.returncode == 0, "EOF on the prompt must not abort the script under set -e"
+        branches = subprocess.run(
+            ["git", "branch"], cwd=local, capture_output=True, text=True
+        ).stdout
+        assert "feat/ahead-of-merge" in branches, "EOF resolves to keep, not delete"
+        assert _rev_parse(local, "feat/ahead-of-merge") == expected_tip, (
+            "the branch's unique, unmerged commit must survive an EOF-resolved keep"
+        )
+
+
+class TestDescendantVerdictRerunIsIdempotent:
+    """Mirrors TestIdempotentRerun for the tier-b:pr-head-descendant verdict.
+    Tier B only prompts, so the branch is never deleted. Idempotency here
+    means a second non-TTY run against a fully-local descendant branch
+    reports the identical skip line and leaves the branch unchanged,
+    rather than drifting between runs."""
+
+    def test_second_non_tty_run_reports_identical_skip_line(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+        expected_tip = _rev_parse(local, "feat/ahead-of-merge")
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+
+        first = _run_script(local, env)
+        assert first.returncode == 0
+        assert "Skipped 1 probable-merge branch(es) (no TTY for prompt): feat/ahead-of-merge" in first.stdout
+
+        second = _run_script(local, env)
+        assert second.returncode == 0
+        assert "Skipped 1 probable-merge branch(es) (no TTY for prompt): feat/ahead-of-merge" in second.stdout
+
+        assert _rev_parse(local, "feat/ahead-of-merge") == expected_tip, (
+            "the branch must be unchanged after two non-TTY runs"
+        )
 
 
 class TestMalformedDescendantVerdictFieldsFailClosed:
@@ -2308,21 +2377,21 @@ class TestMalformedDescendantVerdictFieldsFailClosed:
         result = _run_script(local, env, args=["--dry-run"])
 
         assert result.returncode == 0
-        assert "? commit(s) ahead of that PR's merged head" in result.stdout, (
-            "a failed rev-list --count must degrade to '?', not a raw error or an empty field"
-        )
+        assert (
+            "PR #813, merged 2026-06-01; local tip is ? commit(s) ahead of that PR's merged head and origin/main"
+            in result.stdout
+        ), "a failed rev-list --count must degrade to '?', not a raw error or an empty field"
 
 
 class TestReusedNameInMergeCommitRepoGetsPromptNotStaleSkip:
-    """.claude/plans/tip-descendant-of-merge.md's assumption ledger, row 15:
-    in a repo that merges PRs via a real merge commit
-    (not squash), a genuinely unrelated branch that reuses an old,
-    already-merged PR's name also carries that PR's head in its history
-    purely through merge-commit topology -- ancestry alone cannot tell it
-    apart from a branch that was continued and merge-resynced. Both draw
-    the same non-destructive pr-head-descendant prompt rather than the
-    misleading stale-name skip, and the reported count reflects only the
-    reused branch's own commit(s)."""
+    """In a repo that merges PRs via a real merge commit (not squash), a
+    genuinely unrelated branch that reuses an old, already-merged PR's name
+    also carries that PR's head in its history purely through merge-commit
+    topology -- ancestry alone cannot tell it apart from a branch that was
+    continued and merge-resynced. Both draw the same non-destructive
+    pr-head-descendant prompt rather than the misleading stale-name skip,
+    and the reported count reflects only the reused branch's own
+    commit(s)."""
 
     def _build_reused_name_in_merge_commit_repo(self, tmp_path):
         local, remote = _make_repo_with_remote(tmp_path)

@@ -337,11 +337,13 @@ CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 # ROWS is classify_branch's validated stale-row table: space-separated
 # <pr>,<oid>,<merged-date> triples in gh's own row order, one per merged
 # PR sharing this branch name. BASIS decides which side of the ancestry
-# test TIP occupies: pr-head-ancestor tests whether TIP is an ancestor of
-# the row's oid (the local branch is behind what GitHub merged);
-# pr-head-descendant tests whether the row's oid is an ancestor of TIP
-# (the local branch has extra commits on top of what GitHub merged). An
-# unrecognized BASIS returns 1 without scanning. Scans every row, first
+# test TIP occupies:
+#   pr-head-ancestor:   TIP is an ancestor of the row's oid (the local
+#                        branch is behind what GitHub merged).
+#   pr-head-descendant:  the row's oid is an ancestor of TIP (the local
+#                        branch has extra commits on top of what GitHub
+#                        merged).
+# An unrecognized BASIS returns 1 without scanning. Scans every row, first
 # hit wins. Tests only objects already present locally; classify_branch's
 # own fetch loop is what makes a missing object visible to a second call
 # of this scan.
@@ -406,12 +408,13 @@ merged_row_by_tip_ancestry() {
 #                              part of that merge, empty otherwise
 #   tier-b:pr-head-descendant:<pr>:<merged-date>:<ahead-count>
 #                              a same-named merged PR's headRefOid is a
-#                              strict ancestor of the tip — real commits sit
-#                              unmerged on top of what was merged;
+#                              strict ancestor of the tip: real commits
+#                              sit unmerged on top of what was merged.
 #                              <ahead-count> is the number of the tip's
-#                              commits reachable from neither that head nor
-#                              origin/<default> (the commits a `y` would
-#                              discard), or `?` if it could not be counted
+#                              commits reachable from neither that head
+#                              nor origin/<default> — the commits a `y`
+#                              would discard. It is `?` if the count
+#                              could not be computed.
 #   skip-open-pr:<pr>         an open PR exists for this head branch name —
 #                              never delete
 #   skip-stale-name:<pr>      a merged PR shares this name, but the current
