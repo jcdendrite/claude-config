@@ -370,7 +370,7 @@ class TestMineSzz:
         """A root-commit introducer's rev-parse failure is a _GIT_CALL_ERRORS
         catch inside _build_candidate -- it must be counted and printed to
         stderr, mirroring mine_review_rounds.mine()'s own ref_status_counts/
-        skipped_unresolved convention, which mine_szz previously had none of."""
+        skipped_unresolved convention."""
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "app.py", "def f():\n    return bad_value\n")
         _commit(repo, "add f")  # root commit -- no parent
@@ -489,10 +489,8 @@ class TestResolveBranchRef:
 
 
 class TestResolvePrNumber:
-    """resolve_pr_number's sole `gh`-boundary call, with subprocess.run
-    monkeypatched -- unlike every git-boundary function in this module,
-    this one previously had no test, mocked or real, of any of its
-    branches."""
+    """resolve_pr_number is the module's only `gh`-boundary call, with
+    subprocess.run monkeypatched in place of the real binary."""
 
     def test_well_formed_payload_returns_the_number(self, tmp_path, monkeypatch):
         def fake_run(*args, **kwargs):
@@ -514,6 +512,16 @@ class TestResolvePrNumber:
 
         monkeypatch.setattr(mine_review_rounds.subprocess, "run", fake_run)
         assert mine_review_rounds.resolve_pr_number(tmp_path, "feat") is None
+
+    def test_gh_call_failure_returns_none_and_logs_stderr(self, tmp_path, monkeypatch, capsys):
+        def fake_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="rate limited")
+
+        monkeypatch.setattr(mine_review_rounds.subprocess, "run", fake_run)
+        assert mine_review_rounds.resolve_pr_number(tmp_path, "feat") is None
+
+        captured = capsys.readouterr()
+        assert "rate limited" in captured.err
 
 
 class TestResolveDefectCommits:

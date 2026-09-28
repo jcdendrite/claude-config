@@ -87,10 +87,10 @@ PRECISION_JUDGE_TIMEOUT_S = REVIEWER_TIMEOUT_S
 DEFAULT_K = 10  # runs per arm per defect; the pre-freeze lever this harness tunes is K, not the effect-size delta
 
 # read-scope's own chars-per-token estimate, duplicated per the
-# small-duplicated-value exception -- read_scope.py is
-# mid-extraction by #1116. fixture_repo.py carries its own copy of this
-# same constant for the same reason; the two are not imported from each
-# other to avoid a cross-module coupling neither side needs.
+# small-duplicated-value exception -- read_scope.py is mid-extraction by
+# #1116. fixture_repo.py carries the same constant for the same reason.
+# The two modules don't import it from each other to avoid a coupling
+# neither needs.
 _READ_SCOPE_CHARS_PER_TOKEN = 4
 
 _PARTIAL_VIEW_MARKER = "PARTIAL view"  # Read's own truncation notice text
@@ -264,9 +264,9 @@ def read_run_records(path: Path) -> list[RunRecord]:
         try:
             records.append(RunRecord.from_dict(json.loads(line)))
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            # No cap on consecutive skips (could zero out the file on systemic schema
-            # drift); accepted for this harness's attended, single-author use --
-            # re-evaluate for an unattended caller.
+            # No cap on consecutive skips -- a systemic schema drift could zero
+            # out the file. Accepted for this harness's attended,
+            # single-author use; re-evaluate before an unattended caller.
             print(f"read_run_records: skipping malformed line {line_number} in {path}: {exc}", file=sys.stderr)
     return records
 

@@ -96,6 +96,14 @@ _REVIEW_BENCH_LENS_AGENT_FILES: frozenset[str] = frozenset({
     f"{AGENTS_DIR}/comment-discipline-reviewer.md",
 })
 
+# test_select_tests.py's own test_review_bench_lens_sets_agree_across_all_three_copies
+# imports these two modules directly (`from review_bench import arms,
+# defects`) to ground-truth LENS_READ_CLAUSES/KNOWN_LENSES against
+# _REVIEW_BENCH_LENS_AGENT_FILES above. That import is invisible to
+# path-constant scanning, same shape as SKILL_AUXILIARY_FILES_MODULE below.
+REVIEW_BENCH_ARMS_MODULE = "evals/review_bench/arms.py"
+REVIEW_BENCH_DEFECTS_MODULE = "evals/review_bench/defects.py"
+
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
 CLAUDE_TOP_LEVEL_DIR = "claude"
@@ -522,6 +530,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
 # _REVIEW_BENCH_LENS_AGENT_FILES: see its own comment above for citation.
+# REVIEW_BENCH_ARMS_MODULE, REVIEW_BENCH_DEFECTS_MODULE: see their own
+# comment above for citation.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -581,6 +591,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in _REVIEW_BENCH_LENS_AGENT_FILES, (
         REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST,
     )),
+    (lambda p: p in (REVIEW_BENCH_ARMS_MODULE, REVIEW_BENCH_DEFECTS_MODULE), (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),

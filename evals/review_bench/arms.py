@@ -21,8 +21,9 @@ KNOWN_ARMS: frozenset[str] = frozenset({ARM_CURRENT_RULE, ARM_FUNCTION_CONTEXT})
 ARM_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
 # model: inherit, so that --model <frozen reviewer ID> governs the dispatched
-# bench-<lens> subagent. This was verified to resolve correctly under the
-# reviewer's own model ID. Only the judge agent files pin a literal model ID
+# bench-<lens> subagent -- inherit resolves to the dispatching session's own
+# active model as long as the dispatcher's own Agent tool call omits an
+# explicit model parameter. Only the judge agent files pin a literal model ID
 # instead.
 ARM_MODEL_FRONTMATTER_VALUE = "inherit"
 

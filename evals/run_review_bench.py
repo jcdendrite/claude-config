@@ -96,8 +96,8 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     appended: list[defects.ConfirmedDefect] = []
     rejected = 0
     for candidate in candidates:
-        # A candidate with no description is not yet engineer-approved;
-        # one already in defects.json is a no-op retry, not a rejection.
+        # A candidate with no description is not yet engineer-approved. One
+        # already in defects.json is a no-op retry, not a rejection.
         if not candidate.description or candidate.id in existing_ids:
             continue
 
@@ -143,10 +143,10 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     # No override: a rejected entry is never written, on this or any later run,
     # until the engineer edits its own .local/ description and reruns confirm.
     if appended:
-        # existing_ids was read at load time; if it no longer matches the
-        # file's current defect count, a concurrent confirm run appended in
-        # the meantime -- abort rather than blindly overwrite it with a
-        # stale existing + appended.
+        # existing_ids was read at load time. A mismatch with the file's
+        # current defect count means a concurrent confirm run appended in
+        # the meantime, so this aborts rather than overwriting with a stale
+        # existing+appended set.
         current = defects.load_confirmed_defects(defects_path)
         if len(current) != len(existing):
             print(

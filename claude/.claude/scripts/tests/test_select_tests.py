@@ -678,11 +678,14 @@ class TestSelectPytestTargets:
         }
 
     def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+        # defects.py also matches REVIEW_BENCH_DEFECTS_MODULE's cross-domain
+        # exception, so SCRIPTS_TESTS_DIR is expected here too -- a file
+        # under REVIEW_BENCH_DIR other than arms.py/defects.py would omit it.
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
+            _mod.REVIEW_BENCH_RUNNER_TEST, _mod.SCRIPTS_TESTS_DIR,
         }
 
     def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -792,6 +795,32 @@ class TestSelectPytestTargets:
                 _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
                 _mod.REVIEW_BENCH_RUNNER_TEST,
             }, agent_file
+
+    def test_review_bench_lens_sets_agree_across_all_three_copies(self):
+        """arms.py's LENS_READ_CLAUSES, defects.py's KNOWN_LENSES, and this
+        module's own _REVIEW_BENCH_LENS_AGENT_FILES are three independently
+        hand-typed copies of the same seven-lens set. Ground-truths all
+        three against each other, so a lens added to one and missed in
+        another fails here instead of drifting silently."""
+        from review_bench import arms, defects
+
+        agent_file_lens_names = {
+            Path(agent_file).stem for agent_file in _mod._REVIEW_BENCH_LENS_AGENT_FILES
+        }
+        assert set(arms.LENS_READ_CLAUSES) == defects.KNOWN_LENSES
+        assert agent_file_lens_names == defects.KNOWN_LENSES
+
+    def test_review_bench_arms_or_defects_change_also_selects_scripts_tests(self):
+        """test_review_bench_lens_sets_agree_across_all_three_copies
+        (SCRIPTS_TESTS_DIR) imports arms.py and defects.py directly to
+        ground-truth their lens sets against each other. Without this
+        cross-domain exception, the review_bench domain rule's own targets
+        (REVIEW_BENCH_TEST_GLOB and friends) never include SCRIPTS_TESTS_DIR,
+        so that consistency guard would go unrun on a lens-set edit."""
+        for changed_path in (_mod.REVIEW_BENCH_ARMS_MODULE, _mod.REVIEW_BENCH_DEFECTS_MODULE):
+            result = _mod.select_pytest_targets([changed_path])
+            assert result.is_full_suite is False, changed_path
+            assert _mod.SCRIPTS_TESTS_DIR in result.target_paths, changed_path
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's

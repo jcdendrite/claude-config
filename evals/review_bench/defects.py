@@ -314,7 +314,7 @@ def check_description_provenance(
 # `confirm` with no exit). Duplicated rather than imported because
 # mine_szz.py already imports this module, and importing back would create
 # a circular import. No vendor documentation grounds the 10-second
-# magnitude; it's an empirical guess matching mine_szz.py's own constant.
+# magnitude -- it's an empirical guess matching mine_szz.py's own constant.
 _LOCAL_GIT_TIMEOUT_S = 10.0
 
 

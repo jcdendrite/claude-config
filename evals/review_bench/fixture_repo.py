@@ -33,10 +33,9 @@ _READ_SCOPE_CHARS_PER_TOKEN = 4
 _OVER_READ_CAP_TOKENS = 25_000
 
 # Local git only (archive/diff/show), no network I/O. Mirrors mine_szz.py's
-# own _LOCAL_GIT_TIMEOUT_S rationale -- guards a hung local git blocking a
-# fixture build with no exit, not a network SLA. No vendor documentation
-# grounds the 10-second magnitude itself -- it is an empirical, considered
-# guess against this repo's own git-call latency.
+# own _LOCAL_GIT_TIMEOUT_S rationale (guards a hung local git blocking a
+# fixture build with no exit). No vendor documentation grounds the
+# 10-second magnitude -- it's an empirical guess.
 _LOCAL_GIT_TIMEOUT_S = 10.0
 
 # Fixed author and date for both fixture commits, so two builds of the same

@@ -499,9 +499,10 @@ class TestReadStatsCounting:
         assert result.stats.read_calls == 3
         assert result.stats.partial_view_reads == 1
         assert result.stats.paged_followups == 1
-        # changed_file.py's own read was partial (excluded); its paged
-        # follow-up carries an offset (excluded); only other_changed_file.py's
-        # unpaged, non-partial read counts as a whole-file read.
+        # - changed_file.py's read was partial: excluded.
+        # - Its paged follow-up carries an offset: excluded.
+        # - other_changed_file.py's unpaged, non-partial read: the one
+        #   whole-file read counted.
         assert result.stats.whole_file_reads_of_changed_files == 1
 
     def test_whole_file_read_counts_when_the_recorded_path_is_absolute(self, tmp_path: Path) -> None:
