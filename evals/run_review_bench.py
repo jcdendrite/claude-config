@@ -200,10 +200,8 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None) -> int:
     run_store = runner.RunStore(Path(args.run_store_dir))
     campaign_id = args.campaign_id or f"{args.subcommand}-{uuid.uuid4().hex[:8]}"
     records_path = Path(args.records_dir) / f"{campaign_id}.jsonl"
-    # Both live checkouts the per-run validity check must contain a leak
-    # into: this harness's own, and the one the ambient config resolves
-    # into -- distinct under worktree isolation (evals/README.md's
-    # "Out-of-session reads" section).
+    # See runner.default_live_checkout_roots's own docstring for why these
+    # two roots are checked.
     live_checkout_roots = runner.default_live_checkout_roots()
 
     def build_spec(defect_id: str):
@@ -383,10 +381,8 @@ def cmd_judge(args: argparse.Namespace) -> int:
     finally:
         run_store.release_lock()
 
-    # The raw path is terminal-only, for the engineer's own review
-    # (evals/README.md's "Out-of-session reads" section); the committed --out
-    # report from `analyze` carries only the per-judge-kind count below,
-    # never a path.
+    # Terminal-only by design; see evals/README.md's "Out-of-session reads"
+    # section.
     for record in judge_records:
         for path in record.out_of_session_paths:
             print(f"judge: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)
@@ -497,13 +493,24 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         analysis.check_campaign_environment_consistency(reviewer_records)
 
         if args.baseline_conditions_path is not None:
-            baseline_conditions = json.loads(Path(args.baseline_conditions_path).read_text())
+            baseline_conditions_path = Path(args.baseline_conditions_path)
+            try:
+                baseline_conditions = json.loads(baseline_conditions_path.read_text())
+                baseline_environment = baseline_conditions["environment"]
+                baseline_cli_version = baseline_environment["cli_version"]
+                baseline_ambient_config_commit = baseline_environment["ambient_config_commit"]
+                baseline_harness_closure = baseline_conditions["harness_closure"]
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise analysis.HarnessInvalidatedError(
+                    f"invalidated -- rerun all arms: baseline conditions file "
+                    f"({baseline_conditions_path}) is unreadable or missing an expected field: {exc!r}"
+                ) from exc
             analysis.check_environment_matches_baseline(
-                reviewer_records, baseline_cli_version=baseline_conditions["environment"]["cli_version"],
-                baseline_ambient_config_commit=baseline_conditions["environment"]["ambient_config_commit"],
+                reviewer_records, baseline_cli_version=baseline_cli_version,
+                baseline_ambient_config_commit=baseline_ambient_config_commit,
             )
             current_closure = analysis.compute_harness_closure()
-            analysis.check_manifest_matches(current_closure, baseline_conditions["harness_closure"])
+            analysis.check_manifest_matches(current_closure, baseline_harness_closure)
     except analysis.HarnessInvalidatedError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -582,9 +589,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         f"analyze: missing runs by reason per arm = {analysis.missing_run_counts_by_reason(reviewer_records)}",
         file=sys.stderr,
     )
-    # The raw path is terminal-only, for the engineer's own review
-    # (evals/README.md's "Out-of-session reads" section); the committed --out
-    # report below carries only the per-arm count, never a path.
+    # Terminal-only by design; see evals/README.md's "Out-of-session reads"
+    # section.
     for record in reviewer_records:
         for path in record.out_of_session_paths:
             print(f"analyze: out-of-session read in {record.arm} run {record.opaque_run_id}: {path}", file=sys.stderr)

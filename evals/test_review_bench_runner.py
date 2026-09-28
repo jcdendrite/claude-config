@@ -1072,6 +1072,10 @@ class TestApplyFaultInjection:
         with pytest.raises(ValueError):
             runner.apply_fault_injection("base prompt", fault="not-a-real-fault")
 
+    # Verifies prompt mutation only. Downstream evaluate_run_validity
+    # classification (VALIDITY_FAIL_WRONG_AGENT / VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL)
+    # is out of scope. That check needs a live claude session, which this
+    # LOCAL-ONLY, never-CI harness doesn't run offline.
     def test_known_faults_mutate_the_prompt(self) -> None:
         for fault in runner.KNOWN_SMOKE_FAULTS:
             mutated = runner.apply_fault_injection("base prompt", fault=fault)

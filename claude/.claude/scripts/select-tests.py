@@ -73,6 +73,7 @@ REVIEW_BENCH_RUNNER_TEST = "evals/test_run_review_bench.py"
 # transcript_analysis modules it imports by name.
 _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: frozenset[str] = frozenset({
     "claude/.claude/scripts/transcript_analysis/corpus.py",
+    "claude/.claude/scripts/transcript_analysis/pricing.py",
     "claude/.claude/scripts/transcript_analysis/scope.py",
     "claude/.claude/scripts/transcript_analysis/review_rounds.py",
     "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
@@ -545,7 +546,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
 # _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: evals/review_bench's
-# mine_review_rounds.py imports these four transcript_analysis modules by
+# mine_review_rounds.py imports these transcript_analysis modules by
 # name rather than by directory containment. A change to one of them needs
 # review_bench's own tests re-run, in addition to the SCRIPTS_TESTS_DIR the
 # blanket SCRIPTS_DIR domain rule already selects. Same undeclared-dependency

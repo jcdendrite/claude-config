@@ -683,9 +683,9 @@ def default_live_checkout_roots() -> tuple[Path, ...]:
     """The two live checkouts a per-run validity check must never let a
     Read/Grep/Glob reach into (evals/README.md's "Out-of-session reads"
     section): the harness's own checkout, and the one the ambient config
-    resolves into -- distinct locations under this repo's own
-    worktree-isolation model (repo-root CLAUDE.md), deduped here since they
-    coincide outside it."""
+    resolves into. These coincide outside this repo's own
+    worktree-isolation model (repo-root CLAUDE.md), where they're
+    deduped."""
     roots = {REPO_ROOT.resolve(), ambient_config_checkout_root().resolve()}
     return tuple(sorted(roots))
 

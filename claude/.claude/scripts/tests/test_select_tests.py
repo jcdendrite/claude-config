@@ -740,7 +740,7 @@ class TestSelectPytestTargets:
         }
 
     def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
-        """mine_review_rounds.py imports these four transcript_analysis
+        """mine_review_rounds.py imports these transcript_analysis
         modules by name; without this cross-domain exception, the blanket
         SCRIPTS_DIR rule (plus the generic .py-under-claude/ rule, which
         every SCRIPTS_DIR .py file also matches -- see
@@ -754,6 +754,29 @@ class TestSelectPytestTargets:
                 _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
                 _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REVIEW_BENCH_RUNNER_TEST,
             }, dependency
+
+    def test_review_bench_transcript_analysis_dependencies_match_actual_imports(self):
+        """Ground-truths _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES
+        against mine_review_rounds.py's own `from transcript_analysis
+        import ...` line, rather than against a second hand-written list --
+        a fixed expected list would silently tolerate the same
+        added-import-not-added-to-the-frozenset drift this row exists to
+        catch."""
+        mine_review_rounds_source = (
+            _REPO_ROOT / "evals" / "review_bench" / "mine_review_rounds.py"
+        ).read_text()
+        tree = ast.parse(mine_review_rounds_source)
+        imported_module_names = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis"
+            for alias in node.names
+        }
+        assert imported_module_names, "expected at least one transcript_analysis import"
+        assert {
+            f"claude/.claude/scripts/transcript_analysis/{name}.py"
+            for name in imported_module_names
+        } == _mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES
 
     def test_review_bench_lens_agent_file_change_also_selects_review_bench_tests(self):
         """arms.py's LENS_READ_CLAUSES hand-copies each of these seven

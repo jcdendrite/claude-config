@@ -466,6 +466,87 @@ class TestCmdAnalyzeOutOfSessionReport:
         assert f"analyze: out-of-session read in {JUDGE_ARM_RECALL} run j-recall: secret/path.txt" in stderr
 
 
+class TestCmdAnalyzeMalformedBaselineConditions:
+    """Mirrors TestRunAndSmokeEnvironmentDriftExceeded's contract: a
+    designed invalidation path must surface as exit code 2, not a raw
+    traceback, for a missing file and for each way the file's content can
+    fail to parse into the expected shape."""
+
+    def _args(self, tmp_path: Path, defects_path: Path, baseline_conditions_path: Path) -> argparse.Namespace:
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        runner.append_run_records(reviewer_records_path, [_run_record("d1", arms_mod.ARM_CURRENT_RULE, "run-a", "")])
+        judge_records_path = tmp_path / "judge.jsonl"
+        runner.append_run_records(judge_records_path, [])
+        return argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None,
+            baseline_conditions_path=str(baseline_conditions_path), out=str(tmp_path / "report.json"),
+        )
+
+    def test_invalid_json_returns_exit_code_2_and_names_the_path(self, tmp_path: Path, capsys) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        baseline_conditions_path = tmp_path / "conditions.json"
+        baseline_conditions_path.write_text("not json")
+
+        exit_code = run_review_bench.cmd_analyze(
+            self._args(tmp_path, defects_path, baseline_conditions_path),
+        )
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert str(baseline_conditions_path) in stderr
+        assert "unreadable or missing an expected field" in stderr
+
+    def test_missing_environment_key_returns_exit_code_2_and_names_the_path(self, tmp_path: Path, capsys) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        baseline_conditions_path = tmp_path / "conditions.json"
+        baseline_conditions_path.write_text(json.dumps({"harness_closure": {}}))
+
+        exit_code = run_review_bench.cmd_analyze(
+            self._args(tmp_path, defects_path, baseline_conditions_path),
+        )
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert str(baseline_conditions_path) in stderr
+        assert "unreadable or missing an expected field" in stderr
+
+    def test_non_dict_top_level_returns_exit_code_2_and_names_the_path(self, tmp_path: Path, capsys) -> None:
+        """A top-level JSON array parses without error, so this is the
+        TypeError branch, not the KeyError branch the other two cases hit."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        baseline_conditions_path = tmp_path / "conditions.json"
+        baseline_conditions_path.write_text(json.dumps(["not", "a", "dict"]))
+
+        exit_code = run_review_bench.cmd_analyze(
+            self._args(tmp_path, defects_path, baseline_conditions_path),
+        )
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert str(baseline_conditions_path) in stderr
+        assert "unreadable or missing an expected field" in stderr
+
+    def test_nonexistent_path_returns_exit_code_2_and_names_the_path(self, tmp_path: Path, capsys) -> None:
+        """A typo'd CLI arg hits this branch: read_text() raises
+        FileNotFoundError, an OSError subclass, before json.loads ever runs."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        baseline_conditions_path = tmp_path / "does-not-exist.json"
+
+        exit_code = run_review_bench.cmd_analyze(
+            self._args(tmp_path, defects_path, baseline_conditions_path),
+        )
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert str(baseline_conditions_path) in stderr
+        assert "unreadable or missing an expected field" in stderr
+
+
 class TestCmdAnalyzeReportCompleteness:
     def test_written_report_carries_every_never_gating_secondary_column(self, tmp_path: Path) -> None:
         """Regression guard: a per-function unit test on analysis.py's own
