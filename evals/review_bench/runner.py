@@ -264,10 +264,9 @@ def read_run_records(path: Path) -> list[RunRecord]:
         try:
             records.append(RunRecord.from_dict(json.loads(line)))
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            # No cap on consecutive skips: a systemic schema-drift bug could silently
-            # degrade an entire file to zero records instead of a hard failure. Accepted
-            # for a harness run by its own author at a terminal watching stderr, not
-            # unattended -- re-evaluate if this is ever consumed by an unwatched caller.
+            # No cap on consecutive skips (could zero out the file on systemic schema
+            # drift); accepted for this harness's attended, single-author use --
+            # re-evaluate for an unattended caller.
             print(f"read_run_records: skipping malformed line {line_number} in {path}: {exc}", file=sys.stderr)
     return records
 
@@ -1189,15 +1188,16 @@ def run_campaign(
                 budget_cap_usd=budget_cap_usd, timeout_s=timeout_s, run_store=run_store,
                 launch=launch, fault=fault, workers=workers,
             )
-            # append_run_records lands before mark_block_complete, mirroring
-            # cmd_judge's ordering (evals/run_review_bench.py). A process
-            # kill in this gap leaves the block un-marked-complete, so resume
-            # reruns the whole block and appends its records again -- the
-            # same accepted redo residual cmd_judge's own ordering carries,
-            # not the marked-complete-but-recordless data loss it avoids.
+            # append_run_records lands before cleanup_defect_block, which lands before
+            # mark_block_complete. The append-before-mark half mirrors cmd_judge's ordering
+            # (evals/run_review_bench.py). cmd_judge has no cleanup step of its own.
+            # A process kill between append_run_records and mark_block_complete leaves the
+            # block un-marked-complete, so resume reruns the whole block and appends its
+            # records again -- the accepted redo residual (evals/README.md's "Interruption
+            # and cleanup" section).
             append_run_records(records_path, result.records)
-            run_store.mark_block_complete(defect_id)
             cleanup_defect_block(spec, result, projects_root=projects_root)
+            run_store.mark_block_complete(defect_id)
             block_results[defect_id] = result
         return CampaignResult(campaign_id=campaign_id, block_results=block_results)
     finally:

@@ -240,10 +240,8 @@ class TestCheckDescriptionProvenance:
         assert violation.shared_run == "error handling silently swallows the exception"
 
     def test_description_under_six_tokens_verbatim_quoting_a_short_excerpt_is_rejected(self):
-        """Regression: _six_grams returned [] for text under the six-token
-        window, and the caller treated an empty list as "no violation" --
-        so any five-word-or-shorter description bypassed the leak check
-        unconditionally, even one verbatim-quoting a short excerpt."""
+        """A description under the six-token window still must be checked for
+        verbatim-quoting a short excerpt, not waved through as "no violation"."""
         description = "silently swallows the exception here"  # 5 tokens
         excerpt = "the reviewer found that silently swallows the exception here today"
         violation = defects.check_description_provenance(description, "", {"cand-1": excerpt})
@@ -327,10 +325,8 @@ class TestMineSzz:
         assert candidates[0].head_commit == introducing_sha
 
     def test_root_commit_introducer_is_skipped_not_crashed(self, tmp_path):
-        """Regression: an introducing commit with no parent (the repo's own
-        root commit) previously crashed the whole mining sweep with an
-        uncaught CalledProcessError from `git rev-parse <sha>^` -- there is
-        no fixture base for a commit with no parent, so it must be skipped."""
+        """An introducing commit with no parent (the repo's own root commit) has
+        no fixture base and must be skipped, not crashed on."""
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "app.py", "def f():\n    return bad_value\n")
         _commit(repo, "add f")  # the repo's own root commit -- no parent exists
@@ -351,10 +347,9 @@ class TestMineSzz:
         assert mine_szz.mine(repo, base_ref="origin/main") == []
 
     def test_two_files_with_same_basename_in_different_dirs_get_distinct_ids(self, tmp_path):
-        """Regression: Candidate.id keyed on the changed file's basename
-        only, so a fix commit touching two same-named files in different
-        directories (e.g. two __init__.py additions) collided on the same
-        id despite being distinct candidates."""
+        """Candidate.id must key on the changed file's full path, not just its
+        basename, so a fix commit touching two same-named files in different
+        directories (e.g. two __init__.py additions) gets distinct ids."""
         repo = _init_repo(tmp_path / "repo")
         _write(repo, "pkg_a/__init__.py", "x = 1\n")
         _write(repo, "pkg_b/__init__.py", "y = 1\n")
@@ -645,11 +640,10 @@ class TestRoundScopeAndCitations:
 
 class TestMainThreadEditedBetween:
     def test_edit_of_a_line_suffixed_citation_target_is_detected(self):
-        """Regression: this comparison used raw string equality between the
-        citation's raw_path (which commonly carries a ":line" suffix) and
-        the write target's clean path, so a line-suffixed citation --
-        exactly the shape TestMineReviewRoundsCandidates' own fixtures use
-        -- never matched a real edit of that same file."""
+        """A line-suffixed citation (":line", the shape TestMineReviewRoundsCandidates'
+        own fixtures use) must still match a real edit of that same file, so the
+        comparison normalizes the citation's raw_path before comparing it against the
+        write target's clean path rather than comparing them as raw strings."""
         edit_record = _assistant(
             ts="2026-01-01T12:00:00Z", cwd="/repo",
             content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {"file_path": "/repo/app.py"}}],
@@ -770,10 +764,9 @@ class TestMineReviewRoundsCandidates:
         assert candidates == []
 
     def test_two_later_rounds_citing_the_same_path_get_distinct_ids(self, tmp_path, monkeypatch):
-        """Regression: review-round candidate ids had no round-distinguishing
-        component, so a second later round citing the same earlier-scoped
-        path collided on the same id as the first and silently overwrote
-        it in confirm's excerpts_by_id/existing_ids lookups."""
+        """A second later round citing the same earlier-scoped path must get a
+        distinct id from the first, since confirm's excerpts_by_id/existing_ids
+        lookups depend on ids being unique per round."""
         proj = tmp_path / "projects" / "test-slug"
         proj.mkdir(parents=True)
         session_stem = "sess-1"
@@ -806,11 +799,9 @@ class TestMineReviewRoundsCandidates:
         assert len({c.id for c in candidates}) == 2
 
     def test_one_later_round_matching_two_earlier_rounds_gets_distinct_ids(self, tmp_path, monkeypatch):
-        """Regression: review-round candidate ids carried only the later
-        round's timestamp, so a later round whose citation matched more than
-        one earlier round's scope on the same path collided on the same id
-        despite carrying distinct earlier_round_ts/main_thread_edited_between
-        evidence."""
+        """A later round whose citation matches more than one earlier round's scope
+        on the same path must get a distinct id per match, since each match carries
+        its own earlier_round_ts/main_thread_edited_between evidence."""
         proj = tmp_path / "projects" / "test-slug"
         proj.mkdir(parents=True)
         session_stem = "sess-1"
@@ -941,11 +932,10 @@ class TestConfirmCli:
         assert defects.load_confirmed_defects(defects_path) == []
 
     def test_confirm_skips_one_unresolvable_candidate_but_processes_the_rest(self, tmp_path, monkeypatch):
-        """Regression: public_git_text's `git show` (check=True) had no
-        try/except at its cmd_confirm call site, so one candidate whose
-        commits are unreachable (rewritten history, a stale .local/
-        shortlist) crashed confirmation for every other candidate in the
-        same run."""
+        """One candidate whose commits are unreachable (rewritten history, a stale
+        .local/ shortlist) must not crash confirmation for every other candidate
+        in the same run, since public_git_text's `git show` (check=True) can raise
+        at its cmd_confirm call site."""
         repo, introducing_sha, fix_sha = self._repo_with_two_commits(tmp_path)
         monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
 
@@ -966,9 +956,9 @@ class TestConfirmCli:
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-good"]
 
     def test_confirm_aborts_without_overwriting_when_defects_file_changed_concurrently(self, tmp_path, monkeypatch):
-        """Regression: cmd_confirm's read-modify-write of the committed
-        defects.json re-derived existing + appended from a stale read, so
-        an overlapping confirm run's own append was silently discarded."""
+        """cmd_confirm's read-modify-write of the committed defects.json must abort
+        rather than overwrite when an overlapping confirm run's own append has
+        already changed the file underneath its stale read."""
         repo, introducing_sha, fix_sha = self._repo_with_two_commits(tmp_path)
         monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
 

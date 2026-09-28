@@ -134,10 +134,9 @@ def cmd_confirm(args: argparse.Namespace) -> int:
             print(f"confirm: rejected {candidate.id} -- {exc}", file=sys.stderr)
             rejected += 1
             continue
-        # id is printed alongside description so the engineer's last look
-        # before promotion covers both. id is machine-generated, unlike
-        # description, which the engineer authors. Nothing else in this flow
-        # puts id's content in front of a human before it's committed.
+        # id (machine-generated, unlike the engineer-authored description) is printed
+        # alongside it since this is the only point the description's own text reaches
+        # a human before commit. The rejection branches above print only the id.
         print(f"confirm: promoting {defect.id} -- {defect.description!r}", file=sys.stderr)
         appended.append(defect)
 
@@ -365,15 +364,11 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 else:
                     print(f"judge: skipped {defect.id} -- could not read its git text ({exc})", file=sys.stderr)
                 continue
-            # run_defect_judges already persisted the recall record itself,
-            # as soon as it completed and before precision's own fixture
-            # build. Only the precision record is appended here.
-            #
-            # A process kill between this append and mark_block_complete
-            # redispatches precision once more for this defect on resume.
-            # This is the same accepted hard-kill-mid-write residual as the
-            # write-ahead record's own one-directory residual (see
-            # evals/README.md's "Interruption and cleanup" section).
+            # Only the precision record is appended here -- run_defect_judges already
+            # persisted the recall record itself, as soon as it completed.
+            # A process kill between this append and mark_block_complete redispatches
+            # precision once more for this defect on resume (evals/README.md's
+            # "Interruption and cleanup" section).
             runner.append_run_records(judge_records_path, (precision_record,))
             judge_records.extend((recall_record, precision_record))
             run_store.mark_block_complete(defect.id)

@@ -821,6 +821,59 @@ class TestRunCampaignRecordDurabilityOrdering:
         assert run_store.completed_block_ids() == {"defect-1"}
         assert runner.read_run_records(records_path)
 
+    def test_cleanup_runs_before_the_block_is_marked_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression guard: cleanup_defect_block must delete a completed
+        block's fixture/session-store directories before (not after)
+        run_store.mark_block_complete lands, since run_campaign's resume path
+        (`if defect_id in completed: continue`) never revisits a block once
+        it's marked complete -- a crash after mark_block_complete but before
+        cleanup would leak that block's fixture/session-store directories
+        permanently. Unlike the sibling test above, arm_fixture_dirs points
+        at a real, existing directory so cleanup_defect_block runs for real
+        rather than as a no-op against an empty dict, which couldn't detect a
+        reordering regression. run_defect_block is stubbed to return a canned
+        BlockResult (the same substitution technique as the sibling test);
+        cleanup_defect_block itself is not stubbed, since it's the function
+        under test."""
+        fixture_dir = tmp_path / "fixture-current-rule"
+        fixture_dir.mkdir()
+
+        monkeypatch.setattr(
+            runner, "run_defect_block",
+            lambda *a, **kw: runner.BlockResult(records=(), representative_session_id_by_arm={}),
+        )
+
+        def build_spec(defect_id: str) -> runner.DefectFixtureSpec:
+            return runner.DefectFixtureSpec(
+                defect_id=defect_id, subject="fix: bug", arm_fixture_dirs={"current-rule": fixture_dir},
+                arm_agent_names={"current-rule": AGENT_NAME}, agent_declared_tools=DECLARED_TOOLS,
+                live_checkout_roots=(), changed_relpaths=("changed_file.py",), over_read_cap=False,
+            )
+
+        run_store = runner.RunStore(tmp_path / "run-store")
+        real_mark_block_complete = run_store.mark_block_complete
+
+        def recording_mark_block_complete(defect_id: str) -> None:
+            # If cleanup_defect_block ran first, its fixture directory is
+            # already gone by the time mark_block_complete is called -- the
+            # property that keeps a crash in this gap from leaking it
+            # permanently, since a completed block is never revisited.
+            assert not fixture_dir.exists()
+            real_mark_block_complete(defect_id)
+
+        monkeypatch.setattr(run_store, "mark_block_complete", recording_mark_block_complete)
+
+        runner.run_campaign(
+            ["defect-1"], build_spec=build_spec, arms=("current-rule",), k=1, seed=1,
+            campaign_id="c1", run_store=run_store, records_path=tmp_path / "records.jsonl",
+            projects_root=tmp_path / "projects", launch=lambda cmd, cwd, timeout_s: ([], False), workers=1,
+        )
+
+        assert run_store.completed_block_ids() == {"defect-1"}
+        assert not fixture_dir.exists()
+
 
 def _build_two_commit_source_repo(repo_dir: Path, *, changed_file_content: str = "x = 2\n") -> ConfirmedDefect:
     """A throwaway real git repo with exactly base_commit then head_commit,
@@ -1126,6 +1179,31 @@ class TestRunRecordJsonlRoundTrip:
         runner.append_run_record(path, record)
         with open(path, "a") as fh:
             fh.write('{"defect_id": "d1", "arm": "current-rule"\n')  # truncated JSON, no closing brace
+
+        loaded = runner.read_run_records(path)
+
+        assert loaded == [record]
+        assert "skipping malformed line 2" in capsys.readouterr().err
+
+    def test_read_run_records_skips_a_line_whose_top_level_json_value_is_a_bare_scalar(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A line can parse to valid JSON that isn't an object at all -- e.g. a bare
+        string. RunRecord.from_dict's `dict(data)` call raises ValueError in that
+        case, not TypeError or json.JSONDecodeError, so it must be
+        skipped-and-reported the same way rather than crashing the read."""
+        path = tmp_path / "records.jsonl"
+        record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        runner.append_run_record(path, record)
+        with open(path, "a") as fh:
+            fh.write(json.dumps("corrupt") + "\n")  # valid JSON, but not object-shaped
 
         loaded = runner.read_run_records(path)
 
