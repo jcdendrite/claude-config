@@ -390,8 +390,9 @@ class TestCostLedgerRecordParity:
     def test_record_row_matches_the_compute_functions_independently(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
     ):
-        """--record's row values equal what _compute_cost_trend_data,
-        _compute_deny_summary_data, and _compute_reviewer_yield_data compute
+        """--record's row values equal what cost.compute_cost_trend_data,
+        review_trace.compute_deny_summary_data, and
+        reviewer_yield.compute_reviewer_yield_data compute
         independently for the same week — the parity check that catches
         drift between the recorder and the report subcommands it reuses.
 
@@ -448,7 +449,7 @@ class TestCostLedgerRecordParity:
         assert row["usd"] == pytest.approx(week_data["total"])
         # context_pct (context-class dollar share, GH-554 F1) and ge200k_pct
         # (>=200k-context-bucket dollar share, cost-trend's own existing
-        # metric) are distinct fields of _compute_cost_trend_data, asserted
+        # metric) are distinct fields of cost.compute_cost_trend_data, asserted
         # independently -- the fixture's only turn is all input tokens (no
         # cache_read/cache_write) but crosses the 200k-context threshold, so
         # a regression that swaps or re-aliases the two would be caught by
