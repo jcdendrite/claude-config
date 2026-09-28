@@ -12,12 +12,12 @@
 - `tier-b:[<stale-pr>]` becomes `tier-b:reachable:[<stale-pr>]`.
 - The new case is `tier-b:pr-head-descendant:<pr>:<merged-date>:<ahead-count>`.
 
-An earlier proposal in this plan's drafting suggested a new `tier-b-descendant:` token. The forward-direction plan already rejected that shape for Tier A (`.claude/plans/classify-branch-ancestor-merged-head.md`, M2):
+A new `tier-b-descendant:` token is rejected. The forward-direction plan already rejected that shape for Tier A (`.claude/plans/classify-branch-ancestor-merged-head.md`, M2):
 - The glob `tier-b:*` does not match `tier-b-descendant:…`.
 - Neither verdict `case` statement has a `*)` default arm.
 - So a forgotten arm drops the branch from the sweep silently.
 
-Keeping the tier letter in the token means `checked_out_skip_line()` needs no edit. The detection loop's `tier-b:*` arm records `MERGED_BRANCHES` and `TIER_VALUES` "B" for every basis and uses the basis only to pick the info text. A branch with an unrecognized basis therefore still lands in the prompt tier. The basis comes first here, while Tier A's comes last, because Tier B's two bases carry different fields. A leading discriminator lets the parse branch on the basis without guessing from how many colons there are. Both existing `reachable` info strings stay byte-identical, and tests pin both.
+Keeping the tier letter in the token means `checked_out_skip_line()` needs no edit. The detection loop's `tier-b:*` arm records `MERGED_BRANCHES` and `TIER_VALUES` "B" for every basis and uses the basis only to pick the info text. A branch with an unrecognized basis therefore still lands in the prompt tier. The basis comes first here, while Tier A's comes last, because Tier B's two bases carry different fields. A leading discriminator lets the parse branch on the basis without guessing from how many colons there are. Both existing `reachable` info strings stay byte-identical. Tests pin the no-PR string in full and the stale-PR string by its prefix (ledger row 11).
 
 **Helper: generalize it instead of copying it.** `merged_row_containing_tip TIP ROWS` becomes `merged_row_by_tip_ancestry BASIS TIP ROWS`. BASIS is `pr-head-ancestor` or `pr-head-descendant`, and it only decides the operand order of `git merge-base --is-ancestor`. Two alternatives were set aside:
 - **A sibling function.** It would duplicate the row-parse loop. CLAUDE.md's sibling-audit rule says to abstract once two arms share a shape.
@@ -32,7 +32,7 @@ The BASIS values are the verdict's own basis names, so the helper, the verdicts,
 
 The reverse direction therefore has no "PR ref aged out" failure mode of its own. A `headRefOid` whose object is not local cannot be an ancestor of the tip, so the scan misses and falls through to today's verdict. The existing unfetchable-ref tests now run through the new scan with missing objects, so they keep guarding it with no new fetch-path tests.
 
-**Count: `git rev-list --count "$tip" "^${oid}" "^refs/remotes/origin/${DEFAULT_BRANCH}"`, with `?` as the fallback.** An earlier proposal in this plan's drafting proposed `<oid>..<tip>`. That formula also counts default-branch commits that a merge resync pulled onto the branch. The Context names resyncs as one way this shape arises, so one follow-up commit plus a resync could read as dozens of commits. Excluding `origin/<default>` counts only the commits a `y` would remove from every ref this script can see.
+**Count: `git rev-list --count "$tip" "^${oid}" "^refs/remotes/origin/${DEFAULT_BRANCH}"`, with `?` as the fallback.** `<oid>..<tip>` is rejected: it also counts default-branch commits that a merge resync pulled onto the branch. The Context names resyncs as one way this shape arises, so one follow-up commit plus a resync could read as dozens of commits. Excluding `origin/<default>` counts only the commits a `y` would remove from every ref this script can see.
 - **Always at least 1.** Reachability runs first and returns early, so a descendant hit means the tip is not on `origin/<default>`.
 - **`?` fallback.** It keeps the verdict well-formed if `rev-list` fails, for example when `refs/remotes/origin/<default>` is missing. That matches `classify_branch`'s contract of always returning 0.
 - **Computed in `classify_branch`.** That is the only place that holds the oid. The count travels in the verdict, so the detection loop makes no git call.
@@ -51,19 +51,19 @@ Over-powered-primitive check: nothing here is heavier than what the script alrea
 
 **Rows**
 1. The descendant case lands in Tier B: `TIER_VALUES` "B", with the TTY prompt, the non-TTY skip, and the dry-run section reused. `[engineer-verified: "Fold into Tier B (Recommended)"]`
-2. Two specifics in that earlier proposal are the dispatching session's own wording, not the engineer's: a new verdict label such as `tier-b-descendant`, and reusing Tier B's output verbatim. This plan keeps the output surfaces verbatim but does not add the new token (M2). `[unverified]`
+2. Output surfaces are reused verbatim, with no new verdict token (M2). `[unverified]`
 3. The prompt and the dry-run text state a commit count. `[engineer-verified: "Show the count (Recommended)"]`
-4. The option description's formula, `git rev-list --count <oid>..<tip>`, is the dispatching session's proposal. This plan narrows it to exclude `origin/<default>` (M4). `[unverified]`
+4. The count excludes `origin/<default>` (M4). `[unverified]`
 5. On the `stale:` path no merged row's oid equals the tip, so a successful `--is-ancestor <oid> <tip>` means a strict descendant. `[verified: cleanup-merged-branches.sh:450-452 emits matched: on any equality; case arms :486-502]`
-6. A `headRefOid` that is an ancestor of the local tip is in the local object store, and one whose object is not local cannot pass the test. `[unverified]`: this is git's object model and was not run this session. If it is wrong (for example in a shallow clone), the scan misses and falls through to today's verdict.
+6. A `headRefOid` that is an ancestor of the local tip is in the local object store, and one whose object is not local cannot pass the test. `[unverified]`: this is git's object model and was not run while authoring this plan. If it is wrong (for example in a shallow clone), the scan misses and falls through to today's verdict.
 7. Reachability runs before every stale-row scan and returns early. A descendant hit therefore implies the tip is not on `origin/<default>`, and the count is at least 1. `[verified: cleanup-merged-branches.sh:504-511]`
 8. PR numbers are digits only, and dates are digits and dashes or blank. The colon-delimited verdict fields therefore split unambiguously. `[verified: cleanup-merged-branches.sh:463-477]`
 9. Two `case` statements consume verdicts, and neither has a `*)` arm. `tier-b:*` does not match a `tier-b-descendant:` prefix. `[verified: cleanup-merged-branches.sh:604-613, :652-691]`
 10. The dry-run split and the confirmation pass look only at the `TIER_VALUES` letter. `[verified: cleanup-merged-branches.sh:705-711, :774-797]`
-11. Tests pin both existing Tier B info strings. `[verified: test_cleanup_merged_branches.py:1288, :1980]`
+11. Tests pin the no-PR `reachable` info string in full (`:1288`) and only the prefix `a merged PR #33 shares this name` of the stale-PR one (`:1980`). `[verified: test_cleanup_merged_branches.py:1288, :1980]`
 12. Only `TestDescendantOfMergedHeadStaysStale` supplies a `headRefOid` that is a strict ancestor of the tip. Every other stale-path test uses an unrelated oid, a placeholder oid, or a strict-descendant oid that is not yet local. No other existing test changes outcome. `[verified: grep of "headRefOid": <variable> in test_cleanup_merged_branches.py; fixtures :1008-1068]`
 13. A `y` answer runs `git branch -D` and deletes the remote branch when one exists. `[verified: cleanup-merged-branches.sh:902, :911-913]`
-14. `rev-list` with several `^` exclusions counts the commits reachable from the tip and from none of the excluded refs. `[unverified]`: not run this session. `TestDescendantAheadCountExcludesDefaultBranchCommits` proves it.
+14. `rev-list` with several `^` exclusions counts the commits reachable from the tip and from none of the excluded refs. `[unverified]`: not run while authoring this plan. `TestDescendantAheadCountExcludesDefaultBranchCommits` proves it.
 15. Some repos merge PRs with merge commits. In those repos, a genuinely reused name branched from `origin/<default>` after the old PR merged also has that PR's head in its history. It also classifies as `pr-head-descendant`, so it gets a Tier B prompt instead of today's `skip-stale-name`. Ancestry alone cannot tell it apart from a branch that was continued and merge-resynced. `[unverified]`: inferred from the ancestry relation, not reproduced. This is accepted because the verdict never auto-deletes and M4's count shows only the branch's own commits.
 
 **Mechanisms**
@@ -116,7 +116,7 @@ Over-powered-primitive check: nothing here is heavier than what the script alrea
   - **New `TestDescendantAheadCountExcludesDefaultBranchCommits`.**
     - Setup: build the descendant fixture. Then commit a distinct file (not `file.txt`) on `main` with plain git and push it. `_commit` overwrites `file.txt`, which would make the resync merge conflict. Then run `git merge -q --no-edit main` into the branch.
     - Assertion: `--dry-run` shows `2 commit(s) ahead` (the follow-up commit plus the merge commit) and not `3 commit(s)`.
-    - This is the only test that tells M4 apart from `<oid>..<tip>`.
+    - This test pins the `^origin/<default>` exclusion through a resync merge. `TestReusedNameInMergeCommitRepoGetsPromptNotStaleSkip` pins the same term through merge-commit topology.
   - **New `TestAncestorBasisOutranksDescendantBasis`.**
     - Setup: run `_make_ancestor_merged_branch(…, 902)`. Then give gh two explicit `"state": "MERGED"` rows in this order: `[{901, headRefOid: main's tip}, {902, headRefOid: merged_head}]`. Row 901's head is a strict ancestor of the tip. Row 902's head exists only on the remote.
     - Assertion: a non-TTY run deletes the branch as Tier A.

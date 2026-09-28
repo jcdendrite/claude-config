@@ -11,9 +11,11 @@ import json
 import os
 import pty
 import re
+import select
 import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -1311,16 +1313,74 @@ class TestTierBReachableNoMergedPR:
         assert b"prompt" not in result.stdout.lower()
 
 
+_PTY_PROMPT_MARKER = b"[y/N]"
+_PTY_PROMPT_TIMEOUT_SECONDS = 30  # matches the proc.wait timeout the other pty tests use
+
+
+def _close_pty_master_at_first_prompt(local, env):
+    """Run the script on a pty stdin, close the pty master once the first
+    [y/N] prompt is on stdout, and return (returncode, stdout_bytes).
+
+    The script prints the prompt only after its `[ -t 0 ]` check passes, so a
+    prompt on stdout means the script is about to block in `read`. Closing the
+    master then reaches read() as EOF. The prompt has no trailing newline, so
+    stdout is polled with os.read rather than read line by line.
+
+    On failure paths the child's stdout and stderr pipes stay open until
+    garbage collection, which a test helper tolerates."""
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [str(_SCRIPT)], cwd=local,
+            env=env,
+            stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        os.close(slave_fd)
+        slave_fd = None
+        stdout_fd = proc.stdout.fileno()
+        stdout_before_eof = b""
+        deadline = time.monotonic() + _PTY_PROMPT_TIMEOUT_SECONDS
+        while _PTY_PROMPT_MARKER not in stdout_before_eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            readable, _, _ = select.select([stdout_fd], [], [], remaining)
+            if not readable:
+                break
+            chunk = os.read(stdout_fd, 4096)
+            if not chunk:
+                break
+            stdout_before_eof += chunk
+        os.close(master_fd)
+        master_fd = None
+        stdout_after_eof, _ = proc.communicate(timeout=_PTY_PROMPT_TIMEOUT_SECONDS)
+    except Exception:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+        raise
+    finally:
+        for open_fd in (master_fd, slave_fd):
+            if open_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(open_fd)
+    return proc.returncode, stdout_before_eof + stdout_after_eof
+
+
 class TestTierBPromptEOFDoesNotAbortPendingTierADeletes:
-    """A closed pty master before any reply reaches read() (EOF, e.g.
-    Ctrl-D) must resolve each pending Tier B prompt as "keep", not abort
-    the script under set -e — which, since Tier A and Tier B share one
-    confirmation loop, would otherwise drop a not-yet-appended Tier A
+    """A pty master closed after the first [y/N] prompt is printed (EOF at
+    read(), as on a dropped terminal) must resolve that Tier B prompt as "keep",
+    not abort the script under set -e — which, since Tier A and Tier B share
+    one confirmation loop, would otherwise drop a not-yet-appended Tier A
     delete. Branch names are chosen so both Tier B branches sort before
     the Tier A branch in git for-each-ref's alphabetical order: if Tier A
     sorted first it would already be in TO_DELETE before the loop reaches
     the EOF-triggering Tier B branch, and this test would pass even
-    without the `read -r _REPLY || _REPLY=""` guard."""
+    without the `read -r _REPLY || _REPLY=""` guard. Later Tier B branches
+    find the pty already hung up and take the no-TTY skip path, so only the
+    first Tier B prompt reaches read() and the skip line is not asserted
+    absent."""
 
     def test_eof_on_prompt_keeps_tier_b_and_still_deletes_later_tier_a(self, fake_gh, tmp_path):
         local, remote = _make_repo_with_remote(tmp_path)
@@ -1329,24 +1389,10 @@ class TestTierBPromptEOFDoesNotAbortPendingTierADeletes:
         _make_feature_branch(local, "zzz-tier-a")
         env = fake_gh({"zzz-tier-a": {"number": 55, "mergedAt": "2026-02-01"}})
 
-        master_fd, slave_fd = pty.openpty()
-        try:
-            proc = subprocess.Popen(
-                [str(_SCRIPT)], cwd=local,
-                env=env,
-                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            os.close(slave_fd)
-            os.close(master_fd)  # EOF before any reply is sent
-            proc.wait(timeout=30)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.close(master_fd)
-            with contextlib.suppress(OSError):
-                os.close(slave_fd)
-            raise
+        returncode, stdout = _close_pty_master_at_first_prompt(local, env)
 
-        assert proc.returncode == 0, "EOF on the prompt must not abort the script under set -e"
+        assert _PTY_PROMPT_MARKER in stdout, "the script must reach the [y/N] prompt before EOF is sent"
+        assert returncode == 0, "EOF on the prompt must not abort the script under set -e"
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
@@ -2258,11 +2304,12 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
         assert remote_refs_after.strip() == "", "a y reply must also delete the remote branch"
 
     def test_eof_on_prompt_keeps_descendant_branch_and_its_commits(self, tmp_path, fake_gh):
-        """A closed pty master before any reply reaches read() (EOF, e.g.
-        Ctrl-D) resolves the pr-head-descendant prompt to "keep" via the same
-        `read -r _REPLY || _REPLY=""` fallback that
+        """A pty master closed after the pr-head-descendant [y/N] prompt is
+        printed (EOF at read(), as on a dropped terminal) resolves the prompt to "keep" via
+        the same `read -r _REPLY || _REPLY=""` fallback that
         TestTierBPromptEOFDoesNotAbortPendingTierADeletes exercises for the
-        reachable-tier-b basis."""
+        reachable-tier-b basis. The no-TTY skip line must be absent, which
+        shows the run took the prompt path rather than the non-TTY skip path."""
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
         expected_tip = _rev_parse(local, "feat/ahead-of-merge")
@@ -2271,24 +2318,11 @@ class TestDescendantOfMergedHeadPromptsAsTierB:
             "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
         })
 
-        master_fd, slave_fd = pty.openpty()
-        try:
-            proc = subprocess.Popen(
-                [str(_SCRIPT)], cwd=local,
-                env=env,
-                stdin=slave_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            os.close(slave_fd)
-            os.close(master_fd)  # EOF before any reply is sent
-            proc.wait(timeout=30)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.close(master_fd)
-            with contextlib.suppress(OSError):
-                os.close(slave_fd)
-            raise
+        returncode, stdout = _close_pty_master_at_first_prompt(local, env)
 
-        assert proc.returncode == 0, "EOF on the prompt must not abort the script under set -e"
+        assert _PTY_PROMPT_MARKER in stdout, "the script must reach the [y/N] prompt before EOF is sent"
+        assert b"no TTY for prompt" not in stdout
+        assert returncode == 0, "EOF on the prompt must not abort the script under set -e"
         branches = subprocess.run(
             ["git", "branch"], cwd=local, capture_output=True, text=True
         ).stdout
@@ -2485,13 +2519,12 @@ class TestDescendantAheadCountExcludesDefaultBranchCommits:
 
 
 class TestAncestorBasisOutranksDescendantBasis:
-    """When one merged row's head is already a locally-present strict
-    ancestor of the tip, and another row's head is a strict descendant of
-    the tip but exists only on the remote, the forward pr-head-ancestor
-    scan must still get to fetch and confirm the second row before the
-    descendant scan has a chance to claim the first. It would survive (as
-    Tier B, not Tier A) if the descendant scan ran before the fetch loop
-    or row by row instead of strictly after the whole forward scan."""
+    """Row A's head is a locally-present strict ancestor of the tip.
+    Row B's head is a strict descendant of the tip that exists only on the
+    remote. The forward pr-head-ancestor scan must fetch and confirm row B
+    before the descendant scan can claim row A. The test would fail if the
+    descendant scan ran before the fetch loop or row by row, because the
+    branch would then survive as Tier B instead of being deleted as Tier A."""
 
     def test_non_tty_run_still_deletes_as_tier_a(self, tmp_path, fake_gh):
         local, remote = _make_repo_with_remote(tmp_path)
