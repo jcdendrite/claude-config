@@ -89,7 +89,7 @@ Also owns the `--this-repo` subagent_type disclosure allowlist:
 
 The shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
 which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
-row — see the one-directional exception noted above.
+row (this is the shim-imports-back-into-package pattern described above).
 
 ### `pricing.py`
 
@@ -146,7 +146,7 @@ above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both 
 the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
 membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
 skill name before `_round_skill_name` normalizes it.
-`cmd_cost_counts` and its subagent-spawn-count aggregator are still-unmigrated: they have not
+`cmd_cost_counts` and its subagent-spawn-count aggregator have not
 moved into the package alongside `compute_review_round_counts`.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
