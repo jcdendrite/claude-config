@@ -575,14 +575,12 @@ leaves the block un-marked. The sweep above only removes per-run
 directories and session stores named by a still-pending write-ahead
 entry — it never touches anything already written to `records_path`. A
 resume under the same `--campaign-id` reruns that whole block and appends
-its records a second time into the same file, duplicating that one
-defect's records:
-
-- `pooled_precision` (sums additively across defects): biased, weights the duplicated defect ~2x.
-- `arm_recall` (per-defect macro-average): largely insensitive.
-
-Before running `analyze` after resuming from an unclean interruption, grep
-`records_path` for a defect with more than `K` records per arm.
+its records a second time into the same file. `read_run_records` dedups
+by `(campaign_id, defect_id, arm, run_index)`, keeping the later record
+for a repeated identity and discarding the earlier one, so the rerun's
+records replace the first attempt's rather than joining them — the same
+replace-not-join rule the environment-drift rerun follows within one
+`run_defect_block` call.
 
 ### Out-of-session reads
 

@@ -481,6 +481,8 @@ def cmd_spot_check_import(args: argparse.Namespace) -> int:
 def cmd_analyze(args: argparse.Namespace) -> int:
     from review_bench import adjudicate, analysis, arms, defects, runner
 
+    # Caught here too, not only by main()'s own top-level handler, since
+    # tests invoke cmd_analyze directly and rely on it returning 2 itself.
     try:
         confirmed = defects.load_confirmed_defects(Path(args.defects_path))
         reviewer_records = runner.read_run_records(Path(args.reviewer_records_path))
@@ -489,24 +491,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
         if args.baseline_conditions_path is not None:
             baseline_conditions_path = Path(args.baseline_conditions_path)
-            try:
-                baseline_conditions = json.loads(baseline_conditions_path.read_text())
-                baseline_environment = baseline_conditions["environment"]
-                baseline_cli_version = baseline_environment["cli_version"]
-                baseline_ambient_config_commit = baseline_environment["ambient_config_commit"]
-                baseline_harness_closure = baseline_conditions["harness_closure"]
-                # check_manifest_matches's dict() call would otherwise raise
-                # a raw ValueError/TypeError on a wrong-shaped closure,
-                # outside this guarding try.
-                if not isinstance(baseline_harness_closure, dict):
-                    raise TypeError(
-                        f"harness_closure must be an object, got {type(baseline_harness_closure).__name__}"
-                    )
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                raise analysis.HarnessInvalidatedError(
-                    f"invalidated -- rerun all arms: baseline conditions file "
-                    f"({baseline_conditions_path}) is unreadable or missing an expected field: {exc!r}"
-                ) from exc
+            baseline_cli_version, baseline_ambient_config_commit, baseline_harness_closure = (
+                analysis.load_baseline_conditions(baseline_conditions_path)
+            )
             analysis.check_environment_matches_baseline(
                 reviewer_records, baseline_cli_version=baseline_cli_version,
                 baseline_ambient_config_commit=baseline_ambient_config_commit,
@@ -909,9 +896,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Catch point for every subcommand's HarnessInvalidatedError
+    # (read_run_records and every analysis.check_* precondition raise it) --
+    # guarantees a malformed records file or a failed precondition always
+    # exits 2 with a clean message, in every subcommand including `judge`
+    # and `spot-check`.
+    from review_bench.runner import HarnessInvalidatedError
+
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except HarnessInvalidatedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

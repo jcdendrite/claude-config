@@ -16,20 +16,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-# The seven reviewer lenses whose agent body carries a read clause -- the
-# only lenses A-bench's arm 2 (function-context) can substitute a clause
-# for. staff-data-engineer and staff-product-engineer own other code-review
+from review_bench.arms import LENS_READ_CLAUSES
+
+# The lenses whose agent body carries a read clause -- the only lenses
+# A-bench's arm 2 (function-context) can substitute a clause for.
+# staff-data-engineer and staff-product-engineer own other code-review
 # checklist items but have no read clause to replace, so a defect either of
-# them owns can never enter this benchmark.
-KNOWN_LENSES: frozenset[str] = frozenset({
-    "staff-backend-engineer",
-    "staff-frontend-engineer",
-    "staff-sdet",
-    "staff-platform-engineer",
-    "staff-analytics-engineer",
-    "ciso-reviewer",
-    "comment-discipline-reviewer",
-})
+# them owns can never enter this benchmark. Derived from
+# arms.LENS_READ_CLAUSES rather than a second hand-typed copy, so a lens
+# added or removed there can't drift out of sync here.
+KNOWN_LENSES: frozenset[str] = frozenset(LENS_READ_CLAUSES)
 
 KNOWN_SOURCES: frozenset[str] = frozenset({"szz", "review-round"})
 

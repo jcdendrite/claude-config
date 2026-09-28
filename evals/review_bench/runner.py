@@ -167,6 +167,14 @@ def build_dispatch_command(
     ]
 
 
+class HarnessInvalidatedError(Exception):
+    """Raised by a check that must exit 2, naming the failing field. Carries
+    the already-formatted message; run_review_bench.py's `main` catches it
+    at the top level, prints the message, and returns 2. Defined here
+    rather than in analysis.py (which imports this module) since
+    read_run_records below is one of its raisers."""
+
+
 # --- RunRecord -----------------------------------------------------------------
 
 STATUS_OK = "ok"
@@ -241,34 +249,100 @@ def append_run_record(path: Path, record: RunRecord) -> None:
 def append_run_records(path: Path, records: Sequence[RunRecord]) -> None:
     """Append every record in one open+write+close -- a block's own set of
     records is written in one call (run_campaign), not one file open per
-    record."""
+    record. Every caller holds the campaign-scoped RunStore lock around
+    this call (run_campaign, cmd_judge's precision-record append,
+    adjudicate.run_defect_judges' recall-record append), so the repair
+    this does before appending is safe against a concurrent writer."""
     if not records:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    _repair_torn_tail(path)
     text = "".join(json.dumps(record.to_dict()) + "\n" for record in records)
     with open(path, "a") as fh:
         fh.write(text)
 
 
+def _repair_torn_tail(path: Path) -> None:
+    """Repair a file a prior process left without a trailing newline
+    before this append glues new bytes onto that tail. Left unrepaired,
+    the glued line becomes permanently invalid JSON that's no longer the
+    file's last line. read_run_records' truncated-final-line tolerance
+    only forgives corruption on the last line, so it would raise
+    HarnessInvalidatedError on every read from then on, even after a
+    successful rerun. A tail that still parses as complete JSON (the
+    kill landed between the closing brace and the newline) keeps its
+    record and gets the missing newline appended. A tail that doesn't
+    parse (the kill landed mid-record) is truncated back to the last
+    newline -- the same bytes read_run_records already discards as a
+    tolerated truncated-final-line on read, so truncating on write is
+    consistent with that, not a new behavior. This parse check is
+    JSON-syntax-only, unlike read_run_records' own final-line tolerance,
+    which additionally requires the parsed JSON to shape-match
+    RunRecord.from_dict -- a tail that parses as JSON but not as a
+    RunRecord is still treated here as a complete record to keep.
+
+    Each branch below touches only the minimum bytes needed -- the tail
+    alone, never the file's earlier bytes -- so a second process kill
+    mid-repair can destroy at most the torn tail, never an
+    already-durable record."""
+    if not path.exists():
+        return
+    data = path.read_bytes()
+    if not data or data.endswith(b"\n"):
+        return
+    tail_start = data.rfind(b"\n") + 1
+    tail = data[tail_start:]
+    try:
+        json.loads(tail)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # UnicodeDecodeError: unreachable today since this file's own
+        # writer always uses json.dumps(..., ensure_ascii=True), but the
+        # read side shouldn't assume every future producer stays ASCII-safe.
+        os.truncate(path, tail_start)
+    else:
+        with open(path, "ab") as fh:
+            fh.write(b"\n")
+
+
+def _run_record_identity(record: RunRecord) -> tuple[str, str, str, int]:
+    return (record.campaign_id, record.defect_id, record.arm, record.run_index)
+
+
 def read_run_records(path: Path) -> list[RunRecord]:
-    """Skips (and reports to stderr) a line that fails to parse into a
-    RunRecord -- either invalid JSON or valid JSON shaped wrong for
-    RunRecord.from_dict -- rather than letting one malformed line discard
-    every other already-recorded, already-paid-for run in the file."""
+    """Dedups by (campaign_id, defect_id, arm, run_index): a later record for
+    that identity replaces an earlier one instead of both existing, so a
+    block rerun after a crash between append_run_records and
+    mark_block_complete (run_campaign's own comment on that ordering) does
+    not double-count that defect's runs downstream. Raises
+    HarnessInvalidatedError on a line that fails to parse into a RunRecord --
+    invalid JSON syntax anywhere but the final line, or valid JSON shaped
+    wrong for RunRecord.from_dict anywhere including the final line. A
+    JSON-syntax failure on the final line alone is tolerated: the ordinary
+    signature of a process killed mid-append is an incomplete trailing
+    write, not a bad-shaped-but-complete one, so only that specific failure
+    is silently dropped rather than raised. The returned list orders a
+    superseded identity's replacement at its first-seen position, not at
+    write-recency, since dict key overwrite preserves original insertion
+    order."""
     if not path.exists():
         return []
-    records = []
-    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+    lines = path.read_text().splitlines()
+    records_by_identity: dict[tuple[str, str, str, int], RunRecord] = {}
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
-            records.append(RunRecord.from_dict(json.loads(line)))
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            # No cap on consecutive skips -- a systemic schema drift could zero
-            # out the file. Accepted for this harness's attended,
-            # single-author use; re-evaluate before an unattended caller.
-            print(f"read_run_records: skipping malformed line {line_number} in {path}: {exc}", file=sys.stderr)
-    return records
+            parsed = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if line_number == len(lines):
+                continue  # truncated final line -- the ordinary kill-mid-write case
+            raise HarnessInvalidatedError(f"read_run_records: malformed line {line_number} in {path}: {exc}") from exc
+        try:
+            record = RunRecord.from_dict(parsed)
+        except (TypeError, ValueError) as exc:
+            raise HarnessInvalidatedError(f"read_run_records: malformed line {line_number} in {path}: {exc}") from exc
+        records_by_identity[_run_record_identity(record)] = record
+    return list(records_by_identity.values())
 
 
 # --- Session-store lookup by session ID -----------------------------------

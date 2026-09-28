@@ -64,10 +64,6 @@ REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
 # standalone row -- over-selection here is the safe direction.
 MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
-# Named explicitly for the same reason as MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
-# above: its "test_run_review_bench" filename doesn't match REVIEW_BENCH_TEST_GLOB's
-# "test_review_bench*" prefix, so the glob alone never selects it.
-REVIEW_BENCH_RUNNER_TEST = "evals/test_run_review_bench.py"
 
 # evals/review_bench/mine_review_rounds.py's own Reuse list -- the
 # transcript_analysis modules it imports by name.
@@ -78,31 +74,6 @@ _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: frozenset[str] = frozenset({
     "claude/.claude/scripts/transcript_analysis/review_rounds.py",
     "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
 })
-
-# evals/review_bench/arms.py's LENS_READ_CLAUSES hand-copies each of these
-# seven lenses' exact read-clause wording out of its own production agent
-# file. evals/test_review_bench_fixtures.py contract-tests that copy against
-# the live file, so a wording edit to any of these seven files needs that
-# test re-run too. The generic AGENTS_DIR row below doesn't cover this: its
-# own targets (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR) never include
-# REVIEW_BENCH_TEST_GLOB.
-_REVIEW_BENCH_LENS_AGENT_FILES: frozenset[str] = frozenset({
-    f"{AGENTS_DIR}/staff-backend-engineer.md",
-    f"{AGENTS_DIR}/staff-frontend-engineer.md",
-    f"{AGENTS_DIR}/staff-sdet.md",
-    f"{AGENTS_DIR}/staff-platform-engineer.md",
-    f"{AGENTS_DIR}/staff-analytics-engineer.md",
-    f"{AGENTS_DIR}/ciso-reviewer.md",
-    f"{AGENTS_DIR}/comment-discipline-reviewer.md",
-})
-
-# test_select_tests.py's own test_review_bench_lens_sets_agree_across_all_three_copies
-# imports these two modules directly (`from review_bench import arms,
-# defects`) to ground-truth LENS_READ_CLAUSES/KNOWN_LENSES against
-# _REVIEW_BENCH_LENS_AGENT_FILES above. That import is invisible to
-# path-constant scanning, same shape as SKILL_AUXILIARY_FILES_MODULE below.
-REVIEW_BENCH_ARMS_MODULE = "evals/review_bench/arms.py"
-REVIEW_BENCH_DEFECTS_MODULE = "evals/review_bench/defects.py"
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
@@ -432,12 +403,12 @@ def _is_test_source_change(path: str) -> bool:
 # Covers review_bench's source tree, fixture tree, CLI entry point, and its own
 # flat test files (matched by glob, since evals/ keeps test_*.py beside its
 # source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION
-# and REVIEW_BENCH_RUNNER_TEST -- see their own comments above.
+# -- see its own comment above.
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
-        or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, REVIEW_BENCH_RUNNER_TEST)
+        or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION)
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
 
@@ -453,9 +424,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
-    (_is_review_bench_change, (
-        REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, REVIEW_BENCH_RUNNER_TEST,
-    )),
+    (_is_review_bench_change, (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -529,9 +498,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
-# _REVIEW_BENCH_LENS_AGENT_FILES: see its own comment above for citation.
-# REVIEW_BENCH_ARMS_MODULE, REVIEW_BENCH_DEFECTS_MODULE: see their own
-# comment above for citation.
+# REVIEW_BENCH_TEST_GLOB is also a target of this row: evals/review_bench/
+# arms.py's LENS_READ_CLAUSES hand-copies each lens's exact read-clause
+# wording out of its own production agent file, so an edit to any agent
+# file needs review_bench's own tests re-run too. This selects on every
+# agent file rather than only the lenses with a read clause to copy --
+# over-selection is the safe direction.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -570,10 +542,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # dependency.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (lambda p: p in _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES, (
-        REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST,
-    )),
-    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST)),
+    (lambda p: p in _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES, (REVIEW_BENCH_TEST_GLOB,)),
+    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
@@ -587,11 +557,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p in _REVIEW_BENCH_LENS_AGENT_FILES, (
-        REVIEW_BENCH_TEST_GLOB, REVIEW_BENCH_RUNNER_TEST,
-    )),
-    (lambda p: p in (REVIEW_BENCH_ARMS_MODULE, REVIEW_BENCH_DEFECTS_MODULE), (SCRIPTS_TESTS_DIR,)),
+    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),

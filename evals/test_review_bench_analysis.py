@@ -4,7 +4,9 @@ campaign. No test launches `claude`.
 """
 from __future__ import annotations
 
+import json
 import statistics
+from pathlib import Path
 
 import pytest
 from review_bench import analysis, runner
@@ -277,6 +279,38 @@ class TestManifestAndFreezeChecks:
                 current_manifest_hash=manifest_after, last_smoke_manifest_hash=manifest_before, k_to_freeze=10,
                 smoke_full_k=10, provenance_failures=(), local_excerpts_present=True,
             )
+
+
+class TestLoadBaselineConditions:
+    def test_loads_environment_and_harness_closure_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "conditions.json"
+        path.write_text(json.dumps({
+            "environment": {"cli_version": "2.1.0", "ambient_config_commit": "cafebabe"},
+            "harness_closure": {"a.py": "hash1"},
+        }))
+
+        cli_version, ambient_config_commit, harness_closure = analysis.load_baseline_conditions(path)
+
+        assert cli_version == "2.1.0"
+        assert ambient_config_commit == "cafebabe"
+        assert harness_closure == {"a.py": "hash1"}
+
+    def test_missing_environment_key_raises_naming_the_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "conditions.json"
+        path.write_text(json.dumps({"harness_closure": {}}))
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="unreadable or missing an expected field"):
+            analysis.load_baseline_conditions(path)
+
+    def test_non_dict_harness_closure_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "conditions.json"
+        path.write_text(json.dumps({
+            "environment": {"cli_version": "2.0.0", "ambient_config_commit": "deadbeef"},
+            "harness_closure": "corrupt",
+        }))
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="harness_closure must be an object"):
+            analysis.load_baseline_conditions(path)
 
 
 class TestEnvironmentChecks:

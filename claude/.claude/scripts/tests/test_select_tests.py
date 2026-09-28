@@ -667,25 +667,18 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
-        """Also selects REVIEW_BENCH_TEST_GLOB and REVIEW_BENCH_RUNNER_TEST:
-        evals/run_review_bench.py's own runner reuses run_skill_evals.py's
-        launch shape, so a change here needs review_bench's own tests
-        re-run too."""
+        """Also selects REVIEW_BENCH_TEST_GLOB: evals/run_review_bench.py's
+        own runner reuses run_skill_evals.py's launch shape, so a change
+        here needs review_bench's own tests re-run too."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REVIEW_BENCH_RUNNER_TEST,
-        }
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB}
 
     def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
-        # defects.py also matches REVIEW_BENCH_DEFECTS_MODULE's cross-domain
-        # exception, so SCRIPTS_TESTS_DIR is expected here too -- a file
-        # under REVIEW_BENCH_DIR other than arms.py/defects.py would omit it.
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST, _mod.SCRIPTS_TESTS_DIR,
         }
 
     def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -693,7 +686,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
@@ -705,7 +697,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_test_glob_member_change_selects_itself(self):
@@ -716,20 +707,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
-        }
-
-    def test_review_bench_runner_test_change_selects_itself(self):
-        """evals/test_run_review_bench.py's own "test_run_review_bench"
-        filename doesn't match REVIEW_BENCH_TEST_GLOB's "test_review_bench*"
-        prefix, so it needs its own named-file target (mirroring
-        MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST) to select itself rather than
-        falling open."""
-        result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER_TEST])
-        assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
@@ -739,7 +716,6 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            _mod.REVIEW_BENCH_RUNNER_TEST,
         }
 
     def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
@@ -755,7 +731,7 @@ class TestSelectPytestTargets:
             assert result.is_full_suite is False, dependency
             assert set(result.target_paths) == {
                 _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
-                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.REVIEW_BENCH_RUNNER_TEST,
+                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
             }, dependency
 
     def test_review_bench_transcript_analysis_dependencies_match_actual_imports(self):
@@ -780,47 +756,6 @@ class TestSelectPytestTargets:
             f"claude/.claude/scripts/transcript_analysis/{name}.py"
             for name in imported_module_names
         } == _mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES
-
-    def test_review_bench_lens_agent_file_change_also_selects_review_bench_tests(self):
-        """arms.py's LENS_READ_CLAUSES hand-copies each of these seven
-        lenses' exact read-clause wording out of its own production agent
-        file. Without this cross-domain exception, the generic AGENTS_DIR
-        row's own targets (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR) would claim
-        the path first. The contract test pinning that copy would then
-        never re-run."""
-        for agent_file in sorted(_mod._REVIEW_BENCH_LENS_AGENT_FILES):
-            result = _mod.select_pytest_targets([agent_file])
-            assert result.is_full_suite is False, agent_file
-            assert set(result.target_paths) == {
-                _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
-                _mod.REVIEW_BENCH_RUNNER_TEST,
-            }, agent_file
-
-    def test_review_bench_lens_sets_agree_across_all_three_copies(self):
-        """arms.py's LENS_READ_CLAUSES, defects.py's KNOWN_LENSES, and this
-        module's own _REVIEW_BENCH_LENS_AGENT_FILES are three independently
-        hand-typed copies of the same seven-lens set. Ground-truths all
-        three against each other, so a lens added to one and missed in
-        another fails here instead of drifting silently."""
-        from review_bench import arms, defects
-
-        agent_file_lens_names = {
-            Path(agent_file).stem for agent_file in _mod._REVIEW_BENCH_LENS_AGENT_FILES
-        }
-        assert set(arms.LENS_READ_CLAUSES) == defects.KNOWN_LENSES
-        assert agent_file_lens_names == defects.KNOWN_LENSES
-
-    def test_review_bench_arms_or_defects_change_also_selects_scripts_tests(self):
-        """test_review_bench_lens_sets_agree_across_all_three_copies
-        (SCRIPTS_TESTS_DIR) imports arms.py and defects.py directly to
-        ground-truth their lens sets against each other. Without this
-        cross-domain exception, the review_bench domain rule's own targets
-        (REVIEW_BENCH_TEST_GLOB and friends) never include SCRIPTS_TESTS_DIR,
-        so that consistency guard would go unrun on a lens-set edit."""
-        for changed_path in (_mod.REVIEW_BENCH_ARMS_MODULE, _mod.REVIEW_BENCH_DEFECTS_MODULE):
-            result = _mod.select_pytest_targets([changed_path])
-            assert result.is_full_suite is False, changed_path
-            assert _mod.SCRIPTS_TESTS_DIR in result.target_paths, changed_path
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
@@ -981,10 +916,16 @@ class TestSelectPytestTargets:
         (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
         by import. Without this cross-domain exception, a change under
         claude/.claude/agents/ falls open to the full suite instead of
-        selecting the two domains that actually depend on it."""
+        selecting the two domains that actually depend on it. Also selects
+        REVIEW_BENCH_TEST_GLOB: arms.py's LENS_READ_CLAUSES hand-copies each
+        lens's exact read-clause wording out of its own production agent
+        file, so any agent file change -- not only a lens with a read
+        clause -- over-selects review_bench's tests too."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+        }
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
         """test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
@@ -1688,7 +1629,6 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-    _mod.REVIEW_BENCH_RUNNER_TEST,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import math
 import random
 from collections import defaultdict
@@ -31,6 +32,11 @@ REVIEW_BENCH_DIR = EVALS_DIR / "review_bench"
 CONFIG_SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
 STATUS_OK = runner.STATUS_OK
+# Defined in runner.py (which this module already imports), not here, since
+# runner.read_run_records is one of its raisers and analysis imports runner
+# rather than the reverse. Re-exported so existing `analysis.HarnessInvalidatedError`
+# call sites (run_review_bench.py) don't need updating.
+HarnessInvalidatedError = runner.HarnessInvalidatedError
 
 # --- Design constants -----------------------------------------------------
 
@@ -477,10 +483,26 @@ def closure_manifest_hash(closure: Mapping[str, str]) -> str:
 # conditions and invalidation" section) -------------------------------------
 
 
-class HarnessInvalidatedError(Exception):
-    """Raised by a check that must exit 2, naming the failing field. Carries
-    the already-formatted message; run_review_bench.py's `analyze` and
-    `freeze` subcommands catch it, print the message, and call sys.exit(2)."""
+def load_baseline_conditions(path: Path) -> tuple[str, str, Mapping[str, str]]:
+    """(cli_version, ambient_config_commit, harness_closure) from a baseline
+    conditions.json/baseline.json file, for check_environment_matches_baseline
+    and check_manifest_matches. Raises HarnessInvalidatedError -- naming the
+    file and the unreadable/missing/malformed field -- rather than letting a
+    raw OSError/ValueError/KeyError/TypeError escape to cmd_analyze."""
+    try:
+        conditions = json.loads(path.read_text())
+        environment = conditions["environment"]
+        cli_version = environment["cli_version"]
+        ambient_config_commit = environment["ambient_config_commit"]
+        harness_closure = conditions["harness_closure"]
+        if not isinstance(harness_closure, dict):
+            raise TypeError(f"harness_closure must be an object, got {type(harness_closure).__name__}")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise HarnessInvalidatedError(
+            f"invalidated -- rerun all arms: baseline conditions file "
+            f"({path}) is unreadable or missing an expected field: {exc!r}"
+        ) from exc
+    return cli_version, ambient_config_commit, harness_closure
 
 
 def check_manifest_matches(current_closure: Mapping[str, str], frozen_closure: Mapping[str, str]) -> None:

@@ -1138,23 +1138,101 @@ class TestRunRecordJsonlRoundTrip:
             whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
             cli_version="2.1.0", ambient_config_commit="deadbeef",
         )
-        runner.append_run_record(path, record)
-        runner.append_run_record(path, record)
-        loaded = runner.read_run_records(path)
-        assert len(loaded) == 2
-        assert loaded[0] == record
-
-    def test_append_run_records_writes_a_whole_batch_in_one_call(self, tmp_path: Path) -> None:
-        path = tmp_path / "records.jsonl"
-        record = runner.RunRecord(
-            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+        # Distinct run_index from the first call -- the same run_index would
+        # collide under read_run_records' identity dedup and defeat this
+        # test's two-call persistence intent.
+        second_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=1, opaque_run_id="def456",
             status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
-            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            observed_tools=("Read", "Grep"), out_of_session_paths=("/tmp/x.py",), findings_text="No findings.",
             wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
             whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
             cli_version="2.1.0", ambient_config_commit="deadbeef",
         )
-        runner.append_run_records(path, (record, record, record))
+        runner.append_run_record(path, record)
+        runner.append_run_record(path, second_record)
+        loaded = runner.read_run_records(path)
+        assert len(loaded) == 2
+        assert record in loaded and second_record in loaded
+
+    def test_read_run_records_dedups_by_identity_keeping_the_later_record(self, tmp_path: Path) -> None:
+        """A later record for the same (campaign_id, defect_id, arm,
+        run_index) identity replaces an earlier one instead of both
+        existing -- the shape a block rerun after a crash between
+        append_run_records and mark_block_complete produces (run_campaign's
+        own comment on that ordering), so it doesn't double-weight that
+        defect downstream (e.g. analysis.pooled_precision)."""
+        path = tmp_path / "records.jsonl"
+        first_attempt = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="First attempt.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        rerun_attempt = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="Rerun attempt.",
+            wall_clock_s=13.0, read_calls=4, read_tokens_est=120, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        runner.append_run_record(path, first_attempt)
+        runner.append_run_record(path, rerun_attempt)
+
+        loaded = runner.read_run_records(path)
+
+        assert loaded == [rerun_attempt]
+
+    def test_read_run_records_keeps_distinct_run_indices_of_the_same_defect_and_arm(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dedup keys on the full (campaign_id, defect_id, arm, run_index)
+        tuple, not a coarser prefix -- two different run_index values for
+        the same defect/arm must not collapse into one."""
+        path = tmp_path / "records.jsonl"
+        record_0 = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="Run 0.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        record_1 = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=1, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="Run 1.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        runner.append_run_records(path, (record_0, record_1))
+
+        loaded = runner.read_run_records(path)
+
+        assert {r.opaque_run_id for r in loaded} == {"abc123", "def456"}
+
+    def test_append_run_records_writes_a_whole_batch_in_one_call(self, tmp_path: Path) -> None:
+        path = tmp_path / "records.jsonl"
+
+        def _record(run_index: int) -> runner.RunRecord:
+            return runner.RunRecord(
+                campaign_id="c1", defect_id="d1", arm="current-rule", run_index=run_index,
+                opaque_run_id=f"abc{run_index}", status=runner.STATUS_OK, missing_reason=None,
+                observed_model=MODEL_ID, observed_tools=("Read", "Grep"), out_of_session_paths=(),
+                findings_text="No findings.", wall_clock_s=12.5, read_calls=3, read_tokens_est=100,
+                partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=1,
+                over_read_cap=False, dispatch_prompt_verbatim=True, cli_version="2.1.0",
+                ambient_config_commit="deadbeef",
+            )
+
+        # Three distinct run_index values -- not the same record three
+        # times, which read_run_records' identity dedup would collapse to
+        # one and defeat this test's "one call writes the whole batch" intent.
+        runner.append_run_records(path, (_record(0), _record(1), _record(2)))
         assert len(runner.read_run_records(path)) == 3
 
     def test_append_run_records_is_a_no_op_on_an_empty_sequence(self, tmp_path: Path) -> None:
@@ -1162,12 +1240,21 @@ class TestRunRecordJsonlRoundTrip:
         runner.append_run_records(path, ())
         assert not path.exists()
 
-    def test_read_run_records_skips_one_malformed_trailing_line_and_keeps_the_rest(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    def test_read_run_records_returns_empty_list_for_a_nonexistent_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "never-written.jsonl"
+        assert runner.read_run_records(path) == []
+
+    def test_read_run_records_returns_empty_list_for_an_all_blank_lines_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "records.jsonl"
+        path.write_text("\n\n   \n")
+        assert runner.read_run_records(path) == []
+
+    def test_read_run_records_tolerates_one_truncated_trailing_line_and_keeps_the_rest(
+        self, tmp_path: Path,
     ) -> None:
-        """Regression guard: a single truncated/malformed JSONL line -- e.g.
-        a partial write from a hard kill mid-append -- must not discard every
-        other already-recorded run in the same file."""
+        """Regression guard: a truncated final JSONL line -- e.g. a partial
+        write from a hard kill mid-append -- must not discard every other
+        already-recorded run in the same file, and must not raise."""
         path = tmp_path / "records.jsonl"
         record = runner.RunRecord(
             campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
@@ -1184,15 +1271,196 @@ class TestRunRecordJsonlRoundTrip:
         loaded = runner.read_run_records(path)
 
         assert loaded == [record]
-        assert "skipping malformed line 2" in capsys.readouterr().err
 
-    def test_read_run_records_skips_a_line_whose_top_level_json_value_is_a_bare_scalar(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    def test_append_run_records_discards_a_torn_tail_that_fails_to_parse(
+        self, tmp_path: Path,
+    ) -> None:
+        """A process killed before writing a record's closing brace leaves
+        a trailing line with no newline that also fails to parse as JSON.
+        The next append_run_records call must discard that torn tail
+        rather than glue the new record onto it. Gluing would leave
+        permanently invalid JSON that's no longer the file's last line, so
+        it would no longer be eligible for read_run_records'
+        truncated-final-line tolerance."""
+        path = tmp_path / "records.jsonl"
+        path.write_text('{"defect_id": "d1", "arm": "current-rule"')  # torn mid-write, no closing brace, no newline
+        new_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d2", arm="current-rule", run_index=0, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+
+        runner.append_run_record(path, new_record)
+        loaded = runner.read_run_records(path)
+
+        assert loaded == [new_record]
+
+    def test_append_run_records_restores_a_complete_record_missing_only_its_trailing_newline(
+        self, tmp_path: Path,
+    ) -> None:
+        """A process killed between writing a record's closing brace and
+        its trailing newline leaves a complete record that still parses
+        as JSON. That record can be a real, already-observed run a caller
+        is about to reuse -- e.g. cmd_judge's recall-record dedup. The
+        next append_run_records call must keep it and restore only the
+        missing newline, instead of discarding it as if it were
+        corruption."""
+        path = tmp_path / "records.jsonl"
+        preexisting_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        # No trailing newline -- the kill landed after the closing brace but
+        # before the write of "\n" was flushed.
+        path.write_text(json.dumps(preexisting_record.to_dict()))
+        new_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d2", arm="current-rule", run_index=0, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+
+        runner.append_run_record(path, new_record)
+        loaded = runner.read_run_records(path)
+
+        assert preexisting_record in loaded and new_record in loaded
+        assert len(loaded) == 2
+
+    def test_append_run_records_discards_a_torn_tail_without_touching_earlier_records(
+        self, tmp_path: Path,
+    ) -> None:
+        """The torn-tail-discard branch must operate on the tail only, not
+        the whole buffer: with prior complete, newline-terminated records
+        already in the file, a regression that truncated from byte 0
+        instead of from the last newline would wipe them, and a
+        sole-content fixture (the file being only the torn line) can't
+        catch that since data.rfind(b"\\n") returns -1 either way."""
+        path = tmp_path / "records.jsonl"
+        earlier_records = [
+            runner.RunRecord(
+                campaign_id="c1", defect_id="d1", arm="current-rule", run_index=run_index,
+                opaque_run_id=f"earlier{run_index}", status=runner.STATUS_OK, missing_reason=None,
+                observed_model=MODEL_ID, observed_tools=("Read", "Grep"), out_of_session_paths=(),
+                findings_text="No findings.", wall_clock_s=12.5, read_calls=3, read_tokens_est=100,
+                partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=1,
+                over_read_cap=False, dispatch_prompt_verbatim=True, cli_version="2.1.0",
+                ambient_config_commit="deadbeef",
+            )
+            for run_index in (0, 1)
+        ]
+        with open(path, "w") as fh:
+            for record in earlier_records:
+                fh.write(json.dumps(record.to_dict()) + "\n")
+            fh.write('{"defect_id": "d1", "arm": "current-rule"')  # torn mid-write, no closing brace, no newline
+        new_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d2", arm="current-rule", run_index=0, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+
+        runner.append_run_record(path, new_record)
+        loaded = runner.read_run_records(path)
+
+        assert all(record in loaded for record in (*earlier_records, new_record))
+        assert len(loaded) == 3
+
+    def test_append_run_records_restores_a_torn_tail_without_touching_earlier_records(
+        self, tmp_path: Path,
+    ) -> None:
+        """The parse check that selects the restore branch must run against
+        the isolated tail, not the whole buffer: with prior complete,
+        newline-terminated records already in the file, a regression that
+        checked `json.loads(data)` instead of `json.loads(tail)` would see
+        the earlier records as leading garbage, misclassify this fixture as
+        unparseable, and wipe the earlier records via the discard branch
+        instead of restoring the tail's missing newline."""
+        path = tmp_path / "records.jsonl"
+        earlier_records = [
+            runner.RunRecord(
+                campaign_id="c1", defect_id="d1", arm="current-rule", run_index=run_index,
+                opaque_run_id=f"earlier{run_index}", status=runner.STATUS_OK, missing_reason=None,
+                observed_model=MODEL_ID, observed_tools=("Read", "Grep"), out_of_session_paths=(),
+                findings_text="No findings.", wall_clock_s=12.5, read_calls=3, read_tokens_est=100,
+                partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=1,
+                over_read_cap=False, dispatch_prompt_verbatim=True, cli_version="2.1.0",
+                ambient_config_commit="deadbeef",
+            )
+            for run_index in (0, 1)
+        ]
+        preexisting_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=2, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        with open(path, "w") as fh:
+            for record in earlier_records:
+                fh.write(json.dumps(record.to_dict()) + "\n")
+            # No trailing newline -- the kill landed after the closing brace
+            # but before the write of "\n" was flushed.
+            fh.write(json.dumps(preexisting_record.to_dict()))
+        new_record = runner.RunRecord(
+            campaign_id="c1", defect_id="d2", arm="current-rule", run_index=0, opaque_run_id="def456",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+
+        runner.append_run_record(path, new_record)
+        loaded = runner.read_run_records(path)
+
+        assert all(record in loaded for record in (*earlier_records, preexisting_record, new_record))
+        assert len(loaded) == 4
+
+    def test_read_run_records_raises_on_a_truncated_line_that_is_not_the_last_one(
+        self, tmp_path: Path,
+    ) -> None:
+        """The truncated-final-line tolerance is positional, not blanket: a
+        JSON-syntax failure earlier in the file is a genuine corruption.
+        append_run_records repairs a torn trailing line at write time
+        (restoring the missing newline or truncating it away) before it can
+        get glued to a later append, so a non-final truncated line reaching
+        read_run_records is never that recovered shape -- it still fails
+        closed."""
+        path = tmp_path / "records.jsonl"
+        record = runner.RunRecord(
+            campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
+            status=runner.STATUS_OK, missing_reason=None, observed_model=MODEL_ID,
+            observed_tools=("Read", "Grep"), out_of_session_paths=(), findings_text="No findings.",
+            wall_clock_s=12.5, read_calls=3, read_tokens_est=100, partial_view_reads=0, paged_followups=0,
+            whole_file_reads_of_changed_files=1, over_read_cap=False, dispatch_prompt_verbatim=True,
+            cli_version="2.1.0", ambient_config_commit="deadbeef",
+        )
+        with open(path, "w") as fh:
+            fh.write('{"defect_id": "d1", "arm": "current-rule"\n')  # truncated JSON, not the last line
+        runner.append_run_record(path, record)
+
+        with pytest.raises(runner.HarnessInvalidatedError, match="malformed line 1"):
+            runner.read_run_records(path)
+
+    def test_read_run_records_raises_on_a_line_whose_top_level_json_value_is_a_bare_scalar(
+        self, tmp_path: Path,
     ) -> None:
         """A line can parse to valid JSON that isn't an object at all -- e.g. a bare
         string. RunRecord.from_dict's `dict(data)` call raises ValueError in that
-        case, not TypeError or json.JSONDecodeError, so it must be
-        skipped-and-reported the same way rather than crashing the read."""
+        case, not TypeError or json.JSONDecodeError. That's a schema failure, not a
+        truncated-write one, so it raises even as the file's last line."""
         path = tmp_path / "records.jsonl"
         record = runner.RunRecord(
             campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
@@ -1206,19 +1474,18 @@ class TestRunRecordJsonlRoundTrip:
         with open(path, "a") as fh:
             fh.write(json.dumps("corrupt") + "\n")  # valid JSON, but not object-shaped
 
-        loaded = runner.read_run_records(path)
+        with pytest.raises(runner.HarnessInvalidatedError, match="malformed line 2"):
+            runner.read_run_records(path)
 
-        assert loaded == [record]
-        assert "skipping malformed line 2" in capsys.readouterr().err
-
-    def test_read_run_records_skips_a_valid_json_line_missing_a_required_field(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    def test_read_run_records_raises_on_a_valid_json_line_missing_a_required_field(
+        self, tmp_path: Path,
     ) -> None:
         """A line can be syntactically valid JSON and still fail to parse
         into a RunRecord -- e.g. a required field dropped by a hand-edited
         fixture or a future schema-drift line. RunRecord.from_dict raises
-        TypeError in that case, not json.JSONDecodeError, so it must be
-        skipped-and-reported the same way rather than crashing the read."""
+        TypeError in that case, not json.JSONDecodeError. That's a schema
+        failure, not a truncated-write one, so it raises even as the file's
+        last line."""
         path = tmp_path / "records.jsonl"
         record = runner.RunRecord(
             campaign_id="c1", defect_id="d1", arm="current-rule", run_index=0, opaque_run_id="abc123",
@@ -1232,10 +1499,8 @@ class TestRunRecordJsonlRoundTrip:
         with open(path, "a") as fh:
             fh.write(json.dumps({"defect_id": "d2", "arm": "current-rule"}) + "\n")  # missing campaign_id, etc.
 
-        loaded = runner.read_run_records(path)
-
-        assert loaded == [record]
-        assert "skipping malformed line 2" in capsys.readouterr().err
+        with pytest.raises(runner.HarnessInvalidatedError, match="malformed line 2"):
+            runner.read_run_records(path)
 
     def test_from_dict_defaults_missing_over_read_cap_to_false(self) -> None:
         """A reviewer.jsonl/judge.jsonl line written before over_read_cap

@@ -47,10 +47,10 @@ def _commit(repo: Path, message: str) -> str:
 
 def _run_record(
     defect_id: str, arm: str, opaque_run_id: str, findings_text: str, *, status: str = "ok",
-    out_of_session_paths: tuple[str, ...] = (), over_read_cap: bool = False,
+    out_of_session_paths: tuple[str, ...] = (), over_read_cap: bool = False, run_index: int = 0,
 ) -> runner.RunRecord:
     return runner.RunRecord(
-        campaign_id="c1", defect_id=defect_id, arm=arm, run_index=0, opaque_run_id=opaque_run_id,
+        campaign_id="c1", defect_id=defect_id, arm=arm, run_index=run_index, opaque_run_id=opaque_run_id,
         status=status, missing_reason=None, observed_model="claude-sonnet-5", observed_tools=("Read",),
         out_of_session_paths=out_of_session_paths, findings_text=findings_text, wall_clock_s=1.0, read_calls=1,
         read_tokens_est=10, partial_view_reads=0, paged_followups=0, whole_file_reads_of_changed_files=0,
@@ -174,8 +174,11 @@ class TestBuildSpotCheckSamples:
             _run_record("d1", "current-rule", "run-a", "Leaks a connection on error."),
             _run_record("d1", "function-context", "run-b", "Nothing to report."),
             # A missing reviewer run never reaches the judge's own input,
-            # so it must never surface as a spot-check candidate either.
-            _run_record("d1", "current-rule", "run-c", "A missing run.", status="missing"),
+            # so it must never surface as a spot-check candidate either. A
+            # distinct run_index: it's current-rule's second run in this
+            # block, not a rerun of run-a's own (campaign_id, defect_id,
+            # arm, run_index) identity, which read_run_records dedups on.
+            _run_record("d1", "current-rule", "run-c", "A missing run.", status="missing", run_index=1),
         ]
         runner.append_run_records(reviewer_records_path, reviewer_records)
 
@@ -831,3 +834,29 @@ class TestCmdSpotCheckImport:
         assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_RECALL} kappa = 1.000 -- validated" in stderr
         assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_PRECISION} kappa = 1.000 -- validated" in stderr
         assert f"spot-check import: {arms_mod.ARM_CURRENT_RULE} split agreement = 1.000" in stderr
+
+
+class TestMainCatchesHarnessInvalidatedErrorForEveryCommand:
+    """`cmd_judge` and `_build_spot_check_samples` (unlike `cmd_analyze`) have
+    no local `HarnessInvalidatedError` catch of their own -- this exercises
+    `main`'s own top-level handler, the only thing standing between a
+    malformed records file and a raw traceback for those commands."""
+
+    def test_judge_with_a_malformed_reviewer_records_file_exits_2_via_main(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        # Missing campaign_id/arm/etc. -- a schema failure, not a
+        # truncated-write one, so read_run_records raises even as the last line.
+        reviewer_records_path.write_text(json.dumps({"defect_id": "d1"}) + "\n")
+
+        exit_code = run_review_bench.main([
+            "judge", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_records_path),
+        ])
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "malformed line 1" in stderr
+        assert str(reviewer_records_path) in stderr
