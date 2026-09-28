@@ -116,7 +116,7 @@ Read together, these corpus-level figures — not any figure tied to the one pri
 This study's own plan puts every pipeline-behavior change out of scope, on the grounds that a cost investigation is a mandate to measure, not to redesign the review pipeline unreviewed. Recommended as follow-up work, not built here:
 
 - **Incremental review credit.** The review-marker mechanism re-hashes and re-runs a full review pass on every edit, however small. A delta-aware credit mechanism is the single highest-leverage lever named by this study's own ranked decomposition (#1 and #2 together), but designing one safely — without silently skipping a review a reviewer would have flagged — is its own reviewed plan, not a corollary of this one.
-- **Capping reviewer fan-out**, and **narrowing `ready-for-review`'s cumulative pass** to the increment since the last clean review rather than the whole branch diff, are both named candidates a future plan should evaluate against the per-review-round cost surface this study added.
+- **Capping reviewer fan-out**, and **narrowing `ready-for-review`'s cumulative pass** to the increment since the last clean review rather than the whole branch diff, are both named candidates a future plan should evaluate against the per-review-round cost surface this study reuses.
 - **`pr-cost --record` support for an open PR**, so a branch like this one's own cost trajectory is visible before it merges rather than only after — deliberately excluded here as a ledger schema migration on an append-only file, not a phase of this study.
 
 ## Sources

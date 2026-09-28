@@ -2065,7 +2065,8 @@ def _dispatch_usage_summary(
     pricing, since one API call writes one JSONL record per content block, all
     sharing one requestId, and pricing each block separately would overcount
     every token class. Every other pricing path in this codebase applies the
-    same dedup step (cost.py:120, cost.py:242, ...).
+    same dedup step (cost.py's `_compute_pr_cost_branch_totals`,
+    `_compute_workstream_dollars`, ...).
 
     Returns (observed_bucket, actual_dollars, dollars_by_class,
     counterfactual_dollars, unpriced_turns, unpriced_tokens, stale_models).
