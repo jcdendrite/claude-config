@@ -25,7 +25,6 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import _config
@@ -174,6 +173,7 @@ from transcript_analysis.read_scope import (
     cmd_read_scope,
 )
 from transcript_analysis.redaction import (
+    _BUILT_IN_AGENT_TYPES,  # noqa: F401 -- read only via _mod._BUILT_IN_AGENT_TYPES from test files
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
     _assign_session_redact_label,
     _build_redact_map,
@@ -183,6 +183,7 @@ from transcript_analysis.redaction import (
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
+    _repo_tracked_agent_type_names,
     _root_scoped_display_label,
 )
 from transcript_analysis.render import (
@@ -1843,12 +1844,6 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
-# Built-in Claude Code subagent_type values -- present in every install, so
-# they can't identify a project. Always allowlisted for --this-repo
-# subagent_type disclosure, regardless of whether this repo's own agents/
-# tree tracks a same-named file.
-_BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
-
 # Fallback subagent_type for a spawn tool_use whose input carries no
 # subagent_type field -- shared between cmd_subagent_mix and
 # _spawn_counts_by_agent_type so the two never disagree on which raw string
@@ -1895,56 +1890,6 @@ def _declared_pin(
             pin = _agent_frontmatter_model(text) or _DECLARED_PIN_BUILT_IN
     declared_pin_cache[key] = pin
     return pin
-
-
-# .resolve() is load-bearing: unresolved, a stow-symlinked invocation would
-# land on the invoking account's own <config-dir>/agents/ instead of this
-# repo's tracked tree.
-_REPO_AGENT_DEFINITIONS_DIR = Path(__file__).resolve().parent.parent / "agents"
-
-
-@lru_cache(maxsize=1)
-def _repo_tracked_agent_type_names() -> frozenset[str]:
-    """Stems of every top-level *.md file this repo's own agents/ directory
-    git-tracks, plus _BUILT_IN_AGENT_TYPES -- the --this-repo subagent_type
-    disclosure allowlist.
-
-    - Tracked state, not on-disk presence (`git ls-files` reads the index)
-      -- an untracked scratch or WIP agent file in the invoking checkout's
-      agents/ directory never allowlists its own name, since every worktree
-      of this repo is a distinct physical checkout that can hold one.
-    - `-z` avoids git's path quoting/escaping corrupting the stem for
-      unusual filenames.
-    - `check=True` makes CalledProcessError reachable at all for a non-git
-      directory -- without it, a non-zero exit leaves stdout empty and the
-      failure silently looks like "zero tracked files" instead of raising
-      into the fallback path below.
-    - Top-level entries only (no "/" in the path), matching _declared_pin's
-      own flat agents_dir / f"{agent_type}.md" resolution -- a nested
-      tracked file over-redacts, the safe direction.
-    - _REPO_AGENT_DEFINITIONS_DIR is read fresh on every call (not captured
-      as a default argument) so a test can monkeypatch the module attribute
-      and call .cache_clear() to force a re-read.
-    - Same exception set and timeout as scope._repo_scoped_project_slugs
-      (scope.py:70-77's rationale: a hung local git must not block the
-      whole CLI with no exit), diverging in one way, deliberately: failure
-      here returns the built-ins alone rather than exiting, since failing
-      closed means more redaction, and an operator's report should not die
-      because git is unavailable.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(_REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return _BUILT_IN_AGENT_TYPES
-    tracked = {
-        entry[: -len(".md")]
-        for entry in proc.stdout.split("\0")
-        if entry and "/" not in entry and entry.endswith(".md")
-    }
-    return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
 
 
 # The one folded row a subagent_type this repo's own agents/ tree does not
