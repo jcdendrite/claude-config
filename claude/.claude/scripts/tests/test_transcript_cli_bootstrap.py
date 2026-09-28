@@ -545,3 +545,100 @@ def test_transcript_analysis_cache_rebuild_subprocess_finds_seeded_call(tmp_path
 
     assert result.returncode == 0, result.stderr
     assert "Calls scanned: 1" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--redact" in result.stdout
+
+
+def _seed_audit_routing_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one priced (claude-opus-5) Read
+    turn -- the seed shared by audit-routing's and audit-routing-samples' own
+    subprocess tests below."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-opus-5",
+            "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/a.py"}}],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 4321,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_audit_routing_subprocess_finds_seeded_turn(tmp_path):
+    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing`
+    resolves under a real subprocess -- no in-process `_mod.cmd_audit_routing(...)`
+    test can see a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_audit_routing_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing")
+
+    assert result.returncode == 0, result.stderr
+    assert "Corpus aggregate" in result.stdout
+    assert "4,321" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_shape_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing-shape", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_shape_subprocess_finds_seeded_session(tmp_path):
+    """A representative audit-routing-shape run under a real subprocess, mirroring
+    the turn-shape smoke test above's minimal session shape. cmd_audit_routing_shape's
+    header prints unconditionally, before any D1/D2/D3 bucket is populated, so this
+    needs no turn matching the D1/D2/D3 classifiers to prove the subprocess bootstrap
+    resolved."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    session = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "ls"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0},
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(session) + "\n")
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing-shape")
+
+    assert result.returncode == 0, result.stderr
+    assert "Opus code-read turn-shape distributions" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_samples_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing-samples", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--seed" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_samples_subprocess_finds_seeded_turn(tmp_path):
+    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing_samples`
+    resolves under a real subprocess. Asserts the JSON stream parses rather than
+    asserting on `candidates`' contents -- the minimal seed's non-empty `candidates`
+    list is not itself the bootstrap fact this test proves."""
+    config_dir = _seed_audit_routing_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing-samples")
+
+    assert result.returncode == 0, result.stderr
+    json.loads(result.stdout)
