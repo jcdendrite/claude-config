@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
 # plan file exists in .claude/plans/ and no plan-review marker covering that
 # exact plan state can be found. Exempt: a Write/Edit/MultiEdit whose own
@@ -167,22 +168,17 @@ GATE_DIFF_BASE_STATUS=$?
 # - Runs before the hash computation since path shape alone decides the
 #   common case.
 # - Also the gate's full disarm fast path: nothing active exits 0
-#   immediately here -- but only when GATE_DIFF_BASE is also empty. With a
-#   trusted base in effect, _lib_active_plan_hash's empty-active-set result
-#   is no longer necessarily empty (it binds to the base's own identity
-#   instead -- see that function's docstring), so this shortcut's premise
-#   ("the hash computation below would independently reach this same empty
-#   result") no longer holds and it must fall through instead.
+#   immediately here, whether or not GATE_DIFF_BASE is set, because
+#   _lib_active_plan_hash returns empty for an empty active set.
 # - Because this runs before the hash computation, an unhashable in-repo
 #   active plan does not block an out-of-repo write.
 if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
   ACTIVE_PLAN_FILES=$(_lib_active_plan_files "$REPO_ROOT" "$GATE_DIFF_BASE")
   ACTIVE_PLAN_FILES_STATUS=$?
-  if [ "$ACTIVE_PLAN_FILES_STATUS" -eq 0 ] && [ -z "$ACTIVE_PLAN_FILES" ] && [ -z "$GATE_DIFF_BASE" ]; then
-    # Nothing active and no trusted base: the hash computation below would
-    # independently reach this same empty result via its own call to
-    # _lib_active_plan_files, so short-circuit here instead of paying for a
-    # second enumeration.
+  if [ "$ACTIVE_PLAN_FILES_STATUS" -eq 0 ] && [ -z "$ACTIVE_PLAN_FILES" ]; then
+    # Nothing active: the hash computation below would independently reach
+    # this same empty result via its own call to _lib_active_plan_files, so
+    # short-circuit here instead of paying for a second enumeration.
     exit 0
   fi
   # - Both a failed enumeration and a non-empty active-file list fall through
@@ -218,11 +214,10 @@ fi
 # contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
 # plan file that is tracked and identical to GATE_DIFF_BASE (HEAD outside any
 # trusted in-progress state) is historical and does not contribute to the
-# hash. Empty result means no plan is active and no trusted base was in
-# effect -- gate disarmed, covering both an absent .claude/plans/ and one
-# containing only historical plans. With a trusted base in effect and
-# nothing active relative to it, the result is instead bound to the base's
-# own identity, so the gate still requires a marker rather than disarming.
+# hash. Empty result means no plan is active -- gate disarmed. Covers:
+#   - no .claude/plans/ directory
+#   - only historical plans present
+#   - a plan file a trusted in-progress state brought in untouched
 # Keep this a top-level assignment. Inside a function, `local VAR=$(...)`
 # reports `local`'s exit status (always 0) and would mask the failure; a
 # refactor that moves this must split the declaration from the assignment.

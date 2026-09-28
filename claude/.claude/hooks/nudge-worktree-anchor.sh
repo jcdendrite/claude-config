@@ -48,10 +48,16 @@
 #
 # Every git call goes through _lib_capped, so a locked index or a dead
 # network mount does not stall every prompt for the rest of the session in
-# the common case. That bound carries the caveats _lib_capped's own doc
-# comment in _lib.sh states: `timeout` sends SIGTERM, which a call blocked in
-# uninterruptible I/O will not honor until it exits the syscall, and the
+# the common case. That bound carries the caveats _lib_capped_for's header in
+# _lib.sh states: neither the SIGTERM nor the follow-up SIGKILL
+# is honored by a call blocked in uninterruptible I/O, and the
 # no-`timeout`-binary fallback runs uncapped.
+# The drift-report path chains five capped calls (two jq, three git) at 5s
+# each, so it takes 25s when every child honors SIGTERM and 35s when each
+# ignores it or needs more than the 2s grace to finish its handler.
+# UserPromptSubmit command hooks default to a 30s timeout per the Claude Code
+# hooks reference (fetched 2026-09-20).
+# The 35s case exceeds that 30s default.
 
 # Strict mode omitted deliberately, matching the other UserPromptSubmit
 # nudges: this hook must reach `exit 0` on all paths, and `set -e` would

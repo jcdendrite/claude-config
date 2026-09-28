@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # Gate: require /respond-pr when fetching or posting PR comments.
 #
 # Why: Claude habitually fetches only inline file comments
@@ -110,8 +111,8 @@ fi
 # would be reading a command the shell never runs. A bare newline separates
 # commands, and joins with a space.
 #
-# GH-801: awk with RS = "\0" (matching _mask_shell_quotes's identical
-# technique in deny-invisible-commit-content.sh), not a per-line sed —
+# GH-801: awk with RS = "\0" (matching _lib_mask_shell_quotes's identical
+# technique in _lib.sh), not a per-line sed —
 # a per-line tool never sees an embedded newline character to substitute in
 # the first place, since the newline itself is what separates its input
 # into lines; slurping the whole command as one record is what lets a

@@ -1,9 +1,11 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Read tool on credential-shaped file paths (SSH private keys, .netrc/_netrc, .git-credentials, cloud credential stores, non-template .env variants, credentials.json). Always on, no arming file, no bypass valve -- unlike deny-env-reads.sh's allowlist-and-symlink-defense design (built for .env.example-style safe templates), none of these path shapes has a legitimate secret-free variant.
 # Resolves symlinks via readlink -f before allowing, same fail-closed-on-unresolvable posture as deny-env-reads.sh; since this hook carries no allowlist, every symlinked Read target is resolved and checked, not just ones whose own name looks credential-shaped. Requires GNU coreutils (greadlink on macOS pre-12.3).
 #
 # Scope: Read tool only; deny-credential-bash-reads.sh covers Bash.
+# This zero-allowlist, no-bypass-valve design is deliberate against a steered agent, not only an accidental Read.
 # Fail-closed on unparseable hook input.
 
 set -uo pipefail

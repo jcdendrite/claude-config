@@ -4,8 +4,11 @@
 # byte-identical output on both the read side (hooks) and the write side
 # (marker.sh). Source it; do not invoke it directly.
 # Hooks source this via `${0%/*}`, not `$(dirname "$0")`, to skip a subshell
-# fork and `dirname` exec per invocation. It also fails closed rather than
-# open on the one reachable divergent `$0` shape: a bare filename.
+# fork and `dirname` exec per invocation. For hook-class: gate consumers
+# (which define emit_deny before sourcing), this also fails closed rather
+# than open on the one reachable divergent `$0` shape: a bare filename.
+# Other hook classes intentionally stay fail-open on a missing _lib.sh
+# regardless of this substitution.
 
 # _config.sh defines _lib_config_dir (config-dir resolution) and the
 # _config_*/config-key primitives every hook needs — sourced here, via
@@ -22,15 +25,16 @@ if ! . "$(dirname "${BASH_SOURCE[0]}")/_config.sh"; then
   return 1
 fi
 
-# Backstop against a hung jq (~5s, not a per-fire latency budget).
+# Backstop against a hung jq (5s, plus the 2s SIGKILL grace; not a per-fire
+# latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
 # Probes timeout(1) then gtimeout(1) (Homebrew coreutils' g-prefixed name),
 # falling back to bare jq only when neither is on PATH (stock macOS with no
 # coreutils installed). install.sh warns about missing timeout at onboarding
 # time.
 # Security implication: on a machine with neither binary, a stalled or
-# replaced jq binary can hold a gate hook open indefinitely. The harness's
-# own hook timeout (if any) then governs — not this wrapper.
+# replaced jq binary can hold a gate hook open until the harness's own hook
+# timeout, which does not block the tool call — see _lib_capped_for's header.
 _lib_jq() {
   _lib_capped_for 5 jq "$@"
 }
@@ -53,20 +57,110 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+# Emits a stderr note every time the uncapped fallback fires, so a caller
+# that doesn't redirect stderr can tell the cap silently didn't apply rather
+# than reading a clean exit as capped. Many current hook callers under
+# claude/.claude/hooks/*.sh redirect stderr to /dev/null, so this note is
+# unobservable from those. _lib_realpath_m's fallback-loop test -e/-L calls
+# are one such caller: their own 2>/dev/null (added to suppress a cap-firing
+# timeout's "Terminated"/"Killed" line) also swallows this note.
+#
+# Bound:
+#  - `-k 2` escalates to SIGKILL 2s after the SIGTERM, so under GNU timeout
+#    the wrapper returns at SECONDS+2 even when the direct child ignores or
+#    is slow to honor SIGTERM.
+#  - The bound covers the direct child only, because -k acts only while that
+#    child is still alive.
+#  - A descendant that ignores SIGTERM and holds a captured stdout pipe keeps
+#    a `$(...)` caller open until it exits, under GNU and BusyBox alike.
+#  - BusyBox timeout also signals only the direct child, so any pipe-holding
+#    grandchild, even one that honors SIGTERM, can keep a `$(...)` caller
+#    blocked for the grandchild's lifetime.
+#  - GNU timeout puts its child in a new process group unless run with
+#    --foreground. A capped call started inside a capped script, with stdout
+#    inherited from the captured pipe, is therefore outside the outer cap's
+#    group-directed signal. A `$(...)` caller waits for that nested call to
+#    exit on its own cap.
+#  - A call blocked in uninterruptible kernel I/O honors neither signal, so
+#    that case stays unbounded.
+#  - On the uncapped fallback (no timeout or gtimeout on PATH), or with a
+#    child that survives SIGKILL, a stalled PreToolUse gate exits only by the
+#    harness's own hook timeout. Per the Claude Code hooks reference,
+#    Timeouts section (fetched 2026-09-19): "A timed-out `command`, `http`,
+#    or `mcp_tool` hook doesn't block the tool call. The call continues
+#    through the normal permission flow, so don't count on a stalled hook to
+#    act as a gate."
+#
+# Spelling:
+#  - The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
+#    `--kill-after=2` with a usage error and never runs the command.
+#
+# Supported implementations:
+#  - README.md's Requirements section states which `timeout` builds accept
+#    `-k`.
+#  - A timeout that rejects `-k` makes every wrapped call exit nonzero
+#    without running its command.
+#
+# Exit statuses:
+#  - When the cap fires, the wrapper exits 124 (GNU) or 143 (BusyBox) if
+#    SIGTERM killed the child, and 137 (both) if the -k grace escalated to
+#    SIGKILL.
+#  - 137 and 143 also occur as a child's own signal-death status, so a status
+#    alone cannot prove the cap fired.
+#  - BusyBox returns the child's own status instead when the child traps TERM
+#    and exits cleanly. GNU still reports 124.
+#  - No capped child may trap TERM and exit 0, because BusyBox would then
+#    return that 0 where GNU returns 124.
+#  - Any other nonzero status is the child's own or timeout's own failure (GNU
+#    125/126/127, BusyBox usage error 1 or its own 126/127), so a caller that
+#    branches on the exit status must fail closed on every status it does not
+#    recognise.
+#
+# Side effects:
+#  - A SIGKILLed child can leave lock files behind. docs/hooks.md's "Gate
+#    deadlock recovery" section covers a stranded lock, at the path git names
+#    in its error message (under `.git/worktrees/<name>/` in a linked worktree).
+#  - Bash may print a "Killed" line to the hook's stderr after a SIGKILL, or a
+#    "Terminated" line when a BusyBox-capped child dies of SIGTERM, since
+#    BusyBox runs the command in the process bash waits on.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
+    timeout -k 2 "$seconds" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$seconds" "$@"
+    gtimeout -k 2 "$seconds" "$@"
   else
+    printf '_lib_capped_for: neither timeout nor gtimeout is on PATH -- running %s uncapped\n' "$1" >&2
     "$@"
   fi
 }
 
+# _lib_status_consistent_with_cap_kill STATUS
+# Returns 0 when STATUS is one a _lib_capped_for cap kill produces (124, 137,
+# 143), else 1. Prints nothing and returns only 0 or 1, including for an empty,
+# absent, or non-numeric STATUS.
+# Classifies only: each caller owns the disposition (discard, deny, or skip).
+# 137 and 143 also occur as a child's own signal-death status; see
+# _lib_capped_for's "Exit statuses" bullets.
+# A caller under `set -e` must call it in a conditional context, since a bare
+# call that returns 1 aborts the script.
+_lib_status_consistent_with_cap_kill() {
+  case "${1-}" in 124|137|143) return 0 ;; esac
+  return 1
+}
+
+# Caps the fallback loop, which takes one iteration per not-yet-existing trailing component of the target plus one for the existing ancestor it stops at.
+# A target with 64 or more missing components therefore fails closed.
+# 64 is an arbitrary ceiling far above the few missing components a legitimate target has, not a value derived from a latency budget or an external spec.
+_LIB_REALPATH_M_FALLBACK_MAX_DEPTH=64
+
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
-# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+# The loop's own basename/dirname calls run uncapped, unlike the test -e/-L calls below.
+# They never touch the filesystem, so there is no legitimate stall for them to hang on to.
+# A PATH-substituted basename/dirname that blocks is a separate, accepted concern recorded in docs/security-hardening.md's Limitations section.
+# Each call's own `|| return 1` is therefore sufficient.
+# That's a categorical guarantee, unlike _lib_marker_value_present's uncapped note further down this file, which relies on today's usage rather than a filesystem-independent property.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -80,8 +174,29 @@ _lib_realpath_m() {
     return 0
   fi
   local suffix="" current="$target" suffix_component
+  local depth=0
   while true; do
-    if [ -e "$current" ]; then
+    depth=$((depth + 1))
+    if [ "$depth" -gt "$_LIB_REALPATH_M_FALLBACK_MAX_DEPTH" ]; then
+      return 1  # fail closed: a chain this deep is not a realistic ancestor walk.
+    fi
+    # Unlike basename/dirname/realpath in this loop, `test -e` and `test -L` omit `--`.
+    # GNU coreutils' external `test` binary treats a 3-argument `test -e -- PATH` as its
+    # binary-operator form and rejects it.
+    # Both calls' `2>/dev/null` suppresses a cap-firing timeout's "Terminated"/"Killed"
+    # line from leaking to the hook's own stderr, matching this function's realpath/
+    # grealpath calls above.
+    # Deliberately not routed through _lib_status_consistent_with_cap_kill above: that
+    # helper recognizes only 124/137/143, while this loop fails closed on any status
+    # other than 0 (exists) or 1 (does not exist) -- a strictly broader, more
+    # conservative partition that a shared helper would need to special-case for.
+    local test_e_status
+    if _lib_capped test -e "$current" 2>/dev/null; then
+      test_e_status=0
+    else
+      test_e_status=$?
+    fi
+    if [ "$test_e_status" -eq 0 ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
       [ -n "$resolved" ] || return 1
       if [ -z "$suffix" ]; then
@@ -92,17 +207,34 @@ _lib_realpath_m() {
         printf '%s/%s\n' "$resolved" "$suffix"
       fi
       return 0
+    elif [ "$test_e_status" -ne 1 ]; then
+      return 1  # a cap-fired timeout or test's own error is not a clean "does not exist"; fail closed instead of falling through to the decomposition logic below
     fi
-    if [ -L "$current" ]; then
-      return 1  # dangling symlink: [ -e ] reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    local test_l_status
+    if _lib_capped test -L "$current" 2>/dev/null; then
+      test_l_status=0
+    else
+      test_l_status=$?
+    fi
+    if [ "$test_l_status" -eq 0 ]; then
+      return 1  # dangling symlink: the existence check above reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
+    elif [ "$test_l_status" -ne 1 ]; then
+      return 1  # same ambiguity as test -e above: a cap-fired or errored status is not a clean "not a symlink", so fail closed here too
     fi
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(basename -- "$current")
+    # This basename/dirname trio's `2>/dev/null` is uniform hygiene with the
+    # test -e/-L calls above, not cap-timeout suppression. These calls run
+    # uncapped, so there is no cap-firing "Terminated"/"Killed" line to suppress here.
+    suffix_component=$(basename -- "$current" 2>/dev/null) || return 1
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
+        ;;
+      .)
+        current=$(dirname -- "$current" 2>/dev/null) || return 1
+        continue  # a lone `.` contributes nothing to the resolved path and, unlike `..`, can never defeat a same-prefix boundary check.
         ;;
     esac
     if [ -z "$suffix" ]; then
@@ -110,9 +242,20 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(dirname -- "$current")
+    current=$(dirname -- "$current" 2>/dev/null) || return 1
   done
 }
+
+# Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
+# Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
+# The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
+# `local LC_ALL=C` is not used because its restore of the caller's locale was not verified on bash 4.x.
+_lib_passes_path_char_allowlist() (
+  LC_ALL=C
+  case "${1-}" in
+    '' | *[!A-Za-z0-9._/@+-]*) exit 1 ;;
+  esac
+)
 
 # _lib_advance_offset_past_complete_lines TRANSCRIPT OFFSET CURRENT_SIZE
 # Prints the resume-from byte offset, stopping before any trailing
@@ -157,6 +300,24 @@ _lib_advance_offset_past_complete_lines() {
 # _lib_config_dir is defined in _config.sh (sourced above) — see that
 # file for the function's own contract comment. This comment stays as the
 # pointer a reader searching this file for it would otherwise miss.
+
+# POSIX ERE-escapes every regex metacharacter this sed expression's own
+# class covers, for ask-review-permissions.sh's config-dir-anchored settings-
+# file match (gap (c)).
+# `]` is placed first inside the bracket expression, where it loses its
+# closing-bracket meaning and is instead a literal member of the class --
+# POSIX bracket-expression syntax.
+# Known limitation: `\ ^ $ ( )` in this escape class remain untested, since
+# CLAUDE_CONFIG_DIR/HOME are session-level trusted config rather than
+# attacker-controlled input. `[`, `{`, `+`, `*`, `?`, `|` have dedicated
+# near-miss test cases in test_ask_review_permissions.py -- see
+# test_config_dir_other_ere_metacharacters_are_escaped_not_treated_as_operators.
+# `]` and `}` cannot form a near-miss fixture case, since neither has an
+# unescaped-vs-escaped ask/allow distinction to pin.
+# test_config_dir_escape_class_backslash_escapes_bracket_and_brace_directly
+# covers both directly instead, asserting on the sed script's own output.
+# shellcheck disable=SC2016 # the `$` in this class is a literal ERE metacharacter to escape, not a variable to expand.
+_LIB_CONFIG_DIR_ESCAPE_SED_EXPR='s/[].[\*^$(){}+?|]/\\&/g'
 
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
 # Deliberately NOT named `emit_deny`: sourcing this file must not silently
@@ -203,7 +364,7 @@ _lib_emit_deny() {
     # before any command filtering, so a missing jq denies every tool call
     # with the parse-failure reason below — which names the wrong cause.
     # Without this line the session has no in-agent route to a fix.
-    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. Underlying gate reason follows.\n%s\n' \
+    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, accepts it) causes the same block; see docs/hooks.md \"Gate deadlock recovery\" in the claude-config repository. Underlying gate reason follows.\n%s\n' \
       "$prefixed_reason" >&2
     exit 2
   fi
@@ -240,7 +401,7 @@ _lib_emit_allow_with_context() {
 # structural-type error when .tool_input is non-object (jq non-zero exit).
 #
 # Four deny paths protect against silent-allow:
-#   (a) jq non-zero exit (parse failure, timeout exit=124, missing jq binary)
+#   (a) jq non-zero exit (parse failure, cap kill per _lib_capped_for's header above, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 #   (d) a 0x1f byte inside any extracted value, which would otherwise shift
@@ -515,11 +676,28 @@ _lib_active_plan_files() {
     }
   fi
 
+  # Declaration split from assignment for the same `local VAR=$(...)`
+  # exit-status-masking hazard documented at the top-level assignment note
+  # above require-plan-review.sh's CURRENT_HASH=$(...) hash-block line.
+  # Command substitution is used rather than process substitution because a
+  # process substitution's subshell exit status is invisible to a consuming
+  # `read` loop.
+  # This lets a failed `sort` fail this function closed like every other
+  # enumeration failure above.
+  # Not wrapped in _lib_capped like the git calls above: safe uncapped
+  # because the input is a small in-memory pipe -- the untracked/modified
+  # plan lists -- not a call that can hang on a large repo.
+  local enum_output
+  enum_output=$(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u) || {
+    printf '%s' "$plans_dir"
+    return 1
+  }
+
   local plan_file
   while IFS= read -r plan_file; do
     [ -n "$plan_file" ] || continue
     printf '%s\n' "$plan_file"
-  done < <(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u)
+  done <<< "$enum_output"
   return 0
 }
 
@@ -535,16 +713,12 @@ _lib_active_plan_files() {
 # _lib_active_plan_files -- see that function's own docstring for why this
 # is a required parameter rather than a self-contained resolution.
 #
-# Three-outcome contract -- exit status disambiguates stdout, because
-# "nothing to gate" and "could not compute" must never collapse onto the
-# same caller-visible signal:
-#   - exit 0, non-empty stdout: the active plan set's hash. When BASE is
-#     non-empty and no plan file differs from it, this binds to BASE's own
-#     identity instead of empty stdout -- see _lib_gate_diff_base's docstring
-#     and _lib_code_review_marker_value above for why a forged base must not
-#     collapse to the same value.
-#   - exit 0, empty stdout: no plan is active AND no trusted in-progress
-#     state was detected (BASE empty) -- the gate is disarmed.
+# Exit status disambiguates stdout, because "nothing to gate" and "could not
+# compute" must never collapse onto the same caller-visible signal:
+#   - exit 0, non-empty stdout: the active plan set's hash.
+#   - exit 0, empty stdout: no plan is active -- the gate is disarmed,
+#     whether or not a trusted in-progress state was detected (BASE
+#     non-empty).
 #   - exit 1, stdout = the path of the plan file that could not be hashed
 #     (unreadable, vanished mid-enumeration, sha256sum failed), or of
 #     .claude/plans/ itself when _lib_active_plan_files' own enumeration
@@ -588,18 +762,7 @@ _lib_active_plan_hash() {
     printf '%s' "$active_files"
     return 1
   fi
-  if [ -z "$active_files" ]; then
-    if [ -n "$base" ]; then
-      # A trusted in-progress state was detected but no plan file differs
-      # from BASE. Binding to BASE's own identity rather than returning
-      # empty stdout keeps a forged base's degenerate empty-active-set
-      # result from silently disarming the gate the way an honestly-empty
-      # result (no trusted state at all) safely does.
-      _lib_hash_diff_text "plan-review-empty-base:$base"
-      return $?
-    fi
-    return 0
-  fi
+  [ -z "$active_files" ] && return 0
 
   local file file_hash combined=""
   while IFS= read -r file; do
@@ -664,6 +827,60 @@ _lib_cumulative_diff_hash() {
   diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
   [ -n "$diff_output" ] || return 1
   _lib_hash_diff_text "$diff_output"
+}
+
+# _lib_head_tree_hash CAP_MODE REPO_ROOT
+# Prints `git rev-parse HEAD^{tree}` for REPO_ROOT, mirroring
+# _hash_staged_diff's mode-argument shape in marker.sh. CAP_MODE is "capped"
+# to run the git call through _lib_capped's 5s timeout, or "uncapped" to run
+# it directly.
+# Check git's exit status, not stdout emptiness: an unborn HEAD exits 128 but
+# still echoes the literal string "HEAD^{tree}", which an emptiness-only
+# check would misread as a real hash.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the tree hash.
+#   - exit 1, empty stdout: not inside a git repository, no commit exists yet
+#     (no HEAD), git is absent, or the call timed out.
+_lib_head_tree_hash() {
+  local cap_mode="$1" repo_root="$2"
+  local hash git_exit
+  case "$cap_mode" in
+    capped) hash=$(_lib_capped git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    uncapped) hash=$(git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    *)
+      printf '_lib_head_tree_hash: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
+      return 2
+      ;;
+  esac
+  [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1
+  printf '%s' "$hash"
+}
+
+# _lib_verification_cache_sentinel_present REPO_ROOT
+# Reports whether REPO_ROOT has opted into the `verification` cache: whether
+# .claude/ready-for-review-verification-cache-optin is committed at the tip
+# of origin/<default-branch>, resolved via _lib_default_branch_from_origin_head.
+# Never the working tree -- a working-tree read would let the branch under
+# review opt itself in (docs/design-decisions/ready-for-review-verification-cache.md).
+# `cat-file -e` confirms an object exists at that path, not its type. A tree
+# (directory) committed there therefore reads as present identically to a
+# blob. This is deliberate: either shape is a commit by whoever controls the
+# default branch.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0: the sentinel path exists at origin/<default-branch>.
+#   - exit 1: origin/HEAD is unset, dangling, or the path is absent there.
+_lib_verification_cache_sentinel_present() {
+  local repo_root="$1"
+  local default_branch
+  default_branch=$(_lib_default_branch_from_origin_head "$repo_root") || return 1
+  # This normalizes to exit 1 rather than git's own raw status. `cat-file -e`
+  # exits 128 (a fatal revision-parse error), not 1, when the ref resolves
+  # but the path inside its tree does not -- the common "not opted in" case
+  # this helper's two-outcome contract must still cover cleanly.
+  if _lib_capped git -C "$repo_root" cat-file -e "origin/$default_branch:.claude/ready-for-review-verification-cache-optin" 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
 # _lib_default_branch_from_origin_head REPO_ROOT
@@ -839,7 +1056,7 @@ _lib_gate_diff_base() {
   local default_branch anchor_reached=1
   default_branch=$(_lib_default_branch_or_guess "$repo_root")
   if [ -n "$default_branch" ] \
-    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "origin/$default_branch" >/dev/null 2>&1
+    && _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" "refs/remotes/origin/$default_branch" >/dev/null 2>&1
   then
     anchor_reached=0
   elif _lib_capped git -C "$repo_root" merge-base --is-ancestor "$state_oid" HEAD >/dev/null 2>&1; then
@@ -866,7 +1083,7 @@ _lib_gate_diff_base() {
     *) return 2 ;;
   esac
   case "$tree_status" in
-    124 | 125 | 126 | 127 | 137) return 2 ;;
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
   esac
   # tree_status is not the validation signal. `merge-tree --write-tree`
   # exits 1 (not 0) whenever the merge it computed conflicts -- the
@@ -880,11 +1097,53 @@ _lib_gate_diff_base() {
   _lib_capped git -C "$repo_root" rev-parse --verify --quiet "${tree_oid}^{tree}" >/dev/null 2>&1
   local verify_status=$?
   case "$verify_status" in
-    124 | 125 | 126 | 127 | 137) return 2 ;;
+    124 | 125 | 126 | 127 | 137 | 143) return 2 ;;
   esac
   [ "$verify_status" -eq 0 ] || return 1
 
   printf '%s' "$tree_oid"
+}
+
+# _lib_skill_review_diff_base REPO_ROOT
+# Returns the same tri-state contract as _lib_gate_diff_base, except mid-revert
+# returns 1, empty stdout, in place of the synthesized tree.
+# A revert's synthesized tree is HEAD minus a reviewed patch, so its removals
+# were reviewed nowhere.
+# A pre-sample reading no in-progress state returns 1 directly, without
+# calling _lib_gate_diff_base, the same answer _lib_gate_diff_base itself
+# gives on the same resolved gitdir.
+# The state is sampled once before and once after the _lib_gate_diff_base
+# call, not only after, because both reads hit the same mutable gitdir.
+_lib_skill_review_diff_base() {
+  [ "$#" -eq 1 ] || return 2
+  local repo_root="$1"
+
+  local gitdir
+  gitdir=$(_lib_capped git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || return 2
+  [ -n "$gitdir" ] || return 2
+
+  local pre_state pre_status
+  pre_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  pre_status=$?
+  # Unreachable: gitdir is verified non-empty above, and _lib_git_inprogress_state
+  # returns 2 on a passed-in GITDIR only when it is empty.
+  [ "$pre_status" -eq 2 ] && return 2
+  [ "$pre_status" -eq 1 ] && return 1
+  [ "$pre_state" = revert ] && return 1
+
+  local base base_status
+  base=$(_lib_gate_diff_base "$repo_root")
+  base_status=$?
+  [ "$base_status" -eq 0 ] || return "$base_status"
+
+  local post_state post_status
+  post_state=$(_lib_git_inprogress_state "$repo_root" "$gitdir")
+  post_status=$?
+  # Unreachable: same gitdir, already verified non-empty above.
+  [ "$post_status" -eq 2 ] && return 2
+  [ "$post_status" -eq 0 ] && [ "$post_state" = revert ] && return 1
+
+  printf '%s' "$base"
 }
 
 # _lib_staged_diff_hash REPO_ROOT BASE [PATHSPEC...]
@@ -907,7 +1166,7 @@ _lib_gate_diff_base() {
 # `${PIPESTATUS[0]}` in the same command substitution immediately after the
 # pipeline runs (before any later command in that subshell can overwrite
 # it): any nonzero status there -- an ordinary git error or a cap kill
-# (124/125/126/127/137) alike -- fails this closed regardless of whether
+# (statuses per _lib_capped_for's header) alike -- fails this closed regardless of whether
 # sha256sum/awk still produced output downstream. Callers must fail closed
 # on exit 1, the same posture _lib_active_plan_hash and
 # _lib_reviewer_round_state_value already document for this class of
@@ -916,9 +1175,9 @@ _lib_gate_diff_base() {
 # relative to the caller's cwd -- every current call site already validates
 # REPO_ROOT, but this is a shared primitive future callers may not.
 # A no-op GIT_EXTERNAL_DIFF/diff.external driver makes a genuinely-staged
-# change hash as empty here, an accepted, untested residual mirroring
-# marker.sh's own documented posture for the identical risk on
-# _hash_staged_diff.
+# change hash as empty here, an accepted residual pinned by
+# test_git_external_diff_noop_misclassifies_staged_skill_content_as_empty
+# in test_marker_script.py.
 _lib_staged_diff_hash() {
   [ "$#" -ge 2 ] || return 1
   local repo_root="$1" base="$2"
@@ -1005,6 +1264,17 @@ _lib_is_repo_plan_file() {
   [ "$(dirname -- "$abs_path")" = "$repo_root/.claude/plans" ] || return 1
   case "$abs_path" in
     *.md|*.txt) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Succeeds for pseudo-file paths (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`).
+# Takes exactly one argument (`$1`: the path).
+# A hook cannot meaningfully scan their contents: they may resolve differently
+# at hook time than when the guarded command runs, or point into the hook's own stdin.
+_lib_is_pseudo_file_path() {
+  case "$1" in
+    -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2504,6 +2774,87 @@ _lib_strip_shell_quotes() {
   return 0
 }
 
+# Masks each quoted span's interior while leaving its own delimiter pair
+# intact (e.g. `"..."` becomes `""`), so a commit message that merely
+# mentions the words of a commit command as literal text is not miscounted as
+# a real invocation.
+# Takes exactly one argument (`$1`: the command string) and writes the masked
+# text to stdout.
+# A span whose entire interior is a single safe word (`^[A-Za-z0-9._/-]+$`)
+# is emitted unquoted instead, so a quoted command word stays visible.
+# A `$` directly before an opening delimiter is dropped whenever the span
+# closes, and kept when the quote is left open.
+# A quote left open at end of string is left unmasked, erring toward denying.
+# See docs/hooks.md's deny-invisible-commit-content.sh entry for the design.
+# Runs under a 5s `_lib_capped_for` cap because the scan is O(n^2).
+# Call-site contract (load-bearing): awk can be missing, killed, or time out,
+# and no caller runs under `set -e`, so every call site must capture and check
+# the exit status immediately and fail closed on non-zero.
+#
+# Limits (illustrative, not exhaustive):
+# - This is a character-level quote-state scanner, not a bash tokenizer.
+# - It does not model any of these:
+#   - Backslash escapes (`\"` and `\'` are ordinary quote characters).
+#   - An empty quote pair glued to a word.
+#   - A multi-word mid-word split.
+#   - An ANSI-C escape.
+# - An awk that treats `RS = "\0"` as paragraph mode (BSD/macOS awk) splits the
+#   command into records at each blank line, with two effects:
+#   - An unquoted blank line is deleted and its neighbouring tokens fuse.
+#   - A blank line inside a quoted span resets quote state at the record
+#     boundary, so the span's closing quote acts as an opener and quote parity
+#     stays inverted for the rest of the command, blanking a later real commit
+#     any distance away.
+# - A gap in this class can drop a command word from a caller's fragment
+#   count, and the effect then fails open.
+_lib_mask_shell_quotes() {
+  # False positive: shellcheck's no-warn heuristic for a bare `awk '...'`
+  # pipe stage doesn't recognize awk once it's preceded by the
+  # _lib_capped_for wrapper; the single-quoted script below is an awk
+  # program, not a shell string, and is not meant to expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | _lib_capped_for 5 awk -v dq='"' -v sq="'" '
+    BEGIN { RS = "\0" }
+    {
+      n = length($0)
+      quote = ""
+      quote_start = 0
+      quote_dollar_prefix = 0
+      span = ""
+      result = ""
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (quote == "") {
+          if (c == dq || c == sq) {
+            quote = c
+            quote_start = i
+            span = ""
+            quote_dollar_prefix = (length(result) > 0 && substr(result, length(result), 1) == "$")
+          } else {
+            result = result c
+          }
+        } else if (c == quote) {
+          if (quote_dollar_prefix) {
+            result = substr(result, 1, length(result) - 1)
+          }
+          if (span ~ /^[A-Za-z0-9._\/-]+$/) {
+            result = result span
+          } else {
+            result = result quote c
+          }
+          quote = ""
+        } else {
+          span = span c
+        }
+      }
+      if (quote != "") {
+        result = result substr($0, quote_start)
+      }
+      printf "%s", result
+    }
+  '
+}
+
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
 # Three alternations with different trailing boundaries. Group 1 excludes a following `.` so `id_rsa` doesn't match inside the safe-to-read `id_rsa.pub`, and `.env` doesn't match inside `.env.foo`/`package.env`; `.env`'s own dotted variants beyond the ones enumerated here are deliberately left to deny-env-reads.sh's broader `.env.*` gate. Group 2 (`.netrc`, `.git-credentials`, `credentials.json`, and the three directory-qualified stores) has no known safe dotted-suffix variant, so it allows a following `.` too — closing a `credentials.json.bak`/`.netrc.bak`-style backup-copy bypass group 1's exclusion would otherwise leave open. Group 3 matches `.ssh` (optionally backup/rename-suffixed, e.g. `.ssh.bak`, `.ssh_backup`, `.ssh.old` — the same `.bak`-style continuation group 2 allows) only as a directory/glob reference (`~/.ssh`, `~/.ssh/`, `~/.ssh//`, `~/.ssh/*`, `~/.ssh/.*`), not `.ssh/<filename>`; a named-file reference under `.ssh` (or its backup-suffixed siblings) is instead deny-by-default via `_lib_has_unsafe_ssh_dir_reference` below, since enumerating every unsafe key basename doesn't scale the way enumerating the few safe ones does.
 _LIB_CREDENTIAL_PATH_REGEX='(^|[^A-Za-z0-9_.])(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.env\.local|\.env\.production|\.env\.development|\.env\.staging|\.env\.test)([^A-Za-z0-9_.]|$)|(^|[^A-Za-z0-9_.])(\.netrc|_netrc|\.git-credentials|credentials\.json|\.credentials\.json|\.aws/credentials|\.docker/config\.json|\.kube/config|\.config/gh/hosts\.yml)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.])\.ssh([._-][A-Za-z0-9_.-]*)?(/+(\*|\.|[^A-Za-z0-9_./]|$)|[^A-Za-z0-9_./]|$)'
@@ -2802,8 +3153,10 @@ _LIB_LONG_HEX_IDENTIFIER_REGEX='([0-9a-fA-F]{32,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|private)([^A-Za-z0-9_-]|$)|[A-Za-z0-9.-]+\.local([^A-Za-z0-9_.-]|\.([^A-Za-z0-9]|$)|$)'
 
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
-# - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue
-#   #421) doesn't false-positive.
+# - Excludes a tail that is all digits, or digits followed by one `s` and
+#   then a non-name character or end of line, so a plain GitHub issue
+#   reference (e.g. issue #421) still passes once quote-stripping deletes a
+#   possessive's apostrophe.
 # - The `#` must be reachable from a valid start position, across a run
 #   that excludes parens, braces, and whitespace.
 #   - Valid start positions: line start, whitespace, a close-paren, a
@@ -2863,7 +3216,7 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   the outer run does, so a `{` there blocks reachability just like it
 #   does in the outer run. Same content-blindness root cause as the
 #   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#([a-z_-]|[0-9]+(s[a-z0-9_-]|[a-rt-z_-]))'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
@@ -3143,13 +3496,15 @@ _lib_reviewer_round_state_key() {
 #
 # Capped-git-call count varies by branch: 3 in the common case outside any
 # in-progress merge/rebase/cherry-pick/revert (HEAD rev-parse, the gitdir
-# rev-parse inside _lib_gate_diff_base, the diff itself), up to 13
-# mid-operation, all inside _lib_gate_diff_base (the ref-file cat, up to 5
-# from _lib_default_branch_or_guess's own origin/HEAD-then-candidate chain,
-# up to two merge-base anchor checks, the merge-tree computation, and the
-# tree verification) -- a future added capped call here pushes the
-# mid-operation ceiling higher still. At _lib_capped's 5s-per-call cap, that
-# ceiling is up to 65s of worst-case wall-clock time for one gate call.
+# rev-parse inside _lib_gate_diff_base, the diff itself), up to 14
+# mid-operation: the HEAD rev-parse, then inside _lib_gate_diff_base the
+# gitdir rev-parse, the ref-file cat, up to 5 from
+# _lib_default_branch_or_guess's own origin/HEAD-then-candidate chain, up to
+# two merge-base anchor checks, the merge-tree computation, and the tree
+# verification, then the base-relative diff and _lib_staged_diff_hash's own
+# diff -- a future added capped call here pushes the mid-operation ceiling
+# higher still. At _lib_capped's 5s-per-call cap that ceiling is 70s of
+# worst-case wall-clock time for one gate call, or up to 98s with the -k grace.
 #
 # Determinism contract (read side and write side must agree byte-for-byte):
 # both halves are captured into variables and tested for emptiness rather
@@ -3215,45 +3570,49 @@ _lib_round_consult_gate_disabled() {
   esac
 }
 
-# Shared bounded-retry count for _lib_append_line_locked below, used by both
-# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
-# synchronously inside a hook or CLI script, so the worst-case added latency
-# is bounded retries * the sleep below.
+# Shared bounded-retry count for _lib_acquire_append_lock below, used by
+# both review-ledger.sh and log-reviewer-round.sh. Small and fixed: this
+# runs synchronously inside a hook or CLI script, so the worst-case added
+# latency is bounded retries * the sleep below.
 _LIB_APPEND_LOCK_RETRIES=5
 
-# _lib_append_line_locked FILE LOCK_FILE LINE
-# Sets a bare `trap ... EXIT` to release its lock, which per this repo's
+# _lib_acquire_append_lock LOCK_FILE
+# Shared lock-acquisition/dead-holder-eviction/retry logic behind
+# _lib_append_line_locked and _lib_append_json_line_locked below.
+# Acquires via the same noclobber idiom as _lib_worktree_collision_guard.
+# Evicts a dead lock holder via the same PID-liveness check as
+# _lib_active_bypass_marker_live.
+# Sets a bare `trap ... EXIT` to release the lock, which per this repo's
 # shell-script-conventions rule silently clobbers any other EXIT trap
-# already registered in the calling process -- a future caller sharing this
-# primitive must ensure no other EXIT trap is active in the same process.
-# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
-# identical check-then-append critical section against a different state
-# file. Acquires a same-directory noclobber lock
-# (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
-# establishes in this repo) around the check-then-append: no-ops if LINE
-# already exists verbatim in FILE, else appends it. The lock file's content
-# is the holder's PID. A lock whose PID is dead is evicted and retried
-# immediately, rather than waiting out every retry against a crashed
-# holder. This is the same PID-liveness eviction _lib_active_bypass_marker_live
-# uses for its own markers. It matters more here than at review-ledger.sh's
-# own call site, since a PostToolUse hook is more exposed to being killed
-# mid-lock by the harness's own hook timeout than a skill-invoked CLI
-# script. Falls through to an unlocked append after
-# _LIB_APPEND_LOCK_RETRIES failed acquisitions rather than blocking -- a
-# duplicate line from a lost race is a low-consequence outcome (an inflated
-# round count), not data loss. The lock is released via the EXIT trap noted
-# above, so it clears whether the append succeeds or fails.
-_lib_append_line_locked() {
-  local file="$1" line="$3"
+# already registered in the calling process -- a future caller sharing
+# either primitive must ensure no other EXIT trap is active in the same
+# process.
+# This primitive must be called at most once per process: a second call's
+# EXIT trap replaces rather than stacks on the first, orphaning the first
+# call's lock file until the process exits.
+# Always returns rather than blocking indefinitely: after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
+# the caller proceeds unlocked, trading a low-consequence duplicate line
+# for never blocking.
+# _lib_append_json_line_locked discards this return status via `|| true`,
+# so a lock-contention race is not currently logged by that caller.
+# A matching projection is still a genuine duplicate regardless of lock
+# state: losing the lock only risks a false negative (missing a concurrent
+# duplicate), never a false positive.
+# Dead-holder eviction matters more at log-reviewer-round.sh's call site
+# than at review-ledger.sh's, since a PostToolUse hook is more exposed to
+# being killed mid-lock by the harness's own hook timeout than a
+# skill-invoked CLI script is.
+_lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
   # `local` binding of the same name would be out of scope by then.
-  _LIB_APPEND_LOCK_PATH="$2"
+  _LIB_APPEND_LOCK_PATH="$1"
   local attempt=0 stored_pid
   while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
     if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
       trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
-      break
+      return 0
     fi
     stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
     if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
@@ -3267,6 +3626,23 @@ _lib_append_line_locked() {
     attempt=$((attempt + 1))
     sleep 0.05
   done
+  printf '_lib_acquire_append_lock: exhausted %d retries acquiring %s -- proceeding unlocked\n' \
+    "$_LIB_APPEND_LOCK_RETRIES" "$_LIB_APPEND_LOCK_PATH" >&2
+  return 1
+}
+
+# _lib_append_line_locked FILE LOCK_FILE LINE
+# Used by log-reviewer-round.sh for the check-then-append critical section
+# against its own state file with whole-line dedup: no-ops if LINE already
+# exists verbatim in FILE, else appends it. review-ledger.sh's own append
+# uses the JSON-projection sibling below instead, since its schema carries
+# a field (event_time) that varies on every call. See
+# _lib_acquire_append_lock above for the locking half of this primitive.
+_lib_append_line_locked() {
+  local file="$1" line="$3"
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
   if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
     # A dedup no-op must still count as activity on this file's own mtime,
     # or a long-running branch's later no-op append leaves a stale mtime
@@ -3275,6 +3651,158 @@ _lib_append_line_locked() {
     return 0
   fi
   printf '%s\n' "$line" >> "$file"
+}
+
+# _lib_append_json_line_locked FILE LOCK_FILE LINE DEDUP_KEY_JQ_FILTER
+# Sibling to _lib_append_line_locked, sharing its lock/retry logic via
+# _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER instead of a
+# whole-line match.
+# DEDUP_KEY_JQ_FILTER is caller-supplied (e.g. '{round, finding,
+# disposition}') and must never be hardcoded here.
+# DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
+# bypassing the --arg/--argjson data/code separation this file uses for
+# every other jq input. It MUST therefore be a static, developer-authored
+# jq literal, never derived from session- or user-controlled data. This is
+# enforced by this contract, the runtime shape check below, and
+# review-ledger.sh's own TestReviewLedgerDedupFilterIsStaticLiteral
+# regression test in test_review_ledger_script.py. A future caller of this
+# primitive must add its own equivalent test -- this docstring does not
+# inherit one for it.
+# A duplicate is a no-op but still touches FILE's mtime, per
+# _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
+# above.
+# Whole-line dedup doesn't work for this schema: event_time is captured
+# fresh on every append attempt, so two calls carrying identical business
+# fields would never match byte-for-byte. This is why the check below
+# projects through DEDUP_KEY_JQ_FILTER instead of taking
+# _lib_append_line_locked's whole-line match.
+# The dedup check below re-reads and re-parses the whole FILE on every call
+# (O(file size) per append). FILE is scoped per session -- review-ledger.sh
+# builds it as $REPO_HASH.$SESSION_ID.jsonl -- so this scan's cost grows
+# with every finding appended across all of that session's review rounds.
+# review-ledger.sh's per-append call to _sweep_stale_ledger_files (with the
+# fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
+# footprint by evicting whole stale files. It never touches this file while
+# the session that owns it is still live, so it puts no cap on FILE's own
+# growth.
+_lib_append_json_line_locked() {
+  local file="$1" line="$3" dedup_filter="$4"
+  # Requires a brace-delimited, comma-separated identifier list -- rejects
+  # a bare builtin like `env`, and rejects `{}`/`{ }` since jq projects it
+  # to a constant, which would falsely dedup every future append.
+  # Not a full grammar check: a shape-legal but syntactically invalid
+  # literal (e.g. `{round,,disposition}`) still reaches jq and fails open
+  # via the dup_check_exit branch below.
+  # A single-field filter naming a field absent from every record (e.g. a
+  # typo) is shape-valid too and reproduces the same false-dedup failure --
+  # undetectable here, since telling it apart from a real field requires
+  # schema knowledge this guard doesn't have.
+  # Any shape-invalid filter fails open (unconditional append) rather than
+  # exiting, matching every other failure path in this function: missing
+  # jq, a shape-legal-but-invalid filter, or a lock-acquisition failure.
+  # `exit` would collide with _lib_emit_deny's own exit-2 harness
+  # convention the first time a PreToolUse/PostToolUse hook caller reuses
+  # this primitive.
+  local dedup_filter_shape_valid=1
+  if [[ ! "$dedup_filter" =~ ^[[:space:]]*\{[A-Za-z0-9_,[:space:]]*\}[[:space:]]*$ ]] \
+      || [[ ! "$dedup_filter" =~ [A-Za-z0-9_] ]]; then
+    dedup_filter_shape_valid=0
+    printf '_lib_append_json_line_locked: DEDUP_KEY_JQ_FILTER %q is not a brace-delimited, comma-separated list of identifiers (a jq object-projection literal) -- proceeding with unconditional append\n' \
+      "$dedup_filter" >&2
+  fi
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
+  if [ "$dedup_filter_shape_valid" = 1 ] && [ -f "$file" ] && [ -s "$file" ]; then
+    local dup_check_program is_duplicate
+    # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is
+    # jq's own --argjson-bound variable, meant to expand inside the jq
+    # program this builds, not in this bash string.
+    # -R/inputs/fromjson? reads FILE one raw line at a time rather than
+    # --slurpfile parsing it as one JSON array, so one malformed line (a
+    # partial write from a crash) is skipped instead of failing the whole
+    # file's parse and silently disabling dedup for every future append.
+    dup_check_program=$(printf '($candidate | %s) as $key | any(inputs | fromjson?; (. | %s) == $key)' \
+      "$dedup_filter" "$dedup_filter")
+    local dup_check_exit
+    is_duplicate=$(_lib_jq -R -n --argjson candidate "$line" \
+      "$dup_check_program" -- "$file" 2>/dev/null)
+    dup_check_exit=$?
+    if [ "$is_duplicate" = "true" ]; then
+      touch -- "$file" 2>/dev/null
+      return 0
+    fi
+    # A non-zero exit, or output other than the two expected literals, means
+    # the dedup check itself failed rather than genuinely resolving "not a
+    # duplicate". Causes: a missing jq, the _lib_jq 5s timeout firing, or a
+    # malformed DEDUP_KEY_JQ_FILTER. This line is the stderr signal that
+    # distinguishes that failure case. The fallback itself (append anyway)
+    # is unchanged either way.
+    if [ "$dup_check_exit" -ne 0 ] || [ "$is_duplicate" != "false" ]; then
+      printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
+    fi
+  fi
+  printf '%s\n' "$line" >> "$file"
+}
+
+# Floor for _ledger_sweep_window_days below: the ledger must never sweep
+# more aggressively than the transcript retention it depends on (GH-973).
+# review-ledger.sh's own clear-stale subcommand, via _ledger_sweep_window_days
+# below, is the only production reader of cleanupPeriodDays.
+# author_outcome.py's _LEDGER_SWEEP_FLOOR_DAYS duplicates this floor
+# constant, with no corresponding helper function on the Python side to
+# cross-reference.
+_LEDGER_SWEEP_FLOOR_DAYS=30
+
+# _ledger_sweep_window_days SETTINGS_FILE
+# Prints the ledger's sweep window in days: Claude Code's own
+# cleanupPeriodDays setting read from SETTINGS_FILE, floored at
+# _LEDGER_SWEEP_FLOOR_DAYS above.
+# Single SETTINGS_FILE read -- deliberately skips Claude Code's full
+# settings-precedence resolution (project-local overrides, enterprise-
+# managed settings, CLI flag overrides), which this retention-floor
+# purpose doesn't need.
+# Falls back to _LEDGER_SWEEP_FLOOR_DAYS when:
+# - SETTINGS_FILE is missing or unreadable
+# - cleanupPeriodDays is absent
+# - its value isn't a bare non-negative integer, or has more digits than
+#   the case pattern below accepts
+# jq's `select(type == "number")` passes a fractional value like 45.5 (or
+# a whole-number float like 90.0, which jq prints as "90.0", not "90")
+# through unchanged; the digit-only case pattern below then rejects it as
+# non-integer rather than truncating it. This is deliberate.
+#
+# Side effects: each fallback branch above prints a diagnostic to stderr
+# naming why it floored, matching _lib_capped_for's stderr-diagnostic
+# pattern above.
+_ledger_sweep_window_days() {
+  local settings_file="$1"
+  local cleanup_period_days
+  cleanup_period_days=$(_lib_jq -r '(.cleanupPeriodDays // empty) | select(type == "number")' "$settings_file" 2>/dev/null)
+  case "$cleanup_period_days" in
+    ''|*[!0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays missing, unreadable, or non-numeric -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
+    # 9+ digits (>=100 million days): far beyond any realistic retention
+    # window, but an all-digit value this large can exceed bash's signed-
+    # integer range and make the `-lt` comparison below error instead of
+    # comparing -- floor here rather than depend on that comparison's
+    # behavior on an out-of-range operand.
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*)
+      printf '_ledger_sweep_window_days: cleanupPeriodDays has 9+ digits, implausibly large -- using the %s-day floor\n' \
+        "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+      cleanup_period_days="$_LEDGER_SWEEP_FLOOR_DAYS"
+      ;;
+  esac
+  if [ "$cleanup_period_days" -lt "$_LEDGER_SWEEP_FLOOR_DAYS" ]; then
+    printf '_ledger_sweep_window_days: configured value %s is below the %s-day floor, using the floor instead\n' \
+      "$cleanup_period_days" "$_LEDGER_SWEEP_FLOOR_DAYS" >&2
+    printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
+  else
+    printf '%s' "$cleanup_period_days"
+  fi
 }
 
 # _lib_resume_context_tmpdir_root

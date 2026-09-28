@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Read tool on .env* files that commonly hold secrets.
 # Allows the three conventional non-secret template suffixes:
 #   .env.example  .env.template  .env.sample
@@ -25,6 +26,7 @@
 # Scope: Read tool only. Bash(cat .env.*) is out of scope by design — CLAUDE.md
 # directs Claude to the ! shell-escape valve for non-Read inspection, which
 # depends on Bash being unrestricted for these paths.
+# deny-credential-bash-reads.sh's env-variant token match is this gate's own backstop against that Bash-side gap, including a steered attempt to read the file through it.
 
 set -uo pipefail
 

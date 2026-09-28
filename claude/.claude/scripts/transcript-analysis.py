@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
 pr-link is the only subcommand that touches the network (via gh).
-judgment-pair --out writes a file; all other subcommands are read-only.
+Every subcommand is read-only except an explicit write flag: judgment-pair
+--out, pr-cost --record, and pr-cost-export --out each write a file.
 """
 
 import argparse
-import bisect
 import contextlib
 import errno
 import fcntl
 import fnmatch
-import hashlib  # noqa: F401 -- read only via _mod.hashlib from test files
+import hashlib  # noqa: F401 -- test_transcript_reviewer_yield.py reads _mod.hashlib as a stdlib passthrough
 import json
 import math
 import os
 import random
 import re
-import shlex
-import socket
 import stat
 import statistics
 import subprocess
@@ -27,17 +25,53 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import _config
 from _config_dir import config_dir
 
-# corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
-# test files (unit-testing a private helper, or patching module-owned state like
-# scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
-# scope.PROJECTS_DIR.
-from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
+# audit_routing/cache_rebuild/cache_rebuild_rules/corpus/cost/denials/gh_cli/ledger_common/
+# pr_cost/pr_cost_export/pr_cost_ledger/pricing/read_scope/redaction/render/review_trace/
+# reviewer_yield are read only via _mod.<module> from test files (unit-testing a private
+# helper, or patching module-owned state like scope.PROJECTS_DIR below) -- scope is the
+# only one this file's own code reads bare, as scope.PROJECTS_DIR.
+from transcript_analysis import (  # noqa: F401
+    audit_routing,
+    cache_rebuild,
+    cache_rebuild_rules,
+    corpus,
+    cost,
+    denials,
+    gh_cli,
+    ledger_common,
+    pr_cost,
+    pr_cost_export,
+    pr_cost_ledger,
+    pricing,
+    read_scope,
+    redaction,
+    render,
+    review_trace,
+    reviewer_yield,
+    scope,
+)
+from transcript_analysis.audit_routing import (
+    # All three names below are read bare by this file's own still-monolithic build_parser
+    # (each audit-routing subcommand's own set_defaults).
+    cmd_audit_routing,
+    cmd_audit_routing_samples,
+    cmd_audit_routing_shape,
+)
+from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
+from transcript_analysis.cache_rebuild import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   _CACHE_REBUILD_DEFAULT_SINCE/_CACHE_REBUILD_DEFAULT_THRESHOLD -> build_parser's own
+    #     --since/--threshold defaults
+    #   cmd_cache_rebuild                                             -> p_cache_rebuild.set_defaults
+    _CACHE_REBUILD_DEFAULT_SINCE,
+    _CACHE_REBUILD_DEFAULT_THRESHOLD,
+    cmd_cache_rebuild,
+)
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _index_subagent_dispatches,
@@ -46,18 +80,18 @@ from transcript_analysis.corpus import (
     iter_sessions,
 )
 from transcript_analysis.cost import (
-    # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
-    # a private helper directly, or a monkeypatch retarget). cmd_cost/cmd_cost_trend,
-    # _compute_pr_cost_branch_totals, _compute_workstream_dollars, and _new_pr_cost_agg are the
-    # five this file's own code also calls bare -- via p_cost/p_cost_trend.set_defaults below,
-    # and pr-cost's/workstream-cost's own call sites.
+    # The ten noqa'd names below are read only via _mod.<name> from test files (unit-testing
+    # a private helper directly, or a monkeypatch retarget). _compute_pr_cost_branch_totals is
+    # one of them: pr_cost.py's own code reads it as cost._compute_pr_cost_branch_totals instead.
+    # cmd_cost/cmd_cost_trend and _compute_workstream_dollars are the three this file's own code
+    # also calls bare -- via p_cost/p_cost_trend.set_defaults below, and workstream-cost's own
+    # call sites.
     _accumulate_per_account_turn,  # noqa: F401
     _attributed_branch,  # noqa: F401
-    _compute_pr_cost_branch_totals,
+    _compute_pr_cost_branch_totals,  # noqa: F401
     _compute_workstream_dollars,
     _cost_report,  # noqa: F401
     _cost_trend_report,  # noqa: F401
-    _new_pr_cost_agg,
     _print_branch_exclusion_diagnostic,  # noqa: F401
     _print_model_id_table,  # noqa: F401
     _print_thread_table,  # noqa: F401
@@ -67,6 +101,52 @@ from transcript_analysis.cost import (
     cmd_cost_trend,
 )
 from transcript_analysis.cost import compute_cost_trend_data as _compute_cost_trend_data
+from transcript_analysis.denials import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   hook_denial_key                       -> _friction_denial_events
+    #   _drop_denial_command_flag_values      -> _command_segment_is_mutating_git
+    _drop_denial_command_flag_values,
+    hook_denial_key,
+)
+from transcript_analysis.gh_cli import (
+    # Read bare by pr-link: _classify_gh_error, _GH_ERROR_KIND_NETWORK, _gh_host_qualified_repo,
+    #   _GH_CALL_TIMEOUT_S.
+    # Read bare by workstream-cost: _gh_auth_preflight_ok, _resolve_pinned_gh_repo,
+    #   _gh_discover_merged_prs, _gh_discover_closed_unmerged_pr_branches.
+    # Read bare by both: _git_remote_origin_host_and_owner_repo.
+    _GH_CALL_TIMEOUT_S,
+    _GH_ERROR_KIND_NETWORK,
+    _classify_gh_error,
+    _gh_auth_preflight_ok,
+    _gh_discover_closed_unmerged_pr_branches,
+    _gh_discover_merged_prs,
+    _gh_host_qualified_repo,
+    _git_remote_origin_host_and_owner_repo,
+    _resolve_pinned_gh_repo,
+)
+from transcript_analysis.ledger_common import (
+    # All seven names below are read bare by this file's own still-monolithic cost-ledger code.
+    _COST_LEDGER_CONFLICT_MARKERS,
+    _COST_LEDGER_LOCK_POLL_INTERVAL_S,
+    _COST_LEDGER_LOCK_TIMEOUT_S,
+    _MACHINE_LABEL_RE,
+    _ledger_path_is_git_tracked,
+    _resolve_machine_identity,
+    _warn_machine_identity_absent_from_ledger,
+)
+from transcript_analysis.pr_cost import (
+    # _DEFAULT_PR_COST_PLAN_FILE_GLOB and _PR_COST_ASOF_WINDOW_DAYS_DEFAULT are read bare by
+    #   build_parser's own --plan-file-glob/--asof-window-days defaults.
+    # cmd_pr_cost is read bare by build_parser's own p_pr_cost.set_defaults.
+    _DEFAULT_PR_COST_PLAN_FILE_GLOB,
+    _PR_COST_ASOF_WINDOW_DAYS_DEFAULT,
+    cmd_pr_cost,
+)
+from transcript_analysis.pr_cost_export import (
+    # Read bare by this file's own still-monolithic build_parser (the pr-cost-export
+    # subcommand's own set_defaults).
+    cmd_pr_cost_export,
+)
 from transcript_analysis.pricing import (
     _CACHE_READ_MULTIPLIER,
     _CACHE_WRITE_1H_MULTIPLIER,
@@ -93,31 +173,34 @@ from transcript_analysis.pricing import (
     _warn_if_subagent_format_drift,
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
+from transcript_analysis.read_scope import (
+    # Both names below are read bare by this file's own still-monolithic code:
+    #   _READ_SCOPE_CHARS_PER_TOKEN -> _classify_content_item
+    #   cmd_read_scope              -> p_read_scope.set_defaults
+    _READ_SCOPE_CHARS_PER_TOKEN,
+    cmd_read_scope,
+)
 from transcript_analysis.redaction import (
+    _BUILT_IN_AGENT_TYPES,  # noqa: F401 -- read only via _mod._BUILT_IN_AGENT_TYPES from test files
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
-    _assign_root_scoped_redact_label,
     _assign_session_redact_label,
     _build_redact_map,
-    _corpus_fingerprint,
+    _corpus_fingerprint,  # noqa: F401 -- read only via _mod._corpus_fingerprint from test files
     _derive_proj_label,
     _project_family,
     _redact_proj_label,
     _redact_session_id,
-    _RedactMapKey,
+    _repo_tracked_agent_type_names,
     _root_scoped_display_label,
 )
 from transcript_analysis.render import (
-    _RECENT_LOOKBACK_N,
     _content_text,
     _context_distribution_rows,
     _fam,
     _fmt_date,
     _fmt_usd,
-    _format_samples_as_markdown,
     _pct_of,
     _pct_value,
-    _recent_assistant_text,
-    _recent_tool_trail,
     _sanitize_table_cell,
     _strip_task_notifications,
 )
@@ -129,6 +212,13 @@ from transcript_analysis.review_rounds import (
     cmd_review_round_cost,
     compute_review_round_counts,
 )
+from transcript_analysis.review_trace import (
+    # Both names below are read bare by this file's own still-monolithic
+    # build_parser (the review-trace subcommand's set_defaults).
+    REVIEW_TRACE_SKILLS,
+    cmd_review_trace,
+)
+from transcript_analysis.review_trace import compute_deny_summary_data as _compute_deny_summary_data
 from transcript_analysis.reviewer_yield import (
     # The six names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
@@ -136,7 +226,6 @@ from transcript_analysis.reviewer_yield import (
     # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
     # Also read bare by this file's own still-monolithic code:
     #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
-    #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
     #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
@@ -147,7 +236,7 @@ from transcript_analysis.reviewer_yield import (
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
     _index_session_edits,  # noqa: F401
-    _is_reviewer_subagent_type,
+    _is_reviewer_subagent_type,  # noqa: F401
     _normalize_cited_path,  # noqa: F401
     _reviewer_yield_cited_keys,  # noqa: F401
     cmd_reviewer_yield,
@@ -1018,1240 +1107,6 @@ _MCP_TOOL_BUCKET_LABEL = "mcp__*"
 # no "model" key at all (no explicit model was requested).
 _UNREQUESTED_MODEL_LABEL = "(none)"
 
-# Skills counted as review invocations in review-trace.
-REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
-    {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
-)
-
-# cmd_review_trace's five event["kind"] values, in the docstring's order.
-# A completeness reference for tests only; _review_trace_session_events and
-# cmd_review_trace still dispatch on the literal per event.
-_REVIEW_TRACE_EVENT_KINDS: tuple[str, ...] = (
-    "skill", "denial", "friction", "reviewer-spawn", "architect-consult",
-)
-
-# A plan-architect Agent/Task dispatch whose prompt's first line is anything
-# other than this literal is a consult. This re-expresses
-# log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
-# see docs/design-decisions.md §48 for the cross-runtime duplication rationale.
-_ARCHITECT_CONSULT_SUBAGENT_TYPE = "plan-architect"
-_ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
-
-# Shared by review-trace's two zero-match termini (default timeline and
-# --deny-summary) so both read identically under the scope header.
-_REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
-
-# Skills that open a judgment span in audit-routing: any turn within an active span
-# (from skill invocation until the next user turn) is classified as `judgment`, not
-# by its tool-use contents. Extends REVIEW_TRACE_SKILLS with security-review,
-# respond-pr, and ultrareview.
-AUDIT_JUDGMENT_SKILLS: frozenset[str] = frozenset({
-    "code-review", "plan-review", "ready-for-review", "skill-review",
-    "agent-review", "security-review", "respond-pr", "ultrareview", "plan-it",
-})
-
-# Shared bound for every hook-name/label capture below (detection and
-# extraction alike): a name-shaped character class (word chars, spaces, '.',
-# '-') capped at this many characters, matching every hook's own static
-# "<name> hook/gate" wording — never an unbounded `.+?`, which would echo
-# arbitrary denial-message text (a dynamic file path, say) into
-# --deny-summary's output if a future hook ever interpolated one into this
-# span.
-_DENIAL_HOOK_NAME_MAX_CHARS = 40
-
-# Current-format transcripts record a hook denial as an is_error tool_result,
-# distinguishable from an ordinary tool error only by the deny message text —
-# hook_denial_key deliberately does not read the parent user record's
-# toolDenialKind field, a separate friction-class axis classified by
-# _is_nongate_friction_kind below. These patterns match the Claude Code
-# hook-denial idiom ("Blocked by <hook>", "blocked by <X> gate", "… invocation
-# denied", "<name> gate: …" / "<name> hook: …" — a hook stating its own label
-# directly, e.g. "Skill length gate: ..."). Detection is therefore best-effort
-# in both directions: an atypically worded hook denial is missed, and an
-# ordinary tool error whose text happens to contain the idiom is a false
-# positive. review-trace is a candidate locator, not an exact counter —
-# callers treat denial counts as approximate. Legacy transcripts additionally
-# carry an explicit
-# hook_blocking_error attachment record, matched separately and exactly.
-_HOOK_DENIAL_SIGNATURE = re.compile(
-    r"blocked by .{0,80}?\b(?:hook|gate)\b"
-    r"|invocation denied\b"
-    rf"|[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}\s+(?:hook|gate):",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _normalize_blocking_error(raw) -> dict | str:
-    """Normalize blockingError — may arrive as a dict or a JSON-stringified dict."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return raw
-        if isinstance(parsed, dict):
-            return parsed
-        return raw
-    return raw if raw is not None else {}
-
-
-def hook_denial_key(item: dict) -> tuple[str, dict | str] | None:
-    """Return (tool_use_id, extra) if `item` is a hook denial, else None.
-
-    Detects both denial shapes: a legacy `attachment` record (`item["type"] ==
-    "attachment"` with a nested `hook_blocking_error`), or a current-format
-    `tool_result` block (`item["type"] == "tool_result"`) carrying `is_error`
-    and text matching _HOOK_DENIAL_SIGNATURE. An empty string is a valid
-    tool_use_id — a denial whose transcript recorded no tool_use_id; only
-    None means "not a denial". `extra` is the already-fetched data this
-    predicate needed internally to classify the item — the `attachment`
-    dict for the legacy shape, the decoded content text for the tool_result
-    shape — returned so callers building an event/message don't re-fetch or
-    re-decode it. Callers own the seen-id dedup set and the event/message
-    construction; this predicate only classifies.
-    """
-    item_type = item.get("type")
-    if item_type == "attachment":
-        att = item.get("attachment") or {}
-        if att.get("type") != "hook_blocking_error":
-            return None
-        return att.get("toolUseID") or "", att
-    if item_type == "tool_result":
-        if not item.get("is_error"):
-            return None
-        message = _content_text(item.get("content"))
-        if not _HOOK_DENIAL_SIGNATURE.search(message):
-            return None
-        return item.get("tool_use_id") or "", message
-    return None
-
-
-# Extracts the hook/gate name from a denial message's own "blocked by <name>
-# hook/gate" wording — every hook's emit_deny call already writes this shape
-# (e.g. "Blocked by code-review gate: ..."), so the name is read off the
-# denial text itself rather than an invented category label.
-_DENIAL_HOOK_NAME_RE = re.compile(
-    rf"blocked by (?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate)\b", re.IGNORECASE
-)
-
-# Two wordings hooks emit that the "blocked by <name> hook/gate" idiom above
-# doesn't cover: enforce-marker-script-shape.sh's path-traversal and
-# shape-mismatch denials name their own script directly ("marker.sh
-# invocation denied ..."), and several hooks state their own label as the
-# message's own prefix rather than via "blocked by" (e.g. check-skill-length.sh's
-# "Skill length gate: ..."). Both inherit the same bounded character class and
-# _DENIAL_HOOK_NAME_MAX_CHARS cap as the pattern above.
-_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE = re.compile(
-    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+invocation denied\b", re.IGNORECASE
-)
-_DENIAL_HOOK_NAME_COLON_RE = re.compile(
-    rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
-)
-
-# The hand-maintained set of prose labels hooks/*.sh actually emits. Every
-# gate hook declares its label once as DENY_GATE_LABEL, read by both the
-# bootstrap emit_deny stub and _lib_emit_deny; this set mirrors that
-# declaration. A captured name is trusted only if it's a member of this set;
-# anything else falls to _DENY_SUMMARY_UNMATCHED_HOOK rather than being
-# echoed verbatim. Examples of "anything else": a coincidental match, an
-# unanticipated wording, an unbounded interpolated value that survived the
-# character-class bound. Regression coverage: TestDenialHookLabelEnumeration
-# in test_transcript_analysis.py drives each hook's real deny-path wording
-# and asserts the label it produces is a member here, so a hook's wording
-# change or a new hook shows up as a test failure rather than a silently
-# stale set.
-_DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
-    # "blocked by <name> hook/gate" — one entry per hooks/*.sh DENY_GATE_LABEL.
-    "gh-pr-merge",  # block-gh-pr-merge.sh
-    "CLAUDE.md length",  # check-claude-md-length.sh
-    "skill length",  # check-skill-length.sh
-    "credential-path Bash",  # deny-credential-bash-reads.sh
-    "credential-file read",  # deny-credential-file-reads.sh
-    "data-file read",  # deny-data-file-reads.sh
-    "env-read",  # deny-env-reads.sh
-    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh
-    "network-install",  # deny-network-installs.sh
-    "PII commit",  # deny-pii-in-commits.sh
-    "redaction",  # deny-private-project-refs.sh
-    "repo-relocation",  # deny-repo-relocation.sh
-    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh
-    "marker-script-shape",  # enforce-marker-script-shape.sh
-    "settings session-keys",  # guard-settings-session-keys.sh
-    "code-review",  # require-code-review.sh
-    "memory-skill",  # require-memory-skill.sh
-    "plan-review",  # require-plan-review.sh
-    "ready-for-review",  # require-ready-for-review.sh
-    "respond-pr",  # require-respond-pr.sh
-    "routing-read",  # require-routing-read.sh
-    "stow-reminder",  # require-stow-reminder.sh
-    "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
-    "architect-consult",  # require-architect-consult.sh
-    "invisible-commit-content",  # deny-invisible-commit-content.sh
-    "no-op-dispatch",  # deny-no-op-dispatch.sh
-    # Legacy-only: no active hook emits this wording. Each member is kept
-    # permanently so an older recorded transcript still classifies.
-    "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
-    "AGENTS.md length",  # check-claude-md-length.sh's "CLAUDE.md/AGENTS.md length gate:" wording, kept for legacy transcripts
-    "Skill length",  # check-skill-length.sh's "Skill length gate:" wording, kept for legacy transcripts
-    "ai-instruction-and-memory-files",  # require-memory-skill.sh's behavioral-deny wording, kept for legacy transcripts
-    "plan-review routing",  # require-routing-read.sh's behavioral-deny wording, kept for legacy transcripts
-})
-
-# --deny-summary's unmatched-hook-name bucket: a denial matched by
-# _HOOK_DENIAL_SIGNATURE (e.g. via the "invocation denied" alternative, which
-# names no hook) but from which no enumerated hook/gate name can be extracted.
-_DENY_SUMMARY_UNMATCHED_HOOK = "unmatched"
-
-# --deny-summary's attempted-command-shape classifier: an allowlist, not a
-# free-text sanitizer. A command failing to normalize into one of the
-# multiplexer shapes below falls into "other".
-_DENY_SUMMARY_OTHER_COMMAND_SHAPE = "other"
-
-# Strips a leading NAME=VALUE environment-assignment prefix (one such prefix
-# is observed in the corpus, wrapping a marker.sh invocation with a live
-# per-machine token) before any other normalization runs, so that token never
-# reaches printed output.
-_DENIAL_COMMAND_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+")
-
-# The multiplexer commands the corpus is dominated by — only these get a
-# command+subcommand shape; every other command shape, including an empty
-# command, falls to "other". "marker.sh" is matched post-basename, since the
-# real invocation is always a tilde or absolute script path.
-_DENIAL_COMMAND_MULTIPLEXERS: frozenset[str] = frozenset({"git", "gh", "marker.sh"})
-
-# Per-multiplexer closed allowlist of real subcommands --deny-summary trusts
-# in the printed "<multiplexer> <subcommand>" shape — same discipline as
-# _DENIAL_HOOK_LABELS: a candidate subcommand token that isn't a member (a
-# credential-shaped string, a path, an unenumerated wording) falls to "other"
-# rather than being echoed verbatim. Sourced from the corpus's observed
-# denied invocations plus _LIB_READONLY_GIT_SUBCMDS in hooks/_lib.sh for the
-# git read-only entries; new entries are added deliberately, not accreted.
-_DENIAL_COMMAND_SUBCOMMANDS: dict[str, frozenset[str]] = {
-    "git": frozenset({
-        "add", "checkout", "commit", "config", "diff", "fetch", "init", "log",
-        "merge", "pull", "push", "restore", "rev-parse", "show", "status",
-        "symbolic-ref",
-    }),
-    "gh": frozenset({"api", "auth", "issue", "pr"}),
-    "marker.sh": frozenset({"activate", "clear-stale", "deactivate", "status", "write"}),
-}
-
-# Second layer beyond the allowlist above, matching _DENIAL_HOOK_NAME_MAX_CHARS's
-# defense-in-depth pattern: bounds a future malformed allowlist entry rather
-# than serving as the primary defense, which is allowlist membership itself.
-_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS = 20
-_DENIAL_COMMAND_SUBCOMMAND_RE = re.compile(rf"^[\w-]{{1,{_DENIAL_COMMAND_SUBCOMMAND_MAX_CHARS}}}$")
-
-# git flags that take their value as the following token — dropping (not
-# skipping) both the flag and its value keeps the value from being misread
-# as the subcommand, e.g. "git -C <path> commit" would otherwise leave
-# <path> at index 1 once "-C" alone is skipped, so a naive scan reads <path>
-# as the subcommand instead of "commit" at index 2. -C is
-# require-worktree-for-git-writes.sh's own resolution mechanism for a
-# compliant worktree write, so it's the dominant separate-token form in the
-# worktree-enforcement denial category.
-_DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE: frozenset[str] = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
-
-# git flags whose value is glued to the flag by "=" — the value already
-# lives inside this one token, so nothing further needs dropping.
-_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES: tuple[str, ...] = ("--git-dir=", "--work-tree=")
-
-
-def _drop_denial_command_flag_values(tokens: list[str]) -> list[str]:
-    """Drop (not skip) the values of git's value-taking repo-selection flags.
-
-    A separate-token flag (-C, -c, --git-dir, --work-tree) consumes itself
-    and the token after it; an =-attached flag (--git-dir=<path>,
-    --work-tree=<path>) consumes only itself, since its value is already
-    inside that token. Skipping a flag without dropping its value would
-    leave the value in place to be misread as the subcommand.
-    """
-    kept: list[str] = []
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token in _DENIAL_COMMAND_FLAGS_WITH_SEPARATE_VALUE:
-            i += 2  # drop the flag token and its value token
-            continue
-        if token.startswith(_DENIAL_COMMAND_FLAG_VALUE_ATTACHED_PREFIXES):
-            i += 1  # value is glued to this token; nothing further to drop
-            continue
-        kept.append(token)
-        i += 1
-    return kept
-
-# Extraction patterns tried in order against a current-shape denial message;
-# the first to yield a name in _DENIAL_HOOK_LABELS wins.
-_DENIAL_HOOK_NAME_PATTERNS: tuple[re.Pattern, ...] = (
-    _DENIAL_HOOK_NAME_RE,
-    _DENIAL_HOOK_NAME_INVOCATION_DENIED_RE,
-    _DENIAL_HOOK_NAME_COLON_RE,
-)
-
-
-def _denial_hook_label(hook_name: str, message: str, *, raw_when_unenumerated: bool = False) -> str:
-    """Return the originating hook/gate name for one denial event.
-
-    Legacy-shape denials carry the name directly (hook_name, from the
-    attachment record's hookName field); current-shape denials carry no
-    structured hook identity, so the name is extracted from the denial
-    message text via each pattern in _DENIAL_HOOK_NAME_PATTERNS in turn.
-    Either source is trusted only if the candidate is a member of
-    _DENIAL_HOOK_LABELS — an unenumerated hookName (legacy transcripts predate
-    this bound entirely) or an unenumerated extracted candidate both fall to
-    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim, unless
-    raw_when_unenumerated is set. That flag widens only the legacy hookName
-    path. A non-empty but unenumerated hookName then echoes raw instead of
-    collapsing to _DENY_SUMMARY_UNMATCHED_HOOK. review-trace's single-root
-    timeline uses it because that caller has no disclosure concern and wants
-    an unrecognized hook surfaced, not hidden. A message-extracted candidate
-    always stays classify-only: hook_name being
-    empty is what routes to message extraction in the first place, so there
-    is no raw field left to echo.
-    """
-    candidate = (hook_name or "").strip()
-    if candidate:
-        if candidate in _DENIAL_HOOK_LABELS:
-            return candidate
-        return candidate if raw_when_unenumerated else _DENY_SUMMARY_UNMATCHED_HOOK
-    for pattern in _DENIAL_HOOK_NAME_PATTERNS:
-        m = pattern.search(message)
-        if m is None:
-            continue
-        name = m.group("name").strip().removeprefix("the ")
-        if name in _DENIAL_HOOK_LABELS:
-            return name
-    return _DENY_SUMMARY_UNMATCHED_HOOK
-
-
-def _denial_cause_kind(message: str) -> str:
-    """Return one denial's infra-failure family, or the behavioral fallback.
-
-    Sibling of _denial_hook_label: same substring-cascade mechanism over the
-    message text only, never given hook_name. The cause axis is orthogonal
-    to the hook axis, so a denial carries exactly one value from each.
-    Classification matches a body fragment rather than a full sentence,
-    because the surrounding wording differs per hook. A hook that echoes
-    agent-controlled command or path text into its deny body can produce a
-    false infra classification, so counts are approximate in the same sense
-    _HOOK_DENIAL_SIGNATURE already documents.
-    """
-    lowered = message.lower()
-    for marker, kind in _DENIAL_CAUSE_MARKERS:
-        if marker in lowered:
-            return kind
-    return _DENIAL_CAUSE_BEHAVIORAL
-
-
-def _denial_command_shape(command: str) -> str:
-    """Classify a denied Bash command's shape for --deny-summary.
-
-    Normalizes before matching, in order: strips a leading NAME=VALUE
-    environment assignment, basenames the first token (an absolute script
-    path is a home-rooted path, one of this repo's six always-on structural
-    redaction detectors), and drops the values of git's repo-selection flags
-    (see _drop_denial_command_flag_values). Only a multiplexer command
-    (_DENIAL_COMMAND_MULTIPLEXERS) gets a command+subcommand shape, and only
-    when the candidate subcommand token doesn't itself look like a flag — an
-    unenumerated flag (one _drop_denial_command_flag_values doesn't know
-    about) is left in place rather than dropped, so this guards it from
-    being read as, and printed as, the subcommand — and is itself a member of
-    that multiplexer's _DENIAL_COMMAND_SUBCOMMANDS allowlist, so an
-    unenumerated non-flag token (a credential-shaped string, a raw control
-    byte) falls to "other" instead of being echoed verbatim. Anything else,
-    including an empty command, falls to "other". Nothing past the
-    subcommand token is ever printed, so an argument value — a commit
-    message, a path, a control character — never survives to stdout.
-    """
-    stripped = _DENIAL_COMMAND_ENV_PREFIX_RE.sub("", command)
-    try:
-        tokens = shlex.split(stripped)
-    except ValueError:
-        tokens = stripped.split()
-    if not tokens:
-        return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
-    tokens[0] = os.path.basename(tokens[0])
-    tokens = _drop_denial_command_flag_values(tokens)
-    if len(tokens) > 1 and tokens[0] in _DENIAL_COMMAND_MULTIPLEXERS and not tokens[1].startswith("-"):
-        subcommand = tokens[1]
-        allowed_subcommands = _DENIAL_COMMAND_SUBCOMMANDS.get(tokens[0], frozenset())
-        if subcommand in allowed_subcommands and _DENIAL_COMMAND_SUBCOMMAND_RE.match(subcommand):
-            return f"{tokens[0]} {subcommand}"
-    return _DENY_SUMMARY_OTHER_COMMAND_SHAPE
-
-
-# toolDenialKind's gate-axis value — a permission-layer denial (hook denial or
-# allowlist miss), already covered by hook_denial_key's message-signature
-# match. The four other values (user-rejected, automode-blocked,
-# automode-unavailable, interrupted) are friction, not a gate denial.
-_GATE_TOOL_DENIAL_KIND = "permission-rule"
-
-# The date toolDenialKind first appears in the corpus (the corpus itself
-# starts 2026-06-24), determined by a corpus scan rather than a documented
-# Claude Code rollout date — a user/tool_result record timestamped before
-# this date structurally cannot carry the field, so --deny-summary's
-# friction-kind breakdown must not read a pre-regime record's absent kind as
-# zero friction.
-_TOOL_DENIAL_KIND_REGIME_START = "2026-07-20"
-_TOOL_DENIAL_KIND_REGIME_START_TS = _parse_ts(f"{_TOOL_DENIAL_KIND_REGIME_START}T00:00:00Z")
-
-
-def _is_nongate_friction_kind(tool_denial_kind: str, already_gate_denied: bool) -> bool:
-    """True if a user record's toolDenialKind marks non-gate friction.
-
-    A falsy toolDenialKind means the field is absent from this record — not
-    friction. already_gate_denied guards against double-classifying a block
-    hook_denial_key already matched via the message-text signature, so a
-    record can never produce both a denial event and a friction event.
-    """
-    if already_gate_denied or not tool_denial_kind:
-        return False
-    return tool_denial_kind != _GATE_TOOL_DENIAL_KIND
-
-
-# --deny-summary's/review-trace's printed friction_kind vocabulary — closed,
-# so a future harness-added toolDenialKind value prints as _FRICTION_KIND_OTHER
-# rather than echoing the raw field verbatim.
-_FRICTION_KINDS: frozenset[str] = frozenset({
-    "user-rejected",
-    "automode-blocked",
-    "automode-unavailable",
-    "interrupted",
-})
-_FRICTION_KIND_OTHER = "other-kind"
-
-
-def _friction_kind_label(tool_denial_kind: str) -> str:
-    """Map a friction event's toolDenialKind to its printed label."""
-    return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
-
-
-# --deny-summary's/review-trace's denial-cause vocabulary — closed, the same
-# shape as _FRICTION_KINDS above. Its tuple order fixes _print_deny_summary's
-# printed column order for the hook/gate x cause table.
-_DENIAL_CAUSE_BEHAVIORAL = "behavioral"
-_DENIAL_CAUSE_KINDS: tuple[str, ...] = (
-    _DENIAL_CAUSE_BEHAVIORAL, "lib-source", "input-parse", "helper-proc", "deny-encode",
-)
-
-# Ordered (marker, kind) cascade tried against the message in turn; the
-# first match wins. deny-encode is checked first because a jq outage also
-# fails the input parse and would otherwise be reported as the wrong cause.
-_DENIAL_CAUSE_MARKERS: tuple[tuple[str, str], ...] = (
-    ("could not encode its deny reason", "deny-encode"),
-    ("could not source _lib.sh", "lib-source"),
-    ("could not parse tool-input json", "input-parse"),
-    ("failing closed", "helper-proc"),
-)
-
-
-def _print_deny_summary(
-    hook_counts: dict[str, int],
-    command_shape_counts: dict[str, int],
-    hook_shape_counts: Counter[tuple[str, str]],
-    hook_cause_counts: Counter[tuple[str, str]],
-    friction_counts: dict[str, int],
-    pre_regime_tool_result_count: int,
-    corpus_min_ts: float | None,
-    corpus_max_ts: float | None,
-) -> None:
-    """Print --deny-summary's grouped denial-count tables plus the friction breakout.
-
-    hook_shape_counts cross-tabs the hook/gate axis against the command-shape
-    axis — the two marginal tables alone can't say which hook denied which
-    command shape, which is the whole point of the census this feeds.
-    hook_cause_counts cross-tabs the same hook/gate axis against the
-    orthogonal denial-cause axis (_DENIAL_CAUSE_KINDS).
-    """
-    if corpus_min_ts is not None and corpus_max_ts is not None:
-        print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
-
-    total = sum(hook_counts.values())
-    print(f"\n## Denials by hook/gate ({total} total)\n")
-    print(f"{'Hook/gate':<40} {'Count':>6}")
-    print("-" * 47)
-    for label, count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<40} {count:>6}")
-
-    print(f"\n## Denials by attempted command shape ({total} total)\n")
-    print(f"{'Shape':<16} {'Count':>6}")
-    print("-" * 23)
-    for label, count in sorted(command_shape_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<16} {count:>6}")
-
-    # Column set is the observed shapes only (already restricted to A3's
-    # classifier output plus "other"), not a fixed enumeration — the
-    # multiplexer+subcommand shape space is open-ended by construction.
-    # Skipped entirely (rather than rendering a header-only, zero-row table)
-    # when scope has zero denials — a friction-only report has nothing to
-    # cross-tab.
-    if hook_counts or command_shape_counts:
-        shapes = sorted(command_shape_counts.keys())
-        hooks = sorted(hook_counts.keys())
-        col_width = max((len(s) for s in shapes), default=5) + 2
-        # Rows/header are indented two spaces — unlike the marginal tables above,
-        # deliberately, so a hook-label row here never collides with a
-        # column-0 row-label match against the hook/gate marginal table.
-        print(f"\n## Denials by hook/gate x command shape ({total} total)\n")
-        header = f"  {'Hook':<40}" + "".join(
-            f"{_sanitize_table_cell(shape):>{col_width}}" for shape in shapes
-        )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for hook in hooks:
-            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
-                f"{hook_shape_counts.get((hook, shape), 0):>{col_width}}" for shape in shapes
-            )
-            print(row)
-
-    # Column set is the fixed _DENIAL_CAUSE_KINDS enumeration rather than
-    # sorted-observed — a zero in the lib-source column is itself the
-    # signal, so a fixed column set keeps two runs comparable. Row order
-    # matches the hook/gate marginal table above.
-    if hook_counts:
-        cause_col_width = max((len(k) for k in _DENIAL_CAUSE_KINDS), default=5) + 2
-        print(f"\n## Denials by hook/gate x cause ({total} total)\n")
-        header = f"  {'Hook':<40}" + "".join(
-            f"{_sanitize_table_cell(kind):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
-        )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for hook, _count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
-                f"{hook_cause_counts.get((hook, kind), 0):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
-            )
-            print(row)
-
-    friction_total = sum(friction_counts.values())
-    print(f"\n## Friction events by kind ({friction_total} total)\n")
-    print(f"{'Kind':<24} {'Count':>6}")
-    print("-" * 31)
-    for label, count in sorted(friction_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        print(f"{_sanitize_table_cell(label):<24} {count:>6}")
-    print(
-        f"\n{pre_regime_tool_result_count} errored, non-gate tool result(s) predate the"
-        f" per-record denial-kind field's introduction ({_TOOL_DENIAL_KIND_REGIME_START})"
-        " and are excluded from the breakdown above — kind is structurally unmeasurable"
-        " before that date, not zero."
-    )
-
-
-def _is_architect_consult_dispatch(tool_input: dict) -> bool:
-    """True for a plan-architect Agent/Task dispatch whose prompt is a
-    consult rather than a MODE=plan-sections call — fail-safe toward
-    consult, so a missing `prompt` key or an empty first line both classify
-    as a consult. See docs/design-decisions.md §48 for why this duplicates
-    log-reviewer-round.sh's _maybe_write_consult_latch instead of sharing it."""
-    prompt = tool_input.get("prompt") or ""
-    first_line = prompt.split("\n", 1)[0]
-    return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
-
-
-def _group_start_indices(groups: list[list[dict]]) -> frozenset[int]:
-    """0-based positions in the flattened record list where a new source
-    group (the main transcript, or one subagent file) begins.
-
-    Matches read_session_file's own flatten order — the main transcript's
-    records first, then each subagent file's in filename-sorted order — so a
-    caller that already has the flat, session_iter-yielded records can align
-    this function's output against them by plain list index. See
-    _review_trace_session_events's group_boundaries parameter for why the
-    boundary matters."""
-    starts = []
-    cursor = 0
-    for group in groups:
-        starts.append(cursor)
-        cursor += len(group)
-    return frozenset(starts)
-
-
-def _review_trace_session_events(
-    records: list[dict],
-    since_ts: float | None,
-    until_epoch: float | None,
-    branch_filter: set[str] | None,
-    skill_filter: str | None = None,
-    group_boundaries: frozenset[int] | None = None,
-) -> tuple[list[dict], dict[str, str], int]:
-    """Detect cmd_review_trace's five per-session event kinds (skill, denial,
-    friction, reviewer-spawn, architect-consult) from one session's records.
-
-    Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
-    so the denial/friction detection and dedup rules exist in one place rather
-    than two copies kept in sync by hand. The third return value, a count of
-    errored tool results predating toolDenialKind's introduction, is always
-    computed (cheap) even though only --deny-summary reports it — see
-    _print_deny_summary's own explanation of what it means.
-
-    records may interleave main-thread and subagent (isSidechain) records
-    when the caller resolved scope with include_subagents=True. Detection
-    runs over those records merged into one chronological stream, sorted on
-    a three-part key: effective_ts (the record's own _parse_ts result,
-    forward-filled from the immediately preceding record when unparseable,
-    or float("-inf") at the start of a group), thread_rank (0 for a
-    main-thread record, 1 for a sidechain one), and pre_sort_index (the
-    record's original position, the final tie-break). group_boundaries (the
-    0-based records indices where a new source file starts, from
-    _group_start_indices; None from a caller that hasn't partitioned the
-    corpus read, meaning the whole list is treated as one group) resets
-    effective_ts's forward-fill at each boundary. See
-    docs/design-decisions.md §58 for why the sort key and the per-group
-    reset are shaped this way.
-
-    effective_ts governs ordering only — the --since/--until filter below
-    still tests each record's own, unfilled _parse_ts result. Each event
-    dict carries this same pre_sort_index as line_no, plus a thread field
-    ("main" or "sidechain"): the main transcript's own 1-based file line for
-    thread=main, a merged-stream offset indexing no file for thread=sidechain
-    (see docs/design-decisions.md §58 for why).
-    """
-    events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
-    # Tracks tool_use_ids already emitted as a denial. A legacy denial
-    # appears as both an attachment record and an is_error tool_result
-    # sharing one tool_use_id; this set collapses the pair to one event.
-    seen_denial_ids: set[str] = set()
-
-    # Friction events dedup against their own set, never seen_denial_ids
-    # above — sharing it would let a friction event suppress a later
-    # legitimate denial sharing a tool_use_id.
-    seen_friction_ids: set[str] = set()
-
-    # tool_use_id -> attempted command, for --deny-summary's by-command-shape
-    # grouping. Indexed from every assistant tool_use block, main-thread or
-    # sidechain — this loop carries no isSidechain guard of its own, so a
-    # denial raised inside a subagent's own transcript still resolves to the
-    # command that triggered it. Independent of the --since/--until window,
-    # since a denial's own event already applies it.
-    tool_use_commands: dict[str, str] = {}
-
-    # Carry-forward trackers, updated on every main-thread record, never a
-    # sidechain one. Detection itself no longer gates on isSidechain, but a
-    # sidechain event still inherits whatever branch/model was live on the
-    # dispatching main-thread record, not its own. Applied before the date
-    # filter below, so the branch/model attributed to an event is whatever a
-    # prior main-thread record last set, including one outside the
-    # --since/--until window.
-    last_branch = ""
-    last_model = ""
-    pre_regime_tool_result_count = 0
-
-    # Merge main-thread and subagent records into one chronological stream
-    # before detection (see the docstring's three-part key) — sorting
-    # instead of leaving records in main-then-subagent concatenation order is
-    # what lets the carry-forward trackers above see a sidechain event's
-    # dispatching record before the event itself, rather than after every
-    # main-thread record has already run.
-    merged: list[tuple[float, int, int, dict]] = []
-    prev_effective_ts = float("-inf")
-    for index, rec in enumerate(records):
-        if group_boundaries is not None and index in group_boundaries:
-            prev_effective_ts = float("-inf")
-        ts = _parse_ts(rec.get("timestamp"))
-        effective_ts = prev_effective_ts if ts is None else ts
-        prev_effective_ts = effective_ts
-        thread_rank = 1 if bool(rec.get("isSidechain")) else 0
-        merged.append((effective_ts, thread_rank, index + 1, rec))
-    merged.sort(key=lambda item: item[:3])
-
-    for _effective_ts, _thread_rank, line_no, rec in merged:
-        thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
-
-        if not bool(rec.get("isSidechain")):
-            b = rec.get("gitBranch") or ""
-            if b:
-                last_branch = b
-            if rec.get("type") == "assistant":
-                m = (rec.get("message") or {}).get("model") or ""
-                if m:
-                    last_model = m
-
-        if rec.get("type") == "assistant":
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                tid = block.get("id")
-                if tid:
-                    tool_use_commands[tid] = (block.get("input") or {}).get("command", "")
-
-        rec_ts_str: str | None = rec.get("timestamp")
-        rec_ts: float | None = _parse_ts(rec_ts_str)
-
-        # Apply date filter: records with no parseable timestamp are excluded when
-        # a date boundary is active.
-        if (since_ts is not None or until_epoch is not None):
-            if rec_ts is None:
-                continue
-            if since_ts is not None and rec_ts < since_ts:
-                continue
-            if until_epoch is not None and rec_ts >= until_epoch:
-                continue
-
-        rec_type = rec.get("type", "")
-        evt_branch = last_branch or "?"
-        evt_model = _fam(last_model) if last_model else "?"
-
-        # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
-        # Both are assistant tool_use blocks, main-thread or sidechain; a
-        # single pass over content dispatches on tool name to avoid
-        # iterating the list twice.
-        if rec_type == "assistant":
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                block_name = block.get("name")
-                if block_name == "Skill":
-                    skill_name = (block.get("input") or {}).get("skill") or ""
-                    if skill_name not in REVIEW_TRACE_SKILLS:
-                        continue
-                    if skill_filter and skill_name != skill_filter:
-                        continue
-                    events.append({
-                        "kind": "skill",
-                        "skill": skill_name,
-                        "ts": rec_ts_str,
-                        "line_no": line_no,
-                        "branch": evt_branch,
-                        "model": evt_model,
-                        "thread": thread,
-                    })
-                elif block_name in ("Agent", "Task"):
-                    tool_input = block.get("input") or {}
-                    stype = tool_input.get("subagent_type") or ""
-                    if _is_reviewer_subagent_type(stype):
-                        events.append({
-                            "kind": "reviewer-spawn",
-                            "subagent_type": stype,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-                    elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
-                        # A consult dispatch was initiated -- no dependence on
-                        # a tool_result, unlike log-reviewer-round.sh's
-                        # PostToolUse latch. The prompt itself never lands on
-                        # the event dict, only this classification result.
-                        events.append({
-                            "kind": "architect-consult",
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-
-        # --- Signal 2a: hook denials, legacy shape (attachment record) ---
-        if rec_type == "attachment":
-            denial = hook_denial_key(rec)
-            if denial is None:
-                continue
-            tool_use_id, att = denial
-            if tool_use_id and tool_use_id in seen_denial_ids:
-                continue
-            raw_error = att.get("blockingError")
-            normalized = _normalize_blocking_error(raw_error)
-            hook_name = att.get("hookName") or ""
-            if isinstance(normalized, dict):
-                # Real transcripts nest the human-readable text in a "blockingError"
-                # key alongside a "command" key; fall back to "message" then repr.
-                message = (
-                    normalized.get("blockingError")
-                    or normalized.get("message")
-                    or str(normalized)
-                )
-            else:
-                message = str(normalized) if normalized else ""
-            if tool_use_id:
-                seen_denial_ids.add(tool_use_id)
-            events.append({
-                "kind": "denial",
-                "hook_name": hook_name,
-                "tool_use_id": tool_use_id,
-                "message": message,
-                "ts": rec_ts_str,
-                "line_no": line_no,
-                "branch": evt_branch,
-                "model": evt_model,
-                "thread": thread,
-            })
-
-        # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
-        # Claude Code stopped emitting the hook_blocking_error attachment
-        # record; current transcripts surface a denial only as an is_error
-        # tool_result, identified by the hook-denial message signature.
-        #
-        # --- Signal 2c: non-gate friction, current shape (toolDenialKind) ---
-        # toolDenialKind lives on this same `user` record, not on the
-        # tool_result block — read once, but classification below still
-        # requires the individual block's own is_error, since a parallel
-        # tool call can carry an unrelated successful block alongside it.
-        if rec_type == "user":
-            tool_denial_kind = rec.get("toolDenialKind") or ""
-            # A falsy tool_denial_kind this far before the regime start
-            # means the field structurally could not exist yet, not that
-            # this record measured zero friction. Scoped to the same
-            # is_error-and-non-gate-signature population
-            # _is_nongate_friction_kind would classify below, so the
-            # count reflects records that could plausibly have been
-            # friction, not every tool_result in the era (which would
-            # count ordinary successful tool calls too) — tallied
-            # separately and reported apart from the friction-kind
-            # breakdown.
-            pre_regime = (
-                not tool_denial_kind
-                and rec_ts is not None
-                and _TOOL_DENIAL_KIND_REGIME_START_TS is not None
-                and rec_ts < _TOOL_DENIAL_KIND_REGIME_START_TS
-                and (not branch_filter or evt_branch in branch_filter)
-            )
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                denial = hook_denial_key(block)
-                already_gate_denied = denial is not None
-                if denial is not None:
-                    tool_use_id, message = denial
-                    if not (tool_use_id and tool_use_id in seen_denial_ids):
-                        if tool_use_id:
-                            seen_denial_ids.add(tool_use_id)
-                        events.append({
-                            "kind": "denial",
-                            "hook_name": "",
-                            "tool_use_id": tool_use_id,
-                            "message": message,
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-
-                if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
-                    friction_tool_use_id = block.get("tool_use_id") or ""
-                    if not (friction_tool_use_id and friction_tool_use_id in seen_friction_ids):
-                        if friction_tool_use_id:
-                            seen_friction_ids.add(friction_tool_use_id)
-                        events.append({
-                            "kind": "friction",
-                            "friction_kind": tool_denial_kind,
-                            "tool_use_id": friction_tool_use_id,
-                            "message": _content_text(block.get("content")),
-                            "ts": rec_ts_str,
-                            "line_no": line_no,
-                            "branch": evt_branch,
-                            "model": evt_model,
-                            "thread": thread,
-                        })
-                elif pre_regime and not already_gate_denied and block.get("is_error"):
-                    pre_regime_tool_result_count += 1
-
-    # Branch filtering happens after dedup (seen_denial_ids was populated
-    # above over every event, unconditionally) so a duplicate-id denial on
-    # a differently-branched record is suppressed, not re-emitted as a
-    # distinct in-scope event.
-    if branch_filter:
-        events = [e for e in events if e["branch"] in branch_filter]
-
-    return events, tool_use_commands, pre_regime_tool_result_count
-
-
-def _fresh_records_and_group_boundaries(
-    jsonl: Path, records: list[dict], *, include_subagents: bool,
-) -> tuple[list[dict], frozenset[int] | None]:
-    """Re-read jsonl as one _read_session_file_partitioned call, so the
-    records and group_boundaries handed to _review_trace_session_events
-    always come from the same snapshot of the file -- pairing session_iter's
-    own records (an earlier read) with an independently re-read
-    group_boundaries would let the two desync whenever the file grows in
-    between (e.g. review-trace scanning its own in-progress session).
-    include_subagents is a required keyword argument, not a default, so a
-    future caller must state its own session_iter's scope explicitly rather
-    than silently inheriting whatever this function's last caller needed.
-
-    Falls back to the given records with no group boundaries when jsonl is
-    unreadable right now, rather than discarding a session's already-observed
-    events. Two cases trigger the fallback: the file was deleted mid-scan, or
-    the path is a synthetic one used in a test. Shared by
-    _compute_deny_summary_data and cmd_review_trace, this function's two
-    identically-shaped callers.
-    """
-    groups = _read_session_file_partitioned(jsonl, include_subagents=include_subagents)
-    if not groups:
-        return records, None
-    return [rec for group in groups for rec in group], _group_start_indices(groups)
-
-
-def _compute_deny_summary_data(
-    session_iter,
-    since_ts: float | None = None,
-    until_ts: float | None = None,
-    branch_filter: set[str] | None = None,
-    deny_only: bool = False,
-) -> dict:
-    """Corpus-wide --deny-summary accumulation, extracted so cost-ledger's
-    per-week denial count and cmd_review_trace's own report share one pass
-    over session_iter instead of two implementations kept in sync by hand.
-
-    since_ts/until_ts are explicit epoch-second boundaries (until_ts
-    exclusive, the same convention as cmd_review_trace's own until_epoch)
-    rather than the CLI's date-string args, so a caller can pass exact week
-    boundaries the CLI itself has no flag to reach.
-    """
-    hook_counts: dict[str, int] = defaultdict(int)
-    command_shape_counts: dict[str, int] = defaultdict(int)
-    hook_shape_counts: Counter[tuple[str, str]] = Counter()
-    # No separate corpus-wide cause accumulator — the per-cause total is a
-    # column sum of this cross-tab, and _DENIAL_CAUSE_KINDS is closed so
-    # every column always prints.
-    hook_cause_counts: Counter[tuple[str, str]] = Counter()
-    friction_counts: dict[str, int] = defaultdict(int)
-    corpus_min_ts: float | None = None
-    corpus_max_ts: float | None = None
-    pre_regime_tool_result_count = 0
-    any_session_matched = False
-
-    for jsonl, records in session_iter:
-        # Both of this function's callers resolve scope with
-        # include_subagents=True -- see _fresh_records_and_group_boundaries
-        # for why records and group_boundaries must come from one read.
-        records, group_boundaries = _fresh_records_and_group_boundaries(
-            jsonl, records, include_subagents=True,
-        )
-        events, tool_use_commands, session_pre_regime = _review_trace_session_events(
-            records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
-        )
-        if not events:
-            continue
-        any_session_matched = True
-        pre_regime_tool_result_count += session_pre_regime
-
-        # Corpus window reads the full branch-filtered per-session events list
-        # before the deny_only skip below, same as the friction tally below —
-        # so the reported window matches whatever --branches/--since/--until
-        # actually put in scope, not the pre-branch-filter raw record range.
-        for evt in events:
-            evt_ts = _parse_ts(evt.get("ts"))
-            if evt_ts is None:
-                continue
-            if corpus_min_ts is None or evt_ts < corpus_min_ts:
-                corpus_min_ts = evt_ts
-            if corpus_max_ts is None or evt_ts > corpus_max_ts:
-                corpus_max_ts = evt_ts
-
-        has_denial = any(e["kind"] == "denial" for e in events)
-
-        # Friction tally reads the full per-session events list before the
-        # deny_only skip below, so a friction-only session (has_denial False)
-        # still contributes when --deny-only and --deny-summary run together.
-        # deny_only's own session-selection stays denial-kind-only, unchanged.
-        for evt in events:
-            if evt["kind"] == "friction":
-                friction_counts[_friction_kind_label(evt["friction_kind"])] += 1
-
-        if deny_only and not has_denial:
-            continue
-
-        for evt in events:
-            if evt["kind"] != "denial":
-                continue
-            hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
-            command = tool_use_commands.get(evt["tool_use_id"], "")
-            command_shape = _denial_command_shape(command)
-            cause_kind = _denial_cause_kind(evt["message"])
-            hook_counts[hook_label] += 1
-            command_shape_counts[command_shape] += 1
-            hook_shape_counts[(hook_label, command_shape)] += 1
-            hook_cause_counts[(hook_label, cause_kind)] += 1
-
-    return {
-        "hook_counts": hook_counts,
-        "command_shape_counts": command_shape_counts,
-        "hook_shape_counts": hook_shape_counts,
-        "hook_cause_counts": hook_cause_counts,
-        "friction_counts": friction_counts,
-        "corpus_min_ts": corpus_min_ts,
-        "corpus_max_ts": corpus_max_ts,
-        "pre_regime_tool_result_count": pre_regime_tool_result_count,
-        "any_session_matched": any_session_matched,
-    }
-
-
-def cmd_review_trace(args: argparse.Namespace) -> None:
-    """Emit an ordered review-event timeline per session.
-
-    Scans both the main thread and every dispatched subagent's own
-    transcript file (include_subagents=True), merged into one chronological
-    stream by _review_trace_session_events. Five event types are detected
-    per session, on either thread:
-    - skill: a Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
-    - denial: a hook-blocking denial in either transcript shape — a legacy
-      `attachment` record (type==hook_blocking_error) or a current-format
-      `tool_result` block with is_error and a hook-denial message signature.
-      A denial recorded as both shapes is collapsed to one event by tool_use_id.
-    - friction: a current-format `user` record whose own toolDenialKind field
-      marks non-gate friction (user-rejected, automode-blocked,
-      automode-unavailable, interrupted) — see _is_nongate_friction_kind.
-      Deduped by tool_use_id in its own set, independent of denial dedup.
-    - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
-      _is_reviewer_subagent_type
-    - architect-consult: Agent/Task spawn where subagent_type is
-      plan-architect and the prompt's first line is not the literal
-      MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
-      consult dispatch was initiated, not that it completed — including one
-      dispatched from inside a subagent.
-
-    denial and friction are deliberately separate event kinds: has_denial,
-    denials=N, and --deny-only's session-selection all stay denial-kind-only,
-    so a non-gate toolDenialKind value never broadens what those three
-    surfaces report — only the default timeline and --deny-summary's own
-    friction breakout render friction events.
-
-    Per event:
-    - Branch and model are resolved from the record that produced it, not
-      from the session's first record: each is the last non-empty value
-      carried forward up to that point, so a session that moves from one
-      branch (or model) to another attributes each event correctly instead
-      of labelling every event with whatever the session started on.
-    - An event whose branch or model cannot be resolved renders '?'.
-    - --branches filters the emitted event list by this per-event value,
-      not by a single session-wide branch.
-    - A sidechain event's thread field prints as `thread=sidechain` in the
-      timeline; a main-thread event's `thread=main` is the default and
-      stays unprinted.
-    - A sidechain event's line_no is a merged-stream offset, not a real
-      file line (see _review_trace_session_events's docstring), so it
-      prints as `line   n/a` instead of a numeral.
-    - A denial event's hook= label goes through _denial_hook_label. Under
-      single-root scope, a legacy denial's own hookName echoes raw when it
-      doesn't match _DENIAL_HOOK_LABELS, so a maintainer adding a new hook
-      still sees its real name instead of an opaque "unmatched" bucket. See
-      "Under more than one root scope" below for the multi-root behavior.
-
-    --deny-summary delegates its entire accumulation to
-    _compute_deny_summary_data instead of running its own pass over
-    session_iter, so the corpus-wide grouped-count report and cost-ledger's
-    per-week denial count can never drift apart.
-
-    Under more than one root scope:
-    - _DO_NOT_PUBLISH_BANNER prints on stdout and stderr.
-    - Each session's own "### <path>" header is redacted to an opaque
-      account-<K>/session-<N> label via _root_scoped_display_label instead
-      of the real per-session file path, since that path embeds the real
-      project directory name.
-    - Every branch name printed — in the per-session branches=... summary
-      line and in each event's own (branch=...) suffix — is redacted the
-      same way, to an opaque account-<K>/branch-<N> label. See
-      _redact_branch for why there is no --this-repo disclosure carve-out
-      for this redaction.
-    - model= stays raw regardless of scope, since a model ID is a closed,
-      public, Anthropic-published vocabulary carrying no account, project,
-      or branch identity.
-    - Every denial and friction event's msg=... field is omitted entirely,
-      since this repo's own hook denials routinely embed absolute
-      filesystem paths that would disclose the same project directory name.
-    - hook= is classified through the same _denial_hook_label classifier
-      --deny-summary uses, instead of a legacy denial's raw hookName. Unlike
-      the single-root case above, this always classifies here — an
-      unenumerated hookName still falls to _DENY_SUMMARY_UNMATCHED_HOOK,
-      since echoing it raw under multi-root would be the same project
-      disclosure the rest of this section closes.
-    - A reviewer-spawn event's subagent_type follows the same closed-
-      vocabulary policy as model= above. See _redact_subagent_type for the
-      membership test and why --this-repo isn't part of it.
-    """
-    branch_filter = _branch_filter(args)
-    deny_only: bool = bool(getattr(args, "deny_only", False))
-    deny_summary: bool = bool(getattr(args, "deny_summary", False))
-    skill_filter: str | None = getattr(args, "skill", None) or None
-
-    roots = _resolve_scan_roots(args)
-    multi_root = len(roots) > 1
-    session_iter, scope_label = _resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
-
-    since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
-
-    if multi_root:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    resolved_roots = [root.resolve() for root in roots] if multi_root else []
-    # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
-    # -- same rationale as every other multi-root diagnostic in this file
-    # (subagent-mix, subagents): the same physical root must read as the same
-    # account-N regardless of which profile is currently active.
-    redact_ordinals: dict[Path, int] = _redaction_ordinals(roots) if multi_root else {}
-    session_redact_map: dict[tuple[int, str], str] = {}
-    branch_redact_map: dict[tuple[int, str], str] = {}
-    subagent_type_redact_map: dict[tuple[int, str], str] = {}
-
-    def _session_label(jsonl: Path) -> str:
-        """Text for one session's own "### <path>" header.
-
-        The real path under single-root scope; an opaque
-        account-<K>/session-<N> label under multi-root, since the real path
-        embeds the project directory name. (Branch and msg redaction live at
-        their own print sites — see _redact_branch and the denial/friction
-        handlers.)
-        """
-        if not multi_root:
-            return str(jsonl)
-        root_idx = _root_index_for_path(jsonl, resolved_roots)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return _root_scoped_display_label("session", ordinal, jsonl.stem, session_redact_map, disclose=False)
-
-    def _redact_branch(jsonl: Path, branch: str) -> str:
-        """Redact a branch name under multi-root scope, mirroring subagent-mix's
-        own branch redaction (_mix_branch_label).
-
-        No `--this-repo` carve-out: `--this-repo` only scopes which dirs are
-        scanned, and a carry-forward-attributed branch is itself an
-        approximation that would need `subagents`' own attestation machinery
-        to disclose safely.
-        """
-        if not multi_root:
-            return _sanitize_table_cell(branch)
-        root_idx = _root_index_for_path(jsonl, resolved_roots)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return _root_scoped_display_label("branch", ordinal, branch, branch_redact_map, disclose=False)
-
-    def _redact_subagent_type(jsonl: Path, stype: str) -> str:
-        """Redact a reviewer-spawn's subagent_type under multi-root scope,
-        following the same closed-vocabulary disclosure policy
-        cmd_review_trace's own model= bullet states above.
-        _repo_tracked_agent_type_names is the membership test that decides
-        which side of that policy a given subagent_type falls on, matching
-        names tracked in the invoking checkout's index.
-
-        - Mirrors subagent-mix's own subagent_type redaction (_stype_label).
-        - Excludes --this-repo from this carve-out's disclose= condition,
-          for the same scoping-flag-vs-disclosure-assertion reason
-          _redact_branch's docstring states above.
-        - A name collision with an independently-named foreign account's
-          agent (e.g. an unrelated third party's own "staff-sdet") is an
-          attribution ambiguity for the reader, not a disclosure. The
-          printed string is public either way regardless of which account
-          actually dispatched it.
-        - Safety depends on a naming-convention precondition. See
-          _repo_tracked_agent_type_names's docstring for what that
-          precondition is.
-        """
-        if not multi_root:
-            return _sanitize_table_cell(stype)
-        root_idx = _root_index_for_path(jsonl, resolved_roots)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return _root_scoped_display_label(
-            "agent-type", ordinal, stype, subagent_type_redact_map,
-            disclose=stype in _repo_tracked_agent_type_names(),
-        )
-
-    if deny_summary:
-        # Ahead of the scan, matching the default arm below: a crash partway
-        # through the corpus still leaves the scanned scope on stdout.
-        _print_resolved_scope("review-trace", scope_label, roots)
-        data = _compute_deny_summary_data(
-            session_iter, since_ts=since_ts, until_ts=until_epoch,
-            branch_filter=branch_filter, deny_only=deny_only,
-        )
-        if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
-            _print_deny_summary(
-                data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
-                data["hook_cause_counts"], data["friction_counts"], data["pre_regime_tool_result_count"],
-                data["corpus_min_ts"], data["corpus_max_ts"],
-            )
-        elif data["any_session_matched"]:
-            # Sessions matched but none carried a denial — distinct from the
-            # scope matching no sessions at all, which the else covers.
-            print("\nNo denials found in scope.")
-        else:
-            print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
-        return
-
-    # Printed before the scan, not on the first emitted block: a run matching
-    # no session must still state the corpus it read, or a wrongly-scoped scan
-    # is indistinguishable from a correctly-scoped empty one.
-    _print_resolved_scope("review-trace", scope_label, roots)
-    emitted_any_session = False
-
-    for jsonl, records in session_iter:
-        # session_iter is resolved with include_subagents=True above -- see
-        # _fresh_records_and_group_boundaries for why records and
-        # group_boundaries must come from one read at the same scope.
-        records, group_boundaries = _fresh_records_and_group_boundaries(
-            jsonl, records, include_subagents=True,
-        )
-        events, tool_use_commands, _pre_regime = _review_trace_session_events(
-            records, since_ts, until_epoch, branch_filter,
-            skill_filter=skill_filter, group_boundaries=group_boundaries,
-        )
-        if not events:
-            continue
-
-        has_denial = any(e["kind"] == "denial" for e in events)
-        if deny_only and not has_denial:
-            continue
-
-        skill_count = sum(1 for e in events if e["kind"] == "skill")
-        denial_count = sum(1 for e in events if e["kind"] == "denial")
-        spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
-        consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
-        branches_seen = ",".join(sorted({_redact_branch(jsonl, e["branch"]) for e in events}))
-        models_seen = ",".join(sorted({e["model"] for e in events}))
-
-        emitted_any_session = True
-
-        print(f"\n### {_session_label(jsonl)}")
-        print(
-            f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
-            f"  denials={denial_count}  reviewer-spawns={spawn_count}"
-            f"  architect-consults={consult_count}"
-        )
-        for evt in events:
-            ts_label = evt.get("ts") or "?"
-            # line_no is a real, seekable main-transcript line only for a
-            # thread=main event; for thread=sidechain it's a merged-stream
-            # offset indexing no file (see _review_trace_session_events's
-            # docstring), so it prints as n/a rather than under the same
-            # "line" label as a real one.
-            lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
-            kind = evt["kind"]
-            thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
-            suffix = f"  (branch={_redact_branch(jsonl, evt['branch'])} model={evt['model']}{thread_suffix})"
-            if kind == "skill":
-                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
-            elif kind == "denial":
-                hook = _denial_hook_label(evt['hook_name'], evt['message'], raw_when_unenumerated=not multi_root)
-                uid = evt['tool_use_id']
-                msg = evt['message']
-                cause = _denial_cause_kind(msg)
-                # msg is raw free text from a foreign account's transcript.
-                # This repo's own hook denials routinely embed absolute
-                # filesystem paths (e.g. worktree-enforcement denials name
-                # .claude/worktrees/<branch>/...). That's the same
-                # project-directory disclosure _session_label exists to
-                # prevent, so msg is omitted entirely under multi-root
-                # rather than redacted.
-                msg_field = "" if multi_root else f"  msg={msg!r}"
-                print(
-                    f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
-                    f"  id={uid}{msg_field}{suffix}"
-                )
-            elif kind == "friction":
-                fkind = _friction_kind_label(evt['friction_kind'])
-                uid = evt['tool_use_id']
-                msg = evt['message']
-                msg_field = "" if multi_root else f"  msg={msg!r}"
-                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}{msg_field}{suffix}")
-            elif kind == "reviewer-spawn":
-                stype = _redact_subagent_type(jsonl, evt['subagent_type'])
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {stype}{suffix}")
-            elif kind == "architect-consult":
-                print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
-
-    if not emitted_any_session:
-        print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
-
 
 def cmd_judgment_pair(args: argparse.Namespace) -> None:
     """Emit (review-skill output, user response) pairs from sessions containing review invocations.
@@ -2993,12 +1848,6 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
-# Built-in Claude Code subagent_type values -- present in every install, so
-# they can't identify a project. Always allowlisted for --this-repo
-# subagent_type disclosure, regardless of whether this repo's own agents/
-# tree tracks a same-named file.
-_BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
-
 # Fallback subagent_type for a spawn tool_use whose input carries no
 # subagent_type field -- shared between cmd_subagent_mix and
 # _spawn_counts_by_agent_type so the two never disagree on which raw string
@@ -3045,60 +1894,6 @@ def _declared_pin(
             pin = _agent_frontmatter_model(text) or _DECLARED_PIN_BUILT_IN
     declared_pin_cache[key] = pin
     return pin
-
-
-# .resolve() is load-bearing: unresolved, a stow-symlinked invocation would
-# land on the invoking account's own <config-dir>/agents/ instead of this
-# repo's tracked tree.
-_REPO_AGENT_DEFINITIONS_DIR = Path(__file__).resolve().parent.parent / "agents"
-
-
-@lru_cache(maxsize=1)
-def _repo_tracked_agent_type_names() -> frozenset[str]:
-    """Stems of every top-level *.md file this repo's own agents/ directory
-    git-tracks, plus _BUILT_IN_AGENT_TYPES -- the --this-repo subagent_type
-    disclosure allowlist.
-
-    - Tracked state, not on-disk presence (`git ls-files` reads the index)
-      -- an untracked scratch or WIP agent file in the invoking checkout's
-      agents/ directory never allowlists its own name, since every worktree
-      of this repo is a distinct physical checkout that can hold one.
-    - `-z` avoids git's path quoting/escaping corrupting the stem for
-      unusual filenames.
-    - `check=True` makes CalledProcessError reachable at all for a non-git
-      directory -- without it, a non-zero exit leaves stdout empty and the
-      failure silently looks like "zero tracked files" instead of raising
-      into the fallback path below.
-    - Top-level entries only (no "/" in the path), matching _declared_pin's
-      own flat agents_dir / f"{agent_type}.md" resolution -- a nested
-      tracked file over-redacts, the safe direction.
-    - _REPO_AGENT_DEFINITIONS_DIR is read fresh on every call (not captured
-      as a default argument) so a test can monkeypatch the module attribute
-      and call .cache_clear() to force a re-read.
-    - Same exception set and timeout as scope._repo_scoped_project_slugs
-      (scope.py:70-77's rationale: a hung local git must not block the
-      whole CLI with no exit), diverging in one way, deliberately: failure
-      here returns the built-ins alone rather than exiting, since failing
-      closed means more redaction, and an operator's report should not die
-      because git is unavailable.
-    - Safe reuse of this disclosure carve-out requires every git-tracked
-      stem under the invoking checkout's agents/ directory to stay generic
-      and non-project-identifying -- a maintainer convention this code does
-      not check.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(_REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return _BUILT_IN_AGENT_TYPES
-    tracked = {
-        entry[: -len(".md")]
-        for entry in proc.stdout.split("\0")
-        if entry and "/" not in entry and entry.endswith(".md")
-    }
-    return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
 
 
 # The one folded row a subagent_type this repo's own agents/ tree does not
@@ -3187,6 +1982,9 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     roots = [config_dir() / "projects"]
 
     session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    # Fully materialized (unlike every other cmd_* here, which streams one session at a
+    # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
+    # session history, small enough to hold in memory at once.
     sessions = list(session_iter)
 
     round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
@@ -3439,16 +2237,45 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         print(f"{bin_str:<10} {lead:>5} {main:>5} {side:>5} {pair_pct:>6.1f}%")
 
 
+def _pr_link_gh_failure_kind(exc: Exception) -> str:
+    """This module's own label for why a pr-link gh call failed -- never gh's
+    raw stderr, which can echo the queried repo verbatim."""
+    if isinstance(exc, FileNotFoundError):
+        return "gh not found"
+    if isinstance(exc, json.JSONDecodeError):
+        return "unparseable gh output"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    kind = _classify_gh_error(getattr(exc, "stderr", None) or "")
+    # _classify_gh_error falls through to "network" for any stderr it does
+    # not recognize, a wrong repo slug included.
+    return "network or unrecognized" if kind == _GH_ERROR_KIND_NETWORK else kind
+
+
+def _pr_link_report_gh_failure(branch: str, step: str, exc: Exception) -> None:
+    print(f"pr-link: {step} failed for branch {branch} ({_pr_link_gh_failure_kind(exc)})", file=sys.stderr)
+
+
 def cmd_pr_link(args: argparse.Namespace) -> None:
-    if not getattr(args, "repo", None):
-        print("--repo is required for pr-link", file=sys.stderr)
-        sys.exit(1)
     if not getattr(args, "branches", None):
         print("--branches is required for pr-link", file=sys.stderr)
         sys.exit(1)
 
     branches: list[str] = [b.strip() for b in args.branches.split(",") if b.strip()]
-    repo: str = args.repo
+    supplied_repo: str | None = getattr(args, "repo", None)
+    if supplied_repo:
+        repo = pr_list_repo = supplied_repo
+        api_host_args: list[str] = []
+    else:
+        # `gh pr list --repo` takes the host-qualified slug directly; `gh api`
+        # takes `--hostname` instead, since its path carries no host.
+        # Either way, a GHE origin reaches the right host regardless of the
+        # ambient GH_HOST.
+        origin_host, repo = _git_remote_origin_host_and_owner_repo(
+            subcommand="pr-link", failure_hint="pass --repo OWNER/REPO",
+        )
+        pr_list_repo = _gh_host_qualified_repo(origin_host, repo)
+        api_host_args = ["--hostname", origin_host]
     author: str = getattr(args, "author", None) or ""
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "pr-link", roots=roots)
@@ -3473,11 +2300,17 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             pr_result = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--repo", repo, "--state", "all", "--json", "number", "--limit", "1"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "pr", "list", "--head", branch, "--repo", pr_list_repo,
+                    "--state", "all", "--json", "number", "--limit", "1",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             prs = json.loads(pr_result.stdout or "[]")
-        except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        except (
+            subprocess.CalledProcessError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired,
+        ) as exc:
+            _pr_link_report_gh_failure(branch, "gh pr list", exc)
             print(f"{branch:<35} {'?':>5} {opus_n:>6} {sonnet_n:>7} {'gh-err':>9} {'':>10}")
             continue
 
@@ -3490,19 +2323,26 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
         try:
             ic = subprocess.run(
-                ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/issues/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             issue_logins = [ln.strip() for ln in ic.stdout.splitlines() if ln.strip()]
             issue_comments = sum(1 for ln in issue_logins if not author or ln == author)
 
             rc = subprocess.run(
-                ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments", "--paginate", "--jq", ".[].user.login"],
-                capture_output=True, text=True, check=True,
+                [
+                    "gh", "api", *api_host_args, f"repos/{repo}/pulls/{pr_number}/comments",
+                    "--paginate", "--jq", ".[].user.login",
+                ],
+                capture_output=True, text=True, check=True, timeout=_GH_CALL_TIMEOUT_S,
             )
             review_logins = [ln.strip() for ln in rc.stdout.splitlines() if ln.strip()]
             review_comments = sum(1 for ln in review_logins if not author or ln == author)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            _pr_link_report_gh_failure(branch, "gh api comments", exc)
             issue_comments = review_comments = -1
 
         print(f"{branch:<35} {pr_number:>5} {opus_n:>6} {sonnet_n:>7} {issue_comments:>9} {review_comments:>10}")
@@ -3677,264 +2517,6 @@ def cmd_commit_gate(args: argparse.Namespace) -> None:
                 f"{d['commits_with_prior_skill']:>8} {d['commits_without_prior_skill']:>9} "
                 f"{d['commits_no_verify']:>10}"
             )
-
-
-_AUDIT_CLASSES: tuple[str, ...] = (
-    "orchestration", "judgment", "code-write", "code-read", "pure-thinking", "other"
-)
-
-_ORCHESTRATION_TOOLS: frozenset[str] = frozenset({"Agent", "Task"})
-_CODE_READ_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "Bash"})
-
-
-def _classify_opus_turn(
-    content: list,
-    in_judgment_span: bool,
-    plan_mode_active: bool,
-) -> str:
-    """Classify one Opus assistant turn into an audit routing class.
-
-    Classification is first-match among:
-      orchestration  — any Agent/Task tool_use
-      judgment       — turn is within an active judgment span (skill or plan-mode)
-      code-write     — any Edit/Write/MultiEdit/NotebookEdit tool_use
-      code-read      — at least one tool_use, all from Read/Grep/Glob/Bash
-      pure-thinking  — thinking blocks only, no tool_use
-      other          — none of the above
-    """
-    tool_use_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
-    tool_names = {b.get("name") for b in tool_use_blocks}
-
-    if tool_names & _ORCHESTRATION_TOOLS:
-        return "orchestration"
-    if in_judgment_span or plan_mode_active:
-        return "judgment"
-    if tool_names & corpus._CODE_WRITE_TOOLS:
-        return "code-write"
-    if tool_use_blocks and tool_names <= _CODE_READ_TOOLS:
-        return "code-read"
-    has_thinking = any(isinstance(b, dict) and b.get("type") == "thinking" for b in content)
-    if has_thinking and not tool_use_blocks:
-        return "pure-thinking"
-    return "other"
-
-
-def cmd_audit_routing(args: argparse.Namespace) -> None:
-    """Per-turn Opus token breakdown by routing class across all sessions.
-
-    Classifies every Opus assistant turn into: orchestration, judgment,
-    code-write, code-read, pure-thinking, or other — then aggregates
-    output_tokens and cache_read_input_tokens per class. Emits per-session
-    rows sorted descending by total output tokens, plus a corpus aggregate.
-    """
-    top_n: int = getattr(args, "top", 20) or 20
-    redact: bool = bool(getattr(args, "redact", False))
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing")
-    since_label = since_raw or ""
-
-    roots = _resolve_scan_roots(args)
-    multi_root = len(roots) > 1
-
-    # _resolve_project_scope's fail-closed --this-repo check runs before
-    # _build_redact_map's full-corpus disk scan, so an out-of-repo failure
-    # exits without paying for that scan.
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing", roots=roots)
-    _print_resolved_scope("audit-routing", scope_label, roots)
-
-    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
-    session_redact_map: dict[str, str] = {}
-    # Only computed under multi-root redaction: _root_index_for_path needs
-    # already-resolved roots, and _redaction_ordinals is the same
-    # resolved-path-sorted mapping _build_redact_map's keys and cost's own
-    # per-row lookup share, so a row's ordinal always agrees with the map's.
-    resolved_roots = [r.resolve() for r in roots] if (redact and multi_root) else []
-    redact_ordinals = _redaction_ordinals(roots) if (redact and multi_root) else {}
-
-    # Per-session accumulators: session_key → {class → {out, cr, dollars}}
-    session_rows: list[dict] = []
-    # Corpus totals: class → {out, cr, dollars}
-    corpus_totals: dict[str, dict[str, float]] = {cls: {"out": 0, "cr": 0, "dollars": 0.0} for cls in _AUDIT_CLASSES}
-    # Opus turns whose model ID has no _MODEL_BASE_INPUT_RATES entry — excluded from
-    # the dollar headline, counted here so a corpus with unpriced turns doesn't
-    # silently under-report (mirrors _cost_report's unpriced-tokens convention).
-    unpriced_turns = 0
-    unpriced_tokens = 0
-
-    for jsonl, records in session_iter:
-        # One API call = one turn: dedup merges a requestId run's content
-        # blocks into one union list, so the classification and judgment-span
-        # tracking below see every block (e.g. a Skill/ExitPlanMode tool_use
-        # on a later block), while the run's dollars are attributed once.
-        records = _dedup_turns_by_request_id(records)
-        proj_label = _derive_proj_label(jsonl)
-        session_id = jsonl.stem[:12]
-        if redact:
-            _assign_session_redact_label(session_id, session_redact_map)
-        if redact and multi_root:
-            root_position = _root_index_for_path(jsonl, resolved_roots)
-            redact_key: _RedactMapKey = (redact_ordinals[resolved_roots[root_position]], proj_label)
-        else:
-            redact_key = proj_label
-
-        # Per-session class token accumulators
-        session_class_tokens: dict[str, dict[str, float]] = {
-            cls: {"out": 0, "cr": 0, "dollars": 0.0} for cls in _AUDIT_CLASSES
-        }
-
-        # Judgment span state machine (reset per session)
-        in_judgment_span: bool = False
-        plan_mode_active: bool = False
-
-        for rec in records:
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-
-            # --- State machine updates for user/human records ---
-            if rtype in ("user", "human"):
-                # Judgment span closes at next user turn
-                in_judgment_span = False
-                # Detect plan-mode activation
-                content_text = _content_text(msg.get("content", ""))
-                if "Plan mode is active" in content_text:
-                    plan_mode_active = True
-                continue
-
-            if rtype != "assistant":
-                continue
-
-            # Filter to Opus turns with usage data
-            model = msg.get("model", "")
-            if _fam(model) != "opus":
-                # Still update span state from non-Opus assistant turns (ExitPlanMode)
-                content = msg.get("content") or []
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "ExitPlanMode"
-                    ):
-                        plan_mode_active = False
-                continue
-
-            usage = msg.get("usage")
-            if not usage:
-                continue
-
-            # Apply --since filter
-            if since_ts is not None:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None or rec_ts < since_ts:
-                    continue
-
-            content = msg.get("content") or []
-            out_tokens: int = usage.get("output_tokens", 0)
-            cr_tokens: int = usage.get("cache_read_input_tokens", 0)
-            dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
-            if dollars_by_class is None:
-                unpriced_turns += 1
-                unpriced_tokens += turn_unpriced_tokens
-                turn_dollars = 0.0
-            else:
-                turn_dollars = sum(dollars_by_class.values())
-
-            # Open a judgment span if this turn invokes a judgment skill — evaluated
-            # before classification so the invoking turn itself counts as judgment.
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "Skill"
-                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
-                ):
-                    in_judgment_span = True
-                    break
-
-            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
-
-            # ExitPlanMode clears plan-mode on the *next* turn (the current turn is still in-span).
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "ExitPlanMode"
-                ):
-                    plan_mode_active = False
-                    break
-
-            session_class_tokens[turn_class]["out"] += out_tokens
-            session_class_tokens[turn_class]["cr"] += cr_tokens
-            session_class_tokens[turn_class]["dollars"] += turn_dollars
-
-        session_total_out = sum(v["out"] for v in session_class_tokens.values())
-        if not session_total_out:
-            continue
-
-        session_rows.append({
-            "session_id": session_id,
-            "proj_label": proj_label,
-            "redact_key": redact_key,
-            "classes": session_class_tokens,
-            "total_out": session_total_out,
-        })
-
-        for cls in _AUDIT_CLASSES:
-            corpus_totals[cls]["out"] += session_class_tokens[cls]["out"]
-            corpus_totals[cls]["cr"] += session_class_tokens[cls]["cr"]
-            corpus_totals[cls]["dollars"] += session_class_tokens[cls]["dollars"]
-
-    # --- Emit per-session table ---
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Opus turn-class breakdown ({title_since})\n")
-
-    header = (
-        f"{'Session':<16} {'Proj':<20} "
-        f"{'orch':>8} {'judgment':>9} {'code-write':>11} {'code-read':>10} "
-        f"{'thinking':>9} {'other':>7} {'total_out':>11} {'cache_rd':>10}"
-    )
-    print(header)
-    print("─" * len(header))
-
-    sorted_rows = sorted(session_rows, key=lambda r: r["total_out"], reverse=True)
-    for row in sorted_rows[:top_n]:
-        sid = _redact_session_id(row["session_id"], session_redact_map) if redact else row["session_id"]
-        proj = _redact_proj_label(row["redact_key"], redact_map) if redact else row["proj_label"]
-        cls = row["classes"]
-        total_cr = sum(v["cr"] for v in cls.values())
-        print(
-            f"{sid:<16} {proj:<20} "
-            f"{cls['orchestration']['out']:>8,} {cls['judgment']['out']:>9,} "
-            f"{cls['code-write']['out']:>11,} {cls['code-read']['out']:>10,} "
-            f"{cls['pure-thinking']['out']:>9,} {cls['other']['out']:>7,} "
-            f"{row['total_out']:>11,} {total_cr:>10,}"
-        )
-
-    # --- Emit corpus aggregate ---
-    print("\n## Corpus aggregate\n")
-    print(f"{'Class':<16} {'Output tokens':>15} {'Cache read tokens':>18}")
-    total_out_all = 0
-    total_cr_all = 0
-    for cls in _AUDIT_CLASSES:
-        out_val = corpus_totals[cls]["out"]
-        cr_val = corpus_totals[cls]["cr"]
-        print(f"{cls:<16} {out_val:>15,} {cr_val:>18,}")
-        total_out_all += out_val
-        total_cr_all += cr_val
-    print("─" * 51)
-    print(f"{'total':<16} {total_out_all:>15,} {total_cr_all:>18,}")
-
-    sonnet_tier_dollars = corpus_totals["code-write"]["dollars"] + corpus_totals["code-read"]["dollars"]
-    priced_total_dollars = sum(corpus_totals[cls]["dollars"] for cls in _AUDIT_CLASSES)
-    dollar_pct = f"{100 * sonnet_tier_dollars / priced_total_dollars:.0f}%" if priced_total_dollars else "—"
-    print(f"\nSonnet-tier estimate: ${sonnet_tier_dollars:,.2f}")
-    print(f"  = {dollar_pct} of priced Opus spend in this window")
-    if unpriced_turns:
-        print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
-
-    sonnet_tier_out = corpus_totals["code-write"]["out"] + corpus_totals["code-read"]["out"]
-    sonnet_pct = f"{100 * sonnet_tier_out / total_out_all:.0f}%" if total_out_all else "—"
-    print(f"\nSonnet-tier estimate: {sonnet_tier_out:,} output tokens (secondary diagnostic)")
-    print(f"  = {sonnet_pct} of Opus output in this window")
 
 
 def cmd_context_distribution(args: argparse.Namespace) -> None:
@@ -4530,575 +3112,6 @@ def _print_edit_format_report(stats: dict, per_account: dict[int, dict] | None) 
             print(
                 f"  {account_label:10} calls={a_edit_n:6,}  unread={unread:4,}  "
                 f"not_found={not_found:4,}  multi={multi:3,}  addressable={_pct_of(addressable, a_edit_n)}"
-            )
-
-
-# ~4 chars/token, the same rough English/code estimate _EDIT_FORMAT_CHARS_PER_TOKEN
-# uses. A deliberate second pin rather than a shared constant: recalibrating one
-# report's published figures must not silently move the other's.
-_READ_SCOPE_CHARS_PER_TOKEN = 4
-
-# Tools that answer "which part of this file do I need" before a targeted Read.
-# Their mean result size prices the locate step a narrow-read discipline adds.
-_READ_SCOPE_LOCATE_TOOLS = frozenset({"Grep", "Glob"})
-
-_READ_SCOPE_COHORT_TARGETED = "targeted"
-_READ_SCOPE_COHORT_WHOLE_FILE = "whole_file"
-_READ_SCOPE_COHORT_PAGES = "pages"
-_READ_SCOPE_COHORT_UNPARSED = "unparsed_input"
-
-_READ_SCOPE_SCOPE_MAIN = "main"
-_READ_SCOPE_SCOPE_SUBAGENT = "subagent"
-
-# Result-size histogram buckets, in estimated tokens (chars // 4) — a call's
-# result text length, not its input. The 2,000-token boundary lines up with
-# the gross-ceiling threshold the case study's ceiling arithmetic uses.
-_READ_SCOPE_SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
-    (500, "0-499"),
-    (2000, "500-1999"),
-    (5000, "2000-4999"),
-    (15000, "5000-14999"),
-)
-_READ_SCOPE_SIZE_OVERFLOW_LABEL = "15000+"
-
-
-def _read_scope_size_bucket(tokens: int) -> str:
-    for upper_bound, label in _READ_SCOPE_SIZE_BUCKETS:
-        if tokens < upper_bound:
-            return label
-    return _READ_SCOPE_SIZE_OVERFLOW_LABEL
-
-
-def _classify_read_call(tool_input: dict) -> str:
-    """Classify one Read tool_use's input by scope shape.
-
-    A missing file_path (e.g. only __unparsedToolInput, or an empty input) is
-    unparsed_input regardless of any other field: its scope is unknowable, and
-    filing it as whole-file would inflate the cohort every published share is
-    stated against. pages is checked before offset/limit since a PDF page-range
-    read scopes via a different mechanism entirely, not layered on offset/limit.
-    offset and limit are each checked with `is not None`, never truthiness --
-    offset=0 is a valid first-line read and is falsy in Python.
-    """
-    if not tool_input.get("file_path"):
-        return _READ_SCOPE_COHORT_UNPARSED
-    if tool_input.get("pages") is not None:
-        return _READ_SCOPE_COHORT_PAGES
-    if tool_input.get("offset") is not None or tool_input.get("limit") is not None:
-        return _READ_SCOPE_COHORT_TARGETED
-    return _READ_SCOPE_COHORT_WHOLE_FILE
-
-
-def _new_read_scope_stats() -> dict:
-    return {
-        "read_total": 0,
-        "offset_n": 0,  # Read calls carrying offset (is not None)
-        "limit_n": 0,  # Read calls carrying limit (is not None)
-        "both_n": 0,  # Read calls carrying both offset and limit
-        "cohort_n": Counter(),  # cohort label -> Read call count
-        "unpaired": 0,  # Read tool_use with no matching tool_result in this session
-        "error_result": 0,  # is_error tool_result for a Read call
-        "non_text_result": 0,  # non-string tool_result content for a Read call (e.g. an image block)
-        "cohort_scope_count": Counter(),  # (cohort, scope) -> result count reaching the histogram
-        "cohort_scope_tokens": Counter(),  # (cohort, scope) -> est. token sum
-        "size_hist": Counter(),  # (cohort, scope, bucket label) -> count
-        # Same key -> summed est. tokens. Counts alone cannot answer "what share
-        # of whole-file-read tokens sits above N", which is what any ceiling
-        # estimate and the case study's revisit trigger are both stated against.
-        "size_hist_tokens": Counter(),
-        "read_result_tokens_total": 0,  # every Read tool_result's est. tokens, any cohort/error/text shape
-        "all_tool_result_tokens_total": 0,  # every tool_result's est. tokens, any tool -- cross-check denominator
-        # Locate-step sizing: a targeted read has to be located first, so any
-        # saving quoted against whole-file reads is gross until this is netted.
-        "locate_call_n": 0,
-        "locate_result_tokens_total": 0,
-        "repeat_whole_file_reads": 0,  # whole-file re-reads of a path within the same source-file/sessionId partition
-        "repeat_whole_file_tokens": 0,
-        "repeat_whole_file_output_log_reads": 0,  # sub-count of the above whose path ends .output/.log
-        "growth_tokens": 0,  # prompt-token growth, per "Computing the denominator"
-        "growth_unparseable_ts_excluded": 0,  # growth deltas dropped: --since active, owning turn's ts didn't parse
-    }
-
-
-def _merge_read_scope_stats(dst: dict, src: dict) -> None:
-    dst["read_total"] += src["read_total"]
-    dst["offset_n"] += src["offset_n"]
-    dst["limit_n"] += src["limit_n"]
-    dst["both_n"] += src["both_n"]
-    dst["cohort_n"].update(src["cohort_n"])
-    dst["unpaired"] += src["unpaired"]
-    dst["error_result"] += src["error_result"]
-    dst["non_text_result"] += src["non_text_result"]
-    dst["cohort_scope_count"].update(src["cohort_scope_count"])
-    dst["cohort_scope_tokens"].update(src["cohort_scope_tokens"])
-    dst["size_hist"].update(src["size_hist"])
-    dst["size_hist_tokens"].update(src["size_hist_tokens"])
-    dst["read_result_tokens_total"] += src["read_result_tokens_total"]
-    dst["all_tool_result_tokens_total"] += src["all_tool_result_tokens_total"]
-    dst["locate_call_n"] += src["locate_call_n"]
-    dst["locate_result_tokens_total"] += src["locate_result_tokens_total"]
-    dst["repeat_whole_file_reads"] += src["repeat_whole_file_reads"]
-    dst["repeat_whole_file_tokens"] += src["repeat_whole_file_tokens"]
-    dst["repeat_whole_file_output_log_reads"] += src["repeat_whole_file_output_log_reads"]
-    dst["growth_tokens"] += src["growth_tokens"]
-    dst["growth_unparseable_ts_excluded"] += src["growth_unparseable_ts_excluded"]
-
-
-def _read_scope_growth_for_group(group: list[dict], since_ts: float | None) -> tuple[int, int]:
-    """Sum of positive prompt-token growth deltas within one source-file group
-    (one _read_session_file_partitioned entry: the main transcript or one
-    subagent file).
-
-    Keys the delta chain by each assistant record's own sessionId rather than
-    picking one reference id for the whole group: a subagent transcript file
-    is named by its own agent id, but its records carry the *parent*
-    session's sessionId, so neither the file's own stem nor a first-seen-in-
-    iteration guess is a valid "this group's session" ground truth. Keying by
-    sessionId means an interleaved foreign-session record simply forms its
-    own chain and contributes its own real growth, instead of being dropped
-    or corrupting a neighbouring session's delta. A record with no sessionId
-    at all folds into the ""-keyed chain -- neither excluded nor treated as
-    its own session, preserving this function's long-standing leniency for
-    absent ids. Resets the whole per-session map at each compact_boundary
-    record, since a compaction boundary applies to the file, not to one
-    session. The first turn of every resulting per-session sequence has no
-    predecessor and so contributes nothing. A turn with absent or malformed
-    usage is skipped without breaking its session's chain for the turn after
-    it. A shrinking context contributes nothing (never negative). Every
-    chain is built over every record regardless of --since; --since filters
-    only the completed deltas, by the later (owning) turn's own timestamp --
-    fail-closed: a delta whose owning turn's timestamp doesn't parse is
-    excluded rather than included, and counted in the returned exclusion
-    total so the report's own growth figure stays auditable against
-    --since's promise.
-
-    Returns (growth_tokens, deltas_excluded_for_unparseable_timestamp).
-    """
-    prev_context_by_session: dict[str, int] = {}
-    total = 0
-    unparseable_ts_excluded = 0
-
-    for rec in group:
-        rec_type = rec.get("type")
-        if rec_type == "system" and rec.get("subtype") == "compact_boundary":
-            # Resets every session's chain, not just the compacted one: a
-            # compact_boundary record carries no sessionId, so which session it
-            # belongs to is not recoverable from the data. Costs one real delta
-            # for any other session mid-chain in the same file. Inert on every
-            # transcript shape seen so far -- a main file's records all carry
-            # its own session id, a subagent file's all carry its parent's --
-            # so a file holding two live chains does not currently arise.
-            prev_context_by_session.clear()
-            continue
-        if rec_type != "assistant":
-            continue
-
-        usage = (rec.get("message") or {}).get("usage")
-        if not usage:
-            continue
-
-        session_key = rec.get("sessionId") or ""
-        context_at_turn = _context_at_turn(usage)
-        prev_context = prev_context_by_session.get(session_key)
-        if prev_context is not None:
-            delta = context_at_turn - prev_context
-            if delta > 0:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if since_ts is not None and rec_ts is None:
-                    unparseable_ts_excluded += 1
-                elif since_ts is None or rec_ts >= since_ts:
-                    total += delta
-        prev_context_by_session[session_key] = context_at_turn
-
-    return total, unparseable_ts_excluded
-
-
-def _read_scope_repeat_whole_file_reads(groups: list[list[dict]]) -> tuple[int, int, int]:
-    """Repeat whole-file-read detection, scoped to the same partition the
-    growth chain uses (per source-file group, and per sessionId within a
-    group) rather than to the whole flattened session.
-
-    A parent transcript and its subagent are separate context windows: a
-    subagent re-reading a file its parent already read is not a redundant
-    read, it's the only way that subagent can see the file at all. Scoping
-    to the flattened session would count every such cross-file read as a
-    repeat, inflating the figure with reads that were never avoidable.
-
-    Pairs each group's own Read tool_use/tool_result independently (a Read's
-    result always lives in the same source file as its call), since this
-    detection needs its own per-partition token histories and cannot reuse
-    the flat pass's already-merged read_calls table. Returns
-    (repeat_reads, repeat_tokens, repeat_output_log_reads) — pure aggregates;
-    no file path is retained past this function.
-    """
-    # (group_index, sessionId-or-"") -> file_path -> [est_tokens, ...] in read order
-    sizes_by_partition: dict[tuple[int, str], dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
-
-    for group_idx, group in enumerate(groups):
-        read_calls: dict[str, dict] = {}  # tool_use_id -> {"file_path", "partition_key"}
-        for rec in group:
-            msg = rec.get("message") or {}
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            session_id = rec.get("sessionId") or ""
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type")
-                if block_type == "tool_use":
-                    if block.get("name") != "Read":
-                        continue
-                    tool_input = block.get("input") or {}
-                    if _classify_read_call(tool_input) != _READ_SCOPE_COHORT_WHOLE_FILE:
-                        continue
-                    read_calls[block.get("id")] = {
-                        "file_path": tool_input.get("file_path") or "",
-                        "partition_key": (group_idx, session_id),
-                    }
-                elif block_type == "tool_result":
-                    owner = read_calls.pop(block.get("tool_use_id"), None)
-                    if owner is None or block.get("is_error"):
-                        continue
-                    result_content = block.get("content")
-                    if not isinstance(result_content, str):
-                        continue
-                    tokens = len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN
-                    sizes_by_partition[owner["partition_key"]][owner["file_path"]].append(tokens)
-
-    repeat_reads = 0
-    repeat_tokens = 0
-    repeat_output_log_reads = 0
-    for by_path in sizes_by_partition.values():
-        for file_path, sizes in by_path.items():
-            if len(sizes) < 2:
-                continue
-            repeats = sizes[1:]
-            repeat_reads += len(repeats)
-            repeat_tokens += sum(repeats)
-            if file_path.endswith((".output", ".log")):
-                repeat_output_log_reads += len(repeats)
-
-    return repeat_reads, repeat_tokens, repeat_output_log_reads
-
-
-def _scan_read_scope_session(records: list[dict], groups: list[list[dict]], since_ts: float | None) -> dict:
-    """One session's Read-call census, single pass over the flattened record
-    order, plus per-group prompt-token growth and repeat-whole-file-read
-    detection.
-
-    `records` is the main thread + merged subagent files in flat, file-
-    concatenation order (per read_session_file) — everything here except
-    growth and repeat-whole-file-read detection runs over it, since
-    isSidechain is all that scope (main vs subagent) bucketing needs.
-    `groups` is the same session's records kept separate per source file
-    (per _read_session_file_partitioned) — growth and repeat-whole-file-read
-    detection both need the file (and, within a file, sessionId) boundary
-    the flat order discards; see _read_scope_growth_for_group and
-    _read_scope_repeat_whole_file_reads.
-
-    Every returned figure is a pure aggregate (counts and token sums) — no
-    file path, filename, path fragment, or session identifier is retained
-    past this function or printed by any caller.
-    """
-    stats = _new_read_scope_stats()
-
-    read_calls: dict[str, dict] = {}  # tool_use_id -> {"cohort", "scope", "file_path"}
-    locate_calls: set[str] = set()  # tool_use_ids of Grep/Glob calls, for locate-step sizing
-    matched: set[str] = set()
-
-    for rec in records:
-        msg = rec.get("message") or {}
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        is_subagent = bool(rec.get("isSidechain"))
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type == "tool_use":
-                tool_name = block.get("name")
-                if tool_name in _READ_SCOPE_LOCATE_TOOLS:
-                    # A targeted read has to be located first. Sizing that step
-                    # is what lets a saving be quoted net rather than gross.
-                    locate_calls.add(block.get("id"))
-                    stats["locate_call_n"] += 1
-                    continue
-                if tool_name != "Read":
-                    continue
-                tool_id = block.get("id")
-                tool_input = block.get("input") or {}
-                has_offset = tool_input.get("offset") is not None
-                has_limit = tool_input.get("limit") is not None
-                if has_offset:
-                    stats["offset_n"] += 1
-                if has_limit:
-                    stats["limit_n"] += 1
-                if has_offset and has_limit:
-                    stats["both_n"] += 1
-                cohort = _classify_read_call(tool_input)
-                stats["read_total"] += 1
-                stats["cohort_n"][cohort] += 1
-                read_calls[tool_id] = {
-                    "cohort": cohort,
-                    "scope": _READ_SCOPE_SCOPE_SUBAGENT if is_subagent else _READ_SCOPE_SCOPE_MAIN,
-                    "file_path": tool_input.get("file_path") or "",
-                }
-            elif block_type == "tool_result":
-                tool_use_id = block.get("tool_use_id")
-                result_content = block.get("content")
-                is_error = bool(block.get("is_error"))
-                result_tokens = (
-                    len(result_content) // _READ_SCOPE_CHARS_PER_TOKEN if isinstance(result_content, str) else 0
-                )
-                # Cross-check denominator: every tool's own result, Read or not.
-                stats["all_tool_result_tokens_total"] += result_tokens
-                if tool_use_id in locate_calls:
-                    stats["locate_result_tokens_total"] += result_tokens
-
-                owner = read_calls.get(tool_use_id)
-                if owner is None:
-                    continue
-                matched.add(tool_use_id)
-                stats["read_result_tokens_total"] += result_tokens
-
-                if is_error:
-                    stats["error_result"] += 1
-                    continue
-                if not isinstance(result_content, str):
-                    stats["non_text_result"] += 1
-                    continue
-
-                cohort = owner["cohort"]
-                if cohort not in (_READ_SCOPE_COHORT_TARGETED, _READ_SCOPE_COHORT_WHOLE_FILE):
-                    continue
-                thread_scope = owner["scope"]
-                stats["cohort_scope_count"][(cohort, thread_scope)] += 1
-                stats["cohort_scope_tokens"][(cohort, thread_scope)] += result_tokens
-                size_bucket = _read_scope_size_bucket(result_tokens)
-                stats["size_hist"][(cohort, thread_scope, size_bucket)] += 1
-                stats["size_hist_tokens"][(cohort, thread_scope, size_bucket)] += result_tokens
-
-    stats["unpaired"] = len(read_calls) - len(matched)
-
-    (
-        stats["repeat_whole_file_reads"],
-        stats["repeat_whole_file_tokens"],
-        stats["repeat_whole_file_output_log_reads"],
-    ) = _read_scope_repeat_whole_file_reads(groups)
-
-    for group in groups:
-        growth, unparseable_ts_excluded = _read_scope_growth_for_group(group, since_ts)
-        stats["growth_tokens"] += growth
-        stats["growth_unparseable_ts_excluded"] += unparseable_ts_excluded
-
-    return stats
-
-
-def cmd_read_scope(args: argparse.Namespace) -> None:
-    """CLI entry point for the read-scope subcommand.
-
-    Root resolution happens here, mirroring cmd_edit_format, so --config-dir
-    validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="read-scope")
-    _read_scope_report(args, roots)
-
-
-def _read_scope_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Single-pass Read-call scope census: offset/limit/pages classification
-    against the full call count, result-token distribution by targeted/
-    whole-file cohort and main/subagent scope, repeat-whole-file-read
-    aggregates, and per-file-and-sessionId-partitioned prompt-token growth.
-    One reproducible scan producing every figure the case study cites.
-
-    roots is None for every direct caller other than cmd_read_scope (this
-    module's own tests included) — mirrors edit-format's own contract,
-    including the absence of the per-account breakdown below.
-
-    This report's own content never varies with `redact`: like edit-format,
-    it carries no project name, session ID, file path, or path fragment —
-    the repeat-whole-file-read aggregates are pure counts and token sums, and
-    per-account rows use account-N labels. --no-redact is still accepted and
-    still enforces the same multi-root refusal and DO NOT PUBLISH banner, for
-    CLI parity.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "read-scope: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    since_ts, since_raw = _parse_since_nd_arg(args, "read-scope")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(args, "read-scope", include_subagents=True, roots=roots)
-    _print_resolved_scope("read-scope", scope_label, scan_roots)
-
-    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
-
-    stats = _new_read_scope_stats()
-    per_account: list[dict] = [_new_read_scope_stats() for _ in scan_roots] if multi_root else []
-
-    for jsonl, records in session_iter:
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # which has no variant that also exposes the per-file boundary the
-        # growth chain and repeat-whole-file-read detection need.
-        groups = _read_session_file_partitioned(jsonl, include_subagents=True)
-        session_stats = _scan_read_scope_session(records, groups, since_ts)
-        _merge_read_scope_stats(stats, session_stats)
-        if multi_root:
-            idx = _root_index_for_path(jsonl, resolved_scan_roots)
-            _merge_read_scope_stats(per_account[idx], session_stats)
-
-    _print_read_scope_report(stats, per_account if multi_root else None, since_label)
-
-
-def _read_scope_cohort_bucket_token_total(stats: dict, cohort: str) -> int:
-    """Sum of `cohort`'s size_hist_tokens across both main and subagent scope
-    -- the shared denominator each size-histogram bucket line's percentage
-    divides by, so a subagent-dominated cohort's tokens aren't hidden behind
-    the printing scope's own, smaller total."""
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    return sum(
-        stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-        for label in bucket_labels
-    )
-
-
-def _print_read_scope_report(stats: dict, per_account: list[dict] | None, since_label: str) -> None:
-    read_total = stats["read_total"]
-    cohort_n = stats["cohort_n"]
-    targeted_n = cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-    whole_file_n = cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-    pages_n = cohort_n.get(_READ_SCOPE_COHORT_PAGES, 0)
-    unparsed_n = cohort_n.get(_READ_SCOPE_COHORT_UNPARSED, 0)
-
-    print("\n## Read-call census\n")
-    print(f"Read calls: {read_total:,}")
-    print(f"  offset present: {stats['offset_n']:,}")
-    print(f"  limit present:  {stats['limit_n']:,}")
-    print(f"  both present:   {stats['both_n']:,}")
-    # Cohort shares divide by the full Read call census, never targeted +
-    # whole_file — pages/unparsed_input calls are real Read calls that would
-    # otherwise silently vanish from the arithmetic.
-    print(f"\ntargeted    {targeted_n:,}  ({_pct_of(targeted_n, read_total)} of Read calls)")
-    print(f"whole_file  {whole_file_n:,}  ({_pct_of(whole_file_n, read_total)} of Read calls)")
-    print(f"\npages (Read calls scoping a PDF via `pages` rather than offset/limit): {pages_n:,}")
-    print(
-        "unparsed_input (Read tool_use whose input carried no file_path, e.g. only"
-        f" __unparsedToolInput -- scope unknowable): {unparsed_n:,}"
-    )
-    print(f"unpaired (Read tool_use with no matching tool_result found in this session): {stats['unpaired']:,}")
-    print(f"error_result (is_error tool_result for a Read call, excluded from the size histogram): {stats['error_result']:,}")
-    print(
-        "non_text_result (non-string tool_result content for a Read call, e.g. an image"
-        f" block, excluded from the size histogram): {stats['non_text_result']:,}"
-    )
-
-    print("\n## Result token distribution by cohort x scope\n")
-    cpt = _READ_SCOPE_CHARS_PER_TOKEN
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            tokens = stats["cohort_scope_tokens"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label:12} {thread_scope:9} count={count:8,}  tokens=~{tokens:12,}")
-
-    whole_file_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    targeted_tokens = sum(
-        stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_TARGETED, thread_scope), 0)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT)
-    )
-    result_tokens_total = whole_file_tokens + targeted_tokens
-    print(f"\nwhole_file share of targeted+whole_file result tokens: {_pct_of(whole_file_tokens, result_tokens_total)}")
-    subagent_whole_file_tokens = stats["cohort_scope_tokens"].get((_READ_SCOPE_COHORT_WHOLE_FILE, _READ_SCOPE_SCOPE_SUBAGENT), 0)
-    print(f"whole_file tokens inside subagents: {_pct_of(subagent_whole_file_tokens, whole_file_tokens)}")
-
-    print("\nsize histogram (est. tokens):\n")
-    bucket_labels = [label for _upper, label in _READ_SCOPE_SIZE_BUCKETS] + [_READ_SCOPE_SIZE_OVERFLOW_LABEL]
-    for cohort, cohort_label in (
-        (_READ_SCOPE_COHORT_TARGETED, "targeted"),
-        (_READ_SCOPE_COHORT_WHOLE_FILE, "whole_file"),
-    ):
-        cohort_tokens = _read_scope_cohort_bucket_token_total(stats, cohort)
-        for thread_scope in (_READ_SCOPE_SCOPE_MAIN, _READ_SCOPE_SCOPE_SUBAGENT):
-            cohort_scope_count = stats["cohort_scope_count"].get((cohort, thread_scope), 0)
-            print(f"  {cohort_label} / {thread_scope}:")
-            for label in bucket_labels:
-                count = stats["size_hist"].get((cohort, thread_scope, label), 0)
-                tokens = stats["size_hist_tokens"].get((cohort, thread_scope, label), 0)
-                print(
-                    f"    {label:10} {count:6,}  ({_pct_of(count, cohort_scope_count)})"
-                    f"  ~{tokens:11,} tok  ({_pct_of(tokens, cohort_tokens)} of {cohort_label} tokens)"
-                )
-
-    print(
-        "\n## Repeat whole-file reads (same path read whole-file more than once in the same"
-        " source file / sessionId -- a subagent re-reading what its parent already read is a"
-        " separate context window, not a repeat)\n"
-    )
-    print(f"repeat reads: {stats['repeat_whole_file_reads']:,}  (~{stats['repeat_whole_file_tokens']:,} tok)")
-    print(f"  of which .output/.log suffixed: {stats['repeat_whole_file_output_log_reads']:,}")
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Prompt-token growth ({title_since})\n")
-    growth_tokens = stats["growth_tokens"]
-    print(f"prompt-token growth: {growth_tokens:,}")
-    print(
-        "growth deltas excluded (--since active, owning turn's timestamp unparseable):"
-        f" {stats['growth_unparseable_ts_excluded']:,}"
-    )
-    print(f"Read-result tokens as share of prompt-token growth: {_pct_of(stats['read_result_tokens_total'], growth_tokens)}")
-    print(
-        "Read-result tokens as share of total tool-result tokens (self-consistent"
-        f" cross-check, both ~{cpt} chars/tok): "
-        f"{_pct_of(stats['read_result_tokens_total'], stats['all_tool_result_tokens_total'])}"
-    )
-    locate_n = stats["locate_call_n"]
-    locate_mean = stats["locate_result_tokens_total"] // locate_n if locate_n else 0
-    print(
-        f"\nlocate-step cost (Grep/Glob calls, the step a targeted read adds): {locate_n:,} calls, "
-        f"~{stats['locate_result_tokens_total']:,} tok, mean ~{locate_mean:,} tok/call -- "
-        f"any saving quoted against whole-file reads is gross until this is netted against it"
-    )
-
-    if per_account is not None:
-        print("\n## Per-account breakdown\n")
-        for idx, account_stats in enumerate(per_account):
-            account_label = f"account-{idx + 1}"
-            a_read_total = account_stats["read_total"]
-            if a_read_total == 0:
-                print(f"  {account_label:10} no Read calls")
-                continue
-            a_cohort_n = account_stats["cohort_n"]
-            a_targeted = a_cohort_n.get(_READ_SCOPE_COHORT_TARGETED, 0)
-            a_whole_file = a_cohort_n.get(_READ_SCOPE_COHORT_WHOLE_FILE, 0)
-            print(
-                f"  {account_label:10} calls={a_read_total:6,}  "
-                f"targeted={_pct_of(a_targeted, a_read_total):>6}  whole_file={_pct_of(a_whole_file, a_read_total):>6}"
             )
 
 
@@ -6164,1195 +4177,6 @@ def _cache_efficiency_report(args: argparse.Namespace, roots: Sequence[Path] | N
     _print_cache_efficiency_report(stats, per_account if multi_root else None)
 
 
-# --- cache-rebuild: idle-gap prompt-cache TTL-expiry measurement ----------
-# See .claude/plans/context-cost-root-cause.md for the corpus finding this
-# subcommand reproduces: a full-prefix cache rebuild after the vendor's 5m/1h
-# cache TTL expires during a gap, priced against a warm-cache read at the
-# same token count.
-
-_CACHE_REBUILD_DEFAULT_THRESHOLD = 100_000
-_CACHE_REBUILD_DEFAULT_SINCE = "30d"
-
-# Idle-gap boundaries mirror the vendor's own 5-minute/1-hour cache tiers
-# (_CACHE_WRITE_5M_MULTIPLIER/_CACHE_WRITE_1H_MULTIPLIER above, same source).
-_CACHE_REBUILD_IDLE_5M_SECONDS = 300
-_CACHE_REBUILD_IDLE_1H_SECONDS = 3600
-
-# --ttl-verdict's second boundary point for its two-point sensitivity check
-# (.claude/plans/cache-ttl-tuning-analysis.md's Approach section): the
-# vendor's own illustrative "about 1 minute" margin a 4-minute-streaming
-# response leaves inside a 5-minute TTL, used here as an alternate idle-band
-# lower bound. A direction adopts only when its margin clears at both this
-# boundary and _CACHE_REBUILD_IDLE_5M_SECONDS.
-_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS = 60
-
-# --ttl-verdict's own per-root margin requirement: a direction's net savings
-# must clear at least this fraction of that root's own dollar-equivalent
-# volume to adopt -- a pre-registered decision threshold from the plan's
-# Approach section, not a vendor-sourced rate.
-_CACHE_REBUILD_TTL_MARGIN_FRACTION = 0.10
-
-_TTL_VERDICT_ADOPT = "adopt"
-_TTL_VERDICT_DECLINE = "decline"
-_TTL_VERDICT_ROOTS_DISAGREE = "roots disagree"
-_TTL_VERDICT_NO_VERDICT = "no verdict"
-
-# --ttl-verdict's tier-direction discriminator, shared by root["favors"],
-# _cache_rebuild_root_verdict_input's positive_favors/negative_favors, and
-# the printed Tier/Favors table columns.
-_CACHE_REBUILD_TIER_5M = "5m"
-_CACHE_REBUILD_TIER_1H = "1h"
-
-_CAUSE_SESSION_START = "session start"
-_CAUSE_IDLE_5M_1H = "idle 5m-1h"
-_CAUSE_IDLE_OVER_1H = "idle >1h"
-_CAUSE_MODEL_SWITCH = "model switch"
-_CAUSE_UNEXPLAINED = "unexplained"
-_CAUSE_TS_ANOMALY = "excluded (timestamp anomaly)"
-
-# _cache_miss_reason's own vendor-emitted type value for a real model
-# switch. Compared against the gap-derived idle-5m-1h cause as a
-# cross-check, never fed back into any accumulator.
-# Named as a constant, not a bare string, so it stays byte-identical to
-# _classify_cache_rebuild_cause's own _CAUSE_MODEL_SWITCH trigger.
-_CACHE_MISS_REASON_MODEL_CHANGED = "model_changed"
-
-# Print order for the cause-breakdown table: the two TTL-explained idle
-# buckets first, then the non-idle tail, then the excluded diagnostic bucket
-# last -- a malformed/out-of-order timestamp pair gets its own explicit row
-# here rather than silently falling into "unexplained" or an idle bucket.
-_CACHE_REBUILD_CAUSES: tuple[str, ...] = (
-    _CAUSE_SESSION_START, _CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H,
-    _CAUSE_MODEL_SWITCH, _CAUSE_UNEXPLAINED, _CAUSE_TS_ANOMALY,
-)
-
-# Only these two causes are TTL-expiry rebuilds eligible for priced excess
-# and the concurrency split below -- session start has no prior cache to
-# have hit, and model switch/unexplained are not gap-driven.
-_CACHE_REBUILD_IDLE_GAP_CAUSES: tuple[str, ...] = (_CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H)
-
-# Origin labels for the main/subagent split -- classified per record via
-# isSidechain, never by which source file (group) a record came from, so
-# this reconciles against cache-efficiency's own sidechain row and survives
-# a subagent-file layout change (see _cache_rebuild_report's docstring).
-_CACHE_REBUILD_ORIGINS: tuple[str, ...] = ("main", "subagent")
-
-_ATTR_OWN_BASH = "waiting on own Bash call"
-_ATTR_BACKGROUND_TASK = "waiting on background task"
-_ATTR_COORDINATOR = "waiting on coordinator message"
-_ATTR_UNATTRIBUTED = "unattributed"
-
-# Print order for the subagent idle-gap cause-attribution table -- see
-# .claude/plans/subagent-idle-gap-cause-attribution.md's Approach section for
-# each cause's lever (or lack of one).
-_CACHE_REBUILD_ATTRIBUTIONS: tuple[str, ...] = (
-    _ATTR_OWN_BASH, _ATTR_BACKGROUND_TASK, _ATTR_COORDINATOR, _ATTR_UNATTRIBUTED,
-)
-
-# Claude Code emits these marker literals, not this repo -- a harness release can change either one without notice.
-_BACKGROUND_TASK_MARKER_PREFIX = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
-_COORDINATOR_MESSAGE_MARKER_PREFIX = "The coordinator sent a message while you were working"
-
-_BASH_WAIT_SLEEP_POLL = "sleep-poll wait"
-_BASH_WAIT_OTHER = "other Bash wait"
-_BASH_WAIT_NO_COMMAND = "no command recorded"
-
-# The own-Bash wait-shape table's printed row order follows this tuple's
-# definition order.
-_OWN_BASH_WAIT_SHAPES: tuple[str, ...] = (
-    _BASH_WAIT_SLEEP_POLL, _BASH_WAIT_OTHER, _BASH_WAIT_NO_COMMAND,
-)
-
-# Matches `sleep <number>` at string start, after `;`/`&`/`|`/newline, or
-# after `do`/`then`/`else` (word-boundary-guarded so it doesn't fire inside
-# `sudo`/`docker`).
-_SLEEP_POLL_COMMAND_RE = re.compile(r"(?:\A|[;&|\n]|\b(?:do|then|else))[ \t]*sleep[ \t]+[0-9]")
-
-
-def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
-    """Seconds since the previous call in this transcript's own turn
-    sequence, or None when either endpoint is unparseable or the delta is
-    negative (clock skew) -- both must classify as a timestamp anomaly
-    (_CAUSE_TS_ANOMALY) rather than a silently computed idle bucket."""
-    if prev_ts is None or cur_ts is None:
-        return None
-    gap = cur_ts - prev_ts
-    return gap if gap >= 0 else None
-
-
-def _classify_cache_rebuild_cause(
-    is_first_call: bool, gap_seconds: float | None, model_changed: bool, pure_1h_tier_write: bool,
-    *, idle_5m_boundary_seconds: float = _CACHE_REBUILD_IDLE_5M_SECONDS,
-) -> str:
-    """Classify one threshold-crossing cache-write call's cause.
-
-    Idle buckets take priority over model switch -- the latter only applies
-    inside the still-warm 5-minute window. pure_1h_tier_write is True when
-    the call's cache-write tokens are entirely ephemeral_1h-tier (no
-    ephemeral_5m) -- such a write can't have been forced by a <1h gap, since
-    the 1h-TTL cache would still be warm, so it falls to "unexplained"
-    instead of "idle 5m-1h". idle_5m_boundary_seconds overrides the idle
-    band's lower bound for --ttl-verdict's own two-point sensitivity check;
-    every other caller uses the default, vendor-grounded boundary.
-    """
-    if is_first_call:
-        return _CAUSE_SESSION_START
-    if gap_seconds is None:
-        return _CAUSE_TS_ANOMALY
-    if gap_seconds >= _CACHE_REBUILD_IDLE_1H_SECONDS:
-        return _CAUSE_IDLE_OVER_1H
-    if gap_seconds >= idle_5m_boundary_seconds:
-        return _CAUSE_UNEXPLAINED if pure_1h_tier_write else _CAUSE_IDLE_5M_1H
-    if model_changed:
-        return _CAUSE_MODEL_SWITCH
-    return _CAUSE_UNEXPLAINED
-
-
-def _classify_bash_wait_shape(command: str | None) -> str:
-    """Sub-classify the winning Bash marker's own recorded command text.
-
-    Textual, no shell parsing. A quoted or heredoc-embedded `sleep` counts
-    as a match, over-counting sleep-poll waits for text that only mentions
-    `sleep` without waiting on it. `sleep $VAR` (no literal leading digit)
-    does not match, under-counting sleep-poll waits by missing a real one.
-    """
-    if not isinstance(command, str):
-        return _BASH_WAIT_NO_COMMAND
-    if _SLEEP_POLL_COMMAND_RE.search(command):
-        return _BASH_WAIT_SLEEP_POLL
-    return _BASH_WAIT_OTHER
-
-
-def _attribute_idle_gap_cause(
-    prior_turn: dict, window: list[dict], *, gap_start_ts: float, gap_seconds: float
-) -> tuple[str, float | None, str | None]:
-    """Sub-classify one subagent-origin idle-gap candidate by the last
-    marker record found in `window` (the records strictly between
-    `prior_turn` and the rebuild call that closed the gap).
-
-    Last marker wins, scanning `window` forward: the question this answers
-    is what released the subagent, and the last marker before the
-    gap-closing call is by construction the one nearest that release.
-
-    Each leg is self-scoped rather than filtered by origin:
-
-    - Bash leg: matches only a `tool_use_id` `prior_turn` itself emitted
-      via a Bash `tool_use` block. Ids are unique, so another origin's
-      `tool_result` can never match.
-    - Meta legs (background-task, coordinator): require both `isMeta` and
-      `isSidechain` True on the record carrying them.
-
-    Returns (cause, covered_share, bash_shape). The winning marker's own
-    cause always wins, even when that marker's timestamp is missing or
-    unparseable -- treating a bad timestamp as "no marker at all" would let
-    precedence silently fall back to an earlier, unrelated marker's cause
-    instead of disclosing the gap via `covered_share`. covered_share is
-    (marker_ts - gap_start_ts) / gap_seconds when the winning marker's own
-    timestamp parses, None for _ATTR_UNATTRIBUTED or for an attributed
-    cause whose winning marker has no parseable timestamp. Not clamped to
-    [0, 1] -- a stray clock-skew marker timestamp outside the gap window
-    still yields a finite share rather than a silently clamped one.
-    bash_shape is `_classify_bash_wait_shape`'s label for the winning
-    marker's own recorded command when cause is _ATTR_OWN_BASH, None
-    otherwise.
-    """
-    bash_tool_use_ids: dict[str, str | None] = {}
-    for block in (prior_turn.get("message") or {}).get("content") or []:
-        if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
-            continue
-        command = (block.get("input") or {}).get("command")
-        bash_tool_use_ids[block.get("id")] = command if isinstance(command, str) else None
-
-    last_cause: str | None = None
-    last_marker_ts: float | None = None
-    last_command: str | None = None
-    for rec in window:
-        content = (rec.get("message") or {}).get("content")
-        marker_cause: str | None = None
-        marker_command: str | None = None
-        if isinstance(content, list):
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_result"
-                    and block.get("tool_use_id") in bash_tool_use_ids
-                ):
-                    marker_cause = _ATTR_OWN_BASH
-                    marker_command = bash_tool_use_ids[block.get("tool_use_id")]
-        elif isinstance(content, str) and rec.get("isMeta") and rec.get("isSidechain"):
-            if content.startswith(_BACKGROUND_TASK_MARKER_PREFIX):
-                marker_cause = _ATTR_BACKGROUND_TASK
-            elif content.startswith(_COORDINATOR_MESSAGE_MARKER_PREFIX):
-                marker_cause = _ATTR_COORDINATOR
-        if marker_cause is None:
-            continue
-        last_cause, last_marker_ts, last_command = marker_cause, _parse_ts(rec.get("timestamp")), marker_command
-
-    if last_cause is None:
-        return _ATTR_UNATTRIBUTED, None, None
-    bash_shape = _classify_bash_wait_shape(last_command) if last_cause == _ATTR_OWN_BASH else None
-    if last_marker_ts is None:
-        return last_cause, None, bash_shape
-    return last_cause, (last_marker_ts - gap_start_ts) / gap_seconds, bash_shape
-
-
-def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None, int]:
-    """Priced excess for one idle-gap rebuild call: the dollar delta between
-    what its cache-write tokens were actually billed and what the same
-    token count would have cost at the cache-read rate (a warm hit).
-
-    Returns (excess_dollars, unpriced_tokens): excess_dollars is None, and
-    unpriced_tokens carries the turn's total token count, when the model has
-    no _MODEL_BASE_INPUT_RATES entry -- matching _price_turn's own
-    unpriced-model contract.
-    """
-    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
-    if dollars_by_class is None:
-        return None, unpriced_tokens
-    write_dollars = dollars_by_class["cache_write_1h"] + dollars_by_class["cache_write_5m"]
-    eph_1h, eph_5m = _cache_write_split(usage)
-    rates = _model_rates(model)
-    warm_read_dollars = (eph_1h + eph_5m) / 1_000_000 * rates["cache_read"]
-    # Mirrors _price_turn's own fast/geo multiplier application so the
-    # counterfactual warm read is priced under the same settled infra
-    # conditions as the actual write.
-    if usage.get("speed") == "fast":
-        warm_read_dollars *= _FAST_MODE_RATE_MULTIPLIER
-    if usage.get("inference_geo") == "us":
-        warm_read_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
-    return write_dollars - warm_read_dollars, 0
-
-
-def _cache_rebuild_switch_delta_dollars(
-    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
-) -> tuple[float | None, int]:
-    """One call's signed contribution to the pooled 5m-to-1h cacheTtl switch
-    delta -- see .claude/plans/subagent-idle-gap-cache-rebuild-split.md's
-    Approach section for the derivation. (2 - r) must be resolved per call
-    via _model_rates, never hardcoded as 1.9, since a corpus mixing model
-    rates needs the true per-call coefficient. Positive is
-    switch-cost-positive; the report negates the accumulated sum before
-    printing it as a savings-positive net. Returns (None, unpriced_tokens)
-    for a model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's
-    own contract.
-    """
-    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
-    if dollars_by_class is None:
-        return None, unpriced_tokens
-    rates = _model_rates(model)
-    _eph_1h, eph_5m = _cache_write_split(usage)
-    switch_cost_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
-    delta_dollars = eph_5m / 1_000_000 * switch_cost_per_token
-    if is_idle_5m_1h_cause:
-        rescue_per_token = rates["cache_write_1h"] - rates["cache_read"]
-        delta_dollars -= eph_5m / 1_000_000 * rescue_per_token
-    # Mirrors _price_turn's own fast/geo multiplier application -- neither
-    # leg above goes through _price_turn's own dollars_by_class, so both
-    # need the same multiplier applied here instead.
-    if usage.get("speed") == "fast":
-        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
-    if usage.get("inference_geo") == "us":
-        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
-    return delta_dollars, 0
-
-
-def _cache_rebuild_1h_to_5m_delta_dollars(
-    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
-) -> tuple[float | None, int]:
-    """One call's signed contribution to a per-root 1h-to-5m cacheTtl switch
-    delta -- the algebraic mirror of _cache_rebuild_switch_delta_dollars for
-    the opposite direction (see .claude/plans/cache-ttl-tuning-analysis.md's
-    Approach section for the derivation). The 5m/1h-write rate difference
-    must be resolved per call via _model_rates, never hardcoded, for the
-    same mixed-rate-corpus reason as the sibling. Positive is
-    switch-cost-positive, matching the sibling's own convention: the report
-    negates the accumulated sum before printing it as a savings-positive
-    net. is_idle_5m_1h_cause marks a call whose prior-call gap fell in
-    [idle_5m_boundary, 3600) -- under a live 1h tier this call was served as
-    a warm read, so its own cache_read_input_tokens are the plan's Z
-    contribution, not eph_5m (near-zero by construction on the population
-    this function is called for). Returns (None, unpriced_tokens) for a
-    model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's own
-    contract.
-    """
-    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
-    if dollars_by_class is None:
-        return None, unpriced_tokens
-    rates = _model_rates(model)
-    eph_1h, _eph_5m = _cache_write_split(usage)
-    tier_savings_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
-    delta_dollars = -(eph_1h / 1_000_000 * tier_savings_per_token)
-    if is_idle_5m_1h_cause:
-        read_tokens = int(usage.get("cache_read_input_tokens", 0))
-        expiry_cost_per_token = rates["cache_write_5m"] - rates["cache_read"]
-        delta_dollars += read_tokens / 1_000_000 * expiry_cost_per_token
-    # Mirrors _price_turn's own fast/geo multiplier application -- neither
-    # leg above goes through _price_turn's own dollars_by_class, so both
-    # need the same multiplier applied here instead.
-    if usage.get("speed") == "fast":
-        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
-    if usage.get("inference_geo") == "us":
-        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
-    return delta_dollars, 0
-
-
-def _cache_rebuild_margin_clears(net_dollars: float, dollar_volume: float) -> bool:
-    """Whether a direction's net savings clears --ttl-verdict's own
-    _CACHE_REBUILD_TTL_MARGIN_FRACTION of that root's own dollar-equivalent
-    volume -- shared by both the 5m-to-1h and 1h-to-5m per-root checks
-    (Approach section), since the fraction and comparison are identical;
-    only the two inputs' own derivation differs per direction. A
-    non-positive volume never clears, rather than dividing by zero or by a
-    negative number.
-    """
-    if dollar_volume <= 0:
-        return False
-    return net_dollars / dollar_volume >= _CACHE_REBUILD_TTL_MARGIN_FRACTION
-
-
-def _cache_rebuild_token_tiebreaker_favors_5m(z: int, w1h: int) -> bool | None:
-    """Raw-token, zero-price tiebreaker for a 1h-tier root (the vendor
-    publishes nothing on how cache writes weigh against subscription rate
-    limits, which matters only for a root currently paying the 1h tier):
-    True favors dropping to 5m (Z < W1h), False disfavors it (Z > W1h),
-    None when Z == W1h -- a wash counts as a disagreement, never a
-    favorable tie, so a root whose dollar accounting disagrees with this
-    sign, or whose Z and W1h are exactly equal, declines regardless of
-    its own dollar margin.
-    """
-    if z == w1h:
-        return None
-    return z < w1h
-
-
-def _cache_rebuild_root_verdict_input(
-    *, net_primary: float, net_sensitivity: float, volume: float,
-    positive_favors: str, negative_favors: str,
-    apply_tiebreaker: bool, tiebreaker_favors_5m: bool | None = None,
-) -> dict[str, object]:
-    """Reduce one consistent root's own net-dollar figures (at both
-    sensitivity boundaries) and dollar-equivalent volume into the
-    {"favors", "clears"} shape _cache_rebuild_ttl_verdict consumes.
-    positive_favors/negative_favors name the direction net_primary's own
-    sign resolves to -- "1h"/"5m" for a 5m-tier root, "5m"/"1h" for a
-    1h-tier root, since the two directions' savings-positive sign points
-    opposite ways. apply_tiebreaker is False for a 5m-tier root, so clears
-    is the dollar margin alone. W1h is always 0 for a 5m-tier root by
-    construction -- that's what "consistent 5m" means. A raw-token
-    comparison against it would therefore be degenerate rather than a
-    real tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
-    tiebreaker_favors_5m must agree with the dollar accounting's own sign
-    -- a None (Z == W1h wash) result never agrees, so clears is forced
-    False regardless of margin.
-    """
-    favors = positive_favors if net_primary > 0 else negative_favors
-    margin_ok = (
-        _cache_rebuild_margin_clears(net_primary, volume)
-        and _cache_rebuild_margin_clears(net_sensitivity, volume)
-    )
-    if not apply_tiebreaker:
-        return {"favors": favors, "clears": margin_ok}
-    tiebreaker_agrees = (
-        tiebreaker_favors_5m is not None and tiebreaker_favors_5m == (favors == _CACHE_REBUILD_TIER_5M)
-    )
-    clears = margin_ok and tiebreaker_agrees
-    return {"favors": favors, "clears": clears}
-
-
-def _cache_rebuild_ttl_verdict(root_inputs: Sequence[dict[str, object]]) -> str:
-    """Reduce one bucket's own consistent-root inputs to the plan's four-way
-    verdict (Approach section's "ship rule"). Roots-disagree is checked
-    before clears, so a direction conflict wins even when every root's own
-    margin happens to clear.
-    """
-    if not root_inputs:
-        return _TTL_VERDICT_NO_VERDICT
-    favored_directions = {root["favors"] for root in root_inputs}
-    if len(favored_directions) > 1:
-        return _TTL_VERDICT_ROOTS_DISAGREE
-    if all(root["clears"] for root in root_inputs):
-        return _TTL_VERDICT_ADOPT
-    return _TTL_VERDICT_DECLINE
-
-
-def _negate_switch_delta_for_display(accumulated_delta: float) -> float:
-    """Savings-positive negation of an accumulated switch-delta sum, cents-
-    rounded. Two per-call contributions that cancel exactly at the rational
-    level (a group's own W5m/X sitting exactly at the break-even ratio) can
-    leave a +-1e-16 residual after floating-point summation; left
-    un-rounded, its sign bit would print as the misleading "-0.00" instead
-    of "0.00" once negated."""
-    return round(0.0 - accumulated_delta, 2) + 0.0
-
-
-def cmd_cache_rebuild(args: argparse.Namespace) -> None:
-    """CLI entry point for the cache-rebuild subcommand.
-
-    Root resolution happens here, at the CLI boundary, mirroring cmd_cost --
-    --config-dir validation exits before any scan work.
-    """
-    roots = _resolve_cost_roots(args, subcommand="cache-rebuild")
-    _cache_rebuild_report(args, roots)
-
-
-def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None = None) -> None:
-    """Idle-gap prompt-cache TTL-expiry rebuild measurement: per-call write
-    distribution, cause classification, concurrency split, and priced
-    excess, broken down by account-N ordinal. Redacted by default.
-
-    Each session's own deduped turn sequence is scanned once per
-    _read_session_file_partitioned group (the main thread, then each of its
-    own subagent files) to classify every threshold-crossing cache write and
-    to append every parseable-timestamp call into one corpus-wide
-    (timestamp, transcript) index. is_first_call/gap_seconds/model_changed
-    reset at every group boundary -- a group is its own context, so a delta
-    taken across a boundary would compare two unrelated conversations (see
-    _read_session_file_partitioned's own docstring). Within one group, that
-    same reset is further keyed per origin (main vs. subagent, via each
-    record's own isSidechain flag): an inline sidechain record living inside
-    the main transcript file must never be classified against whichever
-    record precedes it in file order when that record is the other origin.
-    Binary-searches one pre-sorted global (timestamp, transcript) index per
-    idle-gap call instead of re-scanning per gap -- O(n log n) total, not
-    O(gaps x calls).
-
-    `--since` only gates whether a call is *counted*, never whether it can
-    see its own prior turn (same contract as _cost_report's since_ts).
-
-    Also splits idle-gap rebuilds and the 5m-tier cache-write-token volume
-    by origin (main vs. subagent), and prices the dollar delta a 5m-to-1h
-    cacheTtl switch would make to subagent traffic. That delta is not
-    simply the subagent share of the priced excess above, because the
-    switch raises the write rate from 1.25x to 2x on every 5m-tier write
-    the origin makes, not only the idle-gap-rebuilt tokens the excess
-    figure already prices -- see
-    .claude/plans/subagent-idle-gap-cache-rebuild-split.md's Approach
-    section for the full derivation.
-
-    roots is None only for this module's own tests exercising the report
-    body directly; --this-repo/--config-dir CLI validation happens once in
-    cmd_cache_rebuild.
-    """
-    redact: bool = not bool(getattr(args, "no_redact", False))
-    ttl_verdict: bool = bool(getattr(args, "ttl_verdict", False))
-    scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
-    multi_root = len(scan_roots) > 1
-
-    # Defense-in-depth: _resolve_cost_roots is the CLI-level enforcement
-    # point for this refusal, but every direct caller of this function
-    # (including this module's own tests) bypasses that boundary.
-    if not redact and multi_root:
-        print(
-            "cache-rebuild: --no-redact is refused when more than one root is in scope"
-            " (--config-dir was given); drop --no-redact or scope to a single profile",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if not redact:
-        print(_DO_NOT_PUBLISH_BANNER)
-        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    threshold_arg = getattr(args, "threshold", None)
-    threshold: int = _CACHE_REBUILD_DEFAULT_THRESHOLD if threshold_arg is None else int(threshold_arg)
-    since_ts, since_raw = _parse_since_nd_arg(args, "cache-rebuild")
-    since_label = since_raw or ""
-
-    session_iter, scope_label = _resolve_project_scope(args, "cache-rebuild", include_subagents=True, roots=roots)
-
-    # redact_map is used only for the fingerprint below (this report prints
-    # no per-row project label), but the fingerprint must hash the same
-    # full-corpus label set every other --redact caller does to stay
-    # cross-run comparable, and that set can differ from session_iter's own
-    # (possibly --projects-narrowed) scope, so this second disk scan cannot
-    # be folded into the one below.
-    redact_map: dict[_RedactMapKey, str] = _build_redact_map(roots) if redact else {}
-    if redact:
-        print(
-            f"Corpus fingerprint: {_corpus_fingerprint(redact_map)}"
-            "  (private-project labels are not comparable across a different fingerprint)"
-        )
-    _print_resolved_scope("cache-rebuild", scope_label, scan_roots)
-
-    resolved_scan_roots = [root.resolve() for root in scan_roots] if multi_root else []
-    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
-    single_root_ordinal: int | None = redact_ordinals[scan_roots[0].resolve()] if not multi_root else None
-
-    total_calls_in_scope = 0
-    tail_write_sizes: list[int] = []
-    cause_counts: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_CAUSES, 0)
-    idle_gap_candidates: list[dict] = []
-    global_timeline: list[tuple[float, str]] = []
-    unpriced_idle_gap_turns = 0
-    unpriced_idle_gap_tokens = 0
-    # Every account ordinal in scope is pre-seeded with a zero row -- a
-    # valid-but-empty root, or one with no idle-gap rebuilds, still renders
-    # a clean zero-state row instead of vanishing from the breakdown.
-    per_account_rebuilds: dict[int, int] = dict.fromkeys(redact_ordinals.values(), 0) if multi_root else {}
-    per_account_excess: dict[int, float] = dict.fromkeys(redact_ordinals.values(), 0.0) if multi_root else {}
-
-    # Origin split (main vs. subagent, per-record via isSidechain -- see
-    # this function's own docstring). Always seeded with both keys, unlike
-    # the per-account dicts above, since the origin split prints
-    # unconditionally rather than only under a multi-root scope -- a corpus
-    # with no sidechain records at all must still render a zero subagent
-    # row rather than vanishing.
-    origin_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
-    origin_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
-    # Subagent-origin idle-gap cause attribution (see
-    # .claude/plans/subagent-idle-gap-cause-attribution.md's Approach
-    # section) -- zero-seeded for the same zero-state-row reason as the
-    # origin dicts above. attribution_shares holds each attributed
-    # candidate's covered_share for the table's per-row median.
-    attribution_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0)
-    attribution_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
-    attribution_band_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
-    attribution_shares: dict[str, list[float]] = {attribution: [] for attribution in _CACHE_REBUILD_ATTRIBUTIONS}
-    # Own-Bash wait-shape sub-split. Zero-seeded for the same zero-state-row
-    # reason as attribution_* above. Populated only for candidates whose
-    # bash_shape is not None -- the subset of the "waiting on own Bash call" row.
-    bash_shape_rebuilds: dict[str, int] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0)
-    bash_shape_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
-    bash_shape_band_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
-    bash_shape_shares: dict[str, list[float]] = {shape: [] for shape in _OWN_BASH_WAIT_SHAPES}
-    # W5m/X/switch-delta (Approach section) -- accumulated threshold-
-    # independently (every in-scope 5m-tier write, not only tail calls),
-    # since the 2x uplift a cacheTtl switch would charge applies to warm
-    # incremental writes too, not just rebuilds.
-    w5m_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
-    x_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
-    switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
-    unpriced_switch_delta_turns = 0
-    unpriced_switch_delta_tokens = 0
-    # This family is never read on the default path: w5m_by_origin/x_by_origin/
-    # switch_delta_by_origin above remain the sole source for every
-    # default-path figure.
-    w5m_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
-    w5m_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    x_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
-    switch_delta_5m_to_1h_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    # Duplicates the idle-band classification at
-    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
-    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
-    switch_delta_5m_to_1h_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    w1h_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
-    w1h_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    z_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
-    switch_delta_1h_to_5m_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    # Duplicates the idle-band classification at
-    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
-    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
-    switch_delta_1h_to_5m_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
-    # Calls this family skips for lacking a price-table entry, pooled across
-    # both directions and every root -- disclosed in the --ttl-verdict
-    # section rather than split per root, since a call is unpriced by model,
-    # not by which root or direction it landed in.
-    unpriced_ttl_verdict_turns = 0
-    unpriced_ttl_verdict_tokens = 0
-    # Cross-tab of the gap-derived idle-5m-1h cause against
-    # pricing._cache_miss_reason's own "model_changed" signal -- never feeds
-    # back into any accumulator above.
-    cache_miss_reason_agree = 0
-    cache_miss_reason_discrepancy = 0
-    # One entry per subagent-file group (one dispatch's own conversation),
-    # for the ex-post per-dispatch dispersion figures -- kept separate from
-    # w5m_by_origin/x_by_origin above, which pool every subagent-origin
-    # record regardless of which group (or, for an inline sidechain record,
-    # which file) it came from.
-    per_group_dispersion: list[dict] = []
-    # Priced subagent-origin W5m tokens that landed inside a subagent-file
-    # group -- a strict subset of w5m_by_origin["subagent"] above. The gap
-    # (printed as the dispersion block's coverage disclosure) is:
-    #   - an unpriced subagent-origin call (enters no group, priced or not)
-    #   - an inline sidechain record inside the main transcript file
-    #     (group_index == 0, so is_subagent_group is False even though its
-    #     own origin is "subagent")
-    subagent_origin_w5m_in_groups = 0
-
-    for jsonl, _flat_records in session_iter:
-        session_key = str(jsonl.resolve())
-
-        account_ordinal: int | None = None
-        if multi_root:
-            root_position = _root_index_for_path(jsonl, resolved_scan_roots)
-            account_ordinal = redact_ordinals[resolved_scan_roots[root_position]]
-        elif single_root_ordinal is not None:
-            account_ordinal = single_root_ordinal
-
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # which has no variant that also exposes the per-file group boundary
-        # classification needs (mirrors read-scope's own _scan_read_scope_session
-        # call site). Classification (is_first_call/gap_seconds/model_changed)
-        # resets at every group boundary: each group is its own context (the
-        # main thread, or one subagent's own turn sequence), so a delta taken
-        # across a boundary would compare two unrelated conversations (see
-        # _read_session_file_partitioned's own docstring). session_key stays
-        # file-level across every group, though -- a subagent's own calls are
-        # still this session's activity for the concurrency check below, not
-        # another session's.
-        for group_index, group in enumerate(_read_session_file_partitioned(jsonl, include_subagents=True)):
-            group_records = _dedup_turns_by_request_id(group)
-
-            # A subagent-file group is one dispatch's own conversation --
-            # group_index 0 is always the main transcript (see
-            # _read_session_file_partitioned's own docstring). This is used
-            # only for the per-dispatch dispersion figures below, never for
-            # origin classification itself: an inline sidechain record can
-            # still appear inside group_index 0, and is classified as
-            # subagent origin regardless via its own isSidechain flag.
-            is_subagent_group = group_index > 0
-            group_w5m_tokens = 0
-            group_x_tokens = 0
-            group_delta_dollars = 0.0
-
-            # Sequential classification state, keyed per origin (mirroring
-            # _scan_cache_efficiency_group's own chain_key = (session_key,
-            # thread) pattern) rather than shared across the whole group --
-            # an inline sidechain record interleaved with main-thread
-            # records must never be classified against the other origin's
-            # own prior call.
-            chain_state: dict[str, dict] = {
-                origin: {"i": 0, "prev_ts": None, "prev_index": None, "prev_model": None}
-                for origin in _CACHE_REBUILD_ORIGINS
-            }
-
-            for idx, rec in enumerate(group_records):
-                if rec.get("type") != "assistant":
-                    continue
-                msg = rec.get("message") or {}
-                usage = msg.get("usage")
-                if not usage:
-                    continue
-                model = msg.get("model", "")
-                if model == "<synthetic>":
-                    continue
-
-                origin = "subagent" if bool(rec.get("isSidechain")) else "main"
-                chain = chain_state[origin]
-
-                cur_ts = _parse_ts(rec.get("timestamp"))
-                is_first_call = chain["i"] == 0
-                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(chain["prev_ts"], cur_ts)
-                model_changed = not is_first_call and model != chain["prev_model"]
-                eph_1h, eph_5m = _cache_write_split(usage)
-                pure_1h_tier_write = eph_1h > 0 and eph_5m == 0
-                cause = _classify_cache_rebuild_cause(is_first_call, gap_seconds, model_changed, pure_1h_tier_write)
-
-                # Every parseable-timestamp call is corpus "activity", tail or
-                # not -- the concurrency check below asks whether ANY call
-                # happened during a gap, regardless of that call's own size.
-                if cur_ts is not None:
-                    global_timeline.append((cur_ts, session_key))
-
-                in_scope = since_ts is None or (cur_ts is not None and cur_ts >= since_ts)
-                if in_scope:
-                    total_calls_in_scope += 1
-
-                # Threshold-independent: W5m/X accumulate over every
-                # in-scope 5m-tier write, not only tail (>= threshold)
-                # calls -- the 2x uplift a cacheTtl switch would charge
-                # applies to warm incremental writes too, not only rebuilds.
-                if in_scope and eph_5m > 0:
-                    w5m_by_origin[origin] += eph_5m
-                    is_idle_5m_1h_cause = cause == _CAUSE_IDLE_5M_1H
-                    if is_idle_5m_1h_cause:
-                        x_by_origin[origin] += eph_5m
-                    delta_dollars, turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
-                        model, usage, is_idle_5m_1h_cause=is_idle_5m_1h_cause
-                    )
-                    if delta_dollars is None:
-                        unpriced_switch_delta_turns += 1
-                        unpriced_switch_delta_tokens += turn_unpriced_tokens
-                    else:
-                        switch_delta_by_origin[origin] += delta_dollars
-                        if is_subagent_group:
-                            group_w5m_tokens += eph_5m
-                            if is_idle_5m_1h_cause:
-                                group_x_tokens += eph_5m
-                            group_delta_dollars += delta_dollars
-                            if origin == "subagent":
-                                subagent_origin_w5m_in_groups += eph_5m
-
-                # --ttl-verdict's own second, parallel accumulation: keyed
-                # on (origin, root_ordinal), never read on the default
-                # path above. root_key's own ordinal is always an int here
-                # (redact_ordinals seeds single_root_ordinal too), but the
-                # None guard mirrors the per_account_* sites' own defensive
-                # style.
-                if ttl_verdict and in_scope and account_ordinal is not None:
-                    root_key = (origin, account_ordinal)
-                    read_tokens = int(usage.get("cache_read_input_tokens", 0))
-                    # is_idle_5m_1h_cause (the primary, vendor-grounded
-                    # boundary) is exactly `cause == _CAUSE_IDLE_5M_1H`,
-                    # already computed above -- reused here rather than
-                    # re-running _classify_cache_rebuild_cause at its own
-                    # default boundary a second time.
-                    is_idle_primary = cause == _CAUSE_IDLE_5M_1H
-                    is_idle_sensitivity = _classify_cache_rebuild_cause(
-                        is_first_call, gap_seconds, model_changed, pure_1h_tier_write,
-                        idle_5m_boundary_seconds=_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS,
-                    ) == _CAUSE_IDLE_5M_1H
-
-                    in_w5m_branch = eph_5m > 0
-                    # A call in the sensitivity idle band (the wider of the
-                    # two boundaries) may carry read tokens the mirror
-                    # direction needs even when it wrote no 1h-tier tokens
-                    # at all -- the common case for a live-1h-tier root's
-                    # warm read.
-                    in_w1h_branch = eph_1h > 0 or (read_tokens > 0 and is_idle_sensitivity)
-
-                    # Unpriced-ness depends only on model/usage, the same
-                    # regardless of which branch(es) below this record
-                    # enters, so it's resolved once here rather than once
-                    # per branch -- a record eligible for both branches (a
-                    # mixed-tier write, or a sensitivity-band warm read
-                    # alongside a 5m-tier write) is counted at most once.
-                    if in_w5m_branch or in_w1h_branch:
-                        dollars_by_class, _context_at_turn, turn_unpriced_tokens = _price_turn(model, usage)
-                        if dollars_by_class is None:
-                            unpriced_ttl_verdict_turns += 1
-                            unpriced_ttl_verdict_tokens += turn_unpriced_tokens
-
-                    if in_w5m_branch:
-                        w5m_by_origin_root[root_key] += eph_5m
-                        rates = _model_rates(model)
-                        if rates is not None:
-                            w5m_dollars_by_origin_root[root_key] += eph_5m / 1_000_000 * rates["cache_write_5m"]
-                        # X is a primary-boundary-only quantity (the report's
-                        # own display column) -- only switch_delta_5m_to_1h_*
-                        # needs the sensitivity boundary too, for the
-                        # two-point margin check.
-                        if is_idle_primary:
-                            x_by_origin_root[root_key] += eph_5m
-                        for is_idle_at_boundary, delta_dict in (
-                            (is_idle_primary, switch_delta_5m_to_1h_by_origin_root),
-                            (is_idle_sensitivity, switch_delta_5m_to_1h_at_60_by_origin_root),
-                        ):
-                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
-                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
-                            )
-                            if boundary_delta is not None:
-                                delta_dict[root_key] += boundary_delta
-
-                    if in_w1h_branch:
-                        w1h_by_origin_root[root_key] += eph_1h
-                        rates = _model_rates(model)
-                        if rates is not None:
-                            w1h_dollars_by_origin_root[root_key] += eph_1h / 1_000_000 * rates["cache_write_1h"]
-                        # Z is a primary-boundary-only quantity, the same
-                        # reason as X above.
-                        if is_idle_primary:
-                            z_by_origin_root[root_key] += read_tokens
-                        for is_idle_at_boundary, delta_dict in (
-                            (is_idle_primary, switch_delta_1h_to_5m_by_origin_root),
-                            (is_idle_sensitivity, switch_delta_1h_to_5m_at_60_by_origin_root),
-                        ):
-                            boundary_delta, _turn_unpriced_tokens = _cache_rebuild_1h_to_5m_delta_dollars(
-                                model, usage, is_idle_5m_1h_cause=is_idle_at_boundary
-                            )
-                            if boundary_delta is not None:
-                                delta_dict[root_key] += boundary_delta
-
-                    # Disclosed only, never fed back into any accumulator
-                    # above -- see _CAUSE_IDLE_5M_1H's own docstring caveat
-                    # that a model/effort switch outside the classified
-                    # window can masquerade as idle-gap expiry.
-                    if cause == _CAUSE_IDLE_5M_1H:
-                        if _cache_miss_reason(msg) == _CACHE_MISS_REASON_MODEL_CHANGED:
-                            cache_miss_reason_discrepancy += 1
-                        else:
-                            cache_miss_reason_agree += 1
-
-                write_tokens = eph_1h + eph_5m
-                in_tail = write_tokens >= threshold
-
-                if in_tail and in_scope:
-                    tail_write_sizes.append(write_tokens)
-                    cause_counts[cause] += 1
-
-                    if cause in _CACHE_REBUILD_IDLE_GAP_CAUSES:
-                        excess_dollars, turn_unpriced_tokens = _cache_rebuild_excess_dollars(model, usage)
-                        if excess_dollars is None:
-                            unpriced_idle_gap_turns += 1
-                            unpriced_idle_gap_tokens += turn_unpriced_tokens
-                        else:
-                            attribution: str | None = None
-                            covered_share: float | None = None
-                            bash_shape: str | None = None
-                            if origin == "subagent":
-                                window = group_records[chain["prev_index"] + 1 : idx]
-                                attribution, covered_share, bash_shape = _attribute_idle_gap_cause(
-                                    group_records[chain["prev_index"]], window,
-                                    gap_start_ts=chain["prev_ts"], gap_seconds=gap_seconds,
-                                )
-                            idle_gap_candidates.append({
-                                "session_key": session_key,
-                                "gap_start_ts": chain["prev_ts"],
-                                "gap_end_ts": cur_ts,
-                                "excess_dollars": excess_dollars,
-                                "account_ordinal": account_ordinal,
-                                "origin": origin,
-                                "cause": cause,
-                                "attribution": attribution,
-                                "covered_share": covered_share,
-                                "bash_shape": bash_shape,
-                            })
-
-                chain["prev_ts"] = cur_ts if cur_ts is not None else chain["prev_ts"]
-                # prev_index names the record prev_ts came from -- paired so
-                # a later candidate's window always starts right after the
-                # record whose timestamp is that candidate's gap_start_ts.
-                chain["prev_index"] = idx if cur_ts is not None else chain["prev_index"]
-                chain["prev_model"] = model
-                chain["i"] += 1
-
-            if is_subagent_group:
-                per_group_dispersion.append({
-                    "w5m": group_w5m_tokens,
-                    "x": group_x_tokens,
-                    "delta_dollars": group_delta_dollars,
-                })
-
-    # One sort, once, over the whole corpus -- every idle-gap candidate below
-    # binary-searches this same index rather than re-scanning per gap.
-    global_timeline.sort(key=lambda entry: entry[0])
-    global_ts = [ts for ts, _key in global_timeline]
-    global_keys = [key for _ts, key in global_timeline]
-
-    concurrent_rebuilds = 0
-    concurrent_excess = 0.0
-    idle_break_rebuilds = 0
-    idle_break_excess = 0.0
-
-    for cand in idle_gap_candidates:
-        # Open interval: bisect_right/bisect_left exclude a call landing
-        # exactly on gap_start_ts or gap_end_ts, since those endpoints are
-        # this transcript's own calls.
-        # The exclusion is timestamp-value-based, so a different concurrent
-        # session's call at that same exact instant is also excluded, not
-        # just this transcript's own.
-        lo = bisect.bisect_right(global_ts, cand["gap_start_ts"])
-        hi = bisect.bisect_left(global_ts, cand["gap_end_ts"])
-        # Indexed range with early exit, not global_keys[lo:hi], so a
-        # concurrent-activity match short-circuits without first copying the
-        # whole candidate window.
-        other_active = any(global_keys[j] != cand["session_key"] for j in range(lo, hi))
-        if other_active:
-            concurrent_rebuilds += 1
-            concurrent_excess += cand["excess_dollars"]
-        else:
-            idle_break_rebuilds += 1
-            idle_break_excess += cand["excess_dollars"]
-        if multi_root and cand["account_ordinal"] is not None:
-            per_account_rebuilds[cand["account_ordinal"]] += 1
-            per_account_excess[cand["account_ordinal"]] += cand["excess_dollars"]
-        origin_rebuilds[cand["origin"]] += 1
-        origin_excess[cand["origin"]] += cand["excess_dollars"]
-        attribution = cand["attribution"]
-        if attribution is not None:
-            attribution_rebuilds[attribution] += 1
-            attribution_excess[attribution] += cand["excess_dollars"]
-            if cand["cause"] == _CAUSE_IDLE_5M_1H:
-                attribution_band_excess[attribution] += cand["excess_dollars"]
-            if cand["covered_share"] is not None:
-                attribution_shares[attribution].append(cand["covered_share"])
-        bash_shape = cand["bash_shape"]
-        if bash_shape is not None:
-            bash_shape_rebuilds[bash_shape] += 1
-            bash_shape_excess[bash_shape] += cand["excess_dollars"]
-            if cand["cause"] == _CAUSE_IDLE_5M_1H:
-                bash_shape_band_excess[bash_shape] += cand["excess_dollars"]
-            if cand["covered_share"] is not None:
-                bash_shape_shares[bash_shape].append(cand["covered_share"])
-
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
-
-    total_tail_calls = sum(cause_counts.values())
-    print(f"Calls scanned: {total_calls_in_scope:,}")
-    print(
-        f"Calls writing >= {threshold:,} tokens: {total_tail_calls:,}"
-        f" ({_pct_of(total_tail_calls, total_calls_in_scope)} of calls)"
-    )
-
-    if tail_write_sizes:
-        sorted_sizes = sorted(tail_write_sizes)
-        median = statistics.median(sorted_sizes)
-        p90 = sorted_sizes[min(len(sorted_sizes) - 1, int(0.9 * (len(sorted_sizes) - 1)))]
-        print(
-            f"Per-call write distribution: min={sorted_sizes[0]:,}  median={median:,.0f}"
-            f"  p90={p90:,}  max={sorted_sizes[-1]:,}"
-        )
-
-    print("\n## Cause breakdown\n")
-    print(f"{'Cause':<32} {'Calls':>8} {'Share':>7}")
-    for cause in _CACHE_REBUILD_CAUSES:
-        count = cause_counts[cause]
-        print(f"{cause:<32} {count:>8,} {_pct_of(count, total_tail_calls):>7}")
-
-    idle_gap_total = concurrent_rebuilds + idle_break_rebuilds
-    idle_gap_excess = concurrent_excess + idle_break_excess
-    print(
-        "\n## Idle-gap concurrency split [unverified]\n\n"
-        "Classifies each idle-gap rebuild by whether any other transcript, in any\n"
-        "account, had a call inside the gap window. This is an association, not proof\n"
-        "the operator was attending that other session. [unverified]\n"
-    )
-    print(f"{'':<28} {'Rebuilds':>9} {'Excess $':>12}")
-    print(f"{'Another session active':<28} {concurrent_rebuilds:>9,} {concurrent_excess:>12,.2f}")
-    print(f"{'Everything idle (a break)':<28} {idle_break_rebuilds:>9,} {idle_break_excess:>12,.2f}")
-    print(f"{'Total idle-gap rebuilds':<28} {idle_gap_total:>9,} {idle_gap_excess:>12,.2f}")
-
-    if multi_root:
-        print("\n## Idle-gap excess by account\n")
-        print(f"{'Account':<16} {'Rebuilds':>9} {'Excess $':>12}")
-        for ordinal in sorted(per_account_rebuilds):
-            print(f"{f'account-{ordinal}':<16} {per_account_rebuilds[ordinal]:>9,} {per_account_excess[ordinal]:>12,.2f}")
-
-    if unpriced_idle_gap_turns:
-        print(
-            f"\n  ({unpriced_idle_gap_turns:,} idle-gap tail calls / {unpriced_idle_gap_tokens:,} tokens"
-            " excluded from priced excess -- model has no price-table entry)"
-        )
-
-    print("\n## Idle-gap rebuilds by origin\n")
-    print(f"{'Origin':<10} {'Rebuilds':>9} {'Excess $':>12}")
-    for origin in _CACHE_REBUILD_ORIGINS:
-        print(f"{origin:<10} {origin_rebuilds[origin]:>9,} {origin_excess[origin]:>12,.2f}")
-
-    print(
-        "\n## Subagent idle-gap cause attribution [unverified]\n\n"
-        "Sub-classifies the subagent row above (idle 5m-1h and idle >1h pooled,\n"
-        "so the rows below sum exactly to that row) by the last marker record\n"
-        "found in each gap's own window, scanning forward:\n"
-        "  - a tool_result for that call's own Bash tool_use -> waiting on own Bash call\n"
-        "  - a background-task notification -> waiting on background task\n"
-        "  - a coordinator message -> waiting on coordinator message\n"
-        "  - no marker at all -> unattributed\n"
-        "Last marker before the gap-closing call wins. 5m-1h $ restricts Excess $\n"
-        "to the idle 5m-1h band only, the band a cacheTtl switch could actually\n"
-        "rescue (idle >1h stays cold under either tier). Median cov. is the\n"
-        "median (marker_ts - gap_start_ts) / gap_seconds across each row's own\n"
-        "attributed candidates, not clamped to [0, 1]: near 100% means the\n"
-        "marker sits at the gap's end and the attribution is tight, a low value\n"
-        "means the marker landed early and most of the gap is still unexplained.\n"
-        "It renders n/a whenever the winning marker's own timestamp is missing\n"
-        "or unparseable, which never changes the cause itself. Main origin is\n"
-        "excluded: experimental.cacheTtl cannot reach main-conversation traffic,\n"
-        "so a main-origin split would have no lever to point at. A large\n"
-        "'unattributed' share means the marker taxonomy is incomplete, not that\n"
-        "the gaps are causeless -- a transcript records the marker the harness\n"
-        "delivered, never a statement of why the subagent was idle. [unverified]\n"
-    )
-    print(f"{'Cause':<32} {'Rebuilds':>9} {'Excess $':>12} {'5m-1h $':>12} {'Median cov.':>12}")
-    for attribution in _CACHE_REBUILD_ATTRIBUTIONS:
-        shares = attribution_shares[attribution]
-        median_cov = _pct_of(statistics.median(shares), 1.0) if shares else "n/a"
-        print(
-            f"{attribution:<32} {attribution_rebuilds[attribution]:>9,}"
-            f" {attribution_excess[attribution]:>12,.2f} {attribution_band_excess[attribution]:>12,.2f}"
-            f" {median_cov:>12}"
-        )
-
-    print(
-        "\n## Own-Bash wait shape [unverified]\n\n"
-        "Sub-splits the 'waiting on own Bash call' row above (the three rows\n"
-        "below sum exactly to it) by the shape of the winning Bash tool_use's\n"
-        "own recorded command:\n"
-        "  - a sleep <number> in shell command position -> sleep-poll wait\n"
-        "  - any other recorded command -> other Bash wait\n"
-        "  - no command recorded (a Bash block with no input) -> no command recorded\n"
-        "Only the gap-closing call's own winning command is classified, so a\n"
-        "repeated 'sleep N; check' loop is classified once per gap it closed,\n"
-        "not once per sleep. The match is textual, with no shell parsing.\n"
-        "A quoted or heredoc-embedded sleep counts as a match, over-counting\n"
-        "the row below for text that only mentions sleep without waiting on\n"
-        "it. sleep $VAR (no literal leading digit) does not match,\n"
-        "under-counting the row below by missing a real sleep-poll wait. A\n"
-        "high share there points at no lever: see docs/cost-levers-considered.md's\n"
-        "'From background-slow-bash-calls.md' section. [unverified]\n"
-    )
-    print(f"{'Shape':<32} {'Rebuilds':>9} {'Excess $':>12} {'5m-1h $':>12} {'Median cov.':>12}")
-    for shape in _OWN_BASH_WAIT_SHAPES:
-        shape_shares = bash_shape_shares[shape]
-        shape_median_cov = _pct_of(statistics.median(shape_shares), 1.0) if shape_shares else "n/a"
-        print(
-            f"{shape:<32} {bash_shape_rebuilds[shape]:>9,}"
-            f" {bash_shape_excess[shape]:>12,.2f} {bash_shape_band_excess[shape]:>12,.2f}"
-            f" {shape_median_cov:>12}"
-        )
-
-    print(
-        "\n## Cache-write tier switch delta (5m -> 1h), threshold-independent\n\n"
-        "W5m/X below accumulate over every in-scope call regardless of the\n"
-        "--threshold value above -- this is a different denominator than the\n"
-        "tail-only cause breakdown, and must not be divided into those figures.\n"
-        "X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold\n"
-        "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
-        "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
-        "if negative) against this origin's own traffic. The main row's Net$ has\n"
-        "no corresponding lever in this plan's scope -- experimental.cacheTtl is\n"
-        "set in subagent frontmatter and cannot reach main-conversation traffic;\n"
-        "read it as reconciliation context only.\n"
-    )
-    print(f"{'Origin':<10} {'W5m':>14} {'X':>14} {'Ratio':>8} {'Net$':>10}")
-    for origin in _CACHE_REBUILD_ORIGINS:
-        w5m = w5m_by_origin[origin]
-        x_tokens = x_by_origin[origin]
-        net_dollars = _negate_switch_delta_for_display(switch_delta_by_origin[origin])
-        print(f"{origin:<10} {w5m:>14,} {x_tokens:>14,} {_pct_of(x_tokens, w5m):>8} {net_dollars:>10,.2f}")
-
-    if unpriced_switch_delta_turns:
-        print(
-            f"\n  ({unpriced_switch_delta_turns:,} 5m-tier write calls / {unpriced_switch_delta_tokens:,} tokens"
-            " excluded from the switch-delta figures above -- model has no price-table entry)"
-        )
-
-    # Ex-post oracle bound: a group with w5m==0 has an undefined ratio and
-    # is excluded from every figure below, though its (zero) delta still
-    # contributes nothing to clearing_net. "Clears" uses the cents-rounded
-    # sign, not the raw float, for the same reason
-    # _negate_switch_delta_for_display rounds before printing -- a
-    # dispatch built at the exact break-even boundary can leave a +-1e-16
-    # residual that a raw `< 0` comparison would misclassify.
-    eligible_groups = [g for g in per_group_dispersion if g["w5m"] > 0]
-    clearing_groups = [g for g in eligible_groups if round(g["delta_dollars"], 2) < 0]
-    total_subagent_group_w5m = sum(g["w5m"] for g in per_group_dispersion)
-    clearing_w5m = sum(g["w5m"] for g in clearing_groups)
-    # Sum the raw (un-rounded) per-group deltas first, then negate/round the
-    # sum once -- rounding each group to cents before summing can drift a
-    # many-group total by up to $0.005 per group against the raw sum, the
-    # same reason the pooled origin-row Net$ figures above round only once.
-    clearing_net = _negate_switch_delta_for_display(sum(g["delta_dollars"] for g in clearing_groups))
-    # Priced subagent-origin W5m tokens that landed in no dispatch group at
-    # all (see subagent_origin_w5m_in_groups' own comment above) -- a
-    # non-zero figure means the oracle bound below is missing coverage in
-    # the exclusion direction (undercounts what a selective policy could
-    # find), not the inclusion direction.
-    uncovered_subagent_w5m = w5m_by_origin["subagent"] - subagent_origin_w5m_in_groups
-
-    print(
-        "\n## Subagent per-dispatch dispersion (ex-post oracle bound)\n\n"
-        "Dispatches selected by their own realized ratio, which a policy fixed\n"
-        "before the dispatch cannot do -- a one-sided test for whether a\n"
-        "selective lever is excluded, never a validation that one would work.\n"
-    )
-    print(f"Subagent dispatches (dispatches with any 5m-tier write): {len(eligible_groups):,}")
-    print(f"Dispatches individually clearing their own break-even ratio: {len(clearing_groups):,}")
-    print(
-        "Their share of per-dispatch subagent W5m (not the pooled row above):"
-        f" {_pct_of(clearing_w5m, total_subagent_group_w5m)}"
-    )
-    print(f"Net $ restricted to clearing dispatches: {clearing_net:,.2f}")
-    print(
-        f"\n  ({uncovered_subagent_w5m:,} of {w5m_by_origin['subagent']:,} pooled subagent W5m tokens landed in no"
-        " dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main"
-        " transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound"
-        " above has exact W5m coverage, not merely assumed)"
-    )
-
-    if ttl_verdict:
-        print(
-            "\n## TTL-verdict per-root analysis (--ttl-verdict) [unverified]\n\n"
-            "Per-root break-even verdict for each bucket's own live TTL tier -- see"
-            " .claude/plans/cache-ttl-tuning-analysis.md's Approach section for the derivation, the ship rule,"
-            " and every caveat this print omits. A root is consistent by whichever tier it is currently paying"
-            " for this bucket (nonzero W5m XOR nonzero W1h); a root paying both or neither in this window is"
-            " excluded from this bucket's verdict entirely, never counted toward either direction. Clears"
-            " requires the margin to hold at both the"
-            f" {_CACHE_REBUILD_IDLE_5M_SECONDS}s and {_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS}s boundary,"
-            " and, for every 1h-tier root, the raw-token tiebreaker to agree with the dollar accounting's own"
-            " sign. [unverified]\n"
-        )
-        all_root_ordinals: tuple[int, ...] = tuple(sorted(set(redact_ordinals.values())))
-        for ttl_origin in _CACHE_REBUILD_ORIGINS:
-            consistent_5m_roots = 0
-            consistent_1h_roots = 0
-            excluded_roots = 0
-            root_inputs: list[dict[str, object]] = []
-            print(f"\n### {ttl_origin}\n")
-            print(f"{'Root':<12} {'Tier':>6} {'W5m/W1h':>14} {'X/Z':>14} {'Net$':>10} {'Favors':>8} {'Clears':>8}")
-            for root_ordinal in all_root_ordinals:
-                root_key = (ttl_origin, root_ordinal)
-                # --no-redact is refused once more than one root is in
-                # scope, so scan_roots[0] is the only root this branch can
-                # reach when not redact.
-                root_label = f"account-{root_ordinal}" if redact else str(scan_roots[0].parent)
-                root_w5m = w5m_by_origin_root.get(root_key, 0)
-                root_w1h = w1h_by_origin_root.get(root_key, 0)
-                if (root_w5m > 0) == (root_w1h > 0):
-                    # Both nonzero (mixed tier in this window) or both zero
-                    # (no data) -- excluded from this bucket's verdict
-                    # either way (Approach section).
-                    excluded_roots += 1
-                    continue
-                if root_w5m > 0:
-                    consistent_5m_roots += 1
-                    net_primary = _negate_switch_delta_for_display(
-                        switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
-                    )
-                    net_sensitivity = _negate_switch_delta_for_display(
-                        switch_delta_5m_to_1h_at_60_by_origin_root.get(root_key, 0.0)
-                    )
-                    volume = w5m_dollars_by_origin_root.get(root_key, 0.0)
-                    root_input = _cache_rebuild_root_verdict_input(
-                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
-                        positive_favors=_CACHE_REBUILD_TIER_1H, negative_favors=_CACHE_REBUILD_TIER_5M,
-                        apply_tiebreaker=False,
-                    )
-                    root_inputs.append(root_input)
-                    print(
-                        f"{root_label:<12} {_CACHE_REBUILD_TIER_5M:>6} {root_w5m:>14,}"
-                        f" {x_by_origin_root.get(root_key, 0):>14,} {_fmt_usd(net_primary):>10}"
-                        f" {root_input['favors']:>8} {str(root_input['clears']):>8}"
-                    )
-                else:
-                    consistent_1h_roots += 1
-                    net_primary = _negate_switch_delta_for_display(
-                        switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
-                    )
-                    net_sensitivity = _negate_switch_delta_for_display(
-                        switch_delta_1h_to_5m_at_60_by_origin_root.get(root_key, 0.0)
-                    )
-                    volume = w1h_dollars_by_origin_root.get(root_key, 0.0)
-                    root_z = z_by_origin_root.get(root_key, 0)
-                    root_input = _cache_rebuild_root_verdict_input(
-                        net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
-                        positive_favors=_CACHE_REBUILD_TIER_5M, negative_favors=_CACHE_REBUILD_TIER_1H,
-                        apply_tiebreaker=True,
-                        tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
-                    )
-                    root_inputs.append(root_input)
-                    print(
-                        f"{root_label:<12} {_CACHE_REBUILD_TIER_1H:>6} {root_w1h:>14,} {root_z:>14,}"
-                        f" {_fmt_usd(net_primary):>10} {root_input['favors']:>8} {str(root_input['clears']):>8}"
-                    )
-            verdict = _cache_rebuild_ttl_verdict(root_inputs)
-            print(
-                f"\n{ttl_origin}: consistent 5m roots={consistent_5m_roots}"
-                f"  consistent 1h roots={consistent_1h_roots}"
-                f"  excluded (mixed-tier or no data) roots={excluded_roots}  verdict={verdict}"
-            )
-
-        if unpriced_ttl_verdict_turns:
-            print(
-                f"\n  ({unpriced_ttl_verdict_turns:,} calls / {unpriced_ttl_verdict_tokens:,} tokens excluded from"
-                " every Net$ figure and its own margin volume above -- model has no price-table entry)"
-            )
-
-        cache_miss_reason_total = cache_miss_reason_agree + cache_miss_reason_discrepancy
-        if cache_miss_reason_discrepancy:
-            print(
-                f"\n  (cache-miss-reason cross-tab: {cache_miss_reason_discrepancy:,} of"
-                f" {cache_miss_reason_total:,} idle-5m-1h-classified calls carry a vendor cache_miss_reason of"
-                f" {_CACHE_MISS_REASON_MODEL_CHANGED!r} -- a discrepancy between the gap-derived cause and Claude"
-                " Code's own miss signal. Every W5m/X/W1h/Z figure above still reflects the gap-derived"
-                " classification, never this signal.)"
-            )
-
-
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
 #
 # See docs/cost-ledger.md for the schema and .claude/plans/cost-trend-ledger.md
@@ -7365,27 +4189,15 @@ _COST_LEDGER_COLUMNS = (
 )
 _COST_LEDGER_HEADER_LINE = "| " + " | ".join(_COST_LEDGER_COLUMNS) + " |"
 _COST_LEDGER_SEPARATOR_LINE = "|" + "|".join(["---"] * len(_COST_LEDGER_COLUMNS)) + "|"
-# Real git conflict markers are exactly these 7-character prefixes (each
-# followed by a ref name on <<<<<<</>>>>>>> or nothing on =======).
-_COST_LEDGER_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+
+
 _COST_LEDGER_ISO_WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
-# Short, lowercase-alphanumeric, no spaces or unicode -- wide enough for
-# "m1"/"laptop2", narrow enough that a hostname or username can't be
-# expressed in it (see docs/cost-ledger.md). \Z (not $) so a trailing
-# newline doesn't slip past the anchor.
-_MACHINE_LABEL_RE = re.compile(r"^[a-z0-9]{1,8}\Z")
+
+
 # A note is a rendered markdown table cell (docs/cost-ledger.md, viewed on
 # GitHub) and a terminal string (cost-ledger's own read mode) -- printable
 # ASCII only blocks both raw control/escape bytes and non-ASCII lookalikes.
 _COST_LEDGER_NOTE_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
-# Local-lock convenience bound, not a protocol-grounded value -- this guards
-# an interactive CLI's own read-check-write window against another local
-# --record, not a network call, so no vendor timeout spec applies. 30s
-# comfortably exceeds a single --record's read-check-write step (parse,
-# upsert, temp-write, atomic rename) while still surfacing a wedged or
-# long-running concurrent recorder within one interactive command.
-_COST_LEDGER_LOCK_TIMEOUT_S = 30.0
-_COST_LEDGER_LOCK_POLL_INTERVAL_S = 0.1
 
 
 class _CostLedgerParseError(Exception):
@@ -7404,65 +4216,6 @@ def _cost_ledger_path() -> Path:
             raise ValueError(f"COST_LEDGER_PATH must be an absolute path, got: {override!r}")
         return path
     return config_dir() / "cost-ledger.md"
-
-
-def _ledger_path_is_git_tracked(ledger_path: Path, subcommand: str = "cost-ledger") -> bool:
-    """Return True iff the nearest existing ancestor of ledger_path sits
-    inside a git working tree -- scopes --record's multi-root refusal to
-    paths git could actually commit/push, not every ledger destination.
-    Fails closed (True) on any ambiguous result: a missing git binary, a
-    timeout, or a non-zero exit that isn't git's clean "not a git
-    repository" signal (a bare repository, for instance, exits 0 with
-    stdout "false" -- tracked by git but not a work tree, so this returns
-    False for it). `subcommand` labels this function's own stderr
-    diagnostics (default "cost-ledger", its original caller); pr-cost passes
-    its own name so a git-tracked check failure isn't misattributed."""
-    ancestor = ledger_path.parent
-    while not ancestor.exists():
-        ancestor = ancestor.parent
-    # Explicit env, not the inherited one: a GIT_DIR/GIT_WORK_TREE exported
-    # in the caller's shell would otherwise redirect this check to an
-    # unrelated repo; removing (not blanking) them restores git's normal
-    # discovery. LC_ALL=C pins the fatal-error text checked below to stable
-    # English regardless of the operator's locale.
-    env = os.environ.copy()
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        env.pop(var, None)
-    env["LC_ALL"] = "C"
-    try:
-        # Same local-git timeout rationale as _repo_scoped_project_slugs's
-        # git calls: no network/credential work, so 10s only bounds a
-        # wedged invocation.
-        # encoding/errors pinned explicitly: text=True alone decodes with the
-        # parent process's own locale, not LC_ALL=C above (that only governs
-        # what bytes git emits) -- under a narrow-locale parent, a non-ASCII
-        # ancestor path embedded in git's stderr could otherwise raise
-        # UnicodeDecodeError uncaught, defeating fail-closed.
-        proc = subprocess.run(
-            ["git", "-C", str(ancestor), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=10, check=False, env=env,
-            encoding="utf-8", errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        # Not exc's str(): TimeoutExpired renders the full argv, which
-        # includes `ancestor` -- a home-rooted path this module otherwise
-        # never echoes to stderr.
-        print(f"{subcommand}: git-tracked check timed out", file=sys.stderr)
-        return True
-    except OSError as exc:
-        print(f"{subcommand}: git-tracked check failed ({exc})", file=sys.stderr)
-        return True
-    if proc.returncode == 0:
-        # git only ever emits "true"/"false" here on success; anything else
-        # is treated as "false" rather than validated against that literal.
-        return proc.stdout.strip() == "true"
-    if "not a git repository" in proc.stderr:
-        return False
-    print(
-        f"{subcommand}: git-tracked check exited {proc.returncode} unexpectedly",
-        file=sys.stderr,
-    )
-    return True
 
 
 def _parse_cost_ledger_iso_week(week_str: str) -> None:
@@ -7867,16 +4620,16 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     """
     record: bool = bool(getattr(args, "record", False))
     force: bool = bool(getattr(args, "force", False))
-    machine_label: str | None = getattr(args, "machine_label", None) or None
     note: str = getattr(args, "note", None) or ""
 
     try:
         ledger_path = _cost_ledger_path()
-    except ValueError as exc:
-        # COST_LEDGER_PATH is new, operator-set, and easy to mistype relative
-        # -- route it through this module's standard stderr+exit convention
-        # rather than letting a raw traceback reach the terminal.
-        print(f"cost-ledger: {exc}", file=sys.stderr)
+    except ValueError:
+        # Not str(exc): _cost_ledger_path's own message embeds
+        # COST_LEDGER_PATH's raw value, which can carry a home-rooted
+        # engagement path. Same discipline as pr-cost-export's identical
+        # catch.
+        print("cost-ledger: COST_LEDGER_PATH must be an absolute path", file=sys.stderr)
         sys.exit(1)
 
     if roots is None:
@@ -7970,12 +4723,6 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
 
-    if not machine_label:
-        print("cost-ledger: --record requires --machine-label", file=sys.stderr)
-        sys.exit(1)
-    if not _MACHINE_LABEL_RE.match(machine_label):
-        print(f"cost-ledger: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
     if len(roots) > 1 and _ledger_path_is_git_tracked(ledger_path):
         # --record writes to a single resolved ledger path; unioning multiple
         # declared accounts into that one write only risks silently
@@ -7992,18 +4739,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(2)
-    # Rejection names the rule, never the compared hostname value -- echoing
-    # it would persist recon-value data into the session transcript, the same
-    # discipline deny-private-project-refs.sh applies to its own matches.
-    # Covers the POSIX hostname only, not macOS's separate ComputerName
-    # (`scutil --get ComputerName`) -- see docs/cost-ledger.md.
-    if machine_label.lower() == socket.gethostname().lower():
-        print(
-            "cost-ledger: --machine-label must not equal this machine's hostname"
-            " -- publishing a hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+
+    # Resolved only after the sentinel and git-tracked checks above, so a
+    # run never creates a machine-id file inside a config dir whose owner
+    # never opted in to --record.
+    # See pr-cost's equivalent call for the same ordering.
+    machine = _resolve_machine_identity("cost-ledger")
+
     note_violation = _cost_ledger_note_violation(note)
     if note_violation is not None:
         print(f"cost-ledger: --note {note_violation}", file=sys.stderr)
@@ -8061,7 +4803,9 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     opus_share = _pct_value(week_data["opus"], week_data["total"])
 
     deny_data = _compute_deny_summary_data(deny_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
-    denials = sum(deny_data["hook_counts"].values())
+    # Shadows the module-level `denials` import (transcript_analysis.denials) -- this
+    # function needs no denials.<name> access, only the count computed above.
+    denials = sum(deny_data["hook_counts"].values())  # noqa: F811
 
     reviewer_data = _compute_reviewer_yield_data(reviewer_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
     reviewer_gap_pp = _reviewer_gap_pp(reviewer_data["agg2"])
@@ -8069,7 +4813,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     new_row = {
         "week": week_str,
-        "machine": machine_label,
+        "machine": machine,
         "rates": _PRICING_FETCH_DATE.isoformat(),
         "usd": week_data["total"],
         "context_pct": context_share,
@@ -8097,6 +4841,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
                 print(f"cost-ledger: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            _warn_machine_identity_absent_from_ledger("cost-ledger", machine, existing_rows)
+
             try:
                 new_rows = _upsert_cost_ledger_row(existing_rows, new_row, force)
             except ValueError as exc:
@@ -8111,1360 +4857,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
-    print(f"cost-ledger: recorded {week_str} / {machine_label}")
-
-
-# ---------------------------------------------------------------------------
-# pr-cost: per-PR AI-tooling dollar cost, joined against gh PR size, rework,
-# and review-surface data. See docs/pr-cost.md for the full row schema and
-# design rationale. Unlike cost-ledger, this ledger's rows carry
-# branch and repo values, so every stdout/stderr path routes them through
-# _assign_root_scoped_redact_label before printing -- never raw.
-# ---------------------------------------------------------------------------
-
-_PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
-    # Key.
-    "host", "repo", "pr_number", "machine",
-    # Identity / provenance.
-    "head_branch", "merged_at", "rate_stamp", "captured_at",
-    "join_confidence", "supersedes", "status",
-    # Dollars and tokens by class, in _TOKEN_CLASSES order.
-    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
-    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
-    "unpriced_turns", "unpriced_tokens",
-    "turn_count", "session_count",
-    "opus_dollars", "opus_dollar_share_pct",
-    "sum_context_at_turn", "mean_context_at_turn",
-    # gh-sourced PR size/rework.
-    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
-    # Mechanical review-surface proxies -- configurable, with claude-config defaults.
-    "distinct_top_level_dirs", "distinct_file_extensions",
-    "tests_changed", "plan_file_added", "risk_surface_flag",
-)
-_PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
-
-# Legacy header (no "host" column): every row under it is implicitly
-# _PR_COST_LEDGER_LEGACY_HOST_DEFAULT. _parse_pr_cost_ledger_file_text
-# recognizes both headers and normalizes a legacy row to the current column
-# shape before parsing -- see docs/pr-cost.md's backward-compat contract for
-# a new key column.
-if _PR_COST_LEDGER_COLUMNS[0] != "host":  # the slice below assumes this position; `assert` would
-    raise RuntimeError("_PR_COST_LEDGER_COLUMNS[0] must be 'host'")  # vanish under python -O
-_PR_COST_LEDGER_LEGACY_COLUMNS: tuple[str, ...] = _PR_COST_LEDGER_COLUMNS[1:]
-_PR_COST_LEDGER_LEGACY_HEADER_LINE = "\t".join(_PR_COST_LEDGER_LEGACY_COLUMNS)
-_PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
-
-_PR_COST_FLOAT_COLUMNS = (
-    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
-    "opus_dollars", "opus_dollar_share_pct", "mean_context_at_turn",
-)
-# Excludes pr_number, part of the key and parsed separately alongside repo/machine.
-_PR_COST_INT_COLUMNS = (
-    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
-    "unpriced_turns", "unpriced_tokens", "turn_count", "session_count", "sum_context_at_turn",
-    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
-    "distinct_top_level_dirs", "distinct_file_extensions",
-)
-_PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
-
-# status is a fixed enum carrying no embedded gh diagnostic text --
-# _GH_CALL_DEGRADED_AUTH and _GH_CALL_DEGRADED_HOST_MISMATCH from
-# _gh_call_with_backoff both fold into _PR_COST_STATUS_DEGRADED_NETWORK
-# here, since a mid-run auth or local-misconfiguration failure and a
-# generic transient one both just mean "this row's enrichment is
-# incomplete," not distinguishable data states.
-_PR_COST_STATUS_OK = "ok"
-_PR_COST_STATUS_DEGRADED_RATE_LIMIT = "degraded_rate_limit"
-_PR_COST_STATUS_DEGRADED_NETWORK = "degraded_network"
-_PR_COST_STATUS_VALUES = (_PR_COST_STATUS_OK, _PR_COST_STATUS_DEGRADED_RATE_LIMIT, _PR_COST_STATUS_DEGRADED_NETWORK)
-
-# "high": direct headRefName match corroborated by plan-slug or SHA overlap.
-# "medium": direct match, uncorroborated. "low": resolved only via the
-# branch-reuse tie-break (highest commit-SHA overlap, most recent
-# mergedAt), or unresolved (no row written).
-_PR_COST_JOIN_CONFIDENCE_HIGH = "high"
-_PR_COST_JOIN_CONFIDENCE_MEDIUM = "medium"
-_PR_COST_JOIN_CONFIDENCE_LOW = "low"
-_PR_COST_JOIN_CONFIDENCE_VALUES = (
-    _PR_COST_JOIN_CONFIDENCE_HIGH, _PR_COST_JOIN_CONFIDENCE_MEDIUM, _PR_COST_JOIN_CONFIDENCE_LOW,
-)
-
-# The gh-call-level outcomes _gh_call_with_backoff itself returns on an
-# auth-shaped or local-misconfiguration-shaped failure -- never ledger
-# status values; every caller folds them into _PR_COST_STATUS_DEGRADED_NETWORK
-# before they reach a row (see above).
-_GH_CALL_DEGRADED_AUTH = "degraded_auth"
-_GH_CALL_DEGRADED_HOST_MISMATCH = "degraded_host_mismatch"
-
-# Provisional placeholder ("As-of rule"): a merged PR's branch keeps
-# accruing local transcript activity for a while after merge, so
-# capturing too early understates its cost. A future measurement pass is
-# expected to replace this default with a percentile of (last priced turn
-# - mergedAt) across the surviving corpus; 3 days is a defensible guess
-# pending that measurement, not a validated figure -- see docs/pr-cost.md.
-_PR_COST_ASOF_WINDOW_DAYS_DEFAULT = 3.0
-
-_DEFAULT_PR_COST_PLAN_FILE_GLOB = ".claude/plans/*.md"
-
-# Provisional default risk-surface globs for claude-config itself (paths
-# whose review stakes are higher than an average file change: hooks gate
-# operations, install scripts run with the operator's own shell, CI
-# workflows run with repo secrets, and permission rules govern what future
-# agents can do). Not empirically validated against this repo's own
-# incident history -- overridable via --risk-surface-glob for another repo.
-_DEFAULT_PR_COST_RISK_SURFACE_GLOBS: tuple[str, ...] = (
-    "claude/.claude/hooks/**",
-    "claude/.claude/settings*.json",
-    ".github/workflows/**",
-    "install*.sh",
-    "claude/.claude/rules/**",
-)
-
-# Best-effort, ecosystem-generic test-file heuristic (a tests/ path segment,
-# a test_/_test.py Python name, or a .test./.spec. JS/TS suffix) -- not
-# claude-config-specific, unlike the risk-surface globs above.
-_PR_COST_TEST_FILE_RE = re.compile(
-    r"(^|/)tests?/|(^|/)test_[^/]+\.py$|_test\.py$|\.test\.[jt]sx?$|\.spec\.[jt]sx?$"
-)
-
-_PR_COST_GH_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
-# per-call timeout recommendation, so this is a considered guess generous
-# enough for one REST round trip, not a network SLA citation.
-_PR_COST_RATE_LIMIT_MIN_BACKOFF_S = 60.0  # GitHub REST API docs, "Rate
-# limits for the REST API" -- secondary-rate-limit guidance: wait at least
-# one minute between retries when no Retry-After header is present.
-_PR_COST_RATE_LIMIT_MAX_ATTEMPTS = 5  # Operational default, not vendor-specified:
-# GitHub's rate-limit guidance above bounds the per-retry wait, not how many
-# retries to attempt before giving up on one gh call.
-_PR_COST_RATE_LIMIT_MAX_ELAPSED_S = 15 * 60  # Operational default, not
-# vendor-specified: a per-call ceiling generous enough to ride out one
-# secondary-rate-limit window without letting a single gh call stall the run.
-_PR_COST_GH_PR_LIST_LIMIT = 1000  # gh pr list's own default (30) silently
-# truncates any larger population with no error. This repo's own population
-# is a few hundred merged PRs; 1000 is a generous fixed ceiling, not a
-# per-run population count -- --limit is a
-# pagination bound, not a network timeout, so no vendor citation applies here
-# the way it does to the backoff constants above.
-
-_GIT_REMOTE_ORIGIN_TIMEOUT_S = 10  # Matches this file's other local git
-# calls (_ledger_path_is_git_tracked, _repo_scoped_project_slugs): no
-# network/credential work, so this only bounds a wedged invocation.
-# Anchored at the start (after an optional scheme/git@ prefix) so the captured
-# host is the URL's actual host, never merely a substring appearing later in
-# a malicious or misconfigured remote (e.g. https://attacker.example/github.com/x/y) --
-# whatever hostname it turns out to be, github.com or a GHE host alike.
-_GIT_REMOTE_HOST_OWNER_REPO_RE = re.compile(
-    r"^(?:https?://|git://|ssh://(?:git@)?|git@)?(?P<host>[A-Za-z0-9.-]+)[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
-)
-# The host character class above has no port syntax, so a GHE remote on a
-# non-standard port (host:8443, ssh://git@host:2222/...) fails to parse and
-# the run aborts rather than misrouting.
-_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
-
-# Best-effort classification of a failed gh call's stderr text -- gh has no
-# structured error-kind field on stderr, so this is pattern matching against
-# gh's own documented error phrasing, not a guarantee.
-_GH_AUTH_ERROR_RE = re.compile(r"not logged into|gh auth login|authentication failed|http\s?401", re.IGNORECASE)
-# Matches gh's own stderr for an ambient GH_HOST that doesn't match any
-# configured git remote (verified against gh 2.97.0: "none of the git
-# remotes configured for this repository correspond to the GH_HOST
-# environment variable") -- a local shell-config mismatch, not a transient
-# failure, so it must not consume the retry budget the way a genuine
-# network error does.
-_GH_HOST_MISMATCH_ERROR_RE = re.compile(r"GH_HOST environment variable", re.IGNORECASE)
-_GH_RATE_LIMIT_ERROR_RE = re.compile(r"rate limit|http\s?429|http\s?403", re.IGNORECASE)
-_GH_RETRY_AFTER_RE = re.compile(r"retry.{0,3}after[:\s]+(\d+)", re.IGNORECASE)
-
-
-class _PrCostLedgerParseError(Exception):
-    """Raised by _parse_pr_cost_ledger_file_text on any malformed pr-cost
-    ledger content -- the canonical parser fails loud rather than mis-parsing
-    a hand-edited or corrupted row."""
-
-
-def _pr_cost_ledger_path(config_dir_override: Path | None = None) -> Path:
-    """Active pr-cost ledger path: $PR_COST_LEDGER_PATH if set (must be
-    absolute), else (config_dir_override or config_dir()) / "pr-cost-ledger.tsv".
-    config_dir_override lets --all-accounts resolve each account's own
-    ledger path without reassigning the process-wide CLAUDE_CONFIG_DIR."""
-    override = os.environ.get("PR_COST_LEDGER_PATH")
-    if override:
-        path = Path(override)
-        if not path.is_absolute():
-            raise ValueError(f"PR_COST_LEDGER_PATH must be an absolute path, got: {override!r}")
-        return path
-    return (config_dir_override or config_dir()) / "pr-cost-ledger.tsv"
-
-
-def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
-    """Validate and coerce one already-split, already-tab-separated data
-    row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
-    the offending line on any field that doesn't match its column's
-    contract."""
-    if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
-        )
-    row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
-
-    if not row["host"] or row["host"] != row["host"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
-            " this diagnostic since the ledger's host column is never scrubbed at rest"
-        )
-    if not row["repo"] or row["repo"] != row["repo"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
-            " this diagnostic since the ledger's repo column is never scrubbed at rest"
-        )
-    try:
-        row["pr_number"] = int(row["pr_number"])
-    except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number {row['pr_number']!r}") from None
-    if not _MACHINE_LABEL_RE.match(row["machine"]):
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label {row['machine']!r}")
-    for required_col in ("head_branch", "merged_at", "captured_at"):
-        if not row[required_col]:
-            raise _PrCostLedgerParseError(f"line {line_no}: {required_col} must not be empty")
-    # _latest_pr_cost_row picks the "latest" row via a lexicographic string
-    # max() on captured_at, which silently misresolves on a malformed ISO8601 value.
-    for ts_col in ("merged_at", "captured_at"):
-        try:
-            datetime.fromisoformat(row[ts_col].replace("Z", "+00:00"))
-        except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col} {row[ts_col]!r}") from None
-    try:
-        datetime.strptime(row["rate_stamp"], "%Y-%m-%d")
-    except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp {row['rate_stamp']!r}") from None
-    if row["join_confidence"] not in _PR_COST_JOIN_CONFIDENCE_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence {row['join_confidence']!r}")
-    if row["status"] not in _PR_COST_STATUS_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown status {row['status']!r}")
-
-    for float_col in _PR_COST_FLOAT_COLUMNS:
-        try:
-            row[float_col] = float(row[float_col])
-        except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col} {row[float_col]!r}") from None
-        if math.isnan(row[float_col]) or math.isinf(row[float_col]):
-            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col} {row[float_col]!r}")
-
-    for int_col in _PR_COST_INT_COLUMNS:
-        try:
-            row[int_col] = int(row[int_col])
-        except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col} {row[int_col]!r}") from None
-
-    for bool_col in _PR_COST_BOOL_COLUMNS:
-        if row[bool_col] not in ("true", "false"):
-            raise _PrCostLedgerParseError(
-                f"line {line_no}: malformed {bool_col} {row[bool_col]!r} (expected true/false)"
-            )
-        row[bool_col] = row[bool_col] == "true"
-
-    return row
-
-
-def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
-    """Canonical parser for the pr-cost ledger's tab-separated content.
-
-    Unlike the weekly cost-ledger's markdown table, this format has no
-    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE (or the
-    pre-host-column _PR_COST_LEDGER_LEGACY_HEADER_LINE, the one documented
-    backward-compat exception -- see its own comment), and every following
-    non-blank line is one tab-separated data row. Fails loud
-    (_PrCostLedgerParseError) on an unresolved git merge-conflict marker
-    (reusing _COST_LEDGER_CONFLICT_MARKERS -- a generic git marker, not
-    specific to the weekly ledger's own format), a missing/mismatched
-    header, or a row with the wrong column count or a malformed cell --
-    never silently misparses a malformed or hand-edited row.
-    """
-    lines = text.splitlines()
-    for marker in _COST_LEDGER_CONFLICT_MARKERS:
-        for line_no, line in enumerate(lines, start=1):
-            if line.startswith(marker):
-                raise _PrCostLedgerParseError(f"line {line_no}: unresolved merge-conflict marker {marker!r}")
-
-    if not lines:
-        raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
-    if lines[0] == _PR_COST_LEDGER_HEADER_LINE:
-        is_legacy_header = False
-    elif lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
-        is_legacy_header = True
-    else:
-        raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
-
-    rows: list[dict] = []
-    for line_no, line in enumerate(lines[1:], start=2):
-        if not line.strip():
-            continue
-        cells = line.split("\t")
-        if is_legacy_header:
-            cells = [_PR_COST_LEDGER_LEGACY_HOST_DEFAULT, *cells]
-        rows.append(_parse_pr_cost_ledger_row_cells(cells, line_no))
-    return rows
-
-
-def _format_pr_cost_ledger_row(row: dict) -> str:
-    """Render one row dict as its tab-separated line -- the exact inverse of
-    _parse_pr_cost_ledger_row_cells. Refuses (raises _PrCostLedgerParseError)
-    to render any cell containing a tab or newline, which would corrupt the
-    row's own column structure -- every free-text-shaped cell here is
-    program-generated (a redacted placeholder, or an ISO8601 timestamp this
-    module itself formatted), never raw external text, so this should never
-    fire in practice; it exists as a last-resort guard against writing a
-    corrupt row rather than as an expected code path."""
-    cells: list[str] = []
-    for col in _PR_COST_LEDGER_COLUMNS:
-        value = row[col]
-        if col in _PR_COST_BOOL_COLUMNS:
-            cell = "true" if value else "false"
-        elif col in _PR_COST_FLOAT_COLUMNS:
-            cell = f"{value:.6f}"
-        else:
-            cell = str(value)
-        if "\t" in cell or "\n" in cell or "\r" in cell:
-            raise _PrCostLedgerParseError(
-                f"column {col!r} value {cell!r} contains a tab or newline -- refusing to write a corrupt row"
-            )
-        cells.append(cell)
-    return "\t".join(cells)
-
-
-def _latest_pr_cost_row(
-    rows: Sequence[dict], host: str, repo: str, pr_number: int, machine_label: str | None,
-) -> dict | None:
-    """Latest row (by captured_at) matching (host, repo, pr_number[, machine_label]).
-
-    host and repo are compared as-is (no re-lowering here): both are
-    case-folded by the caller before reaching this function (host via
-    _git_remote_origin_host_and_owner_repo, repo via _resolve_pinned_gh_repo),
-    and every stored row's own host/repo cells are validated lowercase by
-    the parser -- the same convention _pr_cost_report's other identity
-    comparisons already rely on. machine_label=None matches any machine --
-    read mode's default (an operator checking "has any machine captured
-    this PR yet" doesn't care which one); --record always passes its own
-    resolved machine_label, matching the ledger's own (host, repo,
-    pr_number, machine) key.
-    """
-    matches = [
-        r for r in rows
-        if r["host"] == host and r["repo"] == repo and r["pr_number"] == pr_number
-        and (machine_label is None or r["machine"] == machine_label)
-    ]
-    if not matches:
-        return None
-    return max(matches, key=lambda r: r["captured_at"])
-
-
-def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
-    """Append new_row to existing_rows, keyed by (host, repo, pr_number, machine).
-
-    Unlike the weekly ledger's in-place replace, a duplicate key with
-    --force APPENDS a new row (carrying new_row["supersedes"], already set
-    by the caller to the prior latest row's own captured_at) rather than
-    overwriting -- this ledger is append-only by design, so a correction
-    keeps the full history instead of losing everything before the latest
-    edit. Refuses (raises ValueError) on a duplicate key without --force. `already`
-    is the caller's own _latest_pr_cost_row lookup, passed in rather than
-    re-derived here so there is one call site for that lookup per write.
-    """
-    if already is not None and not force:
-        raise ValueError(
-            f"a row for pr_number={new_row['pr_number']} machine={new_row['machine']}"
-            " already exists -- pass --force with --pr to append a correcting row"
-        )
-    return [*existing_rows, new_row]
-
-
-def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> None:
-    """Crash-safe write mirroring _write_cost_ledger_file's temp-file/
-    read-back/atomic-replace pattern, adapted for this ledger's plain-TSV
-    format (no markdown preamble) and its own 0600 creation mode -- these
-    rows carry branch/repo data the public weekly ledger's rows don't, so a
-    freshly created file gets 0600 explicitly (an existing file's mode bits
-    are preserved instead, matching _write_cost_ledger_file's own rationale)
-    rather than silently depending on tempfile.mkstemp's own default.
-    """
-    new_text = "\n".join([_PR_COST_LEDGER_HEADER_LINE] + [_format_pr_cost_ledger_row(r) for r in rows]) + "\n"
-    fd, tmp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=".pr-cost-ledger-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(new_text)
-        written_text = Path(tmp_name).read_text()
-        if written_text != new_text:
-            raise _PrCostLedgerParseError("write verification mismatch -- refusing to publish")
-        _parse_pr_cost_ledger_file_text(written_text)  # fails loud on the canonical parser before publishing
-        if ledger_path.exists():
-            os.chmod(tmp_name, stat.S_IMODE(ledger_path.stat().st_mode))
-        else:
-            os.chmod(tmp_name, 0o600)
-        os.replace(tmp_name, ledger_path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
-
-
-def _acquire_pr_cost_ledger_lock(lock_f) -> None:
-    """Acquire an exclusive, non-blocking lock on lock_f, retrying at
-    _COST_LEDGER_LOCK_POLL_INTERVAL_S intervals until
-    _COST_LEDGER_LOCK_TIMEOUT_S elapses -- the same local-lock convenience
-    bound the weekly ledger uses (_acquire_cost_ledger_lock), reused here
-    since it guards the same kind of wait (a local read-check-write window
-    against another --record), not a network call.
-    """
-    deadline = time.monotonic() + _COST_LEDGER_LOCK_TIMEOUT_S
-    while True:
-        try:
-            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError as exc:
-            if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                raise
-            if time.monotonic() >= deadline:
-                print(
-                    "pr-cost: another pr-cost --record appears to be running (lock held on the"
-                    " ledger's own .lock sibling file) -- timed out after"
-                    f" {_COST_LEDGER_LOCK_TIMEOUT_S:.0f}s",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
-
-
-def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
-    """Case-folded (host, owner/name) parsed from this invocation's own
-    `git remote get-url origin` -- the corpus-root side of _resolve_pinned_gh_repo's
-    identity comparison, run from cwd (this subcommand's own worktree) rather
-    than against the ~/.claude/projects/ transcript scan root, which is never
-    a git repository itself. Accepts any host (github.com, a GitHub
-    Enterprise host, ...); whether gh actually holds credentials for that
-    host is left to the caller and to gh itself, not decided by this parse.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=_GIT_REMOTE_ORIGIN_TIMEOUT_S, check=True,
-            encoding="utf-8", errors="replace",
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        print("pr-cost: could not resolve this repo's own remote (git remote get-url origin failed)", file=sys.stderr)
-        sys.exit(1)
-    m = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(proc.stdout.strip())
-    if not m:
-        print("pr-cost: this repo's origin remote is not a recognizable host/owner/repo URL", file=sys.stderr)
-        sys.exit(1)
-    return m.group("host").lower(), f"{m.group('owner')}/{m.group('repo')}".lower()
-
-
-_GH_ERROR_KIND_AUTH = "auth"
-_GH_ERROR_KIND_HOST_MISMATCH = "host_mismatch"
-_GH_ERROR_KIND_RATE_LIMIT = "rate_limit"
-_GH_ERROR_KIND_NETWORK = "network"
-
-
-def _classify_gh_error(stderr: str) -> str:
-    """Best-effort classification of a failed gh call's stderr text into
-    one of the _GH_ERROR_KIND_* constants."""
-    if _GH_AUTH_ERROR_RE.search(stderr):
-        return _GH_ERROR_KIND_AUTH
-    if _GH_HOST_MISMATCH_ERROR_RE.search(stderr):
-        return _GH_ERROR_KIND_HOST_MISMATCH
-    if _GH_RATE_LIMIT_ERROR_RE.search(stderr):
-        return _GH_ERROR_KIND_RATE_LIMIT
-    return _GH_ERROR_KIND_NETWORK
-
-
-def _parse_gh_retry_after_seconds(stderr: str) -> float | None:
-    """Seconds to wait before retrying, parsed from a "retry after N" /
-    "retry-after: N" phrase in gh's own stderr text when present, else None
-    (caller falls back to the exponential backoff base)."""
-    m = _GH_RETRY_AFTER_RE.search(stderr)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return None
-
-
-def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subprocess.CompletedProcess | None, str]:
-    """Run one gh call, retrying a rate-limit- or network-shaped failure with
-    exponential backoff (starting at _PR_COST_RATE_LIMIT_MIN_BACKOFF_S,
-    doubling each attempt, honoring a parsed "retry after" hint from gh's own
-    stderr when present) up to _PR_COST_RATE_LIMIT_MAX_ATTEMPTS attempts or
-    _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
-    one call (attempt/elapsed/backoff are all function-local state), not
-    shared across the run: a --record sweep over many PRs can spend up to
-    that budget on each one in the worst case. An auth-shaped or
-    GH_HOST-mismatch-shaped failure is never retried: gh auth status already
-    ran as a preflight, and a local shell-config mismatch doesn't self-resolve
-    by waiting either way.
-
-    Returns (proc, "") on success. On exhaustion, returns (None, status)
-    with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
-    _PR_COST_STATUS_DEGRADED_RATE_LIMIT, _PR_COST_STATUS_DEGRADED_NETWORK --
-    callers with no row yet to degrade (repo-identity resolution, discovery)
-    abort the whole run on any non-empty status; per-PR enrichment instead
-    marks that row's own status column (folding _GH_CALL_DEGRADED_AUTH and
-    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
-    there -- see _PR_COST_STATUS_VALUES).
-    """
-    attempt = 0
-    elapsed = 0.0
-    backoff = _PR_COST_RATE_LIMIT_MIN_BACKOFF_S
-    while True:
-        stderr = ""
-        try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
-                encoding="utf-8", errors="replace",
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            kind = _GH_ERROR_KIND_NETWORK
-        else:
-            if proc.returncode == 0:
-                return proc, ""
-            stderr = proc.stderr or ""
-            kind = _classify_gh_error(stderr)
-
-        attempt += 1
-        if kind == _GH_ERROR_KIND_AUTH:
-            print(f"pr-cost: {label} failed ({kind}), not retrying (auth failures don't self-resolve)", file=sys.stderr)
-            return None, _GH_CALL_DEGRADED_AUTH
-        if kind == _GH_ERROR_KIND_HOST_MISMATCH:
-            # Never echoes gh's own stderr (same discipline as every other
-            # print site here), but this specific failure has one fix an
-            # operator can actually act on, so name it instead of falling
-            # through to the generic network-failure message below.
-            print(
-                f"pr-cost: {label} failed ({kind}), not retrying -- gh's ambient GH_HOST"
-                " environment variable does not match this repo's own git remote host;"
-                " unset GH_HOST or point it at the correct host",
-                file=sys.stderr,
-            )
-            return None, _GH_CALL_DEGRADED_HOST_MISMATCH
-        if attempt >= _PR_COST_RATE_LIMIT_MAX_ATTEMPTS or elapsed >= _PR_COST_RATE_LIMIT_MAX_ELAPSED_S:
-            print(f"pr-cost: {label} failed ({kind}), giving up after {attempt} attempt(s)", file=sys.stderr)
-            return None, (
-                _PR_COST_STATUS_DEGRADED_RATE_LIMIT if kind == _GH_ERROR_KIND_RATE_LIMIT
-                else _PR_COST_STATUS_DEGRADED_NETWORK
-            )
-        # Capped to the remaining elapsed budget: an unbounded or malformed
-        # "retry after" hint from gh's own stderr must not let one sleep
-        # jump past _PR_COST_RATE_LIMIT_MAX_ELAPSED_S in a single call.
-        sleep_for = min(_parse_gh_retry_after_seconds(stderr) or backoff, _PR_COST_RATE_LIMIT_MAX_ELAPSED_S - elapsed)
-        print(f"pr-cost: {label} failed ({kind}), retrying in {sleep_for:g}s (attempt {attempt})...", file=sys.stderr)
-        time.sleep(sleep_for)
-        elapsed += sleep_for
-        backoff *= 2
-
-
-def _pr_cost_abort_on_gh_failure(label: str, degraded: str) -> None:
-    """Print a run-abort message and exit(1) for a gh call that has no row
-    yet to degrade into (repo-identity resolution, or discovery) -- only
-    these two calls abort the whole run; every later per-PR `gh pr view`
-    failure degrades that row's status instead (see _pr_cost_report's main
-    loop). Never echoes gh's own raw stderr text (the underlying diagnostic
-    gh emits, which can itself echo the queried repo verbatim) -- only this
-    module's own `degraded` classification reaches stdout/stderr.
-    """
-    print(f"pr-cost: {label} failed ({degraded}) before any row could be captured", file=sys.stderr)
-    sys.exit(1)
-
-
-def _gh_auth_preflight_ok(hostname: str) -> bool:
-    """A single, non-retried `gh auth status --hostname` check, run before
-    anything else in this subcommand -- an auth failure caught here is
-    cheaper than one surfacing mid-run after a local corpus scan and gh
-    discovery call. Scoped to one host because a bare `gh auth status`
-    evaluates every host it has ever held credentials for and fails
-    aggregate-wide on any one of them, including hosts irrelevant to this
-    run (e.g. a GHE-only token still triggers a github.com check)."""
-    try:
-        proc = subprocess.run(
-            ["gh", "auth", "status", "--hostname", hostname], capture_output=True, text=True,
-            timeout=_PR_COST_GH_TIMEOUT_S, encoding="utf-8", errors="replace",
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return proc.returncode == 0
-
-
-def _resolve_pinned_gh_repo(corpus_host: str, corpus_repo: str, ordinal: int) -> tuple[str, dict]:
-    """Resolve gh's effective repo identity once, refuse (exit 2) if its
-    host or owner/name (case-folded) disagrees with corpus_host/corpus_repo
-    (this repo's own git remote identity, resolved by the caller), and
-    return the confirmed owner/name to pin on every subsequent gh call this
-    run makes -- gh's ambient target repo (a stale GH_REPO, `gh repo
-    set-default`, or an ambient cwd mismatch) can otherwise silently
-    diverge from the repo this invocation's own corpus and git remote
-    actually belong to, including a same-named repo on a different host.
-    Also returns a fresh repo-kind redact map, used to scrub this same repo
-    value at every later print site this run needs. `ordinal` is the
-    redact label to use for this call's own mismatch-refusal message --
-    this resolution happens once per run, before any single account is
-    "the" account under --all-accounts, so the caller supplies it rather
-    than this function hardcoding one.
-    """
-    # The mismatch check below folds a gh-side parse failure into gh_host=""
-    # and relies on that never coincidentally equaling corpus_host -- true
-    # today only because the sole caller resolves corpus_host via
-    # _git_remote_origin_host_and_owner_repo(), which itself never returns
-    # an empty string. Assert it here so a future caller violating that
-    # invariant fails loud instead of silently disabling the mismatch check.
-    if not corpus_host or not corpus_repo:
-        raise ValueError("_resolve_pinned_gh_repo requires a non-empty corpus_host and corpus_repo")
-    proc, degraded = _gh_call_with_backoff(
-        ["gh", "repo", "view", "--json", "nameWithOwner,url"], label="repo view"
-    )
-    if degraded:
-        _pr_cost_abort_on_gh_failure("gh repo view", degraded)
-    try:
-        payload = json.loads(proc.stdout or "{}")
-        gh_repo = str(payload["nameWithOwner"]).lower()
-        gh_url = str(payload["url"])
-    except (json.JSONDecodeError, KeyError, TypeError):
-        print("pr-cost: gh repo view returned unparseable JSON -- no row was captured", file=sys.stderr)
-        sys.exit(1)
-    # url is the same https://host/owner/repo shape _GIT_REMOTE_HOST_OWNER_REPO_RE
-    # already parses for the local git remote, so reuse it here instead of a
-    # second host-parsing implementation.
-    url_match = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(gh_url)
-    gh_host = url_match.group("host").lower() if url_match else ""
-
-    repo_map: dict[tuple[int, str], str] = {}
-    if gh_host != corpus_host or gh_repo != corpus_repo:
-        print(
-            "pr-cost: gh's effective target repo does not match this repo's own git remote identity"
-            f" ({_assign_root_scoped_redact_label('repo', ordinal, f'{gh_host}/{gh_repo}', repo_map)} vs."
-            f" {_assign_root_scoped_redact_label('repo', ordinal, f'{corpus_host}/{corpus_repo}', repo_map)}) --"
-            " check GH_REPO, `gh repo set-default`, or an ambient cwd mismatch",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    return gh_repo, repo_map
-
-
-def _gh_host_qualified_repo(corpus_host: str, pinned_repo: str) -> str:
-    """`HOST/OWNER/REPO` form for a gh `--repo` argument -- gh's bare
-    `OWNER/REPO` form resolves against whichever host the ambient `GH_HOST`
-    environment variable names (api.github.com when unset), regardless of
-    the invoking directory's own git remote, so every gh call this
-    subcommand makes must host-qualify `--repo` to actually reach the
-    intended host instead of silently querying the wrong one under the
-    same owner/repo.
-    """
-    return f"{corpus_host}/{pinned_repo}"
-
-
-def _gh_discover_merged_prs(corpus_host: str, pinned_repo: str) -> list[dict]:
-    """Bulk-discover every merged PR for the pinned repo in one call, with
-    an explicit --limit -- never gh's own 30-item default, which would
-    silently truncate a larger population with no error. Auth/config-shaped
-    failures abort the whole run immediately (no retry); rate-limit/network
-    failures retry under the shared backoff budget before aborting the same
-    way -- discovery has no per-row granularity to degrade into. `--repo` is
-    host-qualified (see _gh_host_qualified_repo) so a GHE-pinned repo is
-    queried on its own host rather than on api.github.com.
-    """
-    argv = [
-        "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--state", "merged",
-        "--limit", str(_PR_COST_GH_PR_LIST_LIMIT),
-        "--json", "number,headRefName,additions,deletions,changedFiles,mergedAt",
-    ]
-    proc, degraded = _gh_call_with_backoff(argv, label="pr list")
-    if degraded:
-        _pr_cost_abort_on_gh_failure("gh pr list", degraded)
-    try:
-        return json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
-        print("pr-cost: gh pr list returned unparseable JSON -- no row was captured", file=sys.stderr)
-        sys.exit(1)
-
-
-def _gh_discover_closed_unmerged_pr_branches(corpus_host: str, pinned_repo: str) -> set[str]:
-    """Bulk-discover the headRefName of every closed-but-unmerged PR for the
-    pinned repo -- same call shape as _gh_discover_merged_prs, --state
-    closed instead of --state merged. gh's own PR state model keeps "merged"
-    and "closed" disjoint (a merged PR's state is MERGED, never CLOSED), so
-    this tells workstream-cost's abandoned-branch check "had a PR that was
-    closed without merging" apart from "never had a PR at all" -- a branch
-    absent from both this set and _gh_discover_merged_prs' own result.
-    """
-    argv = [
-        "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--state", "closed",
-        "--limit", str(_PR_COST_GH_PR_LIST_LIMIT),
-        "--json", "headRefName",
-    ]
-    proc, degraded = _gh_call_with_backoff(argv, label="pr list (closed)")
-    if degraded:
-        _pr_cost_abort_on_gh_failure("gh pr list (closed)", degraded)
-    try:
-        payload = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
-        print("pr-cost: gh pr list (closed) returned unparseable JSON", file=sys.stderr)
-        sys.exit(1)
-    return {pr["headRefName"] for pr in payload if pr.get("headRefName")}
-
-
-def _gh_pr_view_enrichment(corpus_host: str, pinned_repo: str, pr_number: int) -> tuple[dict | None, str]:
-    """Per-PR enrichment call: commits/reviews/files, none of which
-    `gh pr list` returns. Returns (payload, _PR_COST_STATUS_OK) on success,
-    else (None, degraded) with degraded one of _gh_call_with_backoff's own
-    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH and
-    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
-    before either reaches a ledger row's status column. `--repo` is
-    host-qualified (see _gh_host_qualified_repo) so a GHE-pinned repo is
-    queried on its own host rather than on api.github.com.
-    """
-    argv = [
-        "gh", "pr", "view", str(pr_number),
-        "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--json", "commits,reviews,files",
-    ]
-    proc, degraded = _gh_call_with_backoff(argv, label=f"pr view {pr_number}")
-    if degraded:
-        return None, degraded
-    try:
-        return json.loads(proc.stdout or "{}"), _PR_COST_STATUS_OK
-    except json.JSONDecodeError:
-        return None, _PR_COST_STATUS_DEGRADED_NETWORK
-
-
-def _local_git_object_exists_batch(shas: Sequence[str]) -> set[str]:
-    """Which of `shas` resolve to a real local git commit object, checked
-    via one `git cat-file --batch-check` call fed the whole list over
-    stdin -- avoids one subprocess per SHA. Non-hex-shaped entries are
-    dropped before the call: SHAs come from gh's own JSON (commits[].oid),
-    and while they're git-generated (hex digits can't start with "-", so
-    they're inherently safe in an option position), a malformed API response
-    feeding a non-SHA line into the batch-check stdin stream could desync
-    this function's own line-based output parsing below.
-    """
-    valid_shas = [s for s in shas if _GIT_SHA_RE.match(s)]
-    if not valid_shas:
-        return set()
-    try:
-        proc = subprocess.run(
-            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
-            input="\n".join(valid_shas) + "\n",
-            capture_output=True, text=True, timeout=_GIT_REMOTE_ORIGIN_TIMEOUT_S, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return set()
-    found: set[str] = set()
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == "commit":
-            found.add(parts[0])
-    return found
-
-
-def _pr_cost_sha_overlap(commits_payload) -> int:
-    """Count of a PR's pre-squash commit SHAs (gh pr view's own `commits`
-    field) that still resolve to a real local git object. GitHub's squash
-    merges leave these SHAs unreachable from any live ref once the source
-    branch is deleted, but a commit fetched into this clone during the work
-    itself can survive as a dangling object until git gc reaps it, giving
-    the branch-to-PR join a corroboration signal independent of headRefName
-    even after the source branch ref is gone.
-    """
-    shas = [c.get("oid", "") for c in (commits_payload or []) if isinstance(c, dict)]
-    return len(_local_git_object_exists_batch(shas))
-
-
-def _pr_cost_plan_slug_from_files(file_paths: Sequence[str], plan_glob: str) -> str | None:
-    """The added plan file's slug (filename minus extension) when a PR's
-    changed-file list matches plan_glob exactly once. Measured against this
-    repo's own recent PR history: the overwhelming majority of in-window PRs
-    add exactly one such file and none add more than one, so more than one
-    match is treated as no usable slug rather than guessed.
-    """
-    matches = [p for p in file_paths if fnmatch.fnmatch(p, plan_glob)]
-    if len(matches) != 1:
-        return None
-    return PurePosixPath(matches[0]).stem
-
-
-def _direct_headref_matches(branch: str, merged_prs: Sequence[dict]) -> list[dict]:
-    """Every merged PR whose own headRefName equals `branch` -- gh's
-    headRefName is this join's authoritative signal. Normally at most one;
-    more than one means a branch name was reused across two merged PRs,
-    resolved by _resolve_branch_pr.
-    """
-    return [pr for pr in merged_prs if pr.get("headRefName") == branch]
-
-
-def _pr_cost_join_corroborated(branch: str, enrichment: dict | None, plan_glob: str) -> bool:
-    """True when either independent cross-check corroborates a direct
-    headRefName match: the PR's own added plan-file slug equals `branch`, or
-    at least one of its pre-squash commit SHAs still resolves locally
-    (_pr_cost_sha_overlap). False when enrichment itself could not be
-    fetched -- there is no data to corroborate with.
-    """
-    if enrichment is None:
-        return False
-    files = [f.get("path", "") for f in (enrichment.get("files") or []) if isinstance(f, dict)]
-    if _pr_cost_plan_slug_from_files(files, plan_glob) == branch:
-        return True
-    return _pr_cost_sha_overlap(enrichment.get("commits")) > 0
-
-
-def _resolve_branch_pr(
-    branch: str, matches: Sequence[dict], enrichment_by_pr_number: dict[int, dict], plan_glob: str,
-) -> tuple[dict | None, str]:
-    """Join one branch already known to have >=1 direct headRefName match in
-    `matches` (see _direct_headref_matches) to the merged PR it belongs to.
-    A single match is "high" confidence when either cross-check corroborates
-    it, else "medium" -- gh's headRefName is authoritative either way;
-    corroboration only grades confidence. More than one match means this
-    branch name was reused across two merged PRs: highest SHA overlap wins,
-    ties broken by most recent mergedAt; a remaining tie returns no resolved
-    PR with join_confidence "low". Rename/alias detection for a branch with
-    *no* direct match at all is a separate, manual audit step, not
-    automated here.
-    """
-    if len(matches) == 1:
-        pr = matches[0]
-        corroborated = _pr_cost_join_corroborated(branch, enrichment_by_pr_number.get(pr["number"]), plan_glob)
-        return pr, (_PR_COST_JOIN_CONFIDENCE_HIGH if corroborated else _PR_COST_JOIN_CONFIDENCE_MEDIUM)
-
-    def _overlap(pr: dict) -> int:
-        enrichment = enrichment_by_pr_number.get(pr["number"])
-        return _pr_cost_sha_overlap(enrichment.get("commits") if enrichment else None)
-
-    best = max(matches, key=lambda pr: (_overlap(pr), pr["mergedAt"]))
-    tied = [pr for pr in matches if (_overlap(pr), pr["mergedAt"]) == (_overlap(best), best["mergedAt"])]
-    if len(tied) > 1:
-        return None, _PR_COST_JOIN_CONFIDENCE_LOW
-    return best, _PR_COST_JOIN_CONFIDENCE_LOW
-
-
-def _top_level_dir(path: str) -> str:
-    """First path segment of a changed-file path, or the bare filename when
-    it has none (a repo-root file counts as its own single-item bucket)."""
-    return path.split("/", 1)[0]
-
-
-def _pr_cost_mechanical_proxies(file_paths: Sequence[str], *, plan_glob: str, risk_globs: Sequence[str]) -> dict:
-    """Mechanical review-surface proxies, computed once from one PR's
-    changed-file path list (gh pr view --json files)."""
-    return {
-        "distinct_top_level_dirs": len({_top_level_dir(p) for p in file_paths}),
-        "distinct_file_extensions": len({PurePosixPath(p).suffix for p in file_paths}),
-        "tests_changed": any(_PR_COST_TEST_FILE_RE.search(p) for p in file_paths),
-        "plan_file_added": any(fnmatch.fnmatch(p, plan_glob) for p in file_paths),
-        "risk_surface_flag": any(fnmatch.fnmatch(p, glob) for p in file_paths for glob in risk_globs),
-    }
-
-
-def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetime) -> bool:
-    """True once at least window_days have elapsed since merged_at_iso --
-    the as-of rule's precondition."""
-    merged_ts = _parse_ts(merged_at_iso)
-    if merged_ts is None:
-        return False
-    return now.timestamp() - merged_ts >= window_days * 86400
-
-
-def _new_pr_cost_row(
-    *, host: str, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
-    join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
-    plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict,
-) -> dict:
-    """Assemble one ledger row dict from every piece the main loop resolved.
-    head_branch is the SCRUBBED form (_assign_root_scoped_redact_label) --
-    the join itself already ran on the raw `branch` value passed in here;
-    this is the write boundary, the only point this run's branch value is
-    allowed to reach the ledger or stdout/stderr. `host` and `repo` are
-    stored raw: both are part of the row's own key and must stay stable and
-    comparable across runs for the ledger to function at all (PR numbers are
-    only unique per-(host, repo)) -- every *print* of `repo` still routes
-    through the caller's own repo_map instead.
-    """
-    dollars = agg["dollars"]
-    tokens = agg["tokens"]
-    turn_count = agg["turn_count"]
-    total_dollars = sum(dollars.values())
-
-    files = [f.get("path", "") for f in ((enrichment or {}).get("files") or []) if isinstance(f, dict)]
-    proxies = _pr_cost_mechanical_proxies(files, plan_glob=plan_glob, risk_globs=risk_globs)
-    reviews = (enrichment or {}).get("reviews") or []
-    commits = (enrichment or {}).get("commits") or []
-
-    return {
-        "host": host,
-        "repo": pinned_repo,
-        "pr_number": pr["number"],
-        "machine": machine,
-        "head_branch": _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map),
-        "merged_at": pr["mergedAt"],
-        "rate_stamp": _PRICING_FETCH_DATE.isoformat(),
-        "captured_at": captured_at,
-        "join_confidence": join_confidence,
-        "supersedes": supersedes,
-        "status": status,
-        "cache_read_usd": dollars["cache_read"], "cache_write_5m_usd": dollars["cache_write_5m"],
-        "cache_write_1h_usd": dollars["cache_write_1h"], "output_usd": dollars["output"],
-        "input_usd": dollars["input"],
-        "cache_read_tokens": tokens["cache_read"], "cache_write_5m_tokens": tokens["cache_write_5m"],
-        "cache_write_1h_tokens": tokens["cache_write_1h"], "output_tokens": tokens["output"],
-        "input_tokens": tokens["input"],
-        "unpriced_turns": agg["unpriced_turns"], "unpriced_tokens": agg["unpriced_tokens"],
-        "turn_count": turn_count, "session_count": len(agg["sessions"]),
-        "opus_dollars": agg["opus_dollars"], "opus_dollar_share_pct": _pct_value(agg["opus_dollars"], total_dollars),
-        "sum_context_at_turn": agg["sum_context_at_turn"],
-        "mean_context_at_turn": (agg["sum_context_at_turn"] / turn_count) if turn_count else 0.0,
-        "additions": pr.get("additions", 0), "deletions": pr.get("deletions", 0),
-        "changed_files": pr.get("changedFiles", 0),
-        "commit_count": len(commits), "review_comment_count": len(reviews),
-        "distinct_top_level_dirs": proxies["distinct_top_level_dirs"],
-        "distinct_file_extensions": proxies["distinct_file_extensions"],
-        "tests_changed": proxies["tests_changed"], "plan_file_added": proxies["plan_file_added"],
-        "risk_surface_flag": proxies["risk_surface_flag"],
-    }
-
-
-def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict, repo_map: dict) -> None:
-    """Read-mode's existing-rows preview -- scrubbed repo, no branch column
-    at all (head_branch is already the scrubbed placeholder stored in the
-    row, so re-scrubbing it through `branch_map` would double-redact it)."""
-    if not rows:
-        print("\nNo rows recorded yet.")
-        return
-    print()
-    print(f"{'Repo':<28} {'PR':>6} {'Machine':<9} {'Status':<20} {'Join':<8} {'CapturedAt':<20}")
-    for row in rows:
-        repo_label = _assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
-        print(
-            f"{repo_label:<28} {row['pr_number']:>6} {row['machine']:<9} {row['status']:<20}"
-            f" {row['join_confidence']:<8} {row['captured_at']:<20}"
-        )
-
-
-def _print_pr_cost_uncaptured(
-    branch_totals: dict[str, dict], merged_prs: Sequence[dict], existing_rows: list[dict],
-    corpus_host: str, pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
-) -> None:
-    """Read mode's gap listing: merged PRs with local corpus activity not
-    yet captured in the ledger. Restricted to an unambiguous direct
-    headRefName match (a branch with zero or more-than-one match is a
-    separate manual audit's territory, not this quick gap check) --
-    deliberately makes no extra gh calls beyond the bulk discovery this run
-    already made, so read mode stays cheap enough to run often, closing the
-    capture-trigger gap without needing a hook.
-    """
-    print("\nMerged PRs with local corpus activity not yet captured:")
-    any_uncaptured = False
-    for branch in sorted(branch_totals):
-        matches = _direct_headref_matches(branch, merged_prs)
-        if len(matches) != 1:
-            continue
-        pr = matches[0]
-        if _latest_pr_cost_row(existing_rows, corpus_host, pinned_repo, pr["number"], machine_label) is not None:
-            continue
-        any_uncaptured = True
-        label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
-        print(f"  PR #{pr['number']:<6} {label:<40} merged {pr['mergedAt']}")
-    if not any_uncaptured:
-        print("  (none)")
-
-
-def cmd_pr_cost(args: argparse.Namespace) -> None:
-    """CLI entry point for the pr-cost subcommand.
-
-    Reads the wall-clock date/time exactly once, here, mirroring cost's and
-    cost-ledger's own today-injection split so the as-of window's
-    precondition check is deterministic under test.
-    """
-    roots = _resolve_cost_roots(args, "pr-cost")
-    _pr_cost_report(args, datetime.now(UTC), roots)
-
-
-def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Path]) -> None:
-    """Read (default) or capture (--record) pr-cost ledger rows, one full
-    report per resolved account.
-
-    Failure-handling order: gh auth preflight, then repo-identity resolution
-    (retried under the shared rate-limit backoff, aborting the whole run on
-    exhaustion since no row exists yet to mark degraded), then discovery --
-    each resolved once for the whole run, since gh auth/identity and merged-PR
-    discovery are account-independent (never scoped by CLAUDE_CONFIG_DIR).
-    Everything else -- local corpus scan, per-branch enrichment (rate-limit/
-    network failures degrade that branch's row instead of aborting), and the
-    ledger read/print/write -- loops once per resolved root. Every
-    stdout/stderr path below routes branch/repo values through
-    _assign_root_scoped_redact_label -- no raw branch name or repo value is
-    ever printed. There is deliberately no --no-redact escape hatch for this
-    subcommand, unlike cost/subagents.
-    """
-    all_accounts: bool = bool(getattr(args, "all_accounts", False))
-    if len(roots) > 1 and not all_accounts:
-        # Refuses genuine multi-root ambiguity only, not a claude-config-only
-        # scope requirement (this subcommand is never restricted to running
-        # against claude-config itself) -- load-bearing here because pr-cost
-        # durably writes, unlike a pure read command, and even read mode
-        # could otherwise conflate two accounts' branch/repo data into one
-        # listing.
-        print(
-            "pr-cost: more than one root resolved -- refusing a durable write (or a read that"
-            " could conflate two accounts' branch/repo data) across accounts; pass --all-accounts"
-            " to scan every declared account in one run (each account's own opt-in sentinel still"
-            " gates its own write), or scope to a single profile (drop --config-dir)",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    if all_accounts and len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
-        # A single forced path would commingle every account's rows into one
-        # file, defeating the per-account separation the sentinel gate below
-        # depends on.
-        print(
-            "pr-cost: PR_COST_LEDGER_PATH is refused with --all-accounts across more than one"
-            " resolved root -- unset PR_COST_LEDGER_PATH (each account then defaults to its own"
-            " ledger path) or drop --all-accounts",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    record: bool = bool(getattr(args, "record", False))
-    force: bool = bool(getattr(args, "force", False))
-    target_pr: int | None = getattr(args, "pr", None)
-    machine_label: str | None = getattr(args, "machine_label", None) or None
-    window_days: float = getattr(args, "asof_window_days", None) or _PR_COST_ASOF_WINDOW_DAYS_DEFAULT
-    plan_glob: str = getattr(args, "plan_file_glob", None) or _DEFAULT_PR_COST_PLAN_FILE_GLOB
-    risk_globs: tuple[str, ...] = tuple(
-        getattr(args, "risk_surface_globs", None) or _DEFAULT_PR_COST_RISK_SURFACE_GLOBS
-    )
-
-    if force and target_pr is None:
-        print("pr-cost: --force requires --pr (a correction targets exactly one PR)", file=sys.stderr)
-        sys.exit(1)
-    if record and not machine_label:
-        print("pr-cost: --record requires --machine-label", file=sys.stderr)
-        sys.exit(1)
-    if machine_label is not None and not _MACHINE_LABEL_RE.match(machine_label):
-        print(f"pr-cost: --machine-label {machine_label!r} must match ^[a-z0-9]{{1,8}}$", file=sys.stderr)
-        sys.exit(1)
-    if record and machine_label.lower() == socket.gethostname().lower():
-        # Rejection names the rule, never the compared hostname -- same
-        # discipline as cost-ledger's own equivalent check.
-        print(
-            "pr-cost: --machine-label must not equal this machine's hostname -- publishing a"
-            " hostname risks deanonymizing this repo's corpus; choose an opaque label instead",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
-    if not _gh_auth_preflight_ok(corpus_host):
-        print("pr-cost: gh auth status failed -- run `gh auth login` before pr-cost", file=sys.stderr)
-        sys.exit(1)
-
-    # gh auth/identity and merged-PR discovery are account-independent, so
-    # they're resolved once for the whole run rather than once per account
-    # below. redact_ordinals is computed first so _resolve_pinned_gh_repo's
-    # own mismatch-refusal message has an ordinal to label with.
-    redact_ordinals = _redaction_ordinals(roots)
-    pinned_repo, repo_map = _resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=redact_ordinals[roots[0].resolve()])
-    merged_prs = _gh_discover_merged_prs(corpus_host, pinned_repo)
-    branch_map: dict[tuple[int, str], str] = {}  # shared across accounts; key already includes ordinal
-
-    recorded = skipped_no_sentinel = skipped_other = 0
-    for root in roots:
-        account_config_dir = root.parent
-        ordinal = redact_ordinals[root.resolve()]
-
-        session_iter, scope_label = _resolve_project_scope(
-            args, "pr-cost", include_subagents=True, roots=[root]
-        )
-        _print_resolved_scope("pr-cost", scope_label, [root])
-        branch_totals, unbranched_agg = _compute_pr_cost_branch_totals(session_iter)
-        print(
-            f"pr-cost: {_fmt_usd(sum(unbranched_agg['dollars'].values()))} across"
-            f" {unbranched_agg['turn_count']} priced turns attributed to no branch at all"
-            " (counted, not skipped, unlike `buckets`)",
-            file=sys.stderr,
-        )
-
-        try:
-            ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
-        except ValueError as exc:
-            print(f"pr-cost: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        existing_rows: list[dict] = []
-        if ledger_path.exists():
-            try:
-                existing_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-            except _PrCostLedgerParseError as exc:
-                print(f"pr-cost: {exc}", file=sys.stderr)
-                sys.exit(1)
-
-        if not record:
-            _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
-            _print_pr_cost_uncaptured(
-                branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
-            )
-            continue
-
-        try:
-            pr_cost_recording_enabled = _config.config_enabled(
-                "pr_cost_recording", config_dir_override=account_config_dir
-            )
-        except _config.ConfigSchemaEmptyError:
-            # config-keys.psv was read successfully but produced zero
-            # schema rows (see that class's own docstring) -- distinct
-            # from the unreadable-file case below, which this file was
-            # not.
-            print(
-                "pr-cost: --record found config-keys.psv empty or malformed"
-                " (no parseable schema rows) -- see docs/pr-cost.md",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        except _config.ConfigSchemaRowTruncatedError:
-            # pr_cost_recording's own row is present but truncated after an
-            # earlier column (see that class's own docstring) -- a torn
-            # schema row, not a renamed or typo'd key literal at this call
-            # site.
-            print(
-                "pr-cost: --record found pr_cost_recording's config-keys.psv"
-                " row truncated (partial stow-relink or interrupted git pull)"
-                " -- see docs/pr-cost.md",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        except KeyError as exc:
-            if _config.schema():
-                # config-keys.psv parsed fine (schema() returned rows), so
-                # this KeyError is a real unknown-key bug -- a renamed or
-                # typo'd literal at this call site -- not the infrastructure
-                # cause the message below assumes.
-                print(f"pr-cost: --record: unknown config key {exc}", file=sys.stderr)
-                sys.exit(1)
-            # config-keys.psv itself was unreadable at the moment of this
-            # call (see _config.py's module docstring) -- a partial
-            # stow-relink or interrupted `git pull`, not a caller-side
-            # key-name typo.
-            print(
-                "pr-cost: --record could not read config-keys.psv (partial stow-relink"
-                " or interrupted git pull) -- see docs/pr-cost.md",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if pr_cost_recording_enabled is None:
-            # account_config_dir is always a concrete, already-resolved
-            # directory here (root.parent) -- not expected to be reachable
-            # in practice -- handled explicitly anyway so a future
-            # account_config_dir computation change fails loud rather than
-            # silently misreporting "not opted in".
-            if all_accounts:
-                print(
-                    f"pr-cost: account-{ordinal}'s config directory could not be resolved --"
-                    " skipped, see docs/pr-cost.md",
-                    file=sys.stderr,
-                )
-                skipped_other += 1
-                continue
-            print(
-                "pr-cost: --record could not resolve the Claude Code config directory --"
-                " see docs/pr-cost.md",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if not pr_cost_recording_enabled:
-            if all_accounts:
-                # account-N, not the resolved config dir, to avoid a
-                # resolved home-rooted path in output -- same discipline as
-                # the single-account refusal message below.
-                print(
-                    f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
-                    " skipped, see docs/pr-cost.md",
-                    file=sys.stderr,
-                )
-                skipped_no_sentinel += 1
-                continue
-            # Prints the conventional path, not the resolved config dir, to
-            # avoid a resolved home-rooted path in output -- same discipline
-            # as cost-ledger's equivalent message above.
-            print(
-                "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
-                " see docs/pr-cost.md",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if _ledger_path_is_git_tracked(ledger_path, "pr-cost"):
-            # Always refused for pr-cost (not gated on multi-root, unlike the
-            # weekly ledger's own check): these rows carry branch/repo data
-            # the public weekly ledger's rows don't, so this ledger must
-            # never live inside a git working tree, full stop.
-            if all_accounts:
-                print(
-                    f"pr-cost: account-{ordinal}'s ledger path is inside a git working tree --"
-                    " skipped, see docs/pr-cost.md",
-                    file=sys.stderr,
-                )
-                skipped_other += 1
-                continue
-            print(
-                "pr-cost: --record is refused when the ledger path is inside a git working tree --"
-                " move PR_COST_LEDGER_PATH outside git, or drop --record",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-
-        if target_pr is not None:
-            pr_by_number = {pr["number"]: pr for pr in merged_prs}
-            target_pr_data = pr_by_number.get(target_pr)
-            if target_pr_data is None:
-                print(f"pr-cost: PR #{target_pr} was not found among this repo's merged PRs", file=sys.stderr)
-                sys.exit(1)
-            target_branches = [target_pr_data["headRefName"]]
-        else:
-            target_branches = sorted(branch_totals)
-
-        account_recorded_a_row = False
-        for branch in target_branches:
-            branch_label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
-            print(f"pr-cost: resolving branch {branch_label}...", file=sys.stderr)
-            matches = _direct_headref_matches(branch, merged_prs)
-            if not matches:
-                print("pr-cost:   no merged PR found for this branch -- skipped", file=sys.stderr)
-                continue
-
-            enrichment_by_pr_number: dict[int, dict] = {}
-            degraded_status_by_pr_number: dict[int, str] = {}
-            for pr in matches:
-                print(f"pr-cost:   enriching PR #{pr['number']}...", file=sys.stderr)
-                payload, degraded = _gh_pr_view_enrichment(corpus_host, pinned_repo, pr["number"])
-                if payload is not None:
-                    enrichment_by_pr_number[pr["number"]] = payload
-                else:
-                    degraded_status_by_pr_number[pr["number"]] = (
-                        _PR_COST_STATUS_DEGRADED_NETWORK
-                        if degraded in (_GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH)
-                        else degraded
-                    )
-
-            resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)
-            if resolved_pr is None:
-                print(
-                    "pr-cost:   ambiguous branch-to-PR match (ties unresolved after SHA-overlap"
-                    " and mergedAt comparison) -- skipped",
-                    file=sys.stderr,
-                )
-                continue
-
-            enrichment = enrichment_by_pr_number.get(resolved_pr["number"])
-            row_status = _PR_COST_STATUS_OK if enrichment is not None else degraded_status_by_pr_number.get(
-                resolved_pr["number"], _PR_COST_STATUS_DEGRADED_NETWORK
-            )
-
-            if not _pr_cost_asof_window_ok(resolved_pr["mergedAt"], window_days, now):
-                message = (
-                    f"pr-cost:   PR #{resolved_pr['number']} merged too recently"
-                    f" (as-of window is {window_days:g}d)"
-                )
-                if target_pr is not None and not all_accounts:
-                    print(f"{message} -- refusing", file=sys.stderr)
-                    sys.exit(1)
-                print(f"{message} -- skipped", file=sys.stderr)
-                continue
-
-            ledger_path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = ledger_path.with_name(ledger_path.name + ".lock")
-            with open(lock_path, "w") as lock_f:
-                _acquire_pr_cost_ledger_lock(lock_f)
-                try:
-                    try:
-                        current_rows = _parse_pr_cost_ledger_file_text(ledger_path.read_text())
-                    except FileNotFoundError:
-                        current_rows = []
-                    except _PrCostLedgerParseError as exc:
-                        print(f"pr-cost: {exc}", file=sys.stderr)
-                        sys.exit(1)
-
-                    already = _latest_pr_cost_row(
-                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
-                    )
-                    if already is not None and not force:
-                        print(
-                            f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
-                            " captured -- pass --force (with --pr) to append a correcting row",
-                            file=sys.stderr,
-                        )
-                        if target_pr is not None and not all_accounts:
-                            sys.exit(1)
-                        continue
-
-                    # A --pr target's branch comes from the shared, repo-wide
-                    # merged_prs list, so under --all-accounts it can resolve
-                    # here even for an account whose own local corpus never
-                    # touched it; skip rather than fall through to a
-                    # zero-valued-agg row (single-account --pr N still writes
-                    # that row -- there is no other account to fall back to).
-                    if all_accounts and target_pr is not None and branch not in branch_totals:
-                        print(
-                            f"pr-cost:   account-{ordinal} has no local corpus activity for this"
-                            " branch -- skipped",
-                            file=sys.stderr,
-                        )
-                        continue
-
-                    if branch not in branch_totals and branch_totals:
-                        # branch_totals non-empty but missing this exact key means the account
-                        # saw local activity under some other branch name -- distinct from
-                        # genuine branch-idle (branch_totals empty), which is a legitimate
-                        # zero-cost case that must not warn.
-                        print(
-                            f"pr-cost:   PR #{resolved_pr['number']}'s branch has no matching"
-                            " local corpus activity, but this account's scan attributed activity"
-                            f" to {len(branch_totals)} other branch(es) -- this row may"
-                            " under-report if the branch was renamed; investigate locally with"
-                            " `cost --branches <branch>`",
-                            file=sys.stderr,
-                        )
-                    agg = branch_totals.get(branch) or _new_pr_cost_agg()
-                    captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-                    new_row = _new_pr_cost_row(
-                        host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
-                        enrichment=enrichment, join_confidence=join_confidence, status=row_status,
-                        machine=machine_label, captured_at=captured_at,
-                        supersedes=(already["captured_at"] if already else ""),
-                        plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
-                    )
-                    try:
-                        updated_rows = _append_pr_cost_ledger_row(current_rows, new_row, already, force)
-                    except ValueError as exc:
-                        print(f"pr-cost: {exc}", file=sys.stderr)
-                        sys.exit(1)
-                    try:
-                        _write_pr_cost_ledger_file(ledger_path, updated_rows)
-                    except _PrCostLedgerParseError as exc:
-                        print(f"pr-cost: {exc}", file=sys.stderr)
-                        sys.exit(1)
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
-            existing_rows = updated_rows
-            account_recorded_a_row = True
-            print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_label}")
-
-        if account_recorded_a_row:
-            recorded += 1  # counts accounts that wrote a row, not total rows written
-        elif all_accounts:
-            # Covers every branch-loop skip reason (no PR match, ambiguous
-            # match, already captured, asof-window, not-in-corpus) in one
-            # place, so an account with zero recorded rows is never absent
-            # from all three summary counters below.
-            skipped_other += 1
-
-    if record and all_accounts:
-        print(
-            f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
-            f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
-        )
+    print(f"cost-ledger: recorded {week_str} / {machine}")
 
 
 def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
@@ -9647,9 +5040,9 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
     memory. Returns [] when the file is absent or unreadable -- shared by
     _print_nudge_log_diagnostic and _parse_nudge_log_entries so both read
     ~/.claude/.handoff-nudge.log the same bounded way."""
-    if not log_path.exists():
-        return []
     try:
+        if not log_path.exists():
+            return []
         if log_path.stat().st_size > _NUDGE_LOG_MAX_READ:
             raw = log_path.read_bytes()[-_NUDGE_LOG_MAX_READ:]
             return raw.decode(errors="ignore").splitlines()
@@ -9677,506 +5070,6 @@ def _print_nudge_log_diagnostic() -> None:
         print("  The field paths in nudge-handoff-near-context-cap.sh may need updating.")
 
 
-def _count_read_file_paths(content: list) -> int:
-    """Count distinct file_path values across Read tool_use blocks in a turn's content.
-
-    Only Read blocks are counted — Grep/Glob/Bash are intentionally excluded (conservative
-    undercount). Returns 0 if there are no Read blocks.
-    """
-    file_paths: set[str] = set()
-    for block in content:
-        if (
-            isinstance(block, dict)
-            and block.get("type") == "tool_use"
-            and block.get("name") == "Read"
-        ):
-            fp = (block.get("input") or {}).get("file_path")
-            if fp:
-                file_paths.add(fp)
-    return len(file_paths)
-
-
-def _d1_bucket(file_count: int) -> str:
-    """Map a Read file-path count to the D1 histogram bucket label."""
-    if file_count == 0:
-        return "0"
-    if file_count == 1:
-        return "1"
-    if file_count <= 3:
-        return "2-3"
-    if file_count <= 7:
-        return "4-7"
-    return "8+"
-
-
-def _d2_bucket(streak_len: int) -> str:
-    """Map a code-read streak length to the D2 histogram bucket label."""
-    if streak_len == 1:
-        return "1"
-    if streak_len == 2:
-        return "2"
-    if streak_len <= 5:
-        return "3-5"
-    if streak_len <= 10:
-        return "6-10"
-    return "11+"
-
-
-_D1_BUCKETS: tuple[str, ...] = ("0", "1", "2-3", "4-7", "8+")
-_D2_BUCKETS: tuple[str, ...] = ("1", "2", "3-5", "6-10", "11+")
-_D3_CASES: tuple[str, ...] = ("inline-edit", "dispatched", "neither")
-
-# Buckets / cases that satisfy the dispatchable criterion for the summary line
-_D1_DISPATCHABLE_BUCKETS: frozenset[str] = frozenset({"2-3", "4-7", "8+"})
-_D3_DISPATCHABLE_CASES: frozenset[str] = frozenset({"dispatched", "neither"})
-
-
-def cmd_audit_routing_shape(args: argparse.Namespace) -> None:
-    """Turn-shape distributions for Opus code-read turns: files-Read per turn (D1),
-    code-read streak lengths (D2), and read-then-edit ratio (D3).
-
-    Only code-read and code-write turns outside judgment spans are analysed. The
-    judgment-span state machine is intentionally duplicated from cmd_audit_routing —
-    tests cross-validate the two copies to guard against drift.
-    """
-    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing-shape")
-    since_label = since_raw or ""
-
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-shape", roots=roots)
-
-    # D1: file-count bucket → {turns, out}
-    d1_turns: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
-    d1_out: dict[str, int] = {b: 0 for b in _D1_BUCKETS}
-
-    # D2: streak-length bucket → {streak_count, out}
-    d2_streaks: dict[str, int] = {b: 0 for b in _D2_BUCKETS}
-    d2_out: dict[str, int] = {b: 0 for b in _D2_BUCKETS}
-
-    # D3: case → {turns, out}
-    d3_turns: dict[str, int] = {c: 0 for c in _D3_CASES}
-    d3_out: dict[str, int] = {c: 0 for c in _D3_CASES}
-
-    # D3 cross-tab: (case, d1_bucket) → {turns, out}
-    d3_xtab_turns: dict[tuple[str, str], int] = {
-        (case, bkt): 0 for case in _D3_CASES for bkt in _D1_BUCKETS
-    }
-    d3_xtab_out: dict[tuple[str, str], int] = {
-        (case, bkt): 0 for case in _D3_CASES for bkt in _D1_BUCKETS
-    }
-
-    # Per-turn records collected per session. Each entry:
-    #   class      — routing class string (or "user" for user-turn separators)
-    #   out        — output_tokens; 0 for user-turn separators and non-qualifying Opus turns
-    #   d1_bucket  — D1 file-count bucket (empty string for non-code-read turns)
-    # code-read turns are qualifying entries that feed D1/D2/D3. All Opus-with-usage turns
-    # plus user-turn separators are recorded so D2 streaks and D3 lookahead work correctly.
-    # User-turn separators break D2 streaks but are skipped in D3's 3-turn Opus window.
-
-    _print_resolved_scope("audit-routing-shape", scope_label, roots)
-
-    for _jsonl, records in session_iter:
-        # One API call = one turn: dedup merges a requestId run's content
-        # blocks into one union list, so classification and file-count
-        # counting below see every block, while the run's output tokens are
-        # attributed once. Mirrors cmd_audit_routing's own dedup call.
-        records = _dedup_turns_by_request_id(records)
-        session_turns: list[dict] = []
-
-        # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
-        in_judgment_span: bool = False
-        plan_mode_active: bool = False
-
-        for rec in records:
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-
-            if rtype in ("user", "human"):
-                in_judgment_span = False
-                content_text = _content_text(msg.get("content", ""))
-                if "Plan mode is active" in content_text:
-                    plan_mode_active = True
-                # User turns act as streak breakers for D2 (recorded as spacers; out=0 so
-                # D3 lookahead does not count them against the 3-Opus-turn window).
-                session_turns.append({"class": "user", "out": 0, "d1_bucket": ""})
-                continue
-
-            if rtype != "assistant":
-                continue
-
-            model = msg.get("model", "")
-            if _fam(model) != "opus":
-                # Still check for ExitPlanMode in non-Opus turns
-                content = msg.get("content") or []
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "ExitPlanMode"
-                    ):
-                        plan_mode_active = False
-                continue
-
-            usage = msg.get("usage")
-            if not usage:
-                continue
-
-            if since_ts is not None:
-                rec_ts = _parse_ts(rec.get("timestamp"))
-                if rec_ts is None or rec_ts < since_ts:
-                    continue
-
-            content = msg.get("content") or []
-            out_tokens: int = usage.get("output_tokens", 0)
-
-            # Open judgment span before classification (same logic as cmd_audit_routing)
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "Skill"
-                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
-                ):
-                    in_judgment_span = True
-                    break
-
-            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
-
-            # ExitPlanMode clears plan-mode for next turn
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "ExitPlanMode"
-                ):
-                    plan_mode_active = False
-                    break
-
-            # code-read turns outside judgment spans qualify for D1/D2/D3 distributions.
-            # code-write turns outside judgment spans are recorded so the D3 inline-edit
-            # case can be detected in the lookahead window.
-            # All other Opus-with-usage turns are recorded as spacers so D3 lookahead
-            # correctly counts them against the 3-turn window.
-            if turn_class == "code-read":
-                file_count = _count_read_file_paths(content)
-                bucket = _d1_bucket(file_count)
-                session_turns.append({
-                    "class": "code-read",
-                    "out": out_tokens,
-                    "d1_bucket": bucket,
-                })
-                d1_turns[bucket] += 1
-                d1_out[bucket] += out_tokens
-            else:
-                session_turns.append({
-                    "class": turn_class,
-                    "out": out_tokens,
-                    "d1_bucket": "",
-                })
-
-        # --- D2: streak analysis within this session ---
-        # A streak is a maximal consecutive run of code-read turns (no non-code-read
-        # Opus turn in between, per the recorded session_turns sequence).
-        current_streak_len: int = 0
-        current_streak_out: int = 0
-        for turn in session_turns:
-            if turn["class"] == "code-read":
-                current_streak_len += 1
-                current_streak_out += turn["out"]
-            else:
-                if current_streak_len > 0:
-                    bkt = _d2_bucket(current_streak_len)
-                    d2_streaks[bkt] += 1
-                    d2_out[bkt] += current_streak_out
-                current_streak_len = 0
-                current_streak_out = 0
-        # Flush trailing streak
-        if current_streak_len > 0:
-            bkt = _d2_bucket(current_streak_len)
-            d2_streaks[bkt] += 1
-            d2_out[bkt] += current_streak_out
-
-        # --- D3: read-then-edit lookahead within this session ---
-        # For each code-read turn, look ahead up to 3 Opus turns with usage.
-        # User-turn separator entries (class="user", out=0) are skipped in the
-        # lookahead count — they are not Opus turns with usage.
-        for idx, turn in enumerate(session_turns):
-            if turn["class"] != "code-read":
-                continue
-            lookahead_count = 0
-            d3_case = "neither"
-            for j in range(idx + 1, len(session_turns)):
-                next_turn = session_turns[j]
-                if next_turn["class"] == "user":
-                    # Not an Opus turn with usage — skip without consuming the 3-turn budget.
-                    # A user turn between a code-read and a code-write does not weaken the
-                    # causal link; only Opus turns count against the lookahead window.
-                    continue
-                lookahead_count += 1
-                if lookahead_count > 3:
-                    break
-                if next_turn["class"] == "code-write":
-                    d3_case = "inline-edit"
-                    break
-                if next_turn["class"] == "orchestration":
-                    d3_case = "dispatched"
-                    break
-
-            d3_turns[d3_case] += 1
-            d3_out[d3_case] += turn["out"]
-            d3_xtab_turns[(d3_case, turn["d1_bucket"])] += 1
-            d3_xtab_out[(d3_case, turn["d1_bucket"])] += turn["out"]
-
-    # --- Dispatchable share summary ---
-    # A code-read turn is dispatchable via D1 (file-count bucket 2-3, 4-7, or 8+) or
-    # D3 (case dispatched or neither). Their union is computed via the D3 cross-tab.
-    # D2 streak data is shown separately above as a complementary view.
-    total_code_read_out = sum(d1_out.values())
-    d1_dispatch_out = sum(d1_out[b] for b in _D1_DISPATCHABLE_BUCKETS)
-    d3_dispatch_out = sum(d3_out[c] for c in _D3_DISPATCHABLE_CASES)
-    # Intersection of D1 and D3 dispatchable (via cross-tab)
-    d1_and_d3_dispatch_out = sum(
-        d3_xtab_out[(c, b)]
-        for c in _D3_DISPATCHABLE_CASES
-        for b in _D1_DISPATCHABLE_BUCKETS
-    )
-    union_dispatch_out = d1_dispatch_out + d3_dispatch_out - d1_and_d3_dispatch_out
-    dispatch_pct = f"{100 * union_dispatch_out / total_code_read_out:.0f}%" if total_code_read_out else "—"
-
-    # --- Emit output ---
-    title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Opus code-read turn-shape distributions ({title_since})\n")
-
-    # D1
-    print("### D1 — Files Read per turn (code-read turns, outside judgment spans)\n")
-    d1_header = f"{'Bucket':<8} {'Turns':>8} {'Output tokens':>15}"
-    print(d1_header)
-    print("─" * len(d1_header))
-    for bkt in _D1_BUCKETS:
-        print(f"{bkt:<8} {d1_turns[bkt]:>8,} {d1_out[bkt]:>15,}")
-
-    # D2
-    print("\n### D2 — Code-read streak length\n")
-    d2_header = f"{'Bucket':<8} {'Streaks':>8} {'Output tokens':>15}"
-    print(d2_header)
-    print("─" * len(d2_header))
-    for bkt in _D2_BUCKETS:
-        print(f"{bkt:<8} {d2_streaks[bkt]:>8,} {d2_out[bkt]:>15,}")
-
-    # D3
-    print("\n### D3 — Read-then-edit ratio (lookahead up to 3 Opus turns)\n")
-    d3_header = f"{'Case':<14} {'Turns':>8} {'Output tokens':>15}"
-    print(d3_header)
-    print("─" * len(d3_header))
-    for case in _D3_CASES:
-        print(f"{case:<14} {d3_turns[case]:>8,} {d3_out[case]:>15,}")
-
-    print("\n#### D3 × D1 cross-tab\n")
-    d3x_header = f"{'Case':<14} {'D1 bucket':<10} {'Turns':>8} {'Output tokens':>15}"
-    print(d3x_header)
-    print("─" * len(d3x_header))
-    for case in _D3_CASES:
-        for bkt in _D1_BUCKETS:
-            turns_val = d3_xtab_turns[(case, bkt)]
-            out_val = d3_xtab_out[(case, bkt)]
-            if turns_val > 0:
-                print(f"{case:<14} {bkt:<10} {turns_val:>8,} {out_val:>15,}")
-
-    print(
-        f"\nDispatchable share: {dispatch_pct} of code-read output tokens"
-        " (D1≥2 OR D3-neither/dispatched; D2-streak≥3 shown separately above)"
-    )
-
-
-def cmd_audit_routing_samples(args: argparse.Namespace) -> None:
-    """Emit a random sample of Opus code-read turns with prior-user context and next-turn
-    lookahead classification, as a JSON array to stdout.
-
-    Each element provides a verbatim prior user message, the first tool_use block of the
-    code-read turn, and the kind of action taken in the next non-user Opus turn. Designed
-    for manual curation of which turns should/should not have been delegated.
-
-    The judgment-span state machine is intentionally duplicated from cmd_audit_routing —
-    tests cross-validate the two copies to guard against drift.
-    """
-    since_ts, since_raw = _parse_since_nd_arg(args, "audit-routing-samples")
-
-    sample_n: int = getattr(args, "sample", 30) or 30
-    seed: int | None = getattr(args, "seed", None)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "audit-routing-samples", roots=roots)
-    # stderr, not stdout: stdout is this subcommand's JSON/markdown data stream.
-    _print_resolved_scope("audit-routing-samples", scope_label, roots, file=sys.stderr)
-
-    candidates: list[dict] = []
-
-    for jsonl, records in session_iter:
-        session_id = jsonl.stem
-        # One API call = one turn: dedup merges a requestId run's content
-        # blocks into one union list, so classification below sees every
-        # block (e.g. the first tool_use block promised by this function's
-        # own docstring may land on a later raw record). Mirrors
-        # cmd_audit_routing's own dedup call.
-        records = _dedup_turns_by_request_id(records)
-
-        # Build per-session records list with kind classification.
-        # Judgment span state machine — duplicated from cmd_audit_routing intentionally.
-        in_judgment_span: bool = False
-        plan_mode_active: bool = False
-
-        session_records: list[dict] = []
-
-        for rec in records:
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-
-            if rtype in ("user", "human"):
-                in_judgment_span = False
-                content_text = _content_text(msg.get("content", ""))
-                if "Plan mode is active" in content_text:
-                    plan_mode_active = True
-                user_text = _content_text(msg.get("content", ""))
-                session_records.append({
-                    "kind": "user",
-                    "content": [],
-                    "user_text": user_text,
-                })
-                continue
-
-            if rtype != "assistant":
-                continue
-
-            model = msg.get("model", "")
-            content = msg.get("content") or []
-
-            if _fam(model) != "opus":
-                # Still update span state from non-Opus assistant turns (ExitPlanMode)
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "ExitPlanMode"
-                    ):
-                        plan_mode_active = False
-                continue
-
-            usage = msg.get("usage")
-            if not usage:
-                continue
-
-            # Open judgment span before classification (same logic as cmd_audit_routing)
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "Skill"
-                    and (block.get("input") or {}).get("skill") in AUDIT_JUDGMENT_SKILLS
-                ):
-                    in_judgment_span = True
-                    break
-
-            turn_class = _classify_opus_turn(content, in_judgment_span, plan_mode_active)
-
-            # ExitPlanMode clears plan-mode for next turn
-            for block in content:
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "ExitPlanMode"
-                ):
-                    plan_mode_active = False
-                    break
-
-            session_records.append({
-                "kind": turn_class,
-                "content": content,
-                "user_text": "",
-                "rec_ts": rec.get("timestamp"),
-            })
-
-        # Scan for code-read entries and collect sample candidates.
-        for turn_idx, turn in enumerate(session_records):
-            if turn["kind"] != "code-read":
-                continue
-
-            # Apply --since filter using record timestamp
-            if since_ts is not None:
-                rec_ts = _parse_ts(turn.get("rec_ts"))
-                if rec_ts is None or rec_ts < since_ts:
-                    continue
-
-            # prior_user_message: walk backward to find the nearest user turn.
-            prior_user_message = ""
-            for i in range(turn_idx - 1, -1, -1):
-                if session_records[i]["kind"] == "user":
-                    prior_user_message = session_records[i]["user_text"]
-                    break
-
-            # assistant_tool_call: first tool_use block in this turn's content.
-            assistant_tool_call: dict = {"name": "", "input": {}}
-            for block in turn["content"]:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    assistant_tool_call = {
-                        "name": block.get("name", ""),
-                        "input": block.get("input") or {},
-                    }
-                    break
-
-            # next_assistant_action and next_turn_excerpt: first non-user entry after this turn.
-            next_assistant_action = "other"
-            next_turn_excerpt = ""
-            for j in range(turn_idx + 1, len(session_records)):
-                next_entry = session_records[j]
-                if next_entry["kind"] == "user":
-                    continue
-                # Classify the next non-user entry.
-                if next_entry["kind"] == "code-write":
-                    next_assistant_action = "edit"
-                elif next_entry["kind"] == "orchestration":
-                    next_assistant_action = "dispatch"
-                elif next_entry["kind"] == "code-read":
-                    next_assistant_action = "another-read"
-                elif next_entry["kind"] == "other":
-                    # "respond-to-user" if text-only (no tool_use blocks)
-                    has_tool_use = any(
-                        isinstance(b, dict) and b.get("type") == "tool_use"
-                        for b in next_entry["content"]
-                    )
-                    next_assistant_action = "other" if has_tool_use else "respond-to-user"
-                else:
-                    next_assistant_action = "other"
-                next_turn_text = _content_text(next_entry["content"])
-                next_turn_excerpt = next_turn_text[:200]
-                break
-
-            candidates.append({
-                "session_id": session_id,
-                "turn_index": turn_idx,
-                "prior_user_message": prior_user_message,
-                "assistant_tool_call": assistant_tool_call,
-                "next_assistant_action": next_assistant_action,
-                "next_turn_excerpt": next_turn_excerpt,
-                "recent_assistant_text": _recent_assistant_text(session_records, turn_idx, _RECENT_LOOKBACK_N),
-                "recent_tool_trail": _recent_tool_trail(session_records, turn_idx, _RECENT_LOOKBACK_N),
-            })
-
-    # Apply reproducible sampling.
-    rng = random.Random(seed)
-    rng.shuffle(candidates)
-    candidates = candidates[:sample_n]
-
-    output_format: str = getattr(args, "output_format", "json") or "json"
-    if output_format == "md":
-        print(_format_samples_as_markdown(
-            candidates,
-            since_raw=since_raw,
-            sample_n=sample_n,
-            seed=seed,
-        ))
-    else:
-        print(json.dumps(candidates, indent=2))
-
-
 # ---------------------------------------------------------------------------
 # turn-shape / turn-shape-samples
 # ---------------------------------------------------------------------------
@@ -10191,33 +5084,6 @@ _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
     "branch", "clean", "remote", "fetch", "reflog", "symbolic-ref", "fsck",
     "worktree",
 })
-
-
-# Shell operators that chain multiple invocations into one Bash command --
-# splitting on these keeps a mutating git call from hiding in a later segment
-# of e.g. "cd worktree && git commit -m wip".
-_TURN_SHAPE_SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
-
-
-def _split_command_tokens_on_shell_operators(tokens: list[str]) -> list[list[str]]:
-    """Split a shlex-tokenized command into segments at &&, ||, ;, and | operators.
-
-    A quoted operator (e.g. a commit message containing "&&") survives as
-    part of its enclosing token from shlex.split and is never treated as a
-    separator here, since it can't equal one of these bare operator tokens.
-    """
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in _TURN_SHAPE_SHELL_OPERATOR_TOKENS:
-            if current:
-                segments.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
 
 
 # A single env-var-assignment token, e.g. "FOO=bar" -- the per-token form of
@@ -10253,13 +5119,9 @@ def _bash_command_is_mutating_git(command: str) -> bool:
     """Return True iff any &&/;/|/||-chained segment of `command` invokes a
     mutating git subcommand (see _command_segment_is_mutating_git).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
     return any(
         _command_segment_is_mutating_git(segment)
-        for segment in _split_command_tokens_on_shell_operators(tokens)
+        for segment in corpus.split_command_segments(command)
     )
 
 
@@ -10696,7 +5558,9 @@ def _friction_struggle_turn_events(records: list[dict]) -> int:
 
 def _friction_signals(records: list[dict]) -> dict[str, int]:
     """Return the per-signal friction breakdown plus the all-1-weighted composite."""
-    denials = _friction_denial_events(records)
+    # Shadows the module-level `denials` import (transcript_analysis.denials) -- this
+    # function needs no denials.<name> access, only the count computed below.
+    denials = _friction_denial_events(records)  # noqa: F811
     failed_test_runs = _friction_failed_test_run_events(records)
     struggle_turns = _friction_struggle_turn_events(records)
     composite = (
@@ -11328,6 +6192,121 @@ def _operator_response_lag_from_log(
     return lags, excluded
 
 
+def _nudge_conversion_from_log(
+    session_traces: dict[str, list[int]], log_entries_by_root: dict[Path, list[dict]]
+) -> dict:
+    """Classify each fired, in-scope session into one of four nudge-to-handoff
+    conversion buckets, per the frozen classification in
+    .claude/plans/handoff-nudge-deep-tail-lever.md.
+
+    A session enters the classified population when it appears on at least
+    one `nudged` log line AND has a surviving in-scope trace in
+    session_traces -- the same population _operator_response_lag_from_log
+    joins against. A nudged session with no in-scope trace is excluded and
+    counted under "dropped" rather than guessed at (mirroring
+    _operator_response_lag_from_log's own excluded_count). A `handoff` line
+    for a session that never appears on a `nudged` line at all is outside
+    this population and is neither classified nor counted -- this measures
+    "did a nudged session convert," not "how many handoffs ran."
+
+    log_entries_by_root groups _parse_nudge_log_entries' own per-root output
+    -- a session's own nudged/handoff lines always land in one root's log,
+    since the same account writes both. Neither line type carries a
+    timestamp, so each root's own file order is the only chronological
+    signal available. No cross-root merge is needed as a result.
+
+    Buckets (mutually exclusive, decided by the first `handoff` line reached
+    and whether any `action=block` line precedes it):
+    - voluntary: a handoff line exists, no block precedes it
+    - forced: a handoff line exists, at least one block precedes it
+    - blocked_no_handoff: at least one block line, no handoff line
+    - no_compliance: neither a block nor a handoff line
+
+    Returns a dict with:
+    - "voluntary", "forced", "blocked_no_handoff", "no_compliance": the four
+      bucket counts above
+    - "dropped": nudged sessions with no surviving in-scope trace, excluded
+      rather than guessed at (see above)
+    - "join_validity": voluntary + forced, the count of fired, in-scope
+      sessions whose handoff line's session id actually matched a nudged
+      session id
+    - "ignored_values": the `ignored=` value on the last nudged line
+      preceding the handoff line, one per voluntary session where that line
+      carries the field
+    - "no_ignored_field": voluntary sessions whose preceding nudged line
+      carries no ignored= field -- counted separately and never defaulted to
+      0, which would bias the distribution toward "complied immediately"
+
+    A future nudge tier adding a third `action=` value must update this
+    function's own `action == "block"` check (below) alongside
+    _operator_response_lag_from_log's.
+    """
+    # A session id repeated across roots (stale symlink, merged log, PID
+    # reuse) is not handled -- entries land in root-scan order.
+    # Ordering is approximate because neither line type carries a
+    # timestamp.
+    per_session: dict[str, list[dict]] = defaultdict(list)
+    for entries in log_entries_by_root.values():
+        for entry in entries:
+            if entry.get("kind") not in ("nudged", "handoff"):
+                continue
+            session = entry.get("session")
+            if session:
+                per_session[session].append(entry)
+
+    voluntary = forced = blocked_no_handoff = no_compliance = 0
+    dropped = no_ignored_field = 0
+    ignored_values: list[int] = []
+
+    for session, entries in per_session.items():
+        if not any(e["kind"] == "nudged" for e in entries):
+            continue
+        if session not in session_traces:
+            dropped += 1
+            continue
+
+        handoff_index = next((i for i, e in enumerate(entries) if e["kind"] == "handoff"), None)
+        block_index = next(
+            (i for i, e in enumerate(entries) if e["kind"] == "nudged" and e.get("action") == "block"),
+            None,
+        )
+
+        if handoff_index is None:
+            if block_index is not None:
+                blocked_no_handoff += 1
+            else:
+                no_compliance += 1
+            continue
+
+        if block_index is not None and block_index < handoff_index:
+            forced += 1
+            continue
+
+        voluntary += 1
+        last_nudged = next(
+            (e for e in reversed(entries[:handoff_index]) if e["kind"] == "nudged"), None
+        )
+        if last_nudged is not None and "ignored" in last_nudged:
+            ignored_values.append(last_nudged["ignored"])
+        else:
+            no_ignored_field += 1
+
+    return {
+        "voluntary": voluntary,
+        "forced": forced,
+        "blocked_no_handoff": blocked_no_handoff,
+        "no_compliance": no_compliance,
+        "dropped": dropped,
+        # Definitional sum of the two buckets above, not an independent join
+        # re-check: the classification loop's own per-session bucket
+        # assignment already requires a shared session id before either
+        # bucket increments.
+        "join_validity": voluntary + forced,
+        "ignored_values": ignored_values,
+        "no_ignored_field": no_ignored_field,
+    }
+
+
 def _simulate_rearm_spacing(
     main_thread_turns: Sequence[tuple[int, int, float]],
     boundaries: Sequence[int],
@@ -11446,6 +6425,49 @@ def _session_matches_rearm_scope(
     )
 
 
+def _rearm_backtest_log_size_lines(
+    per_root_sizes: Sequence[tuple[Path, int | None]],
+    *,
+    multi_root: bool,
+    redact: bool,
+    redact_ordinals: dict[Path, int],
+) -> list[str]:
+    """Render the nudge-log byte-size disclosure line(s) for
+    _rearm_backtest_report from each root's already-resolved byte size
+    (None means unreadable). Multi-root scope pools every root into one
+    aggregate line: a per-root byte count is itself a per-account figure,
+    which docs/private-project-redaction.md's Account-cardinality bar
+    prohibits. Single-root scope prints that root's own account-N-labeled
+    (or raw path under --no-redact) line directly.
+
+    Pure over already-resolved sizes so it's unit-testable without a
+    filesystem.
+    """
+    if multi_root:
+        total_bytes = sum(size for _root, size in per_root_sizes if size is not None)
+        # Boolean-only, never a count: same cardinality-leak concern as above.
+        any_truncated = any(
+            size is not None and size > _NUDGE_LOG_MAX_READ for _root, size in per_root_sizes
+        )
+        any_unreadable = any(size is None for _root, size in per_root_sizes)
+        note = ""
+        if any_truncated:
+            note += " (some roots truncated -- oldest lines dropped)"
+        if any_unreadable:
+            note += " (some roots unreadable)"
+        return [f"  nudge logs across every resolved root: {total_bytes:,} bytes{note}"]
+
+    # multi_root=False implies exactly one entry: the sole caller derives
+    # multi_root from the same scan_roots that produced per_root_sizes.
+    root, size = per_root_sizes[0]
+    log_path = root.parent / ".handoff-nudge.log"
+    root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
+    if size is None:
+        return [f"  {root_label} nudge log: unreadable"]
+    truncated_note = " [truncated -- oldest lines dropped]" if size > _NUDGE_LOG_MAX_READ else ""
+    return [f"  {root_label} nudge log: {size:,} bytes{truncated_note}"]
+
+
 def cmd_rearm_backtest(args: argparse.Namespace) -> None:
     """CLI entry point for the rearm-backtest subcommand.
 
@@ -11542,15 +6564,31 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    try:
-        config_directory = config_dir()
-    except ValueError as exc:
-        # Mirrors _cost_ledger_path's callers' own stderr+exit convention.
-        # The rest of this report can't locate the recorded corpus it
-        # backtests against without a resolved config dir.
-        print(f"rearm-backtest: {exc}", file=sys.stderr)
-        sys.exit(1)
-    log_entries = _parse_nudge_log_entries(config_directory / ".handoff-nudge.log")
+    # scan_roots is already resolved (with its own exit(2) handling) via
+    # _resolve_cost_roots, so no config_dir() call is needed here. Per-root
+    # join avoids biasing lag/conversion toward one account while
+    # session_traces spans every root.
+    log_entries_by_root: dict[Path, list[dict]] = {}
+    per_root_sizes: list[tuple[Path, int | None]] = []
+    for root in scan_roots:
+        log_path = root.parent / ".handoff-nudge.log"
+        log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
+        # This duplicates _read_bounded_log_lines' own exists/stat/read guard
+        # rather than reusing it. The two stay in sync only because both
+        # currently catch plain OSError -- re-check both sites together if
+        # either's caught exception type narrows.
+        try:
+            log_size = log_path.stat().st_size if log_path.exists() else 0
+        except OSError:
+            per_root_sizes.append((root, None))
+            continue
+        per_root_sizes.append((root, log_size))
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    for line in _rearm_backtest_log_size_lines(
+        per_root_sizes, multi_root=multi_root, redact=redact, redact_ordinals=redact_ordinals
+    ):
+        print(line)
+    log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)
@@ -11618,6 +6656,55 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
                 f"{spacing:>10,} {compliance_label:>12} {total:>14,.2f} {delta:>+10,.2f}"
                 f" {c_bar:>10,.0f} {delta_c_bar:>+12,.0f}"
             )
+
+    conversion = _nudge_conversion_from_log(session_traces, log_entries_by_root)
+    fired = (
+        conversion["voluntary"] + conversion["forced"]
+        + conversion["blocked_no_handoff"] + conversion["no_compliance"]
+    )
+    print(f"\n## Nudge->handoff conversion ({title_since}, generated {today.isoformat()})\n")
+    print(f"Fired sessions in scope: {fired:,} ({conversion['dropped']:,} dropped -- no in-scope trace)")
+
+    bucket_header = f"{'Bucket':<24} {'Count':>8} {'Rate':>8}"
+    print(f"\n{bucket_header}")
+    print("-" * len(bucket_header))
+    for label, key in (
+        ("voluntary", "voluntary"),
+        ("forced", "forced"),
+        ("blocked-no-handoff", "blocked_no_handoff"),
+        ("no-compliance-observed", "no_compliance"),
+    ):
+        count = conversion[key]
+        print(f"{label:<24} {count:>8,} {_pct_of(count, fired):>8}")
+
+    converted = conversion["voluntary"] + conversion["forced"]
+    block_reach = conversion["forced"] + conversion["blocked_no_handoff"]
+    print(
+        f"\nConversion rate (voluntary + forced / fired): {_pct_of(converted, fired)}"
+        f" ({converted:,}/{fired:,})"
+    )
+    print(
+        f"Block-reach rate (forced + blocked-no-handoff / fired): {_pct_of(block_reach, fired)}"
+        f" ({block_reach:,}/{fired:,})"
+    )
+    print(
+        "Join validity (fired sessions with a matching handoff line):"
+        f" {conversion['join_validity']:,}"
+    )
+
+    ignored_values = conversion["ignored_values"]
+    if ignored_values:
+        median_ignored = statistics.median(ignored_values)
+        print(
+            f"Re-arms tolerated at voluntary compliance: median ignored={median_ignored:,.0f}"
+            f" across {len(ignored_values):,} voluntary session(s)"
+            f" ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
+    else:
+        print(
+            "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
+            f" present ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
 
 
 # --- plan-boundary: continue-vs-switch-vs-handoff repricing at the plan boundary ---
@@ -11937,6 +7024,631 @@ def _plan_boundary_report(args: argparse.Namespace, today: date, roots: Sequence
             print(f"  {reason}: {cache_miss_reason_counts[reason]:,}")
 
 
+# --- handoff-signal-response: mechanical audit of the handoff-nudge rationalization gap ---
+# .claude/plans/handoff-nudge-rationalization-gap.md owns the full design.
+
+# Named constants, not inline strings, so a signal's kind is never a
+# copy-pasted literal. Read at three call sites: the OR-condition detector,
+# the aggregate table, and the curation-card formatter.
+_HANDOFF_SIGNAL_CHECK = "check"
+_HANDOFF_SIGNAL_ADVISORY = "advisory"
+_HANDOFF_SIGNAL_HARD_BLOCK = "hard-block"
+
+# nudge-handoff-near-context-cap.sh's own script basename, matched
+# post-basename since the real invocation is always a tilde or absolute path
+# -- mirrors _DENIAL_COMMAND_MULTIPLEXERS' own convention for marker.sh.
+_HANDOFF_SIGNAL_HOOK_BASENAME = "nudge-handoff-near-context-cap.sh"
+
+# The hard-block stderr message's own stable substring
+# (nudge-handoff-near-context-cap.sh's printf, around line 647), distinct
+# from the advisory clause's own text so it can't cross-match.
+_HANDOFF_SIGNAL_HARD_BLOCK_TEXT = "handoff-nudge hard-block point"
+
+# A /handoff write's own file-path shape: handoff/SKILL.md writes
+# "<config-dir>/handoffs/<slug>-handoff.md".
+_HANDOFF_SIGNAL_WRITE_PATH_RE = re.compile(r"/handoffs/[^/]+-handoff\.md$")
+
+# Long enough to carry a full rationalization sentence on a curation card,
+# short enough to keep the card scannable -- a display truncation, not a
+# protocol-grounded value.
+_HANDOFF_SIGNAL_EXCERPT_MAX_CHARS = 400
+
+# Long enough to carry a full reasoning paragraph in a --context-turns
+# entry, short enough to keep --sample output bounded -- a display
+# truncation, not a protocol-grounded value.
+_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS = 1000
+
+
+def _handoff_signal_bash_check_call(block: dict) -> bool:
+    """True iff `block` is a Bash tool_use invoking
+    nudge-handoff-near-context-cap.sh --check, in any &&/;/|-chained segment."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+        return False
+    command = (block.get("input") or {}).get("command", "") or ""
+    for segment in corpus.split_command_segments(command):
+        if segment and os.path.basename(segment[0]) == _HANDOFF_SIGNAL_HOOK_BASENAME and "--check" in segment[1:]:
+            return True
+    return False
+
+
+def _handoff_signal_marker_transition(block: dict) -> str | None:
+    """Return "activate"/"deactivate" iff `block` is a Bash tool_use invoking
+    `marker.sh (activate|deactivate) ready-for-review`, else None. Best-effort,
+    like every other command-shape classifier in this file: an unrecognized
+    wrapping (an alias, a function) is silently missed."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+        return None
+    command = (block.get("input") or {}).get("command", "") or ""
+    for segment in corpus.split_command_segments(command):
+        if len(segment) < 3 or os.path.basename(segment[0]) != "marker.sh":
+            continue
+        if segment[1] in ("activate", "deactivate") and segment[2] == "ready-for-review":
+            return segment[1]
+    return None
+
+
+def _handoff_signal_is_handoff_event(block: dict) -> bool:
+    """True iff `block` is a same-session handoff event: a `/handoff` Skill
+    invocation, or a Write/Edit whose file_path is a
+    `<config-dir>/handoffs/<slug>-handoff.md` write."""
+    if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+        return False
+    name = block.get("name")
+    inp = block.get("input") or {}
+    if name == "Skill" and inp.get("skill") == "handoff":
+        return True
+    if name in ("Write", "Edit"):
+        return bool(_HANDOFF_SIGNAL_WRITE_PATH_RE.search(inp.get("file_path", "") or ""))
+    return False
+
+
+def _handoff_signal_is_eligible_main_thread_turn(rec: dict) -> bool:
+    """True iff `rec` is a main-thread assistant turn: type=="assistant",
+    not isSidechain. Shared by _handoff_signal_excerpt_eligible_text and
+    _handoff_signal_forward_context, whose turn-walking loops both need
+    the same main-thread-turn definition."""
+    return rec.get("type") == "assistant" and not bool(rec.get("isSidechain"))
+
+
+def _handoff_signal_excerpt_eligible_text(rec: dict) -> str:
+    """Excerpt-eligible: main-thread assistant `text` blocks only, never
+    tool_use/tool_result/user records or sidechain turns."""
+    if not _handoff_signal_is_eligible_main_thread_turn(rec):
+        return ""
+    content = (rec.get("message") or {}).get("content") or []
+    if not isinstance(content, list):
+        return ""
+    texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+    return " ".join(texts)
+
+
+def _handoff_signal_excerpt(deduped: Sequence[dict], after_record_index: int) -> str:
+    """First excerpt-eligible text strictly after `after_record_index` in
+    `deduped` (see _handoff_signal_excerpt_eligible_text), truncated to
+    _HANDOFF_SIGNAL_EXCERPT_MAX_CHARS; "" when no eligible record follows."""
+    for rec in deduped[after_record_index + 1:]:
+        text = _handoff_signal_excerpt_eligible_text(rec)
+        if text:
+            return text[:_HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
+    return ""
+
+
+def _handoff_signal_forward_context(deduped: Sequence[dict], after_record_index: int, n_turns: int) -> list[dict]:
+    """Forward-context window for a --context-turns caller:
+    - up to `n_turns` main-thread turns strictly after `after_record_index` in `deduped`
+    - same main-thread-turn definition as _handoff_signal_response_session_rows' own
+      main_thread_turns: type=="assistant", not isSidechain
+    - each entry carries both text AND thinking content -- unlike
+      _handoff_signal_excerpt_eligible_text (text blocks only), reading both
+      content-block kinds lets a caller see reasoning an agent confined to an
+      extended-thinking block, invisible to the base excerpt
+    - one entry per turn visited, even when both fields are empty, keeping
+      turn_offset (1-based) stable
+    - stops early once `n_turns` turns have been visited or the transcript
+      runs out, whichever comes first
+    - never includes session_id/jsonl_path or any other identifying field
+    """
+    if n_turns <= 0:
+        return []
+    contexts: list[dict] = []
+    for rec in deduped[after_record_index + 1:]:
+        if not _handoff_signal_is_eligible_main_thread_turn(rec):
+            continue
+        content = (rec.get("message") or {}).get("content") or []
+        if not isinstance(content, list):
+            content = []
+        texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+        thinkings = [
+            b.get("thinking", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "thinking" and b.get("thinking")
+        ]
+        contexts.append({
+            "turn_offset": len(contexts) + 1,
+            "text": " ".join(texts)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+            "thinking": " ".join(thinkings)[:_HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS],
+        })
+        if len(contexts) >= n_turns:
+            break
+    return contexts
+
+
+def _handoff_signal_response_session_rows(records: Sequence[dict]) -> tuple[list[dict], list[dict], list[int]]:
+    """Detect every observed context-budget signal in one session's own
+    transcript. Returns (rows, deduped, trace):
+    - rows: one dict per signal (kind, record_index, position, context_at_turn,
+      threshold, marker_active, handoff_followed, turns_after_signal,
+      dollars_after_signal, session_total_dollars, pct_spend_after_signal)
+      -- session_id is not included; the caller attaches it (this function
+      has no I/O, so it never resolves jsonl.stem).
+      -- exceeds_startup_burn_benchmark is not included either: it depends on
+      a corpus-wide benchmark the caller alone can compute
+      (_startup_burn_benchmark), not on anything local to one session.
+    - deduped: this session's own _dedup_turns_by_request_id output, returned
+      so a caller building curation-card excerpts can search forward from a
+      row's own record_index without re-deduping the session a second time.
+    - trace: one abs-token estimate (context_at_turn + output_tokens, the
+      hook's own ESTIMATE unit) per main-thread turn, in
+      _rearm_backtest_report's own session_traces shape -- lets a caller feed
+      _operator_response_lag_from_log without a second dedup+price pass.
+
+    A single ordered pass over `records` (post-dedup) tracks, in parallel:
+    - running main-thread turn context/output/dollars (`_price_turn`, the
+      same primitive every sibling subcommand in this file uses for this)
+    - the `ready-for-review` active-marker state (marker.sh
+      activate/deactivate Bash calls)
+    - pending `--check` tool_use ids awaiting their tool_result
+    - every same-session handoff event
+
+    Each signal row captures the running marker-active state AS OF that
+    point in the pass, not the state by the end of the session.
+    """
+    deduped = _dedup_turns_by_request_id(records)
+
+    main_thread_turns: list[tuple[int, int, float]] = []  # (context_at_turn, output_tokens, dollars)
+    main_thread_models: list[str] = []
+    marker_active = False
+    pending_check_calls: dict[str, int] = {}  # tool_use_id -> turn_index at call time
+    handoff_record_indices: list[int] = []
+    signals: list[dict] = []
+
+    for record_index, rec in enumerate(deduped):
+        rec_type = rec.get("type")
+
+        if rec_type == "attachment":
+            att = rec.get("attachment") or {}
+            att_type = att.get("type")
+            if att_type == "hook_success" and os.path.basename(att.get("command") or "") == _HANDOFF_SIGNAL_HOOK_BASENAME:
+                try:
+                    payload = json.loads(att.get("stdout") or "")
+                except (json.JSONDecodeError, ValueError):
+                    payload = {}
+                additional_context = (payload.get("hookSpecificOutput") or {}).get("additionalContext")
+                if additional_context:
+                    signals.append({
+                        "kind": _HANDOFF_SIGNAL_ADVISORY,
+                        "record_index": record_index,
+                        "turn_index": len(main_thread_turns),
+                        "marker_active": marker_active,
+                    })
+            elif att_type == "hook_stopped_continuation" and _HANDOFF_SIGNAL_HARD_BLOCK_TEXT in (att.get("message") or ""):
+                signals.append({
+                    "kind": _HANDOFF_SIGNAL_HARD_BLOCK,
+                    "record_index": record_index,
+                    "turn_index": len(main_thread_turns),
+                    "marker_active": marker_active,
+                })
+            continue
+
+        if rec_type == "user":
+            content = (rec.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                        continue
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id is None or tool_use_id not in pending_check_calls:
+                        continue
+                    turn_index = pending_check_calls.pop(tool_use_id)
+                    try:
+                        payload = json.loads(_content_text(block.get("content")))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if payload.get("status") != "ok":
+                        continue
+                    if payload.get("over_threshold") or payload.get("already_fired"):
+                        signals.append({
+                            "kind": _HANDOFF_SIGNAL_CHECK,
+                            "record_index": record_index,
+                            "turn_index": turn_index,
+                            "marker_active": marker_active,
+                        })
+            continue
+
+        if rec_type != "assistant" or bool(rec.get("isSidechain")):
+            continue
+
+        msg = rec.get("message") or {}
+        usage = msg.get("usage")
+        if usage:
+            model = msg.get("model", "")
+            dollars_by_class, context_at_turn, _unpriced_tokens = _price_turn(model, usage)
+            dollars = sum(dollars_by_class.values()) if dollars_by_class is not None else 0.0
+            main_thread_turns.append((context_at_turn, int(usage.get("output_tokens", 0)), dollars))
+            main_thread_models.append(model)
+
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            transition = _handoff_signal_marker_transition(block)
+            if transition == "activate":
+                marker_active = True
+            elif transition == "deactivate":
+                marker_active = False
+            if _handoff_signal_bash_check_call(block):
+                tool_use_id = block.get("id")
+                if tool_use_id:
+                    pending_check_calls[tool_use_id] = len(main_thread_turns)
+            if _handoff_signal_is_handoff_event(block):
+                handoff_record_indices.append(record_index)
+
+    total_turns = len(main_thread_turns)
+    # Suffix sums: O(total_turns) once, vs. O(signals × turns) if re-summed per signal.
+    suffix_dollars = [0.0] * (total_turns + 1)
+    for i in range(total_turns - 1, -1, -1):
+        suffix_dollars[i] = suffix_dollars[i + 1] + main_thread_turns[i][2]
+
+    rows: list[dict] = []
+    for sig in signals:
+        turn_index = sig["turn_index"]
+        if turn_index > 0:
+            context_at_turn = main_thread_turns[turn_index - 1][0]
+            threshold = _hook_effective_fire_threshold(main_thread_models[turn_index - 1])
+        else:
+            # Defensive edge case, not expected in practice: every real fire
+            # already read a usage block before firing, so turn_index is 0
+            # only for a malformed/synthetic fixture with no prior usage.
+            context_at_turn, threshold = 0, None
+        rows.append({
+            "kind": sig["kind"],
+            "record_index": sig["record_index"],
+            "position": turn_index,
+            "context_at_turn": context_at_turn,
+            "threshold": threshold,
+            "marker_active": sig["marker_active"],
+            "handoff_followed": any(idx > sig["record_index"] for idx in handoff_record_indices),
+            "turns_after_signal": total_turns - turn_index,
+            "dollars_after_signal": suffix_dollars[turn_index],
+            "session_total_dollars": suffix_dollars[0],
+            "pct_spend_after_signal": (
+                suffix_dollars[turn_index] / suffix_dollars[0] if suffix_dollars[0] > 0 else None
+            ),
+        })
+
+    trace = [c + o for c, o, _d in main_thread_turns]
+    return rows, deduped, trace
+
+
+def _rank_signal_rows_by_spend(rows: list[dict], sample_n: int, seed: int | None) -> list[dict]:
+    """Return the top `sample_n` rows descending by `dollars_after_signal`,
+    with a seeded pre-shuffle tie-break; with no seed, ties keep input order."""
+    if seed is not None:
+        rng = random.Random(seed)
+        rows = list(rows)
+        rng.shuffle(rows)
+    return sorted(rows, key=lambda row: row["dollars_after_signal"], reverse=True)[:sample_n]
+
+
+def _handoff_signal_response_cards(sampled: list[dict], redact: bool, context_turns: int = 0) -> list[dict]:
+    """Attach a curation-card excerpt to each sampled row, re-reading only
+    the sampled rows' own sessions (not the whole scanned corpus) -- see
+    _handoff_signal_excerpt's own eligibility rule. `redact` controls
+    whether each card's session id is replaced by a run-scoped opaque
+    label (_assign_session_redact_label/_redact_session_id, the same
+    mechanism cost's own per-row redaction uses). `context_turns` > 0 adds
+    a "forward_context" key (_handoff_signal_forward_context) to each card;
+    0 (the default) omits the key entirely, so every existing call site's
+    card shape is unchanged."""
+    session_redact_map: dict[str, str] = {}
+    deduped_cache: dict[Path, list[dict]] = {}
+    cards: list[dict] = []
+    for row in sampled:
+        jsonl_path: Path = row["jsonl_path"]
+        deduped = deduped_cache.get(jsonl_path)
+        if deduped is None:
+            deduped = _dedup_turns_by_request_id(corpus.read_session_file(jsonl_path, include_subagents=False))
+            deduped_cache[jsonl_path] = deduped
+        excerpt = _handoff_signal_excerpt(deduped, row["record_index"])
+        session_id = row["session_id"]
+        if redact:
+            _assign_session_redact_label(session_id, session_redact_map)
+            session_id = _redact_session_id(session_id, session_redact_map)
+        card = {
+            "session_id": session_id,
+            "kind": row["kind"],
+            "position": row["position"],
+            "context_at_turn": row["context_at_turn"],
+            "threshold": row["threshold"],
+            "marker_active": row["marker_active"],
+            "handoff_followed": row["handoff_followed"],
+            "turns_after_signal": row["turns_after_signal"],
+            "dollars_after_signal": round(row["dollars_after_signal"], 2),
+            "session_total_dollars": round(row["session_total_dollars"], 2),
+            "pct_spend_after_signal": (
+                round(row["pct_spend_after_signal"], 4) if row["pct_spend_after_signal"] is not None else None
+            ),
+            "exceeds_startup_burn_benchmark": row["exceeds_startup_burn_benchmark"],
+            "excerpt": excerpt,
+        }
+        if context_turns:
+            card["forward_context"] = _handoff_signal_forward_context(deduped, row["record_index"], context_turns)
+        cards.append(card)
+    return cards
+
+
+def _startup_burn_benchmark(workstream: dict[str, dict]) -> tuple[float | None, int, int]:
+    """Session-count-weighted average of startup-burn dollars
+    (_compute_workstream_dollars' own startup_burn_dollars) across every
+    branch in scope -- not an unweighted per-branch average, which would let
+    a low-continuation branch skew the result.
+
+    Returns (benchmark_dollars, total_continuations, branch_count), where
+    branch_count is every branch with corpus activity in scope (len(workstream),
+    _compute_workstream_dollars' own population), not only branches with a
+    continuation session. Returns None for benchmark_dollars when no branch
+    has a non-first session to sum, to avoid a ZeroDivisionError.
+    """
+    total_burn = sum(agg["startup_burn_dollars"] for agg in workstream.values())
+    total_continuations = sum(max(agg["session_count"] - 1, 0) for agg in workstream.values())
+    benchmark = total_burn / total_continuations if total_continuations > 0 else None
+    return benchmark, total_continuations, len(workstream)
+
+
+def _format_startup_burn_benchmark(benchmark_dollars: float | None) -> str:
+    """Shared "$X.XX per continuation session" / unavailable phrasing for
+    the startup-burn benchmark -- used by both the aggregate report and the
+    curation-card markdown header, so the two surfaces never drift apart."""
+    if benchmark_dollars is None:
+        return "unavailable (no continuation sessions found in scope)"
+    return f"{_fmt_usd(benchmark_dollars)} per continuation session"
+
+
+def _format_forward_context_turns_markdown(forward_context: list[dict]) -> str:
+    """Render a card's own "forward_context" list (--context-turns only) as
+    a markdown subsection; a turn whose text and thinking are both empty is
+    skipped entirely to keep the card scannable. Caller only invokes this
+    when the key is present on the card -- an empty (but present) list
+    still renders a header, distinct from the key being absent."""
+    if not forward_context:
+        return "**Forward context:** (no eligible turns followed the signal)\n\n"
+    lines = [f"**Forward context (next {len(forward_context)} turn(s)):**\n"]
+    for turn in forward_context:
+        text = turn.get("text") or ""
+        thinking = turn.get("thinking") or ""
+        if not text and not thinking:
+            continue
+        pieces = []
+        if thinking:
+            pieces.append(f"thinking: {thinking}")
+        if text:
+            pieces.append(f"text: {text}")
+        lines.append(f"- turn +{turn['turn_offset']}: {' / '.join(pieces)}\n")
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _format_handoff_signal_cards_as_markdown(
+    cards: list[dict], *, sample_n: int, seed: int | None, benchmark_dollars: float | None,
+) -> str:
+    """Return a full markdown document for human curation of
+    handoff-signal-response --sample output, mirroring
+    _format_samples_as_markdown's own curation-card shape."""
+    today = date.today().isoformat()
+    seed_display = str(seed) if seed is not None else "(none)"
+    header = (
+        f"# handoff-signal-response curation — {len(cards)} signal(s)\n"
+        f"\n"
+        f"Generated: {today}  ·  Filter: `--sample {sample_n}  --seed {seed_display}`\n"
+        f"\n"
+        f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.\n"
+        f"\n"
+        f"For each signal: read the excerpt (the agent's own next eligible text turn after the"
+        f" signal, if any), then check ONE verdict box.\n"
+    )
+    sections: list[str] = []
+    total = len(cards)
+    for i, card in enumerate(cards):
+        excerpt = card["excerpt"] or "(no eligible assistant text turn followed the signal)"
+        threshold_display = f"{card['threshold']:,}" if card["threshold"] is not None else "n/a"
+        pct_display = (
+            f"{card['pct_spend_after_signal'] * 100:.1f}%" if card["pct_spend_after_signal"] is not None else "n/a"
+        )
+        exceeds_display = (
+            "n/a" if card["exceeds_startup_burn_benchmark"] is None
+            else ("yes" if card["exceeds_startup_burn_benchmark"] else "no")
+        )
+        forward_context_block = (
+            _format_forward_context_turns_markdown(card["forward_context"]) if "forward_context" in card else ""
+        )
+        section = (
+            f"## {i + 1}/{total} — session `{card['session_id']}` — {card['kind']} signal at turn {card['position']}\n"
+            f"\n"
+            f"- context_at_turn: {card['context_at_turn']:,}  ·  threshold: {threshold_display}\n"
+            f"- ready-for-review marker active: {card['marker_active']}\n"
+            f"- handoff followed (same session): {card['handoff_followed']}\n"
+            f"- turns after signal: {card['turns_after_signal']:,}  ·  $ after signal: {card['dollars_after_signal']:,.2f}\n"
+            f"- % of session spend after signal: {pct_display}  ·  exceeds startup-burn benchmark: {exceeds_display}\n"
+            f"\n"
+            f"**Excerpt:**\n"
+            f"> {excerpt}\n"
+            f"\n"
+            f"{forward_context_block}"
+            f"Verdict: [ ] cost-grounded  [ ] step-count/\"nearly-done\" (no cost reasoning)  "
+            f"[ ] handed off  [ ] unclassifiable\n"
+        )
+        sections.append(section)
+    return header + "\n" + "\n".join(sections)
+
+
+def _handoff_signal_response_aggregate_report(
+    rows: Sequence[dict], log_diagnostic: str | None,
+    benchmark_dollars: float | None,
+) -> None:
+    """Print the census-mode aggregate report: signal counts, conversion
+    rate, and post-signal spend distribution split by signal kind and by
+    marker-active context.
+
+    benchmark_dollars is the corpus-wide startup-burn benchmark
+    (_startup_burn_benchmark), pre-computed by the caller from a second,
+    independent scope pass -- this function never recomputes it from rows."""
+    total = len(rows)
+    print(f"\n## Handoff signal response ({total:,} signal(s) in scope)\n")
+    print(f"Startup-burn benchmark (this scope): {_format_startup_burn_benchmark(benchmark_dollars)}.")
+    if not total:
+        print("No signals found in scope.")
+        return
+
+    sessions_with_signal = len({r["session_id"] for r in rows})
+    followed = sum(1 for r in rows if r["handoff_followed"])
+    print(f"Sessions with at least one signal: {sessions_with_signal:,}")
+    print(
+        "Conversion rate (a same-session /handoff followed the signal):"
+        f" {_pct_of(followed, total)} ({followed:,}/{total:,})"
+    )
+    if benchmark_dollars is not None:
+        exceeding = sum(1 for r in rows if r["exceeds_startup_burn_benchmark"])
+        print(
+            "Signals whose post-signal spend exceeded the benchmark:"
+            f" {exceeding:,} ({_pct_of(exceeding, total)})"
+        )
+    if log_diagnostic:
+        print(f"\n{log_diagnostic}")
+
+    def _print_breakdown(title: str, key) -> None:
+        print(f"\n### {title}\n")
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            groups[key(r)].append(r)
+        header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
+        print(header)
+        print("-" * len(header))
+        for label in sorted(groups):
+            group_rows = groups[label]
+            n = len(group_rows)
+            hf = sum(1 for r in group_rows if r["handoff_followed"])
+            dollars = [r["dollars_after_signal"] for r in group_rows]
+            median = statistics.median(dollars) if dollars else 0.0
+            print(f"{label:<14} {n:>8,} {_pct_of(hf, n):>9} {median:>15,.2f}")
+
+    _print_breakdown("By signal kind", lambda r: r["kind"])
+    _print_breakdown(
+        "By ready-for-review active-marker context",
+        lambda r: "active" if r["marker_active"] else "inactive",
+    )
+
+
+def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
+    """CLI entry point for the handoff-signal-response subcommand.
+
+    Uses the shared `_resolve_scan_roots` scope machinery, not the
+    cost-family per-subcommand `--config-dir` extras.
+
+    Resolves scope a second time to feed `_compute_workstream_dollars`,
+    since `session_iter` above is a single-pass generator already consumed
+    by the main loop. Every other two-pass subcommand in this file (e.g.
+    cost-ledger) accepts the same tradeoff.
+    """
+    redact: bool = not bool(getattr(args, "no_redact", False))
+    roots = _resolve_scan_roots(args)
+    multi_root = len(roots) > 1
+    sample_n: int = getattr(args, "sample", 0) or 0
+    context_turns: int = getattr(args, "context_turns", 0) or 0
+
+    if not redact and multi_root:
+        print(
+            "handoff-signal-response: --no-redact is refused when more than one root is in scope;"
+            " drop --no-redact or scope to a single root (e.g. --this-repo with no additional"
+            " declared roots)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if context_turns and not sample_n:
+        print("handoff-signal-response: --context-turns requires --sample", file=sys.stderr)
+        sys.exit(2)
+    if context_turns < 0:
+        print("handoff-signal-response: --context-turns must not be negative", file=sys.stderr)
+        sys.exit(2)
+    if not redact:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    session_iter, scope_label = _resolve_project_scope(args, "handoff-signal-response", roots=roots)
+    _print_resolved_scope("handoff-signal-response", scope_label, roots)
+
+    seed: int | None = getattr(args, "seed", None)
+
+    all_rows: list[dict] = []
+    session_traces: dict[str, list[int]] = {}
+    for jsonl, records in session_iter:
+        session_id = jsonl.stem
+        rows, _deduped, trace = _handoff_signal_response_session_rows(records)
+        for row in rows:
+            row["session_id"] = session_id
+            row["jsonl_path"] = jsonl
+        all_rows.extend(rows)
+        if trace:
+            session_traces[session_id] = trace
+
+    benchmark_session_iter, _benchmark_scope_label = _resolve_project_scope(
+        args, "handoff-signal-response", roots=roots
+    )
+    workstream = _compute_workstream_dollars(benchmark_session_iter)
+    benchmark_dollars, _, _ = _startup_burn_benchmark(workstream)
+    for row in all_rows:
+        row["exceeds_startup_burn_benchmark"] = (
+            row["dollars_after_signal"] > benchmark_dollars if benchmark_dollars is not None else None
+        )
+
+    # Corroborating diagnostic only -- every row above already comes from
+    # this session's own transcript, never from this log. Mirrors
+    # _rearm_backtest_report's own "Operator-response-lag sample" line.
+    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    lags, excluded = _operator_response_lag_from_log(session_traces, log_entries)
+    log_diagnostic: str | None = None
+    if lags:
+        median_lag = statistics.median(lags)
+        log_diagnostic = (
+            f"Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): {len(lags):,}"
+            f" joined ({excluded:,} excluded -- no matching session in scope), median lag"
+            f" {median_lag:,.0f} tokens past the fire point"
+        )
+
+    if sample_n:
+        # Rank by post-signal spend, since that is where a wrong
+        # continue-decision actually cost something -- not the whole
+        # population. See _rank_signal_rows_by_spend's own docstring for the
+        # tie-break contract.
+        sampled = _rank_signal_rows_by_spend(all_rows, sample_n, seed)
+        cards = _handoff_signal_response_cards(sampled, redact, context_turns=context_turns)
+        output_format: str = getattr(args, "output_format", "json") or "json"
+        if output_format == "md":
+            print(_format_handoff_signal_cards_as_markdown(
+                cards, sample_n=sample_n, seed=seed, benchmark_dollars=benchmark_dollars,
+            ))
+        else:
+            print(json.dumps(cards, indent=2))
+        return
+
+    for row in all_rows:
+        row.pop("jsonl_path", None)
+        row.pop("record_index", None)
+    _handoff_signal_response_aggregate_report(
+        all_rows, log_diagnostic, benchmark_dollars=benchmark_dollars,
+    )
+
+
 def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
     """Add the shared --projects/--this-repo scope flags to a subparser.
 
@@ -12121,7 +7833,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_reviewer_yield.set_defaults(func=cmd_reviewer_yield)
 
     p_pr = sub.add_parser("pr-link", help="Map branches to GitHub PRs and pull per-PR comment counts. Requires gh.")
-    p_pr.add_argument("--repo", required=True, metavar="OWNER/REPO")
+    p_pr.add_argument(
+        "--repo", metavar="OWNER/REPO",
+        help="GitHub repo to query (default: parsed from this checkout's origin remote, host-qualified)",
+    )
     p_pr.add_argument("--branches", required=True, metavar="B1,B2,...")
     p_pr.add_argument("--author", metavar="LOGIN", help="Filter comments to this GitHub login")
     _add_project_scope_args(p_pr)
@@ -12604,11 +8319,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled and --machine-label.",
-    )
-    p_cost_ledger.add_argument(
-        "--machine-label", metavar="LABEL",
-        help="Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this machine's hostname.",
+        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -12648,7 +8359,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled and --machine-label.",
+        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",
@@ -12657,8 +8368,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_pr_cost.add_argument(
         "--machine-label", metavar="LABEL",
         help=(
-            "Opaque per-machine label for --record: ^[a-z0-9]{1,8}$, must not equal this"
-            " machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine."
+            "Narrow read mode's uncaptured-PR listing to one machine: ^[a-z0-9]{1,8}$. Refused"
+            " (exit 1) together with --record -- machine identity is generated and persisted"
+            " automatically there; see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(
@@ -12687,6 +8399,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_pr_cost.set_defaults(func=cmd_pr_cost)
+
+    p_pr_cost_export = sub.add_parser(
+        "pr-cost-export",
+        help=(
+            "Export every declared account's current pr-cost ledger rows -- redacted,"
+            " collapsed to one row per PR -- to a single operator-named TSV. Never writes to"
+            " stdout. Makes no gh call and scans no transcript corpus. See docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--out", metavar="PATH",
+        help=(
+            "Required: destination TSV path, refused if it already exists (never"
+            " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
+            " captured into that session's own transcript."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help="Additional Claude Code config directory to scan (repeatable).",
+    )
+    p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)
 
     p_spend_over_threshold = sub.add_parser(
         "spend-over-threshold",
@@ -12738,6 +8472,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    p_author_outcome = sub.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
+            " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
+            " round/dispatch structure and each session's own review-narrative-ledger file for"
+            " disposition. Corpus-wide, no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)
+
     p_cost_counts = sub.add_parser(
         "cost-counts",
         help=(
@@ -12785,9 +8539,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-redact", action="store_true",
         help=(
             "This report's output is aggregate-only (no project names or session IDs), so"
-            " --no-redact has no effect on its content, but it still prints the DO NOT PUBLISH"
-            " banner and enforces the same multi-root refusal as cost, for CLI parity."
-            " Refused when --config-dir puts more than one root in scope."
+            " --no-redact has no effect on most of its content, but at single-root scope it"
+            " prints the literal .handoff-nudge.log path (instead of an account-N label) in the"
+            " per-root log-size line. It still prints the DO NOT PUBLISH banner and enforces the"
+            " same multi-root refusal as cost, for CLI parity. Refused when --config-dir puts"
+            " more than one root in scope."
         ),
     )
     p_rearm_backtest.add_argument(
@@ -12795,6 +8551,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated candidate re-arm spacings in tokens past the first fire (default: 40000,80000,120000).",
     )
     p_rearm_backtest.set_defaults(func=cmd_rearm_backtest)
+
+    p_handoff_signal_response = sub.add_parser(
+        "handoff-signal-response",
+        help=(
+            "Per-session observed context-budget signals (--check over_threshold/already_fired,"
+            " the advisory nudge injection, the hard-block stderr) and whether a same-session"
+            " /handoff followed each one, split by marker context. Redacted by default."
+        ),
+    )
+    _add_project_scope_args(p_handoff_signal_response)
+    p_handoff_signal_response.add_argument(
+        "--no-redact", action="store_true",
+        help=(
+            "Emit raw session IDs in --sample curation cards instead of a run-scoped opaque"
+            " label, and print the DO NOT PUBLISH banner. Refused when scope resolves to more"
+            " than one root -- narrow to a single root first, e.g. with --this-repo."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--sample", type=int, default=0, metavar="N",
+        help=(
+            "Emit the top N signal rows by post-signal spend as curation cards instead of the"
+            " aggregate report."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--seed", type=int, default=None, metavar="N",
+        help=(
+            "Seed for reproducible tie-breaking among equal-spend rows in --sample (default:"
+            " unseeded -- ties keep scan order)."
+        ),
+    )
+    p_handoff_signal_response.add_argument(
+        "--format", dest="output_format", choices=("json", "md"), default="json",
+        help="--sample output format: json (default) or md (a human curation document).",
+    )
+    p_handoff_signal_response.add_argument(
+        "--context-turns", type=int, default=0, metavar="N",
+        help=(
+            "With --sample, also attach the next N main-thread turns of text AND thinking-block"
+            " content after each signal (forward_context) -- unlike the single-turn excerpt"
+            " (text blocks only), this surfaces reasoning an agent confined to an"
+            " extended-thinking block. Requires --sample."
+        ),
+    )
+    p_handoff_signal_response.set_defaults(func=cmd_handoff_signal_response)
 
     p_plan_boundary = sub.add_parser(
         "plan-boundary",

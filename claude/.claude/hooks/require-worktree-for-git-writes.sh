@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, irreversible
 # Gate: require git write operations to happen inside a linked worktree,
 # not the main working tree. Three activation markers:
 #   - <repo>/.claude/worktree-required  (committed repo sentinel — opt-out has no effect)
@@ -283,7 +284,7 @@ fi
 # 5s ceiling matches _lib_jq's and require-plan-review.sh's established
 # precedent for local, non-network subprocess calls. Parsing a Bash
 # command string is a pure in-memory operation with no I/O, so this leaves
-# ample headroom; a timeout here (exit 124) is treated as a parser failure
+# ample headroom; a cap kill here is treated as a parser failure
 # and denies, same as any other non-zero exit.
 RECORDS=$(printf '%s' "$COMMAND" | _lib_capped python3 "$PARSER" 2>/dev/null)
 PARSER_EXIT=$?

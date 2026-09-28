@@ -20,7 +20,7 @@ fixture is exactly the content the item exists to keep out of the repo.
 
 ## Skill and rule authoring conventions
 
-**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` has no `includes:`/`import:`/`extends:` field and the `@path` syntax is CLAUDE.md-only — duplicate shared rule text into each skill rather than extracting a `_shared/` file. Co-located auxiliary files are a separate, permitted pattern — `REFERENCES.md` (edit-time) and `plan-review/ROUTING.md` (runtime) are the two in use. Add one only for content that is genuinely load-bearing and can't be shortened, never as a way to route around a file's length cap. See `docs/skills.md`'s Skill architecture notes section for the full distinction.
+**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` has no `includes:`/`import:`/`extends:` field and the `@path` syntax is CLAUDE.md-only — duplicate shared rule text into each skill rather than extracting a `_shared/` file. Co-located auxiliary files are a separate, permitted pattern. Add one only for content that is genuinely load-bearing and can't be shortened, never as a way to route around a file's length cap. See `docs/skills.md`'s Skill architecture notes section for the full distinction.
 
 **`REFERENCES.md` is the edit-time co-located reference for a skill.** It holds canonical URLs/quotes/framework notes for a skill, read manually at edit time — it is never loaded at runtime and must not be embedded in `SKILL.md`.
 

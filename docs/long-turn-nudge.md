@@ -13,15 +13,18 @@ The sampled cadence bounds the `tail`/`jq -s` scan's cost specifically — O(fir
 - **A same-session fire can leak the scan lock directory, reclaimed only by the periodic `MARKER_DIR` sweep (up to 30 days).** Two independent races produce this:
   - A fire killed by SIGKILL while holding the lock blinds the nudge for the rest of that dispatch until the lock is reclaimed. The likely root cause is an unwrapped `rmdir`/`mktemp` hang hitting a harness execution timeout.
   - A `mkdir`/trap race:
-    - A `mkdir` that completes after its own timeout's SIGTERM leaves exit 124 with the directory still created.
+    - A `mkdir` that completes after its own timeout's SIGTERM or SIGKILL leaves a cap-kill exit status with the directory still created. `_lib_capped_for`'s header in `claude/.claude/hooks/_lib.sh` lists the statuses.
+    - A BusyBox `timeout` that SIGTERM-kills the `mkdir` leaks the directory the same way.
+    - BusyBox returns the `mkdir`'s own status when the `mkdir` completes and then races the cap. Nothing leaks in that case.
     - A trappable signal landing between `mkdir` succeeding and `LOCK_DIR` being assigned leaves the EXIT trap closing over an empty `LOCK_DIR` and never running `rmdir` on the just-created directory.
 
-    Both leak the directory the same way, subject to the same 30-day reclaim.
-- **Worst case for a sampled fire is ~20-22s.**
-  - Hit when the window is truncated (`scan_window_end < current_size`) — the common case once windowing engages, since the truncation point rarely lands on a newline.
-  - Unbounded when both `timeout` and `gtimeout` are absent from PATH.
+    Every case above except the BusyBox own-status one leaks the directory the same way, subject to the same 30-day reclaim.
+- **Worst case for a sampled fire is ~26-30s.**
+  - That is 13 to 15 independently-capped `_lib_capped_for 2` calls on a fire that scans and emits the nudge, at 2s each when every call honors SIGTERM.
+  - The count is 13 when the scanned window's last byte is a newline. It is 15 when `_lib_advance_offset_past_complete_lines` takes its slow path, which is the common case once windowing engages, since the window's truncation point (`scan_window_end < current_size`) rarely lands on a newline.
+  - Bounded only by the harness's own hook timeout, not indefinitely, when both `timeout` and `gtimeout` are absent from PATH, because `_lib_capped_for` then runs the command uncapped. [`docs/handoff-nudge.md`](handoff-nudge.md) gives that timeout.
 
-  The sibling hook's own documented figure is 14-20s in [`docs/handoff-nudge.md`](handoff-nudge.md), for comparison.
+  See [`docs/handoff-nudge.md`](handoff-nudge.md) § "Known limitations" for the SIGKILL grace's effect on these figures and for the sibling hook's own worst case.
 - **A jq timeout driven by content rather than backlog size retries the identical window forever**, since the 2s `_lib_capped_for` cap applies to every retry.
 - **A record whose own line exceeds `MAX_SCAN_WINDOW_BYTES` force-advances the offset past it**, undercounting that record's turn (see `_scan_turn_count_cached` for the resync mechanics).
 - **A dispatch can permanently outpace the scan when transcript growth exceeds the average per-fire catch-up rate (`MAX_SCAN_WINDOW_BYTES` / `SAMPLE_CADENCE`, 200,000 bytes).**
@@ -29,8 +32,8 @@ The sampled cadence bounds the `tail`/`jq -s` scan's cost specifically — O(fir
   - That rate isn't validated against real transcript growth, so `TURN_COUNT` can end up chronically undercounted with no visible signal.
   - A losing fire during lock contention contributes nothing at all to that fire's scan, not a partial scan.
   - That outpaced-scan-rate undercounting compounds across a burst of same-session fires rather than resetting each fire.
-- **`_lib_capped_for`'s `timeout` wrapper is a soft SIGTERM-only backstop, not a hard bound.**
-  - A child process stuck in uninterruptible disk-wait against an unresponsive mount is genuinely unbounded — `timeout` cannot deliver SIGTERM to a process in that state.
+- **`_lib_capped_for`'s `timeout` wrapper escalates to SIGKILL after a 2s grace, but is still not a hard bound.**
+  - A child process stuck in uninterruptible disk-wait against an unresponsive mount is genuinely unbounded — `timeout` cannot deliver SIGTERM or SIGKILL to a process in that state.
   - This applies to every `_lib.sh`-capped call across the hook suite, not only this hook.
   - This is currently the only hook that fires unconditionally on every subagent-dispatch `PostToolBatch`, so it is the first place this backstop's limits are load-bearing on every fire rather than a gated subset.
 - **`_scan_turn_count_cached`'s windowed `head` read isn't wrapped in `_lib_capped_for`. Only the piped `jq -s` call is.** Low severity: the unwrapped read targets a freshly-created, `MAX_SCAN_WINDOW_BYTES`-bounded temp file, not an unbounded or externally-controlled source.

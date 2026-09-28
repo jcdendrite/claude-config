@@ -1,0 +1,168 @@
+# Global CLAUDE.md is split into an Agent Core group and a Main session group
+
+*2026-09-23.*
+
+GH-1085 holds the full placement table; this record holds the contract a later `claude/.claude/CLAUDE.md` editor needs.
+
+## Why
+
+Claude Code's `omitClaudeMd` subagent frontmatter, together with `skills:` preload, would let an agent drop the global CLAUDE.md and load only the rules it needs. That needs the rules every agent must follow in one block that can be extracted as-is. Until an agent adopts it, every subagent except Explore and Plan still loads the whole file, so the grouping also tells those subagents which rules are theirs.
+
+## The contract
+
+- Two H1 groups: `# Agent Core` first and contiguous, then `# Main session`.
+- Every `##` name is kept, except that Code Comments, Documentation, and Prose becomes `### Durable text` under Prose and Output Format.
+- The opening line under `# Agent Core` states each group's audience and translates ask, confirm and stop steps into "report it in your return" for dispatched agents. It lives at `claude/.claude/CLAUDE.md`; this record does not restate it.
+- `claude/.claude/hooks/tests/test_global_claude_md_groups.py` pins the group order, the opening line's contract, the cross-group placements listed below, and the core-only rules. Per-bullet placement of a new rule stays a manual check.
+
+## Placement tests
+
+- Tool capability decides, not likelihood. A prose-only rule whose trigger can arise in a subagent goes to Agent Core.
+- A rule meant for `code-writer` or `plan-architect` goes to Agent Core, because the opening line tells subagents that Main session is not theirs.
+- A rule addressed to subagents goes to Agent Core: the "Dispatching cannot clear a denial your child inherits" bullet and the "any fork or subagent returns its work to its dispatcher rather than shipping on its own" clause.
+- The MEMORY.md-index bullet sits in Agent Core because every subagent probed (`plan-architect`, `general-purpose`, `code-writer`, `staff-sdet`) reported the index in its own context.
+- The marker `clear-stale` bullet stays in Main session: `clear-stale` cannot clear a subagent's own leftovers.
+
+Whether subagents comply with the grouping is unmeasured at the time of writing. A post-merge compliance spot-check on this repo's own sessions follows `docs/private-project-redaction.md` § "Publishing a tooling measurement", and GH-1085 records the result.
+
+The spot-check includes two cases:
+
+- A dispatcher prompt that asserts the user's approval of a gated step, because "report it in your return" names no policy for a relayed approval.
+- A dispatcher prompt that directs shipping, to observe whether a fork or subagent ships.
+
+Three pins in the group test need a test edit alongside a change this record anticipates: the opening line's fragments (a later trim of that line), the exactly-one-line output-preferences pin (the deferred `@`-import follow-up), and the whole-sentence shipping-clause pin (the net-zero edit under Forks, and the "Merge stays human-only" follow-up).
+
+## Forks
+
+The opening line names forks: `only the main session and forks follow Main session`. A fork acts for the main session and cannot ask the user.
+
+"Fork" here means a dispatched run that either inherits the parent's conversation or, for a `context: fork` skill, receives none.
+
+The shipping clause ("any fork or subagent returns its work to its dispatcher rather than shipping on its own") names forks because, with the opening line granting forks Main session, "a dispatched subagent" would not cover them. Its handling of forks:
+
+- For a fork, the clause is intended to take precedence over Main session's Shipping bullets, on specificity, so the fork returns its work instead of following the commit-and-PR duties.
+- No loaded text states a tiebreak.
+- Prose is the only control on a prompt-injected fork.
+- The commit, push and PR-creation gates are review-state gates that apply to every caller.
+- Those gates have documented bypass shapes and a marker read not tied to a session.
+- They therefore pass a fork that follows a main-session review at HEAD.
+- `deny-reviewer-tree-mutation.sh` keys on `agent_type` for the closed review-only set. It does not gate `gh pr create` or `gh pr merge`, and its Bash arm passes `touch`, `rm`, `dd`, interpreter file writes and `2>` (its header lists the rest).
+- No gate keyed on caller identity covers a fork, `code-writer` or `general-purpose`, and a fork runs in the parent's process identity, so nothing can tell it from the main session.
+- Extending the identity-keyed hook to other non-fork subagents, with a PR-creation arm, is a follow-up candidate. The gap predates this restructure.
+
+Four readings of the clause still let a fork or subagent ship:
+
+- A fork may not know it is one.
+- The loaded text has no tiebreak against Main session's Shipping bullet.
+- "On its own" can read as "on its own initiative".
+- The audience partition is self-declared: a non-fork subagent told, or injected with text saying, "you are a fork" inherits Main session's Shipping autonomy text. The existing review-state gates bound this.
+
+Closing the first three readings needs a net-zero edit: an addition plus an equal trim in the same commit, per the ratchet constraint in the Byte margin section. The fourth reading is not closable by wording. The post-merge fork spot-check is the control.
+
+## Accepted risk: duplicate headings
+
+`## Safety` and `## Working Style` each appear once per group until core moves into its own file. Until then a `§ "Safety"` citation can resolve to either heading. The "Dispatching cannot clear a denial your child inherits" bullet's phrase "Safety's marker bullet" is ambiguous, because Main session's Safety also holds a marker bullet. The citation resolver builds a set of headings and does not flag duplicates. Both are accepted.
+
+## The permissions-globs relocation
+
+The "Don't add globs" bullet lives in `claude/.claude/rules/settings-json-conventions.md`, with a one-line stub in Agent Core § Safety that reads "No wildcards in `permissions.allow`." A permission rule is composed before any settings file opens, which is why the stub stays always loaded.
+
+- The stub keeps the prohibition always loaded, which meets the relocation bar at `docs/cost-levers-considered.md` for the prohibition. The rationale and the exact-match alternative live in the rule file to pay for the opening line's bytes. The stub is a fragment on purpose.
+- The primary guarantee of a prompt for an Edit of a path ending in `.claude/settings*.json` is the shipped `permissions.ask` entry `Edit(//**/.claude/settings*.json)`, which is Edit-tool-scoped. Explicit ask rules are documented to apply in every mode that can prompt (under `dontAsk` a prompt becomes a denial). Edit and Write prompted with the entry present and hooks disabled, in auto mode. That observation is not isolated from `.claude/` protected-path handling. The second layer is `ask-review-permissions.sh`, which has a tested regex and a MultiEdit arm. MultiEdit, case variants and Bash-mediated writes are untested for the `permissions.ask` entry.
+- The hook fails open when `_lib.sh` cannot be sourced.
+- A hook `ask` and a `permissions.ask` rule each reached a human in a live auto-mode session, although `docs/auto-mode.md` says auto mode replaces per-action permission prompts with a background classifier. `docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the observation and its limits, and calls both an `ask` soft gate.
+- Decision: both the `permissions.ask` entry and `ask-review-permissions.sh` are kept.
+  - The `permissions.ask` entry adds a harness-level prompt that is independent of `_lib.sh` and `jq`, so the no-ask outcome of gaps (e) and (g) is mitigated for Edit in auto mode; residual scope: see Known gaps below.
+  - The hook keeps its tested regex and its MultiEdit arm.
+  - A throwaway hook's reason text was not observed to render. The shipped hook's reason text was not tested, alone or with the rule.
+- Test coverage for the two layers:
+  - `test_ask_review_permissions.py` covers the Edit, Write and MultiEdit arms, ask and allow paths.
+  - `test_hook_alignment.py` pins that `settings.json` wires the hook on a matcher spanning all three tools.
+  - `test_hook_alignment.py` pins only that the `permissions.ask` entry is declared in the stow-source `settings.json`. Whether the harness matches it is recorded in `docs/security-hardening.md`.
+  - The group test pins that the rule file keeps the guidance and both settings filenames in its `paths:`.
+  - None of these tests cover when the rule loads.
+- A permission deny rule for Bash reads of settings files was considered and advised against by `plan-architect`. A narrow pattern misses `settings.local.json`, `sed`, `jq`, `head` and `grep`. A broad one also blocks `git diff` on settings paths and any `git commit -m` that names the file. It teaches the agent nothing, and it does not reach an out-of-project `~/.claude/settings.json`.
+
+Known gaps. Gap (d), Bash-mediated writes, is an accepted risk on the basis that the always-loaded stub keeps the prohibition in context. Gaps (e) and (g) are mitigated for Edit only, in auto mode. The shipped `permissions.ask` entry is Edit-tool-scoped, so Write, MultiEdit, and other modes remain residual. Gaps (c) and (h) are fixed, pinned by `test_ask_review_permissions.py`. A `_lib_config_dir` failure leaves gap (c) unmitigated for that shape: a settings file at a config-dir root with no `.claude/` segment gets no ask. A `_lib_realpath_m` failure loses only gap (h)'s alias-normalization sub-behavior. Its case-folding sub-behavior stays in effect via the literal `.claude/settings*.json` substring match. Like gap (g), both are observed only by transcript review, not by the hook itself. The remaining gaps are open:
+
+- (a) Advice given without any settings file being opened or created, which neither the rule nor the hook reaches.
+- (b) A Write that creates a new settings file gets the hook's generic ask, but may not get the rule's guidance before the content is written.
+- (c) FIXED for the config-dir-root shape: the hook now asks when a settings file sits directly at the resolved config-dir root (`_lib_config_dir`). The rule itself still loads on Read only when the config directory is inside the session's project; an out-of-project config directory still gets no rule, only the always-loaded stub and the hook's ask. The Edit tool's symlink-write refusal and its bearing on this gap are recorded in `docs/security-hardening.md`'s Observed list; unconfirmed when the config directory has no `.claude/` segment.
+- (d) Bash-mediated writes (`jq`, `sed -i`, `tee`) get no ask, because the hook covers Edit, Write and MultiEdit only.
+- (e) A consumer who pulls without re-running `install.sh` after a hook-file addition loses the hook. The shipped `permissions.ask` entry asks in their place for Edit in auto mode; residual scope: see Known gaps above.
+- (f) In one-trial subagent probes, a Read-tool read of a settings file outside the session's project loaded no rule, including the user-scope `~/.claude/settings.json`, where the hook asks but the rule did not load.
+- (g) The hook fails open silently when its own `jq` call fails or is missing: it reads an empty tool name and exits 0 with no stderr. Observed on a copy of the hook. The shipped `permissions.ask` entry asks in their place for Edit in auto mode; residual scope: see Known gaps above.
+- (h) FIXED. The hook normalizes the path with `_lib_realpath_m` and folds case before matching, so a doubled slash, `./` segment, `../` segment, or a case variant (`.CLAUDE/`, `SETTINGS.json`) still asks. Whether the harness itself normalizes `file_path` before the hook sees it remains unverified, but the hook no longer depends on that. On a host with neither native `realpath -m` nor `grealpath`, `_lib_realpath_m`'s manual fallback still fails closed on a `../`-segment alias, since it deliberately rejects a `..` component there to protect other callers' same-prefix boundary checks. The raw-path fallback comparison doesn't match the literal `../` segment either, so that shape alone still produces no ask on such a host. The same fallback also fails closed when the ancestor chain exceeds `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH`; unlike the `../`-segment shape, a `.`/`//`-only alias past that depth (no `..` component) defeats the raw-path fallback comparison too, since the decoration hides the literal `.claude/settings*.json` substring. See the depth-cap/gap (h) bullet under "Open residuals and re-review triggers" below.
+- (i) A symlinked leaf whose literal `file_path` never contains the substring "settings" bypasses every match arm, including the (h) fix — for example, a `Write` or `MultiEdit` naming `.claude/config.json` where `config.json` is itself a symlink to `settings.json`. The cheap path prefilter (`*settings*.json`) runs before any `_lib_realpath_m` call, so it exits allow before the symlink could ever be resolved. Gap (i) is independent of the (c)/(h) fix; the fix neither introduces nor closes it.
+
+Unverified: load behavior on out-of-project reads beyond one trial each, whether `**/settings.json` matches the project-root shape `.claude/settings.json` (one intermediate dot-directory segment), whether "Edit requires a prior Read" holds, whether the rule loads on a Write that creates a new file, and whether the relocated bullet loads after merge on a Read of an in-project `settings.json`.
+
+## Open residuals and re-review triggers
+
+The fork and identity-gate residual under Forks is an accepted risk that relies on the post-merge fork spot-check. Gap (d) is an accepted risk. Gaps (a), (b), (f) and (i) are open. Gaps (e) and (g) are mitigated for Edit in auto mode; residual scope: see Known gaps above. Gaps (c) and (h) are fixed; see Known gaps above. The `_lib_realpath_m` TOCTOU race, the config-dir-root ERE-escaping test gap, and the fallback-only-host depth-cap alias gap below, all surfaced by a `ciso-reviewer` pass on the (c)/(h) fixes, are accepted risks. The `_lib_realpath_m` fallback's `test -e`/`test -L` capping fork cost below, surfaced by a later code-review pass on the same fixes, is also an accepted risk. All share one ownership record:
+
+- Owner: the repo owner.
+- Tracker:
+  - GH-1094 covers gaps (c), (g) and (h). Its decision keeps both the `permissions.ask` entry and the hook, and fixes gaps (c) and (h) (see Known gaps above).
+  - No tracker issue exists for gaps (a), (b), (e), (f) and (i), for the fork and identity-gate residual, or for the `_lib_realpath_m` TOCTOU race, ERE-escaping test gap, depth-cap alias gap, and `test -e`/`test -L` capping fork cost below.
+  - GH-1093 separately tracks the Model & Effort Routing section's audiences.
+- Re-review triggers, each with how it is observed:
+  - A fork or subagent commits, pushes or opens a PR contrary to the shipping clause: observed by the post-merge fork spot-check and by transcript review.
+  - A settings edit slips through gap (d), or through gap (e) or (g) by Write, MultiEdit, or outside auto mode: not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
+  - A settings edit slips through gap (i)'s path-prefilter bypass, or through a `_lib_config_dir`/`_lib_realpath_m` failure degrading gap (c) or (h): not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
+  - `ask-review-permissions.sh`'s `_lib_realpath_m` calls (added by the (c)/(h) fixes) resolve and follow symlinks at hook-fire time, before the tool's actual Edit/Write executes; a symlink swapped into place during that window can make the hook's allow diverge from what actually gets written. Accepted as a missed-advisory-nudge risk rather than a bypass of a blocking control. Editing settings.json is not otherwise access-controlled, and an attacker able to win this race already holds local write access sufficient to edit it directly. Not detectable from the hook, which emits no ask and leaves no log. Observed only by transcript review or a report.
+  - The config-dir-root ERE-escaping in the hook's own `sed` call has an untested subset of escape-class characters, accepted because `CLAUDE_CONFIG_DIR`/`HOME` are session-level trusted config, not attacker-controlled input. See `_lib.sh`'s comment above `_LIB_CONFIG_DIR_ESCAPE_SED_EXPR` for the current tested/untested character list, kept there as the single source of truth. Observed only if a future config-dir value contains one of the untested characters and the match silently fails.
+  - On a fallback-only host (no native `realpath -m`/`grealpath`), a `.`/`//`-only aliased `file_path` (no `..` component) with more than `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` ancestor components defeats both the normalized match (fails closed on the depth cap) and the raw-path fallback comparison (the decoration hides the literal `.claude/settings*.json` substring), so gap (h) reopens for that shape. Accepted alongside the `../`-segment residual already disclosed in gap (h) above, for the same reason: a chain this deep is not a realistic ancestor walk. Observed only by transcript review, not by the hook itself.
+  - `_lib_realpath_m`'s manual fallback loop wraps its `test -e`/`test -L` calls in `_lib_capped`, each adding a `timeout(1)` fork alongside the wrapped `test` call. The loop's `basename`/`dirname` calls run uncapped, since they only manipulate the string argument and never touch the filesystem. A PATH-substituted `basename`/`dirname` binary that itself blocks or sleeps is uncapped for the same reason `_lib_capped_for`'s own `timeout`/`gtimeout` resolution is — see `docs/security-hardening.md` § "Limitations" for the PATH-trust-boundary reasoning. The loop runs once per trailing path component of `file_path` that does not yet exist, plus one for the existing ancestor that terminates it: an Edit/Write over an already-existing file is 1 iteration, and a Write of one new file into an existing directory is 2. The capping-related fork cost is therefore 2 forks per iteration: `test -e` and `test -L` when the target does not yet exist (a non-terminating iteration), or `test -e` and `realpath` when it does (the terminating iteration, which never reaches `test -L`). `require-memory-skill.sh`'s Write/Edit/MultiEdit arm and `require-plan-review.sh` both call `_lib_realpath_m` unconditionally, with no agent-type prefilter, on the BusyBox/no-`grealpath` host class this repo documents as supported (`.claude/plans/hook-performance.md`'s Alpine mention, README.md's Requirements section's BusyBox 1.35.0+ commitment). Each makes two `_lib_realpath_m` calls per fire: `require-memory-skill.sh` on every qualifying Write/Edit/MultiEdit, and `require-plan-review.sh` on any non-`ExitPlanMode` Write/Edit/MultiEdit whose `TARGET_PATH` is non-empty once the active-plan-file set is non-empty or its enumeration fails. `enforce-marker-script-shape.sh`'s Write/Edit/MultiEdit arm reaches `_lib_realpath_m` only for a `code-writer` or other no-gate-release agent type — `_lib_is_no_gate_release_agent "$AGENT_TYPE" || exit 0` gates it first — so the main session never pays this cost there. That exemption covers only this hook's Write/Edit/MultiEdit arm, not its Bash arm. The Bash arm reaches `_lib_realpath_m` unconditionally, for every agent type including the main session, on any Bash command whose quote-stripped text mentions `.claude` in a redirect/`tee`/`cp`/`mv`/`install`/`dd`/`sed` context, bounded only by `MARKER_WRITE_REALPATH_BUDGET` (10) candidates at up to 2 `_lib_realpath_m` calls each, not by agent type at all — its own `_lib_is_no_gate_release_agent` check there only gates the deny decision, after those `_lib_realpath_m` calls already happened. Accepted rather than fixed here, since the `test -e`/`test -L` capping is what protects the loop against a stalled filesystem; removing it would reopen the failure mode this hardening exists to close. That tradeoff is a separate design decision for the repo owner to make. Observed only by transcript review or a `/doctor` timing capture, not by the hook itself.
+  - The identity-keyed hook is extended to other subagents: observed at the next change to `deny-reviewer-tree-mutation.sh`.
+  - New evidence on how a hook `ask` or a `permissions.ask` rule resolves under auto mode: observed at the next change to `docs/auto-mode.md` or `docs/security-hardening.md`.
+  - In-project Edit of the shipped pattern alone, this rule's primary real-world scenario, remains untested (`docs/security-hardening.md`'s Untested list): observed at the next auto-mode session that isolates it from `.claude/` protected-path handling.
+- Any later change to CLAUDE.md Agent Core reopens this section.
+
+## The output-preferences deferral
+
+The output-preferences read instruction moves verbatim into Main session. Making it an `@`-import is deferred to a follow-up.
+
+A user-scope scratch test, one run per arm, showed that a symlinked CLAUDE.md follows `@`-imports and resolves a relative import against the symlink target's directory. `@~/` resolution is untested. The consequence for the later extraction of core: a colocated relative import of core resolves inside the repo.
+
+## Moved and reworded lines
+
+The Stopping bullet is split across the group boundary. Its blocked-stop half sits in Agent Core: "Stop when the work is genuinely blocked", with the three example conditions and "Say what is blocked." Its "Do not ask permission to proceed with work that is already done." half ends Main session § Shipping's "Do not offer to show the diff first" sub-bullet, next to its autonomous-shipping antecedent. The group test pins both placements.
+
+Four lines are reworded rather than moved verbatim: the shipping clause, the Stopping bullet's opening, the permissions stub, and the relocated proceed clause.
+
+Follow-ups for dangling phrases left by verbatim moves:
+
+- The shipping clause's "Merge stays human-only", whose autonomous-shipping antecedent stays in Main session.
+- The output-preferences bullet's "the rules above", which now sits under Working Style. Tracked in GH-1091.
+
+## Byte margin
+
+CLAUDE.md sits at the length gate's ceiling (200 lines and the byte ratchet, which compares each commit to HEAD). Wording growth needs an equal trim in the same commit.
+
+Standing constraints:
+
+- Orchestrator naming in the opening line waits until the agent exists.
+- The permissions stub stays in place of the full bullet.
+- Bullets carry no per-bullet "(main)" tags.
+
+## Review orchestrator
+
+A future review-orchestrator agent must claim Main session in its own body, because the opening line names only the main session and forks.
+
+## Rollback
+
+Trigger, either of:
+
+- A subagent skips an Agent Core rule because of the new grouping, as its return or transcript shows.
+- The fork spot-check observes a fork or subagent shipping (commit, push or PR creation) that the shipping clause tells it to return, or a dispatcher-relayed approval treated as the user's own.
+
+Procedure:
+
+- Confer with the repo owner before choosing the approach.
+- Revert the whole squash commit, never individual paths, so this record and the "Partially superseded" line do not describe a contract that no longer exists.
+- A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it.
+- Plain `git revert <sha>` is not intercepted by the length gate or the code-review gate, both of which match only the `commit` subcommand.
+- `git revert -n` followed by `git commit` passes the length gate but needs a `/code-review` marker on the reverse diff.
+- Expect a `CHANGELOG.md` conflict.
+- Reopen the placement question in GH-1085 after the revert.

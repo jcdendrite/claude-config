@@ -1,6 +1,6 @@
 # transcript-analysis.py reference
 
-`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
+`transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to this repository on the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
 All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
 
@@ -27,7 +27,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
 **What `--this-repo` does not cover, and the documented fallback:**
 
-- **Other clones of this repo.** `git worktree list` enumerates the linked worktrees of the checkout you ran it from — a second, independent clone of the same repo elsewhere on the machine is correctly outside that set. There is no fallback for this; it is not this checkout's data.
+- **Other clones of this repo.** `git worktree list` enumerates the linked worktrees of the checkout you ran it from — a second, independent clone of the same repo elsewhere on the machine is correctly outside that set. There is no fallback for this; it is not this checkout's data. The exception is any checkout, of this repo or not, whose path maps to the same project-directory slug as one of this checkout's worktrees, such as `/w/app.v2` and `/w/app-v2`. Its sessions share that project directory, so `--this-repo` reads them as this repo's, and `cost --summary` counts them under its `this repository only` caption. Its scanned-files count includes them whatever the branch and date filters, while priced sessions, priced turns, tokens, and dollars include only their turns whose branch and timestamp match those filters.
 - **A session started in a repo subdirectory.** Claude Code slugs a project directory from the session's *startup cwd*, not the repo root — replacing `/` and `.` with `-` — so a session started inside a subdirectory of a worktree has a slug that is string-unequal to that worktree's own slug — `--this-repo`'s exact-identity match excludes it. The fallback is a prefix glob derived from `--git-common-dir`, not `pwd` (`--git-common-dir` resolves to the main repo's `.git` from inside any worktree, so the prefix is stable regardless of which worktree the session started in):
 
   ```bash
@@ -38,7 +38,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 - **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
 - **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution* — a subagent's `gitBranch` field can silently disagree with the branch actually checked out in a pre-existing different-repo cwd, so treat an all-zero `--branches` result there as inconclusive, not proof of zero spend.
 
-All four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected.
+The four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected. The slug-collision exception in the first gap is the reverse case, silent over-inclusion: the resolved-scope header's project-dir count comes from `git worktree list`, so it does not change, and `cost --summary` prints no such header.
 
 `cost --config-dir` does not refuse `--this-repo`: since `--this-repo`'s identity match is derived from `git worktree list` alone, it is root-independent, so `cost --config-dir DIR --this-repo` unions across the default corpus and every `--config-dir` extra the same way `--this-repo` does everywhere else. See the `cost` section below for the full `--config-dir` contract.
 
@@ -46,7 +46,7 @@ All four gaps are silent under-coverage, not an error: a narrower-than-expected 
 
 ## Corpus scope: the declared-roots file
 
-Every subcommand's default scan corpus is a **union**, not a single account — except `cost --summary`, which resolves to the active account's config dir only (see the `cost` section's `--summary` entry below). List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its single-account scope on its own `Scope:` line instead. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
+Every subcommand's default scan corpus is a **union**, not a single account — except `cost --summary`, which resolves to this repository within the active account's config dir only (see the `cost` section's `--summary` entry below). List additional Claude Code config directories, one absolute path per line, in `~/.claude/transcript-config-dirs` (blank lines and `#`-comments ignored, a leading `~`/`~/` expands to `$HOME`) — a machine running several accounts to keep engagements apart (`~/.config/claude-accounts/<account>/`, for example) declares each one here. The active profile's own config dir is always scanned first regardless of this file; every declared entry is added to it, deduped by resolved path. `post-crash-sessions.py` reads this same file but with a looser `sessions/`-or-`projects/` validity predicate than the `projects/`-only predicate `declared_transcript_roots()` applies here — its scanned-root count can legitimately differ from this toolkit's. The resolved-scope header (`<NAME> SOURCES (...)`) states the root count unconditionally on every funnel site that prints it, even at one root with nothing declared — that line is what makes a scan self-disclosing about whether it covered one account or several, including on a zero-match run, where it is the only thing separating a wrongly-scoped scan from a correctly-scoped empty one — except `cost --summary`, which prints no header at all and states its repository-and-account scope on its own `Scope:` line instead. `review-trace` additionally prints `No sessions matched in scope.` under the header when nothing matched, on both its default timeline and `--deny-summary`. Populating this file also changes `cost --no-redact`'s behavior even with no `--config-dir` flag involved: it now exits 2 once more than one root is in scope, where it previously always worked with zero declared roots (see the `cost` section's `--no-redact` entry below).
 
 This union amplifies two costs, both linearly in the number of declared roots:
 
@@ -56,6 +56,14 @@ This union amplifies two costs, both linearly in the number of declared roots:
 Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. `review-trace` prints the same banner above one root and redacts each session's own `### <path>` header to an opaque `account-<K>/session-<N>` label (see the `review-trace` section below). Every other subcommand — `audit-routing-samples`, `buckets`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list. `subagent-mix` and `review-round-cost` are outside this three-bucket split entirely: both redact branch names (and, for `subagent-mix`, `subagent_type` values) under more than one root via `account-N/branch-N`-style opaque labels, disclosing the raw value only under `--this-repo` — see their own sections below for the full contract.
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
+
+### Testing against a synthetic corpus
+
+Setting both `TRANSCRIPT_CONFIG_DIRS_FILE` and `CLAUDE_CONFIG_DIR` fully **replaces** — never augments — the resolved root set. This applies to every subcommand named in `transcript_analysis/scope.py`'s `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR` set, and to every other subcommand's default (non-`--config-dir`) scope. `CLAUDE_CONFIG_DIR` points the active-profile root at a synthetic directory instead of the real `~/.claude`. `TRANSCRIPT_CONFIG_DIRS_FILE` points the declared-roots read at a synthetic roots file instead of the real `~/.claude/transcript-config-dirs`. Together they let a run scan only fixture data seeded under a throwaway directory (e.g. a test's own `tmp_path`), with no path back to this workstation's real corpus.
+
+Both env vars are required together, not either alone. If only `CLAUDE_CONFIG_DIR` is set while a real `~/.claude/transcript-config-dirs` file is still present and unoverridden, `declared_transcript_roots()` unions in the real declared accounts' real roots alongside the synthetic one. A "synthetic" run can therefore silently mix in real account data.
+
+This is the safe way to smoke-test any of these subcommands against synthetic data. It is not a `--config-dir` alternative for a real run, and a run made this way must never be treated as reporting on this machine's actual accounts. `pr-cost-export`'s own provenance line states this explicitly: `corpus_override=1` flags an export built from an overridden root set rather than this machine's real declared accounts. That flag is computed by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars it checks. See `docs/pr-cost.md`'s "Redacted cross-account export" section for what a `corpus_override=1` export means for publication.
 
 ---
 
@@ -299,7 +307,7 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 **Purpose.** Map branches to GitHub PRs and pull per-PR comment counts. Requires `gh` and network access.
 
 **Flags.**
-- `--repo OWNER/REPO` *(required)* — GitHub repository
+- `--repo OWNER/REPO` — GitHub repository. Default: parsed from this checkout's `origin` remote, with a GitHub Enterprise origin host-qualified so `gh` reaches the right host. With no usable `origin` and no `--repo`, the command exits 1 with a one-line error naming `--repo`. Supplying `--repo` explicitly does not host-qualify the `gh api` comment-count calls the way the auto-derived path does
 - `--branches B1,B2,...` *(required)* — branches to look up
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -307,11 +315,23 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 
 **Sample output.**
 ```
-Branch                    PR#   Title                              Author comments  Total comments
----------------------------------------------------------------------------------------------------
-feat-TICKET-101           #42   Add new widget component                         3              8
-feat-TICKET-202           #47   Refactor auth middleware                          1              5
+Branch                                 PR   Opus  Sonnet  IssueCmt  ReviewCmt
+--------------------------------------------------------------------------------
+feat-TICKET-101                        42     18       0         3          2
+feat-TICKET-202                      none      0       5         —          —
 ```
+
+**Failure diagnostics.** A failed `gh` call keeps the table cell as `gh-err` (`PR` lookup) or `-1` (comment counts) and prints one `pr-link:` line per failure on stderr naming the branch and one of these failure kinds:
+
+- `auth`
+- `host_mismatch`
+- `rate_limit`
+- `timeout`
+- `gh not found`
+- `unparseable gh output`
+- `network or unrecognized` (the catch-all, which includes a wrong repo slug)
+
+Each label is this module's own classification of `gh`'s stderr, not `gh`'s own vocabulary. The raw stderr is never echoed, because it can repeat the queried repo verbatim. `pr-link` does not retry a failed call.
 
 **When to reach for it.** After a set of branches lands: measure review engagement per branch or filter to one author's comments to count their review activity.
 
@@ -632,7 +652,7 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`). When given, each scanned root's actual earliest in-scope turn is tracked (regardless of the filter) and compared against the requested window start: a root whose earliest turn is more than a day newer prints its own `WARNING: cost: <root>: earliest turn found is …` line, naming that date and the requested window start, so a corpus that starts partway through the requested window is visible instead of silently under-reporting. One warning per short root — a well-covered root never suppresses a sibling root's own warning.
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
-- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's PR body cost block). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It prints, in order, a one-line `Scope:` caption and a small scan-coverage GFM table (see "Terms" above for what each column counts). The table replaces the full report's per-root `cost: account-N: scanned …` diagnostic. An `Of those, unreadable` column appears only when nonzero. It still prints the zero-scope `WARNING`, since both are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Prints a loud `EXCLUDED SPEND` banner, counting (never naming) every unrecognized model ID, only when there is real excluded spend to report — silent on an all-priced corpus, unlike the full report's own unconditional per-model unpriced breakdown. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report. The list-price caveat leads this block as a GFM `> [!IMPORTANT]` alert, unlike the full report's plain sentence. It renders correctly only when the consumer embeds the stdout unfenced — see `` `claude/.claude/skills/pr-description/SKILL.md` § "Cost section" `` for that rule.
+- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's PR body cost block). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label. It prints, in order, a one-line `Scope:` caption and a small scan-coverage GFM table (see "Terms" above for what each column counts). The caption echoes the `--branches` value, and a branch name is a disclosed field — see "The disclosed fields are not neutral" below. The table replaces the full report's per-root `cost: account-N: scanned …` diagnostic. An `Of those, unreadable` column appears only when nonzero. It still prints the zero-scope `WARNING`, since both are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Prints a loud `EXCLUDED SPEND` banner, counting (never naming) every unrecognized model ID, only when there is real excluded spend to report — silent on an all-priced corpus, unlike the full report's own unconditional per-model unpriced breakdown. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report. The list-price caveat leads this block as a GFM `> [!IMPORTANT]` alert, unlike the full report's plain sentence. It renders correctly only when the consumer embeds the stdout unfenced — see `` `claude/.claude/skills/pr-description/SKILL.md` § "Cost section" `` for that rule.
 - `--share-only` — renders four dimensionless percentage-share tables (`Class | Share`, `Model | Share`, `Thread | Share`, `Bucket | Share`) and nothing else. These four tables never carry a `$` column, a `Tokens` column, or a grand-total row. The mode exists to keep raw pooled dollar and token absolutes out of the agent's context on a private wider read. Nothing it prints is publishable under the bar (`docs/private-project-redaction.md` § "Publishing a tooling measurement"). The alternative today is running the full report and hand-copying only the percentage. It composes with `--config-dir`/multi-root scope: mixed-corpus multi-root is exactly the case this mode exists to serve, so it is never refused here. Its own `EXCLUDED SPEND` banner variant states only that some spend was excluded, with no count at all — not even the model-ID count `--summary`'s own variant names — since that scope is wider than this repository on one account. It is not available on `cost-trend`: `cost-trend`'s rows are per-ISO-week, a calendar-anchored series over a corpus this wide, and a wider corpus is not published at all, share-only or not (`` `docs/private-project-redaction.md` § "A wider corpus goes to the owner, never into a public artifact" ``).
 
   Refuses, exit 2 on stderr:
@@ -650,18 +670,33 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 
 **Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history. For the separate case of a subagent whose cwd is simply a different, already-existing repo than its parent's (no `isolation: "worktree"` involved), see "A subagent dispatched from another repo's session" above.
 
-**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. The same PR body's `cost-counts` subsections (below) add per-review-skill round counts and per-agent-type spawn counts, both bare integers with no dollar figure attached. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
+**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use; the branch name in the `Scope:` caption is a disclosed field too. The same PR body's `cost-counts` subsections (below) add per-review-skill round counts and per-agent-type spawn counts, both bare integers with no dollar figure attached. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
 
-The branch itself is never echoed in `--summary`'s text — it only narrows which records the tables below are computed from — so a reviewer confirms scope by re-running the printed command, not by reading a label in the output.
+`--summary`'s `Scope:` caption echoes the `--branches` filter in one of four shapes:
+
+- `branch X`: one branch.
+- `branches a, b`: several branches, sorted.
+- `all branches`: `--branches` is absent or empty.
+- `no branches`: `--branches` held only empty segments such as `","`.
+
+The echo carries these hazards:
+
+- The echo is unescaped. A comma in the name splits it into separate entries.
+- `pr-cost-section.sh` takes the name from the local git HEAD (`git rev-parse --abbrev-ref HEAD`).
+- That name is usually the PR's own head ref but can differ from the pushed head ref, for example after `git push origin local:remote`.
+- Git's ref-name rules (`git check-ref-format`) bar ASCII whitespace and ASCII control characters, so the name contains no newline and the echo stays on the single `Scope:` line of the body's source text.
+- A ref name containing non-UTF-8 bytes is legal in git, and its outcome depends on the locale. Under strict UTF-8 stdout the caption print raises and the wrapper exits 3, so the cost block is omitted. Under `LC_ALL=C` or `PYTHONUTF8=1` the raw byte is emitted.
+- Everything else git allows renders as-is. Examples, not an exhaustive list: HTML tags, `@user` and `@org/team` mentions, bare `www.` and email autolinks, non-ASCII invisible or line-separator characters, and long names.
+- A hand-typed `--branches` value is not covered by the publication pre-clearance, so review hand-run output before pasting it into a public artifact.
 
 **Sample output (`--summary`, synthetic, illustrative counts only).**
 ```
 > [!IMPORTANT]
 > Computed locally at API list price — this is a compute estimate, not an invoice, and may not match what your plan or contract actually bills.
 
-Scope: this account only, all time.
+Scope: this repository only, branch my-feature-branch. This account only, all time.
 
-| Transcript files scanned | Of those, unreadable | Sessions with priced turns | Priced turns |
+| Transcript files scanned (before branch/date filters) | Of those, unreadable | Sessions with priced turns | Priced turns |
 |---|---|---|---|
 | 2 | 1 | 1 | 2 |
 
@@ -789,14 +824,14 @@ sidechain         240          500,000              0      1,000,000          25
 
 ## cost-trend
 
-**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `handoff-ratio`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
+**Purpose.** Per-ISO-week dollar spend, Opus-family share, and `>=200k` context-bucket share — the standing week-over-week view neither `cost` (a single-window snapshot) nor `audit-routing` provides on its own. Reuses `cost`'s `_price_turn` pricing and `spend-over-threshold`'s ISO-week bucketing rather than introducing a second date-bucketing convention.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), on top of the default corpus already described in "Corpus scope: the declared-roots file" above. Each extra must contain its own `projects/` subdirectory or the run is rejected. Composes with `--this-repo` the same way `cost`'s own `--config-dir` does. Roots resolve via the same `_resolve_cost_roots` funnel `cost` uses (not the generic single-root resolver every other subcommand uses), so the same per-root scan-summary and zero-scope `WARNING` lines `cost` prints also print here. `--config-dir` sums every declared root into the same single weekly table, rather than producing a per-account-per-week matrix.
 
-No `--redact` flag: like `handoff-ratio`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
+No `--redact` flag: like `spend-over-threshold`, this subcommand's output (week / $ / context-share % / Opus-share %) is aggregate-only and names no per-session or per-project field.
 
 **Sample output.**
 ```
@@ -886,8 +921,9 @@ marker sits at the gap's end and the attribution is tight, a low value
 means the marker landed early and most of the gap is still unexplained.
 It renders n/a whenever the winning marker's own timestamp is missing
 or unparseable, which never changes the cause itself. Main origin is
-excluded: experimental.cacheTtl cannot reach main-conversation traffic,
-so a main-origin split would have no lever to point at. A large
+excluded from this sub-table because experimental.cacheTtl is a
+subagent-frontmatter lever and cannot reach main-conversation
+traffic. The main bucket's own lever is promptCacheTtl. A large
 'unattributed' share means the marker taxonomy is incomplete, not that
 the gaps are causeless -- a transcript records the marker the harness
 delivered, never a statement of why the subagent was idle. [unverified]
@@ -929,10 +965,13 @@ tail-only cause breakdown, and must not be divided into those figures.
 X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold
 past 3600s, so those rebuilds happen under either tier. Net$ is
 savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,
-if negative) against this origin's own traffic. The main row's Net$ has
-no corresponding lever in this plan's scope -- experimental.cacheTtl is
-set in subagent frontmatter and cannot reach main-conversation traffic;
-read it as reconciliation context only.
+if negative) against this origin's own traffic. The main row reads
+zero because this corpus was captured while main traffic was on the
+1h tier -- promptCacheTtl is unset for main (see
+docs/design-decisions/main-bucket-prompt-cache-ttl-unset.md), so a
+corpus captured today still shows the 1h tier here. The per-root
+--ttl-verdict gate below, not this pooled, threshold-independent
+row, is what actually decides a tier change.
 
 Origin                W5m              X    Ratio       Net$
 main                    0              0     0.0%       0.00
@@ -977,7 +1016,7 @@ Last marker wins, since the question is what released the subagent, and the last
 - Bash leg: matches only a `tool_use_id` the prior call itself emitted.
 - Meta legs: require both `isMeta` and `isSidechain` true on the record.
 
-**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded**: `experimental.cacheTtl` cannot reach main-conversation traffic (see the switch-delta section below), so a main-origin split would have no lever to point at. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
+**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded** because `experimental.cacheTtl` is a subagent-frontmatter lever and cannot reach main-conversation traffic (see the switch-delta section below). The main bucket's own lever is `promptCacheTtl`, set in `claude/.claude/settings.json`. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
 
 **Own-Bash wait shape** sub-splits the `waiting on own Bash call` row above into three rows — `sleep-poll wait`, `other Bash wait`, `no command recorded` — that partition the row and sum exactly to it, by pattern-matching the winning Bash `tool_use`'s own recorded `command` string:
 
@@ -987,15 +1026,31 @@ Last marker wins, since the question is what released the subagent, and the last
 
 The match is textual pattern matching, not shell parsing, so a quoted or heredoc-embedded `sleep` still counts as a match, over-counting `sleep-poll wait` for text that only mentions `sleep` without waiting on it. `sleep $VAR` (no literal leading digit) does not match, under-counting `sleep-poll wait` by missing a real one. A high `sleep-poll wait` share points at no lever; see `docs/cost-levers-considered.md`'s `From background-slow-bash-calls.md` section for why.
 
-**Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row's `Net$` has a lever, `promptCacheTtl`, that `.claude/plans/cache-ttl-tuning-analysis.md` scopes out of shipping** — `experimental.cacheTtl` is set in subagent frontmatter and cannot reach main-conversation traffic at all, so treat the `main` row as reconciliation context (confirming the origin split adds up against the corpus-wide total), not as an actionable figure.
+**Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row reads zero only when every root's main traffic sits on the vendor's own default tier:** one hour under a Claude subscription within plan usage, five minutes otherwise. `promptCacheTtl` is unset for main (`docs/design-decisions/main-bucket-prompt-cache-ttl-stays-unset.md`). A corpus mixing billing regimes, or forcing a tier via an env var, will not read zero here. The per-root `--ttl-verdict` gate below, not this pooled, threshold-independent row, is what actually decides a tier change.
 
 **Subagent per-dispatch dispersion** is an ex-post oracle bound, not a forecast: it selects individual subagent dispatches by their own *realized* `X`/`W5m` ratio, something no policy fixed before a dispatch runs could do (a policy can only pick agent *types* in advance, not outcomes). A pooled ratio below break-even can still hide dispatches that individually clear it; this bound answers whether a *selective* lever (raising `cacheTtl` only for chronically-idle-gap-prone agent types) is even worth investigating further — if this ex-post-best-case subpopulation still misses a decision floor, no selective policy built on it can either. A dispatch with `W5m = 0` (no 5-minute-tier writes at all) has an undefined ratio and is excluded from the clearing count and the W5m-share denominator. "Their share of per-dispatch subagent W5m" is denominated against the sum of *per-group* `W5m` figures, not the pooled `subagent` row in the table above — the two can diverge (an unpriced call, or an inline sidechain record inside the main transcript file, contributes to the pooled row but to no dispatch group), which is exactly what the trailing coverage-disclosure line measures: the pooled-subagent-`W5m` tokens that landed in no dispatch group at all. A value of 0 there means the oracle bound has exact `W5m` coverage; a non-zero value means the bound is missing some subagent-origin volume, biased toward under-counting rather than over-counting the selective-lever case.
 
-**TTL-verdict per-root analysis** (`--ttl-verdict`) prints last, after the dispersion section above, and adds a per-root, per-bucket break-even verdict for each bucket's own currently-live TTL tier — main and everything-else scored independently. A root is *consistent* for a bucket when it is currently paying exactly one tier there: nonzero `W5m` or nonzero `W1h`, never both and never neither — a root with both nonzero (mixed tier within the window) or both zero (no data) is excluded from that bucket's verdict entirely, not counted toward either direction. A consistent 5m root is scored against the switch-delta section's own break-even (`X / W5m > 0.75 / (2 − r)` ≈ 0.3947); a consistent 1h root is scored against its algebraic mirror, **`Z / W1h < 0.75 / (1.25 − r)` ≈ 0.6522** (`r` still the model's own cache-read multiplier), where `Z` is the read-token volume served during a gap in `[300, 3600)` seconds that a live 1-hour tier serves as a warm read — dropping to the 5-minute tier pays off only when that read volume is small relative to `W1h`. Unlike `X`, which is a directly observed rebuild, `Z` is inferred: `cache_read_input_tokens` carries no tier split and cannot represent partial-prefix survival, so it estimates the rescued volume rather than observing it.
+**TTL-verdict per-root analysis** (`--ttl-verdict`) prints last, after the dispersion section above, and adds a per-root, per-bucket break-even verdict for each bucket's own currently-live TTL tier — main and everything-else scored independently. A root is *consistent* for a bucket when its dominant tier's share of `W5m + W1h` clears `_CACHE_REBUILD_TTL_DOMINANT_TIER_SHARE_MIN` (0.900, engineer-set, no vendor grounding). A root below that share (near-tie) or with both `W5m` and `W1h` zero (no data) is excluded from that bucket's verdict entirely, not counted toward either direction. A dominance-resolved mixed root feeds only its own dominant tier's accumulators into the verdict. The minority tier's own volume is excluded from both the net and the margin denominator. This is why the threshold must sit strictly above 0.5 and below 1.0 rather than at either extreme. A consistent 5m root is scored against the switch-delta section's own break-even (`X / W5m > 0.75 / (2 − r)` ≈ 0.3947); a consistent 1h root is scored against its algebraic mirror, **`Z / W1h < 0.75 / (1.25 − r)` ≈ 0.6522** (`r` still the model's own cache-read multiplier), where `Z` is the read-token volume served during a gap in `[300, 3600)` seconds that a live 1-hour tier serves as a warm read — dropping to the 5-minute tier pays off only when that read volume is small relative to `W1h`. `Z` also counts an in-band call whose own write is purely 1-hour-tier, which `X` excludes, since a live 1-hour tier serves that call's read regardless of what it wrote. Unlike `X`, which is a directly observed rebuild, `Z` is inferred: `cache_read_input_tokens` carries no tier split and cannot represent partial-prefix survival, so it estimates the rescued volume rather than observing it.
 
-Each consistent root's own net-dollar margin must clear at least 10% of that root's own dollar-equivalent write volume, and it must clear at **two boundary points, not one** — the vendor-grounded 300-second idle-band lower bound, and a stricter 60-second alternative (the vendor's own illustrative margin a 4-minute-streaming response leaves inside a 5-minute TTL) — since the transcript's own timestamp isn't documented as request-start, a bias that pushes both `X` and `Z` toward favoring the 5-minute tier. A root's margin must clear at both points to count as clearing at all; clearing at only one is the same as not clearing. Every consistent 1h root also runs a zero-price raw-token tiebreaker (`Z` against `W1h` directly, no margin), which must agree with the dollar accounting's own direction — including the wash case, `Z == W1h`, counted as a disagreement and never a tie — or the root doesn't clear regardless of how comfortably its dollar margin cleared alone. A consistent 5m root has no meaningful raw-token comparison in the opposite direction and runs no tiebreaker at all; its `clears` is decided by the dollar margin alone.
+Each consistent root's own net-dollar margin must clear at least 10% of that root's own dollar-equivalent write volume (priced with the same fast-mode and US-inference-geo multipliers the net carries), and it must clear at **two boundary points, not one** — the vendor-grounded 300-second idle-band lower bound, and a stricter 60-second alternative (the vendor's own illustrative margin a 4-minute-streaming response leaves inside a 5-minute TTL) — since the transcript's own timestamp isn't documented as request-start, a bias that pushes both `X` and `Z` toward favoring the 5-minute tier. A root's margin must clear at both points to count as clearing at all; clearing at only one is the same as not clearing. Every consistent 1h root also runs a zero-price raw-token tiebreaker (`Z` against `W1h` directly, no margin), which must agree with the dollar accounting's own direction — including the wash case, `Z == W1h`, counted as a disagreement and never a tie — or the root doesn't clear regardless of how comfortably its dollar margin cleared alone. A consistent 5m root has no meaningful raw-token comparison in the opposite direction and runs no tiebreaker at all; its `clears` is decided by the dollar margin alone.
 
-The report prints one `Root`/`Tier`/`W5m/W1h`/`X/Z`/`Net$`/`Favors`/`Clears` table per bucket, one row per consistent root labelled by redaction ordinal, followed by the consistent-5m-root count, the consistent-1h-root count, the excluded (mixed-tier-or-no-data) count, and a per-bucket verdict: **adopt** (every consistent root favors the same direction and clears), **decline** (every consistent root agrees on direction but at least one fails its own margin or boundary check, or a consistent 1h root's tiebreaker disagrees), **roots disagree** (consistent roots favor opposite directions), or **no verdict** (the bucket has zero consistent roots). A discrepancy between the gap-derived `idle 5m-1h` classification and the vendor's own `cache_miss_reason` signal, for every call so classified, prints as a disclosed count — it never overrides the gap-derived classification either accumulator uses.
+The report prints one `Root`/`Tier`/`W5m/W1h`/`X/Z`/`Net$`/`Favors`/`Clears`/`Share` table per bucket, one row for *every* root labelled by redaction ordinal, not only the consistent ones. `Share` is the dominant tier's share of that root's `W5m + W1h`, rounded to 3 decimals. A consistent root's first seven columns behave as before and `Share` reads `1.000` for a pure root or a share at or above the dominance threshold for a mixed one. An excluded root's row still prints: `Clears` names the reason instead of a boolean, using a whitespace-free token — `excluded(near-tie)` when the dominant tier's own share falls below the threshold, or `excluded(no-data)` when both `W5m` and `W1h` are zero. The two excluded row shapes render their remaining columns differently:
+
+- A near-tie root's `Tier`/`W5m/W1h`/`X/Z`/`Net$`/`Favors` report its own *dominant* tier's accumulators and direction (display only — it still does not count), with `Share` at that tier's own share.
+- A no-data root shows `Tier=none`, zero counts, `Net$=n/a`, `Favors=--`, and `Share=n/a`.
+
+Neither excluded shape ever reaches the consistent-5m-root count, the consistent-1h-root count, or the bucket's own verdict. The table is followed by the consistent-5m-root count, the consistent-1h-root count, the excluded (near-tie-or-no-data) count, and a per-bucket verdict:
+
+- **adopt** (every consistent root favors the same direction and clears)
+- **decline** (every consistent root agrees on direction but at least one fails its own margin or boundary check, or a consistent 1h root's tiebreaker disagrees)
+- **roots disagree** (consistent roots favor opposite directions)
+- **no verdict** (the bucket has zero consistent roots)
+
+A consistent root that favors the tier it already runs never clears, since its margin measures the savings from switching away from that tier. A bucket whose consistent roots all run the same tier and all favor staying on it therefore returns `decline`: no root has a switch to make, rather than a switch whose evidence fell short.
+
+**Two-slice cross-check.** For any root with both `W5m > 0` and `W1h > 0` — whether it cleared the dominance threshold or was excluded as a near-tie — the table is followed by a `tier-split account-N: 5m-slice favors T, 1h-slice favors T (agree|disagree)` line naming each tier's own accumulators' favoured direction, using the same net-sign rule the consistent-root reduction itself uses. This line is informative only: it never feeds `root_inputs`, never reaches the bucket's verdict, and never changes the consistent-5m-root, consistent-1h-root, or excluded-root count. Counting a root-slice instead of a root would change the unanimity unit the verdict rests on.
+
+A discrepancy between the gap-derived `idle 5m-1h` classification and the vendor's own `cache_miss_reason` signal, for every call so classified, prints as a disclosed count — it never overrides the gap-derived classification either accumulator uses.
 
 **Rule of thumb.** At list `claude-sonnet-5` rates ($2.00/MTok base input), the per-token excess is the gap between the cache-write rate and the 0.1x warm-read rate it replaces: 1.15x base for a pure 5-minute-tier rebuild (roughly $1 per 435k tokens abandoned and rebuilt) and 1.9x base for a pure 1-hour-tier rebuild (roughly $1 per 263k tokens — costlier per token, since the 1-hour cache-write multiplier is wider). A `cache-rebuild` dollar total mixes both tiers, so dividing by a single tier's per-token figure over- or under-states the tokens involved; as a corpus-wide blended average across both tiers, **$1 per ~250k tokens** is a reasonable estimate to divide by when a per-tier breakdown isn't available.
 
@@ -1013,8 +1068,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
-- `--record` — append the current ISO week's row instead of reading. Requires the `cost_ledger_recording` config key (`config-get.sh cost_ledger_recording` exits 0 — see [`docs/config-file.md`](config-file.md)) and `--machine-label`.
-- `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname.
+- `--record` — append the current ISO week's row instead of reading. Requires the `cost_ledger_recording` config key (`config-get.sh cost_ledger_recording` exits 0 — see [`docs/config-file.md`](config-file.md)).
 - `--force` — with `--record`, overwrite an existing row for the same (week, machine) pair instead of refusing.
 - `--note TEXT` — free-text note for `--record`'s row (what changed in the workflow this week). Must not contain `|` or a newline.
 
@@ -1022,7 +1076,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **`--record`'s row.** `usd`/`context_pct`/`opus_pct`/`ge200k_pct` reuse `_compute_cost_trend_data`, the per-week accumulation behind `cost-trend`'s own report. `context_pct` and `ge200k_pct` are two distinct metrics, not one under two names: `context_pct` is the context-class (cache read plus both cache-write tiers) dollar share of the week's spend, while `ge200k_pct` is the dollar share of turns whose context crossed the >=200k bucket — the same figure `cost-trend`'s own printed "Context%" column has always shown. `denials` and `reviewer_gap_pp` are windowed to the current ISO week's Monday-through-next-Monday UTC boundary via `review-trace --deny-summary`'s and `reviewer-yield`'s own accumulation, scoped to that one week rather than corpus lifetime. See `docs/cost-ledger.md`'s schema table for `reviewer_gap_pp`'s empty and `insufficient` cell values.
 
-**Error paths.** `--record` refuses (non-zero exit, writes nothing) on: an empty corpus or a current week with zero priced turns; a malformed ledger file (wrong column count, non-ISO week label, non-numeric cell, an embedded `|`, or an unresolved git merge-conflict marker); a `--machine-label` that doesn't match `^[a-z0-9]{1,8}$` or that equals this machine's hostname (the rejection never echoes the compared hostname value); an existing row for the same (week, machine) without `--force`; and a clock-skew mismatch between the corpus's most recent activity and the week the machine's clock resolves as current. The final read-check-write step (re-read the ledger, check for an existing (week, machine) row, write) holds an exclusive lock on a sibling `.lock` file, so two racing `--record` invocations can't both pass the duplicate-row check; the corpus scan that computes the row's values runs unlocked beforehand. Every write goes through a temp-file-then-atomic-replace step with a parse-back verification.
+**Error paths.** `--record` refuses (non-zero exit, writes nothing) on: an empty corpus or a current week with zero priced turns; a malformed ledger file (wrong column count, non-ISO week label, non-numeric cell, an embedded `|`, or an unresolved git merge-conflict marker); an unreadable or malformed `<config-dir>/machine-id` (see `docs/pr-cost.md`'s "Machine identity"); an existing row for the same (week, machine) without `--force`; and a clock-skew mismatch between the corpus's most recent activity and the week the machine's clock resolves as current. The final read-check-write step (re-read the ledger, check for an existing (week, machine) row, write) holds an exclusive lock on a sibling `.lock` file, so two racing `--record` invocations can't both pass the duplicate-row check; the corpus scan that computes the row's values runs unlocked beforehand. Every write goes through a temp-file-then-atomic-replace step with a parse-back verification.
 
 **When to reach for it.** Check the ledger before a workflow change ships, to confirm the baseline week is actually recorded before its transcripts age out — and after, to score the change once enough weeks have accumulated.
 
@@ -1035,9 +1089,9 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled` and `--machine-label`.
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`.
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
-- `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname. Also narrows read mode's uncaptured-PR listing to one machine.
+- `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
 - `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
 - `--asof-window-days DAYS` — close-out window a merged PR must clear before it's eligible for capture (default `3`, a provisional placeholder — see `docs/pr-cost.md`).
 - `--plan-file-glob GLOB` — glob checked against a PR's added files for the plan-slug join cross-check (default `.claude/plans/*.md`).
@@ -1048,6 +1102,20 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
+
+---
+
+## pr-cost-export
+
+**Purpose.** Export every declared account's current `pr-cost` ledger rows — redacted, collapsed to one row per PR — to a single operator-named TSV. A pure local file transform over ledger files already on disk: makes no `gh` call and scans no transcript corpus of its own. See `docs/pr-cost.md`'s "Redacted cross-account export" section for the full grain and redaction contract; this section covers only the essentials.
+
+**Flags.**
+- `--out PATH` — required; the destination TSV. Refused if it already exists (never overwritten). There is deliberately no stdout fallback — stdout inside a Claude Code session is captured into that session's own transcript.
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable).
+
+**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `~/.claude/.pr-cost-enabled` sentinel (an account without it contributes zero rows).
+
+**When to reach for it.** Before a cross-account or cross-repo cost analysis that needs to leave the machine it was captured on, or before comparing per-PR cost figures across more than one declared account in one artifact.
 
 ---
 
@@ -1119,6 +1187,103 @@ Unpriced turns inside round windows: 0
 
 ---
 
+## author-outcome
+
+**Purpose.** For each `--agent`-typed dispatch (default `code-writer`), did the `code-review` round that judged its diff record a must-fix (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for, so a later measurement can compute what share of `code-writer` dispatches fail their own downstream `/code-review` check. Reads the transcript for round/dispatch structure and each session's own review-narrative-ledger file for disposition; no `gh` calls.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). Each in-scope transcript's own ledger file is located by session-id glob, so this flag governs the transcript side; the ledger side follows automatically, one file per session.
+- `--agent NAME` -- the `subagent_type` to join dispatches against (default: `code-writer`). The mechanism is not hardcoded to `code-writer`; every other reviewer-agent type is a legal (if less meaningful) value. `inline`, `mixed`, and `unknown` are reserved `authoring_agent` sentinels, not real `subagent_type` values -- passing one exits with an error instead of joining against zero dispatches.
+- `--since Nd` -- limit to dispatches with a timestamp in the last N days (e.g. `30d`); default: all time.
+  - Compares against the dispatch's own `Agent`/`Task` tool_use record (its *start* position), not its completion -- distinct from the completion index the failure definition below uses for round attribution.
+  - Filters which *dispatches* enter "Dispatches in scope" and the reported outcome buckets.
+  - Does not filter which rounds are detected or which ledger rows are read -- a round's own signals are evaluated without regard to `--since` at all (see the `authoring_agent inconsistent` counter below for why this distinction matters).
+
+**Ledger lookup.** Each transcript's own session id (the same id its filename is stem-named after) is globbed against `<config_dir_root>/review-narrative-ledger/*.<session_id>.jsonl`; every matching file is read and merged, sorted by each row's own `event_time`, so a session that appended from more than one git worktree of the same repo has all of its rows joined rather than only one worktree's. A session with no matching ledger file reads as zero rows, and every round in that session falls straight to the marker-write fallback below. A session has no matching ledger file when:
+
+- the kill switch was on for its whole lifetime
+- the session predates `review-ledger.sh`
+- every one of its ledger files was already swept
+
+**Failure definition.** A dispatch's completion index is the position of its paired `tool_result` record, not its `Agent`/`Task` tool_use's own start position. This is because the `code-writer` dispatch being classified can legitimately still be running when a round opens. A round that opened before the dispatch's own output existed cannot have reviewed that output, so only the completion-keyed attribution can be correct. A dispatch's **attributed round** is the `code-review` round with the smallest `open_idx` strictly greater than that completion index. That round's own **round ordinal** is its 1-indexed position in the transcript's own code-review-open sequence for that session. A ledger row is **matched** to a round when its `round` field equals that round's ordinal exactly. A row with no `round` key -- one predating this field -- never matches, since `None` can't equal an int.
+
+Each dispatch classifies by walking three tests against its attributed round, in order:
+
+1. No attributed round exists -> **UNRESOLVED**.
+2. The round has >=1 matching ledger row with `disposition: ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another matching row also exists -- the finding was raised against that diff, and a same-round fix does not undo that.
+3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
+
+A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. This covers two cases: the kill switch was on for that round, or an append attempt errored before landing. It is counted separately under "rounds with a marker write but no ledger row (kill-switch inferred clean)".
+
+A dispatch whose paired `tool_result` record is absent has no completion index, so it's classified **UNDECIDABLE** before the three-test walk runs. It counts only under Data quality, never in "Dispatches in scope".
+
+Two non-failure buckets, each of which would bias the share if collapsed into PASS:
+
+- **UNRESOLVED** -- no `code-review` round after the dispatch at all (typically the last dispatch of a session). Excluded from the failure-share denominator.
+- **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade. A round that both had the ledger kill switch on and raised a genuine `ADDRESS` finding is indistinguishable from this bucket, since the kill switch suppresses the row a real finding would otherwise have left; accepted as narrow, since the kill switch is a manual, rare operator toggle.
+
+**Accepted risk: a project-level `cleanupPeriodDays` override is not honored.** `_ledger_sweep_window_days` reads only `$CONFIG_DIR/settings.json` (the global/user-level file), deliberately skipping Claude Code's full settings-precedence resolution. A project-level override that Claude Code's real precedence would honor -- one raising the value above the global default -- is invisible to it, so a session under that project sweeps against the global default instead of its own project's wider window.
+
+**Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check below is built to catch. It is bounded by the round-number-mismatch exclusion below, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
+
+**Accepted risk: `authoring_agent` and `disposition` are both self-declared at write time.** `authoring_agent` is checked after the fact by the non-blocking `authoring_agent inconsistent` counter below, so treat it as directional, not verified. `disposition` has no cross-check at all -- a consistently-optimistic self-report (writing `CLEAN`/`DEFER` for a diff that warranted `ADDRESS`) would deflate the failure-share number with no counter to catch it.
+
+**Co-authored rounds.** When several dispatches precede one round, the round's outcome fans out to each -- each contributed bytes to a diff that failed or passed together. The count of such rounds prints as its own Data quality counter. This counter deliberately uses the `--since`-filtered dispatch count, unlike the `authoring_agent inconsistent` counter below, which reads the unfiltered count instead: co-authored measures fan-in to the headline in-scope aggregate, so a dispatch outside the `--since` window shouldn't make an otherwise-single-dispatch round look co-authored.
+
+**Round-number-sequence check.** Every ledger row carrying a `round` key, from every one of the session's matching files merged and ordered as above, must resolve to the exact `1..N` sequence for `N` code-review rounds the transcript's own detector found in that session. Each of the following counts under "sessions whose ledger round sequence doesn't match the transcript's round-opens":
+
+- a gap (a round-open with no ledger row)
+- a ledger round number with no corresponding round-open
+- rows recorded out of sequence
+- the same round number independently claimed by two different source files -- a worktree-subagent race with no safe way to pick one file's row as authoritative -- which the same `1..N` equality check already catches, since one round value split across two files necessarily duplicates in the merged sequence
+
+A session whose ledger is entirely legacy rows (no row carries a `round` key) or has no ledger file at all is not evaluated by this check. A session that fails this check has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
+
+This still excludes, fail-closed rather than detected, a single round genuinely split across two worktrees at the same round number with rows that individually look consistent, and a round-counter restart following a mid-session worktree switch combined with compaction. A narrower gap also remains: a subagent dispatched into a different worktree under the same session id merges in by the same session-id glob, so if this session's own primary ledger file is missing and the subagent's file alone happens to form a complete matching `1..N` sequence, the check passes even though those rows track the subagent's own review activity rather than rounds this session's own transcript opened.
+
+`show`'s merged output tags each row with its source file's own repo-hash, display-time only, for an operator debugging a flagged collision.
+
+**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round but no ledger file, cold enough to be swept" when all three hold:
+
+- It opened >=1 `code-review` round.
+- Every one of its matching ledger files, if any matched the session-id glob at all, failed to open -- indistinguishable from zero files matching, since a file evicted by a concurrent `clear-stale` sweep between the glob and the read counts the same as never having matched.
+- The record at its earliest code-review round's own open position is older than the fixed 30-day `_LEDGER_SWEEP_FLOOR_DAYS` (GH-973). That's the same floor `review-ledger.sh`'s `append` command passes on its dominant eviction path, not `clear-stale`'s dynamically-resolved `cleanupPeriodDays`-driven window. The earliest round's own open, not the session's newest record, is what's compared. A swept file's last successful append is always at or before that round's own open, so keying there never misses a truly-swept file. This also avoids a bias a ledger file's own mtime -- which only advances on `append` -- would otherwise introduce against a transcript's mtime, which advances for the life of the session: a session that reviews early then keeps working past the sweep window would otherwise misread as kill-switch-clean rather than swept. Only that one record's own timestamp is checked, with no fallback to any other record in the session, accepted because Claude Code transcript records reliably carry a `timestamp` field.
+
+This can't tell a genuinely swept ledger apart from a session the kill switch simply ran clean for its entire (now-cold) lifetime, since both leave the identical no-file signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on that one record is not evaluated by this check.
+
+**The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
+
+This counter is meaningful only when `--agent` is `code-writer` (the default). `review-ledger.sh`'s `--authoring-agent` enum has no case for any other value, so `declared` can never match and the counter fires on nearly every round. Treat that as reduced signal from an unsupported `--agent` value, not a data-quality problem.
+
+**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one.
+
+**Sample output.**
+```
+AUTHOR OUTCOME SOURCES (this repo (N project dirs); 1 root)
+agent=code-writer  window=last 30d
+
+Dispatches in scope                                 20
+  FAILURE      (round had >=1 ADDRESS)              10
+  PASS         (round concluded clean)               6
+  UNRESOLVED   (no subsequent round)                 3
+  UNATTRIBUTED (round ran, no ledger row, no marker)   1
+Failure share: 10 of 16 resolved dispatches (62.5%)
+
+Data quality
+  rounds co-authored by >1 dispatch                                                 3
+  rounds with a marker write but no ledger row (kill-switch inferred clean)         0
+  sessions whose ledger round sequence doesn't match the transcript's round-opens   0
+  sessions with a code-review round but no ledger file, cold enough to be swept     0
+  dispatches with no paired tool_result (undecidable)                               0
+  authoring_agent inconsistent with the transcript join                             1
+```
+
+`Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.
+
+**Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED. A round whose `append` calls straddle the schema v2 rollout mid-session can also misclassify as PASS, if a pre-flip `ADDRESS` row lacks a `round` key while a post-flip `DEFER` row in the same round has one -- a one-time artifact bounded by this same sweep window, which is the other reason the accumulation wait matters.
+
+**When to reach for it.** Answer "what share of `code-writer`'s own diffs failed their own downstream review" -- no other subcommand joins the review's own structured disposition back to the dispatch that authored the reviewed diff. `reviewer-yield` classifies a *reviewer's* own verdict shape (findings-found/zero-finding/unclassified), not whether the diff under review passed; `review-round-cost` prices a round's dollars with no pass/fail axis at all.
+
 ## cost-counts
 
 **Purpose.** Per-branch review-round and subagent-spawn counts, as two GFM subsections (`### Review rounds`, `### Subagent spawns`) meant for splicing directly into a public PR body -- counts only, no dollar attribution anywhere. `pr-cost-section.sh` calls this as a second, independently-degrading call alongside `cost --summary`, splicing its output between the dollar tables and the reproducibility trailer; a failed call substitutes a one-line caveat instead of changing the wrapper's own exit code.
@@ -1167,28 +1332,29 @@ Counts main-thread dispatches only; an agent spawned from inside another agent i
 
 ---
 
-## handoff-ratio
+## spend-over-threshold
 
-**Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
+**Purpose.** Per-ISO-week share of session dollars spent above `nudge-handoff-near-context-cap.sh`'s own effective fire threshold — how much of the week's spend happened in context deep enough for the nudge to have fired.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
-- `--debug-detector` — print candidate compaction records for schema-drift inspection
 
-**Sample output.**
+**Sample output** (synthetic, illustrative counts only).
 ```
-Week        Handoffs  Compactions   Ratio
--------------------------------------------
-2026-W19           5           39   11.4%
-2026-W20          10           50   16.7%
-2026-W21           5           16   23.8%
--------------------------------------------
-Total             22          141   13.5%
+Week       Sessions       AboveUSD       TotalUSD   Share
+---------------------------------------------------------
+2026-W19         40         100.00         200.00   50.0%
+2026-W20         60         300.00         500.00   60.0%
+2026-W21         50         140.00         200.00   70.0%
+---------------------------------------------------------
+Total           150         540.00         900.00   60.0%
 ```
 
-**When to reach for it.** Check whether context-cap management is proactive (handoffs) or reactive (compaction). A low ratio means most context resets are happening automatically rather than at deliberate checkpoints.
+A `Diagnostic:` block follows the table when `<config-dir>/.handoff-nudge.log` holds schema-drift lines: a usage block with every token field zero or null. When it appears, the subcommand's field paths may need updating.
+
+**When to reach for it.** Measure how much spend sits in the band the handoff nudge governs, as a standing regression tripwire on nudge policy changes.
 
 ---
 
@@ -1199,14 +1365,14 @@ Total             22          141   13.5%
 Each candidate spacing is replayed against every in-scope session's own recorded turn sequence: real context/output growth is never altered, only the dollars charged after a simulated re-arm point are re-priced. That re-pricing uses a fresh-session rebuild ramp — $/1k-output-tokens bucketed by turn-index-since-a-fresh-start, re-derived from the current corpus every run (PR #605's own turn-index bands are reused for comparability, but the multipliers are never hardcoded — that PR's own table is a one-off, non-reproducible measurement). Two figures are reported per spacing:
 
 - **perfect** — the session splits at the first *hook-observable boundary* at or after a band crossing (`UserPromptSubmit`/`Stop`'s own sampling points, reconstructed from the transcript). This is a ceiling: it assumes the operator acts on the nudge the instant it's technically visible.
-- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point (`<config-dir>/.handoff-nudge.log`'s own `nudged` lines) sessions in this corpus actually kept running.
+- **realistic** — the same boundary detection, plus an empirically measured operator-response lag: how far past each historical nudge's fire point sessions in this corpus actually kept running. Joined per resolved root: each root's own `.handoff-nudge.log` (at `<that root's config dir>/.handoff-nudge.log`) is read and joined against that root's own sessions. This report is multi-root by default the same way every other subcommand is — see "Corpus scope: the declared-roots file" above.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir`. Refused together with `--no-redact` once more than one root is in scope.
 - `--since Nd` — limit to sessions with a first timestamp in the last N days (e.g. `30d`). Scopes whole sessions, not individual turns within one — a re-arm simulation's turns-since-restart positioning depends on a session's own turn sequence staying intact.
 - `--branches B1,B2,...` — whole-session branch filter: a session with no matching main-thread turn is excluded entirely (default: all)
-- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
+- `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on most of its content. The one exception: at single-root scope it prints the literal `.handoff-nudge.log` path (instead of an `account-N` label) in the per-root log-size line — multi-root scope is unaffected, since `--no-redact` is refused outright once more than one root is in scope. It still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
 - `--spacings N1,N2,...` — comma-separated candidate re-arm spacings in tokens past the first fire (default: `40000,80000,120000`)
 
 **Sample output.**
@@ -1233,7 +1399,123 @@ Model routing and each session's own fire threshold (the lesser of 40% of its mo
 
 A `nudged` log line whose session id has no match in the resolved scope (a since-deleted transcript, or a session from an account/root outside `--projects`/`--this-repo`/`--config-dir`) is excluded from the operator-response-lag sample and the excluded count is reported, not silently dropped — a near-100% exclusion rate signals a broken join, not sparse data.
 
+Each resolved root's own `.handoff-nudge.log` is read separately:
+
+- **Bounded, per-root truncation.** The same bounded, tail-truncated read `spend-over-threshold` uses (`_NUDGE_LOG_MAX_READ`, 2 MB) applies per root — a root's log growing past the cap loses only its own oldest lines, never another root's.
+- **Single root.** The resolved-scope header is followed by that root's own log byte size, labeled `account-N` via the same ordinal scheme every other per-account figure in this repo's cost tooling uses — or the literal config-dir path under `--no-redact` (see that flag's bullet above).
+- **More than one root.** No per-root breakdown is printed — a per-root byte count is itself a per-account figure, which `docs/private-project-redaction.md`'s Account-cardinality bar prohibits. The header is instead followed by one pooled line summing every root's bytes, plus a boolean-only note on whether any root was truncated or unreadable, with no root singled out. The note never carries a count: a per-condition digit would disclose a root/account-cardinality lower bound the same way a per-root breakdown would.
+- **Truncation note.** Either way, a size over the 2 MB cap on any root prints a `[truncated -- oldest lines dropped]` note, rather than leaving a reader to compare the printed size against the unprinted constant by hand.
+
+**Nudge→handoff conversion.** A second report prints after the spacing table, under its own `## Nudge->handoff conversion` heading. Its table shares no column header with the spacing table above. It classifies the same population the operator-response-lag join above uses: every fired, in-scope session. Each session lands in one of four buckets, decided by whether a `handoff` log line exists (see `docs/handoff-nudge.md`'s "Log location" for what writes that line) and whether any `action=block` line precedes it:
+
+- **voluntary** — a `handoff` line exists, no `action=block` line precedes it
+- **forced** — a `handoff` line exists, at least one `action=block` line precedes it
+- **blocked-no-handoff** — at least one `action=block` line, no `handoff` line
+- **no-compliance-observed** — neither a block nor a handoff line. This is a legitimate outcome, not a failure: the advisory copy explicitly invites it ("If the task is nearly complete, ignore this and finish," `nudge-handoff-near-context-cap.sh:660`)
+
+- **dropped sessions** — a nudged session with no in-scope trace is excluded and counted under "dropped," mirroring the lag sample's own excluded-count convention
+- **rates** — conversion rate ((voluntary + forced) / fired) and block-reach rate ((forced + blocked-no-handoff) / fired) print alongside their raw counts, so the two are poolable across separate runs by summing counts, not averaging rates
+- **block-reach vs. the bucket split** — block-reach is unambiguous, but the bucket split beneath it is not: a blocked session with no later `handoff` line may have ended outright or used the kill-switch instead of ignoring the block (`docs/handoff-nudge.md`'s "Recovering from a hard block" section lists three routes out of a block, only one of which writes a `handoff` line). "Blocked-no-handoff" is therefore a lower bound on forced compliance, not a precise count of dismissed blocks
+- **`ignored=` median** — for each voluntary session, the report reads the `ignored=` value on the last `nudged` line preceding its `handoff` line and prints the median across sessions where that field is present. A session whose preceding line predates the field (older hook versions didn't record it) is counted separately as missing `ignored=` and never defaulted to 0, which would bias the distribution toward "complied immediately"
+
 **When to reach for it.** Pick a re-arm spacing for `nudge-handoff-near-context-cap.sh`'s Phase 3 rollout against measured dollars and `C_bar`, instead of shipping one of the three candidate values on the parent plan's own `[unverified]` assumption.
+
+---
+
+## handoff-signal-response
+
+**Purpose.** A *signal* is an observed context-budget event: a `--check` result carrying `over_threshold` or `already_fired` true, the advisory nudge's own injected `additionalContext`, or the hard-block stderr. Per session, this subcommand locates every signal and reports:
+
+- whether a `/handoff` invocation followed it in that **same session's own transcript** before the transcript ends
+- how many main-thread turns and priced dollars elapsed after it
+- whether a live `ready-for-review` active-bypass marker applied at signal time
+
+It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`: that subcommand does not key on an *observed* signal, so it cannot separate "the session was deep" from "the agent was told and continued anyway."
+
+A `--check` result is invisible in `<config-dir>/.handoff-nudge.log` (it writes no log line — see "Querying the current estimate" in `docs/handoff-nudge.md`), so this subcommand detects all three signal kinds directly from each session's own transcript records, never from the log. Cross-checked against `.handoff-nudge.log`'s `nudged` lines as a corroborating diagnostic only; no per-session row depends on it.
+
+Field definitions:
+
+- `context_at_turn` — from the nearest preceding main-thread turn's own priced usage (`_price_turn`), never from a signal's own embedded text (which for the advisory case states only the threshold, not the live estimate).
+- `position` — the main-thread turn ordinal (0-based) the signal was observed at or immediately after.
+- `turns_after_signal` — main-thread turns following the signal, from the same priced-usage pass.
+- `dollars_after_signal` — main-thread dollars only, past the signal's own turn.
+- `threshold` — `_hook_effective_fire_threshold` for that turn's own model.
+- `handoff_followed` — same-session only: a `/handoff` Skill invocation, or a Write/Edit to a `<config-dir>/handoffs/<slug>-handoff.md` path, occurring anywhere after the signal before the transcript ends.
+  - Deliberately not a cross-session join: a signal's intended remedy invokes `/handoff` in the same session that saw the signal, so the fresh session that resumes afterward is a separate transcript this metric never needs to look at.
+- `session_total_dollars` — the whole session's own total main-thread priced dollars, not just the tail after the signal — the denominator `pct_spend_after_signal` divides by.
+- `pct_spend_after_signal` — `dollars_after_signal / session_total_dollars`. `null` (JSON) / `None` (aggregate) when `session_total_dollars` is zero, avoiding a divide-by-zero rather than reporting a misleading 0%.
+- `exceeds_startup_burn_benchmark` — whether this row's own `dollars_after_signal` exceeds the startup-burn benchmark described below. `null`/`None` when the benchmark itself is unavailable.
+
+**Startup-burn benchmark.** Once per invocation, this subcommand resolves the same scope a second time (an independent scan, since the main pass's own `session_iter` is a consumed single-pass generator) and feeds it to `_compute_workstream_dollars` — the same "startup burn" instrument `workstream-cost` reports: a branch's non-first sessions' own first `until_first_n_turns` (default 5) main-thread turns, summed. The benchmark is the sum of every branch's `startup_burn_dollars` divided by the sum of every branch's non-first-session count: a session-count-weighted average, not an unweighted per-branch average (which would let a low-continuation branch skew the result). It is unavailable (`None`) when no branch in scope has a non-first session to sum, realistic only for a tiny or degenerate corpus. Every row's `exceeds_startup_burn_benchmark` compares that row's own `dollars_after_signal` against this one corpus-wide figure.
+
+**Excerpt source-turn eligibility (curation cards only).** An excerpt is never sourced from a `tool_use` block, a `tool_result` block, or any user-type record, however unambiguous its content — only a main-thread assistant record's own `"text"` content blocks are excerpt-eligible. This closes the cross-turn leak vector: a pasted path, diff, stack trace, or credential that reached the agent via tool output or a user message can never become a published excerpt. It does not catch an assistant turn that paraphrases such content in its own words — a manual redaction read over the sampled set is still required before anything from `--sample`/`--no-redact` output ships anywhere public.
+
+**Flags.**
+- `--config-dir PATH` — top-level flag (precedes the subcommand name), resolves sessions under `PATH/projects` instead of the default config dir. Composes with `--this-repo`/`--projects` the same way every non-`cost`-family subcommand does (`_resolve_scan_roots`) — this subcommand is not in `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`, so it has no separate, repeatable per-subcommand `--config-dir` of its own the way `cost`/`context-distribution` do.
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--no-redact` — emit raw session IDs in `--sample` curation cards instead of a run-scoped opaque label (`session-1`, `session-2`, ...), and print the `DO NOT PUBLISH` banner. Refused (exit 2) once scope resolves to more than one root — matching `context-distribution`'s own contract, not `audit-routing-samples`' (which has no redaction of any kind). Narrow to a single root first, e.g. `--this-repo` with no additional declared roots.
+- `--sample N` — emit the top N signal rows by post-signal spend (`dollars_after_signal` descending) as curation cards instead of the aggregate census report
+- `--seed N` — seed for reproducible tie-breaking among equal-spend rows in `--sample` (default: unseeded — ties keep scan order)
+- `--format json|md` — `--sample` output format: `json` (default) or `md` (a human curation document with a verdict checklist, mirroring `audit-routing-samples`' own card shape)
+- `--context-turns N` — with `--sample`, attach a `forward_context` list to each card: the next N main-thread turns after the signal, each carrying its own `text` and `thinking` content (independently truncated). Requires `--sample` (exit 2 otherwise). Unlike the single-turn `excerpt` above (`"text"` blocks only), this also reads `"thinking"` blocks, closing the excerpt's own blind spot for reasoning an agent confined to an extended-thinking block. `forward_context` never carries a session id, a file path, or any other identifying field, so it is safe under the default multi-root redacted scope the same way `excerpt` is.
+
+**Sample output (synthetic, illustrative counts only).**
+```
+HANDOFF SIGNAL RESPONSE SOURCES (this repo (N project dirs); 1 root (~/.claude/transcript-config-dirs declared but contributed no additional root))
+
+## Handoff signal response (1,850 signal(s) in scope)
+
+Startup-burn benchmark (this scope): $1.85 per continuation session.
+Sessions with at least one signal: 640
+Conversion rate (a same-session /handoff followed the signal): 88.0% (1,628/1,850)
+Signals whose post-signal spend exceeded the benchmark: 705 (38.1%)
+
+Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 720 joined (245 excluded -- no matching session in scope), median lag 64,000 tokens past the fire point
+
+### By signal kind
+
+Group           Signals  Handoff%  Median $ after
+-------------------------------------------------
+advisory          1,290     85.5%            4.10
+check               500     93.0%            0.85
+hard-block           60    100.0%            2.00
+
+### By ready-for-review active-marker context
+
+Group           Signals  Handoff%  Median $ after
+-------------------------------------------------
+active              610     76.5%            3.60
+inactive          1,240     93.6%            2.05
+```
+
+**Sample output (`--sample 1 --format json`, redacted, synthetic, illustrative values only).**
+```json
+[
+  {
+    "session_id": "session-1",
+    "kind": "check",
+    "position": 40,
+    "context_at_turn": 160000,
+    "threshold": 150000,
+    "marker_active": false,
+    "handoff_followed": true,
+    "turns_after_signal": 10,
+    "dollars_after_signal": 0.50,
+    "session_total_dollars": 3.20,
+    "pct_spend_after_signal": 0.1562,
+    "exceeds_startup_burn_benchmark": false,
+    "excerpt": "Usage is now over the configured threshold; wrapping up before handing off."
+  }
+]
+```
+
+**Instrument sanity check.** A wrongly-narrowed scan (a stray `--config-dir`, a missing `--this-repo`) reads identically to "no evidence exists," and the resolved-scope header is the only line that would catch it. Before trusting a census run's numbers, confirm both, against `--config-dir ~/.claude --this-repo`'s own header (`HANDOFF SIGNAL RESPONSE SOURCES (this repo (N project dirs); 1 root (...))`):
+
+- Root count reads `1 root`, never `2 roots` or more — a multi-root run here means `--no-redact` is unavailable and every session-id label in a curation card is opaque.
+- Project-dir count (`N`) matches this repo's own worktree count in that account's `<config-dir>/projects/`.
+
+**When to reach for it.** Run the census to get the corpus-wide conversion rate and post-signal spend distribution; run `--sample N --seed S --format md --no-redact` (single root only) to build a curation deck for a manual read of whether a rationalization pattern (step-count-for-cost substitution) actually recurred in the sampled excerpts — see `.claude/plans/handoff-nudge-rationalization-gap.md` for the classification rubric this deck feeds.
 
 ---
 

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # set -uo pipefail but NOT -e: hooks inspect exit codes rather than aborting on them.
 set -uo pipefail
 # PreToolUse hook: block Write/Edit/MultiEdit to Claude Code auto-memory files
@@ -78,7 +79,10 @@ fi
 # Fails open on an unresolvable config dir (empty/unset $HOME, no
 # CLAUDE_CONFIG_DIR), mirroring the SESSION_ID fail-open below — a
 # merely-missing-but-resolvable projects/ (fresh install) is fine since
-# realpath -m tolerates a missing path.
+# realpath -m tolerates a missing path. A transient cap-timeout on the
+# manual fallback's `_lib_capped`-wrapped `test -e`/`test -L` calls reaches
+# this same accepted fail-open on an actual stall. So does an ancestor
+# chain deep enough to hit `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH`.
 #
 # Resolves config_dir/projects, not config_dir alone — a setup that symlinks
 # projects/ independently of its parent needs the full target resolved to

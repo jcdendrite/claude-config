@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 set -uo pipefail
 
 DENY_GATE_LABEL="routing-read"

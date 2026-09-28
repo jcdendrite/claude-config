@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
 
 from transcript_analysis import scope
@@ -243,3 +245,63 @@ def _root_scoped_display_label(
     if disclose:
         return f"account-{ordinal}/{_sanitize_table_cell(value)}"
     return _assign_root_scoped_redact_label(kind, ordinal, value, redact_map)
+
+
+# Built-in Claude Code subagent_type values -- present in every install, so
+# they can't identify a project. Always allowlisted for --this-repo
+# subagent_type disclosure, regardless of whether this repo's own agents/
+# tree tracks a same-named file.
+_BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
+# .resolve() is load-bearing: unresolved, a stow-symlinked invocation would
+# land on the invoking account's own <config-dir>/agents/ instead of this
+# repo's tracked tree.
+_REPO_AGENT_DEFINITIONS_DIR = Path(__file__).resolve().parent.parent.parent / "agents"
+
+
+@lru_cache(maxsize=1)
+def _repo_tracked_agent_type_names() -> frozenset[str]:
+    """Stems of every top-level *.md file this repo's own agents/ directory
+    git-tracks, plus _BUILT_IN_AGENT_TYPES -- the --this-repo subagent_type
+    disclosure allowlist.
+
+    - Tracked state, not on-disk presence (`git ls-files` reads the index)
+      -- an untracked scratch or WIP agent file in the invoking checkout's
+      agents/ directory never allowlists its own name, since every worktree
+      of this repo is a distinct physical checkout that can hold one.
+    - `-z` avoids git's path quoting/escaping corrupting the stem for
+      unusual filenames.
+    - `check=True` makes CalledProcessError reachable at all for a non-git
+      directory -- without it, a non-zero exit leaves stdout empty and the
+      failure silently looks like "zero tracked files" instead of raising
+      into the fallback path below.
+    - Top-level entries only (no "/" in the path), matching _declared_pin's
+      own flat agents_dir / f"{agent_type}.md" resolution -- a nested
+      tracked file over-redacts, the safe direction.
+    - _REPO_AGENT_DEFINITIONS_DIR is read fresh on every call (not captured
+      as a default argument) so a test can monkeypatch the module attribute
+      and call .cache_clear() to force a re-read.
+    - Same exception set and timeout as scope._repo_scoped_project_slugs
+      (scope.py:108-111's rationale: a hung local git must not block the
+      whole CLI with no exit), diverging in one way, deliberately: failure
+      here returns the built-ins alone rather than exiting, since failing
+      closed means more redaction, and an operator's report should not die
+      because git is unavailable.
+    - Safe reuse of this disclosure carve-out requires every git-tracked
+      stem under the invoking checkout's agents/ directory to stay generic
+      and non-project-identifying -- a maintainer convention this code does
+      not check.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(_REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return _BUILT_IN_AGENT_TYPES
+    tracked = {
+        entry[: -len(".md")]
+        for entry in proc.stdout.split("\0")
+        if entry and "/" not in entry and entry.endswith(".md")
+    }
+    return frozenset(tracked) | _BUILT_IN_AGENT_TYPES

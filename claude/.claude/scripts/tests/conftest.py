@@ -3,7 +3,19 @@
 plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
 test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
-and test_context_composition.py (see the extraction rationale on
+test_context_composition.py, test_transcript_denials.py,
+test_transcript_review_trace.py, test_transcript_read_scope.py,
+test_transcript_ledger_common.py, test_transcript_gh_cli.py,
+test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
+test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
+test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
+test_transcript_cache_rebuild_attribution.py,
+test_transcript_cache_rebuild_switch_delta.py,
+test_transcript_cache_rebuild_ttl_rules.py,
+test_transcript_cache_rebuild_ttl_accumulation.py,
+test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
+test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py, and
+tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
@@ -26,7 +38,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from transcript_analysis import pricing
+from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -86,6 +98,22 @@ def _base_test_env() -> dict:
 _TOOLS_NEEDED_WITHOUT_DIRENV = (
     "git", "python3", "bash", "grep", "awk", "sed", "dirname", "mktemp", "rm",
 )
+
+
+def require_direnv() -> None:
+    """Guard for a test that needs a real direnv binary, not a shim: skip
+    locally when direnv isn't installed, but hard-fail in this repo's own
+    CI.
+
+    Checks GITHUB_ACTIONS rather than the generic CI var because it's this
+    workflow's own install step being asserted. The hard-fail guarantee
+    depends on .github/workflows/tests.yml's "Install stow and direnv"
+    step, which installs direnv before tests run.
+    """
+    if not shutil.which("direnv"):
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("direnv missing in CI — .github/workflows/tests.yml must install it")
+        pytest.skip("direnv not installed")
 
 
 def _curated_path_without_direnv(tmp_path: Path) -> str:
@@ -314,8 +342,20 @@ def _bash_use(tool_id: str, command: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
 
 
+def _skill_block(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
+def _slash_user(skill: str, *, branch: str = "main", ts: str | None = None) -> dict:
+    return _user_msg(f"<command-name>/{skill}</command-name>", branch=branch, ts=ts)
+
+
 def _tool_result(tool_id: str, text: str) -> dict:
     return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
+
+
+def _compact_boundary_rec() -> dict:
+    return {"type": "system", "subtype": "compact_boundary"}
 
 
 def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", prompt: str = "y") -> dict:
@@ -325,6 +365,55 @@ def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", pr
         "name": tool_name,
         "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
     }
+
+
+def _ledger_row(
+    *,
+    round: int | None,
+    disposition: str,
+    finding: str = "some finding",
+    rationale: str = "why",
+    source: str = "n/a",
+    authoring_agent: str = "",
+    authoring_effort: str = "",
+    schema_version: int = 2,
+    event_time: str = "2026-08-01T10:00:00Z",
+) -> dict:
+    """One review-narrative-ledger row, review-ledger.sh's own schema v2
+    shape. round=None omits the `round` key entirely rather than setting it
+    null, modeling a pre-schema-v2 legacy row. review-ledger.sh itself
+    never writes a null round."""
+    row = {
+        "schema_version": schema_version,
+        "finding": finding,
+        "disposition": disposition,
+        "rationale": rationale,
+        "source": source,
+        "authoring_agent": authoring_agent,
+        "authoring_effort": authoring_effort,
+        "event_time": event_time,
+    }
+    if round is not None:
+        row["round"] = round
+    return row
+
+
+def _write_ledger_file(
+    config_dir_root: Path, session_id: str, rows: list[dict], *, repo_hash: str = "0" * 64,
+) -> Path:
+    """Write one review-narrative-ledger file for a synthetic session.
+
+    author_outcome.py's own ledger read path locates it by session-id glob
+    under <config_dir_root>/review-narrative-ledger/, mirroring
+    review-ledger.sh's own $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming
+    -- the repo-hash prefix is irrelevant to that glob, so a fixed
+    placeholder is fine here.
+    """
+    ledger_dir = config_dir_root / "review-narrative-ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    path = ledger_dir / f"{repo_hash}.{session_id}.jsonl"
+    _write_jsonl(path, rows)
+    return path
 
 
 def _opus(
@@ -340,6 +429,23 @@ def _opus(
         content=content,
         request_id=request_id,
     )
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
+def _priced_opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    model: str = "claude-opus-5", request_id: str | None = None,
+) -> dict:
+    """Build a priced-Opus assistant record (default claude-opus-5, in
+    _MODEL_BASE_INPUT_RATES) for audit-routing's dollar-headline tests —
+    _opus()'s claude-opus-4-7 is deliberately unpriced."""
+    rec = _asst(model, branch="main", ts=ts, content=content, request_id=request_id)
     rec["message"]["usage"] = {
         "input_tokens": 50,
         "output_tokens": out,
@@ -525,6 +631,56 @@ def _cost_args(
     })()
 
 
+def _cost_ledger_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    record: bool = False,
+    force: bool = False,
+    note: str = "",
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "record": record,
+        "force": force,
+        "note": note,
+    })()
+
+
+def _cost_ledger_row(**overrides) -> dict:
+    """A complete, valid row dict with sensible defaults, overridden per test."""
+    row = {
+        "week": "2026-W20", "machine": "m1", "rates": "2026-08-02", "usd": 12.5,
+        "context_pct": 10.0, "opus_pct": 5.0, "ge200k_pct": 10.0,
+        "denials": 2, "reviewer_gap_pp": 3.5, "note": "baseline",
+    }
+    row.update(overrides)
+    return row
+
+
+def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
+    """Active profile (acct-a) plus one declared root (acct-b, via
+    TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal multi-root setup where a call
+    site that forgot to thread `roots` is distinguishable from one that
+    threaded it correctly (both look identical at one root, since
+    _resolve_project_scope's own internal default is also (PROJECTS_DIR,)).
+    Pins both PROJECTS_DIR (_resolve_scan_roots' base, used by 18 of the 19
+    funnel subcommands) and CLAUDE_CONFIG_DIR (config_dir(), which
+    _resolve_cost_roots reads independently for cost/context-distribution) at
+    the same acct-a, so every subcommand agrees on the same two-root list."""
+    acct_a = tmp_path / "acct-a"
+    (acct_a / "projects").mkdir(parents=True)
+    acct_b = tmp_path / "acct-b"
+    (acct_b / "projects").mkdir(parents=True)
+    monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{acct_b}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    return [acct_a / "projects", acct_b / "projects"]
+
+
 def _cost_trend_args(
     *, projects: str = "*", this_repo: bool = False, extra_config_dirs: list[str] | None = None,
 ) -> object:
@@ -584,6 +740,113 @@ def _reviewer_yield_args(
     })()
 
 
+def _hook_deny(
+    hook_name: str, *, stringified: bool = False, branch: str = "main", ts: str | None = None
+) -> dict:
+    """Build an attachment/hook_blocking_error record using the real transcript shape.
+
+    Real transcripts nest the human-readable denial text in a "blockingError" key
+    inside the blockingError dict (alongside a "command" key).
+
+    When stringified=True, the outer blockingError value is a JSON-encoded string
+    of that dict rather than the dict itself (as seen in some real transcripts).
+
+    branch/ts mirror the sibling _hook_deny_current — a synthetic attachment
+    denial carries its own gitBranch/timestamp too, so tests can distinguish an
+    implementation that reads the record's own branch from one that only
+    exercises the carry-forward path.
+    """
+    human_message = f"Hook '{hook_name}' blocked the operation"
+    error_dict = {"blockingError": human_message, "command": "git commit -m x"}
+    blocking_error = json.dumps(error_dict) if stringified else error_dict
+    rec: dict = {
+        "type": "attachment",
+        "gitBranch": branch,
+        "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": hook_name,
+            "toolUseID": f"toolu_{hook_name[:8]}",
+            "blockingError": blocking_error,
+        },
+    }
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _hook_deny_current(
+    message: str,
+    *,
+    tool_id: str = "toolu_cur",
+    ts: str | None = None,
+    branch: str = "main",
+    tool_denial_kind: str | None = None,
+    is_error: bool = True,
+) -> dict:
+    """Build a current-format hook denial.
+
+    Newer Claude Code transcripts no longer emit a hook_blocking_error
+    attachment record — a denial surfaces only as a user record whose
+    tool_result block carries is_error and the denial text. tool_denial_kind
+    mirrors the real toolDenialKind field, which lives on this parent user
+    record, not on the tool_result block itself.
+    """
+    rec: dict = {
+        "type": "user",
+        "gitBranch": branch,
+        "isSidechain": False,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_id,
+             "content": message, "is_error": is_error},
+        ]},
+    }
+    if ts:
+        rec["timestamp"] = ts
+    if tool_denial_kind:
+        rec["toolDenialKind"] = tool_denial_kind
+    return rec
+
+
+def _review_trace_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    branches: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    deny_only: bool = False,
+    deny_summary: bool = False,
+    skill: str | None = None,
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "branches": branches,
+        "since": since,
+        "until": until,
+        "deny_only": deny_only,
+        "deny_summary": deny_summary,
+        "skill": skill,
+    })()
+
+
+def _skill_use(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
+def _read_use(tool_id: str, file_path: str) -> dict:
+    """Build a Read tool_use block with the given file_path."""
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
+
+
+def _exit_plan_mode(tool_id: str = "epm1") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
+
+
+def _thinking_block() -> dict:
+    return {"type": "thinking", "thinking": "some thought"}
+
+
 @pytest.fixture()
 def fake_projects(tmp_path, monkeypatch, request):
     """Isolated single-account corpus: patches scope.PROJECTS_DIR and
@@ -598,11 +861,12 @@ def fake_projects(tmp_path, monkeypatch, request):
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. cost-ledger,
-    spend-over-threshold, and rearm-backtest stay in the shim (not yet moved into
-    the package) and call config_dir() via their own separate import, so
-    mod.config_dir is patched too -- two bindings of the same initial value,
-    each the sole read path for its own still-independent call sites.
+    config dir instead of this fixture's isolated tmp_path. cost-ledger, spend-over-threshold,
+    and rearm-backtest stay in the shim (not yet moved into the package) and call config_dir()
+    via their own separate import, so mod.config_dir is patched too. ledger_common and
+    pr_cost_ledger each bind config_dir by name from _config_dir, mirroring scope.py's own
+    binding, so both are patched too -- four bindings of the same initial value, each the sole
+    read path for its own still-independent call sites.
     """
     mod = request.module._mod
     projects = tmp_path / "projects"
@@ -611,6 +875,8 @@ def fake_projects(tmp_path, monkeypatch, request):
     monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
     monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
 
 
@@ -644,6 +910,40 @@ def cost_ledger_file(tmp_path, monkeypatch, request):
     )
     monkeypatch.setattr(mod, "_cost_ledger_path", lambda: ledger_path)
     return ledger_path
+
+
+@pytest.fixture()
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects, request):
+    """Isolated config dir carrying the cost-ledger opt-in sentinel and a
+    seeded machine identity. Shared by test_transcript_analysis.py's own
+    cost-ledger section and test_transcript_ledger_common.py's
+    TestMachineIdentity (see fake_projects above for why
+    `request.module._mod`).
+
+    - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
+      `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
+      `_cost_ledger_report`'s sentinel check resolves `config_dir` through
+      `_config.py`'s own binding, not `_mod`'s, so patching
+      `_mod.config_dir` alone has no effect on it.
+    - The env var alone is not sufficient either. `fake_projects`
+      monkeypatches `_mod.config_dir` to its own `tmp_path`, which wins over
+      the env var since it never re-reads the environment.
+    - Declaring `fake_projects` as this fixture's own parameter (not just
+      requested alongside it) makes pytest's fixture graph run it first,
+      regardless of a test's own parameter order.
+    - `mod.config_dir` and `mod.ledger_common.config_dir` are both patched
+      again here so they and `_config.config_enabled()`'s env-var-based
+      resolution all agree on the same directory.
+    """
+    mod = request.module._mod
+    cfg_dir = tmp_path / "isolated-claude-config"
+    cfg_dir.mkdir()
+    (cfg_dir / ".cost-ledger-enabled").touch()
+    (cfg_dir / mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(mod, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: cfg_dir)
+    return cfg_dir
 
 
 @pytest.fixture(autouse=True)

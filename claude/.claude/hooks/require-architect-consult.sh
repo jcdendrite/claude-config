@@ -1,13 +1,14 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative
 # PreToolUse: deny a reviewer-persona Agent/Task spawn when this branch is
 # entering a new reviewed state beyond the round-state cap without a
 # recent `plan-architect MODE=consult`. The cap is resolved by _lib.sh's
-# _lib_reviewer_round_state_cap (2 by default, 1 under the round-2 pilot
-# sentinel). "Entry to round 3" -- the default cap's trigger point -- is
-# the measured, discontinuous jump in the case study this gate exists to
-# interrupt (docs/case-studies/opus-frontload-review-rounds.md lines
-# 158-269). See
+# _lib_reviewer_round_state_cap (2 by default, 1 when the
+# round_consult_round2_pilot config key is enabled). "Entry to round 3" --
+# the default cap's trigger point -- is the measured, discontinuous jump in
+# the case study this gate exists to interrupt
+# (docs/case-studies/opus-frontload-review-rounds.md lines 158-269). See
 # docs/design-decisions/round3-plan-architect-consult-gate.md for the full
 # design rationale.
 #
@@ -120,4 +121,4 @@ LATCH_FILE="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
 
 STATE_NOUN="states"
 [ "$CAP" -eq 1 ] && STATE_NOUN="state"
-emit_deny "this branch has already recorded $CAP distinct reviewed $STATE_NOUN without a recent architect consult, and the current one is new. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then retry this reviewer spawn once it returns. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
+emit_deny "this branch has already recorded $CAP distinct reviewed $STATE_NOUN without a recent architect consult, and the current one is new. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then route its return by the three verdicts in code-review/SKILL.md's 'Round-cap architect consult' section before retrying this reviewer spawn. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."

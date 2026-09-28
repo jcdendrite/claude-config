@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import textwrap
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -28,6 +29,22 @@ SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+
+_LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _sourced_value(var_name: str) -> str:
+    """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess
+    -- reads the shell's own definition rather than a hand-copied Python
+    literal that could drift from it."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
@@ -561,7 +578,7 @@ def stop_input(
     return payload
 
 
-def exitplanmode_input(plan_file_path: str = "/home/user/.claude/plans/test-plan.md") -> dict:
+def exitplanmode_input(plan_file_path: str = "/nonexistent/.claude/plans/test-plan.md") -> dict:
     """Build an ExitPlanMode event payload matching the real harness shape.
 
     The ExitPlanMode tool_input has `plan` and `planFilePath` fields — no
@@ -771,17 +788,24 @@ def staged_diff_hash(repo: Path) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
-def staged_diff_hash_at_base(repo: Path, base: str) -> str:
+def staged_diff_hash_at_base(repo: Path, base: str, *pathspecs: str) -> str:
     """Independent oracle for a base-relative marker preimage: computes
-    `git diff --cached <base>` directly in Python rather than by calling
-    the production `_lib_staged_diff_hash`/`_lib_gate_diff_base` shell
-    functions under test -- a test seeding a marker via the function it is
+    `git diff --cached [<base>] [-- PATHSPEC...]` directly in Python rather
+    than by calling the production `_lib_staged_diff_hash`/`_lib_gate_diff_base`
+    shell functions under test -- a test seeding a marker via the function it is
     testing would only prove the function agrees with itself, not that its
     output is correct (see write_plan_review_marker's docstring below for
-    the same caution applied to a different marker kind)."""
-    diff = subprocess.run(
-        ["git", "diff", "--cached", base], cwd=repo, capture_output=True, check=True
-    ).stdout
+    the same caution applied to a different marker kind). An empty `base`
+    omits the base argument entirely rather than passing it to git as an
+    empty string, so an empty `base` yields the HEAD-relative preimage
+    (scoped to PATHSPEC when given) and one call expresses both recipes."""
+    args = ["git", "diff", "--cached"]
+    if base:
+        args.append(base)
+    if pathspecs:
+        args.append("--")
+        args.extend(pathspecs)
+    diff = subprocess.run(args, cwd=repo, capture_output=True, check=True).stdout
     return hashlib.sha256(diff).hexdigest()
 
 
@@ -797,6 +821,15 @@ def _run_git(repo: Path, *args: str) -> str:
 
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
+
+
+def absolute_git_dir(repo: Path) -> Path:
+    """Resolve `repo`'s real gitdir via `git rev-parse --absolute-git-dir`,
+    rather than assuming `repo / ".git"` is a directory -- a linked worktree
+    makes `.git` a file pointing elsewhere, and the in-progress-state marker
+    files (MERGE_HEAD, REVERT_HEAD, CHERRY_PICK_HEAD, rebase-merge/) live in
+    that real gitdir, not under the worktree's own `.git`."""
+    return Path(_run_git(repo, "rev-parse", "--absolute-git-dir").strip())
 
 
 def _seed_tracked_file(repo: Path, file_name: str, content: str = "base\n") -> Path:
@@ -877,6 +910,71 @@ def push_conflicting_edit_to_origin(
     subprocess.run(["git", "push", "-q", "origin", branch], cwd=push_clone, check=True)
 
 
+def build_conflicted_merge_via_origin_with_upstream_skill_edit(
+    tmp_path: Path,
+    *,
+    skill_name: str = "example-skill",
+    conflict_file: str = "f",
+    upstream_adds_skill: bool = False,
+) -> Path:
+    """Merge fixture with a nested claude-skills/skills/<skill_name>/SKILL.md
+    edited only upstream, before the merge, alongside an edit to
+    `conflict_file` in the same upstream commit -- it auto-merges into the
+    local worktree unchanged, so SKILL.md reads as active relative to plain
+    HEAD (upstream's whole contribution) but not relative to the trusted
+    merge-tree base (already-reviewed content excluded). The conflict is
+    engineered in `conflict_file`, unrelated to SKILL.md, so MERGE_HEAD
+    persists to a resolvable state. With `upstream_adds_skill`, SKILL.md does
+    not exist before the fork and upstream's commit adds it instead of
+    editing it. Mirrors
+    _build_conflicted_merge_via_origin_with_upstream_plan_edit in
+    test_marker_script.py for the plan-review marker kind, generalized to a
+    shared helper since the skill-review gate's tests need the same shape.
+    Neither bare_remote_with_default_branch nor push_conflicting_edit_to_origin
+    creates parent directories, so this builder does its own mkdir -p for the
+    nested skill path."""
+    bare, clone = bare_remote_with_default_branch(tmp_path)
+    skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
+    if not upstream_adds_skill:
+        skill_path = clone / skill_rel_path
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("base skill\n")
+        subprocess.run(["git", "add", skill_rel_path], cwd=clone, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed SKILL.md"], cwd=clone, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=clone, check=True)
+
+    (clone / conflict_file).write_text("ours-edit\n")
+    subprocess.run(["git", "add", conflict_file], cwd=clone, check=True)
+    subprocess.run(["git", "commit", "-qm", f"ours edits {conflict_file}"], cwd=clone, check=True)
+
+    push_clone = tmp_path / f"_push_upstream_skill_edit_{skill_name}"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(push_clone)], check=True, capture_output=True
+    )
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=push_clone, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=push_clone, check=True)
+    (push_clone / conflict_file).write_text("origin-edit\n")
+    (push_clone / skill_rel_path).parent.mkdir(parents=True, exist_ok=True)
+    (push_clone / skill_rel_path).write_text("upstream edited skill\n")
+    subprocess.run(["git", "add", conflict_file, skill_rel_path], cwd=push_clone, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", f"origin edits {conflict_file} and SKILL.md"],
+        cwd=push_clone,
+        check=True,
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=push_clone, check=True)
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=clone, check=True)
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists()
+    (clone / conflict_file).write_text("resolved\n")
+    subprocess.run(["git", "add", conflict_file], cwd=clone, check=True)
+    return clone
+
+
 def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
     """Build a real conflicted two-way merge inside `repo`: branch "theirs"
     off the checked-out branch, edit `file_name` differently on each side,
@@ -901,7 +999,7 @@ def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected merge conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    assert (absolute_git_dir(repo) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
     return theirs_oid
 
 
@@ -929,7 +1027,7 @@ def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected cherry-pick conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
+    assert (absolute_git_dir(repo) / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
     return source_oid
 
 
@@ -954,8 +1052,63 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     assert result.returncode != 0, (
         f"expected revert conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
     return commit_a
+
+
+def build_conflicted_revert_with_clean_gated_removal(
+    repo: Path, *, skill_name: str = "revert-skill", conflict_file: str = "f"
+) -> str:
+    """Build a real conflicted revert whose gated-SKILL.md removal applies
+    cleanly: commit X edits claude-skills/skills/<skill_name>/SKILL.md and
+    `conflict_file`, commit Y edits `conflict_file` again, then `git revert
+    X` conflicts in `conflict_file` only. The SKILL.md revert is staged
+    without conflict and `conflict_file` is resolved, so the index holds a
+    gated removal that differs from HEAD but equals the revert's own
+    synthesized subtraction tree. A gate wrongly diffing against that
+    tree sees an empty gated diff; one diffing against HEAD does not.
+    Returns commit X's oid -- REVERT_HEAD's expected content."""
+    conflict_target = _seed_tracked_file(repo, conflict_file)
+    skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
+    skill_path = repo / skill_rel_path
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n")
+    _run_git(repo, "add", skill_rel_path)
+    _run_git(repo, "commit", "-qm", "seed SKILL.md")
+    skill_path.write_text("edited skill\n")
+    conflict_target.write_text("X-edit\n")
+    _run_git(repo, "add", skill_rel_path, conflict_file)
+    _run_git(repo, "commit", "-qm", "commit X")
+    commit_x = _run_git(repo, "rev-parse", "HEAD").strip()
+    conflict_target.write_text("Y-edit\n")
+    _run_git(repo, "add", conflict_file)
+    _run_git(repo, "commit", "-qm", "commit Y")
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", commit_x], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected revert conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    unmerged = _run_git(repo, "diff", "--name-only", "--diff-filter=U").split()
+    assert unmerged == [conflict_file], f"conflict must be confined to {conflict_file}: {unmerged}"
+    conflict_target.write_text("resolved\n")
+    _run_git(repo, "add", conflict_file)
+    return commit_x
+
+
+def revert_subtraction_base(repo: Path) -> str:
+    """Independently computes the tree `_lib_gate_diff_base` returns
+    mid-revert: `git merge-tree --write-tree --merge-base=<REVERT_HEAD>
+    HEAD <REVERT_HEAD>^`, with the literal OID (not a ref name) so the
+    conflict-marker labels match production's."""
+    revert_head_oid = (absolute_git_dir(repo) / "REVERT_HEAD").read_text().strip()
+    out = subprocess.run(
+        ["git", "merge-tree", "--write-tree", f"--merge-base={revert_head_oid}",
+         "HEAD", f"{revert_head_oid}^"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    ).stdout
+    return out.strip().splitlines()[0]
 
 
 def build_conflicted_rebase(
@@ -998,7 +1151,7 @@ def build_conflicted_rebase(
     assert result.returncode != 0, (
         f"expected rebase conflict, got: {result.stdout}{result.stderr}"
     )
-    gitdir = repo / ".git"
+    gitdir = absolute_git_dir(repo)
     assert (gitdir / "rebase-merge").is_dir() or (gitdir / "rebase-apply").is_dir(), (
         "rebase did not leave rebase-merge/ or rebase-apply/"
     )
@@ -1170,14 +1323,16 @@ def write_plan_review_marker(
     marker meant to validate mid-merge/rebase/cherry-pick/revert.
 
     Note the tradeoff, and do not mistake this for the technique
-    `write_marker`/`write_skill_review_marker` use: those recompute the hash
-    independently in Python from a real `git diff`, so they can catch drift
-    in the shell-side recipe. This one calls the very function under test, so
-    a test that seeds a marker here and asserts the hook allows is checking
-    that the function agrees with itself across two invocations -- not that
-    its output is correct. Independent correctness is covered by the
-    relational unit tests in `hooks/tests/test_marker_lib.py`, which do not
-    route through this helper."""
+    `write_marker` uses: its callers recompute the hash independently in
+    Python from a real `git diff` (see `staged_diff_hash`), so they can catch
+    drift in the shell-side recipe. This one calls the very function under
+    test, so a test that seeds a marker here and asserts the hook allows is
+    checking that the function agrees with itself across two invocations --
+    not that its output is correct. Independent correctness is covered by
+    the relational unit tests in `hooks/tests/test_marker_lib.py`, which do
+    not route through this helper. `write_skill_review_marker` takes the
+    same tradeoff, for the pathspec-list-drift reason its own docstring
+    states."""
     marker = plan_review_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     lib_sh = HOOKS_DIR / "_lib.sh"
@@ -1213,25 +1368,39 @@ def write_skill_review_marker(
     session_id: str = DEFAULT_TEST_SESSION_ID,
     config_dir: Path | None = None,
 ) -> None:
-    diff = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--cached",
-            "--",
-            "claude-skills/skills/**/SKILL.md",
-            "plugins/*/skills/**/SKILL.md",
-            "skills/**/SKILL.md",
-            "claude-skills/skills/plan-review/ROUTING.md",
-        ],
+    """Write a skill-review completion marker by shelling out to the real
+    `marker.sh write skill-review` recipe, rather than hand-maintaining a
+    second copy of the SKILL.md pathspec list here — marker.sh's own
+    SKILL_REVIEW_PATHSPECS is the single source of truth.
+
+    marker.sh resolves its session id from the caller's own process
+    ancestry, so this seeds a $HOME/.claude/sessions/<pid> entry for the
+    current test process first. Duplicates hooks/tests/conftest.py's
+    _seed_session rather than importing it — that conftest is a pytest
+    fixture file, not importable from this unpackaged test-support module.
+    """
+    pid = os.getpid()
+    config_dir_resolved = config_dir if config_dir is not None else home / ".claude"
+    sessions_dir = config_dir_resolved / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
         capture_output=True,
+        text=True,
         check=True,
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(pid)).write_text(f"{session_id}\n{start_time}\n")
+
+    extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)} if config_dir is not None else None
+    subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "skill-review"],
         cwd=repo,
-    ).stdout
-    diff_hash = hashlib.sha256(diff).hexdigest()
-    marker = skill_review_marker_path(home, repo, session_id, config_dir)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(diff_hash + "\n")
+        env=_build_subprocess_env(home, extra_env),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def plan_review_active_marker_path(home: Path, session_id: str) -> Path:
@@ -1484,6 +1653,54 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
     return outputs
 
 
+def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: exits exit_status at once when any argument
+    matches the shell `case` pattern arg_pattern, printing nothing; every
+    other invocation proxies to the real git. Stands in for a capped call
+    whose wrapper reports a cap-kill status without waiting for the cap.
+    Callers must set REAL_GIT in the shim's environment to a real git
+    binary path (e.g. via shutil.which("git"))."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        f'    {arg_pattern})\n'
+        f'      exit {exit_status}\n'
+        '      ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
+def _make_git_recording_argv(bin_dir: Path, log_file: Path, action: str = "") -> Path:
+    """Shim at bin_dir/git: appends this invocation's argv as one line to
+    log_file, then runs the caller-supplied bash `action` -- which sees that
+    argv as "$@" and this invocation's own running count (log_file's line
+    count immediately after the append, so no second state file exists to
+    drift) as $count -- before exec'ing the real git. `action` defaults to a
+    no-op, for callers that only need the recorded log. Callers must set
+    REAL_GIT in the shim's environment to a real git binary path (e.g. via
+    shutil.which("git"))."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "git"
+    shim.write_text(
+        '#!/bin/bash\n'
+        f'LOG_FILE="{log_file}"\n'
+        'printf "%s\\n" "$*" >> "$LOG_FILE"\n'
+        'count=$(wc -l < "$LOG_FILE")\n'
+        f'{action}\n'
+        'exec "$REAL_GIT" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim
+
+
 def build_path_without(binary: str, farm_dir: Path) -> str:
     """Build a PATH string mirroring the real PATH via a symlink farm, with
     `binary` omitted, inside the caller-supplied (already-created) `farm_dir`.
@@ -1526,6 +1743,41 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# -- Forced-fallback realpath shim -------------------------------------------
+#
+# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
+# through to the manual ancestor-walk fallback) by shadowing `realpath` on
+# PATH. A non-`-m` invocation still execs the real binary, so the fallback
+# loop's own `realpath --` lookups keep working. Shared by test_lib.py's
+# TestLibRealpathM and test_ask_review_permissions.py, both of which force
+# the same fast-path failure for the same reason.
+
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+
+
+def _forced_fallback_path_env(tmp_path: Path) -> str:
+    """Build a PATH whose `realpath` is the forced-fallback shim
+    (`_FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The shim dir
+    is placed first specifically to exclude any `grealpath` the host might
+    also have on a wider PATH -- `command -v grealpath` succeeding would
+    skip the fallback branch this exists to force. Shared by
+    test_ask_review_permissions.py and test_lib.py's `_run_realpath_m`,
+    both of which force the same fast-path failure for the same reason."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "realpath"
+    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+    shim.chmod(0o755)
+    return f"{shim_dir}:/usr/bin:/bin"
 
 
 # -- Scaled timeout(1) shim for cap-boundary tests ---------------------------
@@ -1578,23 +1830,36 @@ def write_scaled_timeout_shim(bin_dir: Path) -> bool:
         "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
         "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
         "# so every other $1 runs at the caller's own duration.\n"
+        "# A leading `-k <n>` pair (_lib_capped_for's SIGKILL grace) is stripped before that check runs, so it isn't\n"
+        "# misread as the duration itself. A 1-9-leading integer grace is scaled by the same divisor before being\n"
+        "# re-attached below; any other grace is forwarded unscaled.\n"
+        "grace=()\n"
+        'if [ "$1" = "-k" ]; then\n'
+        '  grace=(-k "$2")\n'
+        "  shift 2\n"
+        "fi\n"
         'if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then\n'
         '  requested="$1"\n'
         f"  scaled_ms=$(( requested * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
         "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
+        '  if [ "${#grace[@]}" -gt 0 ] && [[ "${grace[1]}" =~ ^[1-9][0-9]*$ ]]; then\n'
+        f"    scaled_grace_ms=$(( grace[1] * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "    printf -v scaled_grace '%d.%03d' \"$(( scaled_grace_ms / 1000 ))\" \"$(( scaled_grace_ms % 1000 ))\"\n"
+        '    grace=(-k "$scaled_grace")\n'
+        "  fi\n"
         "  shift\n"
         "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
         "  # $1 is the wrapped command; the shift above already consumed the duration.\n"
         f"  printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(started_log))}\n"
-        f'  {shlex.quote(str(real_timeout))} "$scaled" "$@"\n'
+        f'  {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$scaled" "$@"\n'
         "  status=$?\n"
-        "  # Assumes exit 124 only comes from timeout's own kill; a race with\n"
-        "  # an external kill (OOM, outer test-runner) is a test-infra\n"
-        "  # concern only, not production-reachable.\n"
-        f"  [[ $status -eq 124 ]] || printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
+        "  # The statuses in _lib_capped_for's header (_lib.sh) count as the cap firing;\n"
+        "  # a child's own 137/143 signal-death is indistinguishable, so an external kill counts the same way.\n"
+        "  [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]] || \\\n"
+        f"    printf '%s %s\\n' \"$requested\" \"${{1##*/}}\" >> {shlex.quote(str(completed_log))}\n"
         '  exit "$status"\n'
         "fi\n"
-        f'exec {shlex.quote(str(real_timeout))} "$@"\n'
+        f'exec {shlex.quote(str(real_timeout))} "${{grace[@]}}" "$@"\n'
     )
     shim_path.chmod(0o755)
     return True
@@ -1662,8 +1927,10 @@ def assert_cap_engaged(
 ):
     """Assert a timeout(1) cap killed the wrapped block's capped call(s),
     read from the scaled `timeout` shim's started/completed logs rather
-    than a wall-clock floor. 124 is timeout(1)'s documented exit status for
-    "the command was killed by the cap" -- the discriminator this observes.
+    than a wall-clock floor. The shim logs a call as fired when it returns
+    124, 137 or 143, the statuses _lib_capped_for's header in _lib.sh lists
+    for a cap kill. 137 and 143 also occur as a child's own signal-death
+    status, so a fired call is evidence of a cap kill, not proof.
 
     Snapshots both logs on entry so a second hook run inside the same
     bin_dir isn't double-counted. Raises when the shim recorded nothing at

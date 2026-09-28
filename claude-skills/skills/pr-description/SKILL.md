@@ -42,11 +42,21 @@ not something you can resolve. If none match, proceed without a layer.
   chronology, not a summary: it re-narrates how the work arrived instead of
   what it does, and it is the per-commit narrative the checks below exist to
   strip. Organize by the surface a reviewer maps to instead.
+- **Current state, not branch history.** Every section says what the change is
+  and does now, to a reader who never saw the branch develop. Review rounds,
+  superseded designs, and who found what stay out; `git log` and the review
+  record hold them. A finding, limitation, or accepted risk that is still true
+  at HEAD stays as a present-tense fact, with only its round and attribution
+  removed. A mechanism that exists only in the branch's own history is
+  not context, because the reviewer cannot see it. A rejected approach a
+  reviewer would plausibly propose belongs in `## Alternatives considered`
+  with its one-line reason, not in Context. The machine-managed blocks under
+  Checks below are exempt.
 - **Section structure from the repo's template.** If the repo has
   `.github/PULL_REQUEST_TEMPLATE.md`, read it and use its headings — neither
   `gh pr create --body-file` nor `--body` applies the template, so it is
-  honored only by reading it here. Absent one, use `## Summary` and
-  `## Test plan`.
+  honored only by reading it here. Absent one, read
+  `${CLAUDE_SKILL_DIR}/DEFAULT_TEMPLATE.md` and use its headings the same way.
 - **A `## Test plan` of results, not a checklist.** Verification has already
   run by the time this fires, so state what ran and what it produced, in past
   tense. If verification was skipped under a documented scope exception, say
@@ -54,7 +64,8 @@ not something you can resolve. If none match, proceed without a layer.
   Never `- [ ]` items, never a placeholder prompt, never an empty section —
   and never fabricated results. A future-tense checklist for work already
   done is the heading-negates-its-own-body defect the coherence pass below
-  flags.
+  flags. In `## Test plan`, state what the final review pass returned, not how
+  many rounds ran or what earlier ones found.
 - **The caller's context, folded in.** Text passed as `$ARGUMENTS` is the
   caller's own account of the change. Work it into the What/Why prose under
   the body's own headings — do not drop it, do not silently paraphrase it,
@@ -66,6 +77,8 @@ not something you can resolve. If none match, proceed without a layer.
 ## Cost section
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
+
+When the script below exits 0, its block is pre-cleared for publication (the account's `pr-cost-disclosure` sentinel is the standing approval), so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
 
 Resolve the section with a single script call:
 
@@ -97,6 +110,8 @@ per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch
 neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
 under an account that opted in; it is not a property of the output format, and an account enabling
 this for one engagement should not assume the fields are harmless in another.
+
+The `Scope:` caption also prints the local branch name. See `docs/transcript-analysis.md` § "cost" for the echo's hazards.
 
 ## Prose tightening pass
 
@@ -134,6 +149,10 @@ Markers, illustrative rather than exhaustive:
   claim up top against a breaking change in the deploy notes.
 - Leftover template instruction text: placeholder prompts the
   template's own directions said to remove once a condition holds.
+- Narration only someone who watched the branch develop could follow; see
+  **Current state, not branch history** above.
+- Two sections saying the same thing — a Summary bullet restating a list in
+  Context. Keep it in the section where the reader looks for it.
 - Any span a reader arriving cold would stop on and ask "what is this?"
 
 If nothing fires after a careful read, say so — naming the sections
@@ -151,6 +170,11 @@ Flag and fix:
   Reorganize "What shipped" by surface the reviewer maps to (schema /
   handler / tests / invariants / migration-deploy notes); `git log`
   already has the chronology.
+- **Branch-history narration.** The per-commit check's sibling, for prose that
+  narrates by review round or by reviewer instead of by commit: "earlier
+  rounds implemented…", "a later review found…", or a reviewer or agent name
+  credited with a finding or a method. Rewrite it per **Current state, not
+  branch history** above. The tells are illustrative.
 - **Reviewer-action items Claude can answer itself.** Strip claims
   you can verify ("all migrations match precedent" — confirm and
   remove), test counts (those belong in the commit message), and

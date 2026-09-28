@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: gate
+# tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: guard review-marker state. Two jobs:
 #   1. Deny gate-releasing writes (a marker file path via Write/Edit/MultiEdit,
 #      or `marker.sh write|activate` via Bash) from agent types that cannot
@@ -85,6 +86,10 @@
 #     agents including `code-writer` routinely run under those modes. For
 #     that mode, this gap is a live, unmitigated path to forging a
 #     `/code-review` or `/plan-review` completion marker.
+#   - `_lib_realpath_m`'s fallback loop wraps its `test -e`/`test -L` calls in
+#     `_lib_capped` (external subprocess + timeout), which widens — in degree,
+#     not in kind — the check-then-use race already inherent between this
+#     hook's `_marker_shape_match` resolution and a target's next use.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -92,7 +97,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 19 single-command shapes, the marker.sh write chain to git
+# match one of the 22 single-command shapes, the marker.sh write chain to git
 # commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
 # (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
@@ -615,7 +620,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+code-review)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review|verification)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+(code-review|verification))'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -655,7 +660,7 @@ fi
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 17 shapes in permissions.allow) or harmless
+# individually allowlisted (the 20 shapes in permissions.allow) or harmless
 # (clear-stale only evicts dead-PID bypass markers). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
@@ -680,6 +685,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh write plan-review
   ~/.claude/scripts/marker.sh write ready-for-review
   ~/.claude/scripts/marker.sh write cumulative-review
+  ~/.claude/scripts/marker.sh write verification
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
   ~/.claude/scripts/marker.sh activate respond-pr
@@ -695,8 +701,15 @@ Valid shapes:
   ~/.claude/scripts/marker.sh resolve-session-id
   ~/.claude/scripts/marker.sh status
   ~/.claude/scripts/marker.sh check code-review
+  ~/.claude/scripts/marker.sh check verification
 
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
 any other command (except the blessed 'git commit' tail), or using ||/;,
 redirects, or extra args, is denied. Env-var prefix, bash wrapper, and
-relative-path forms are not gated here — they are denied by permissions.allow."
+relative-path forms are not gated here — they are denied by permissions.allow.
+
+To see a result, run the op alone: its stdout and the tool's reported exit
+code already carry the verdict. For a multi-line commit message, write it to
+a file with the Write tool and chain 'git commit -F' on that file. Never use a
+heredoc or -m \"\$(cat ...)\" (code-review's SKILL.md, \"Authoring the commit
+message\", gives why)."
