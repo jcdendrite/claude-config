@@ -98,16 +98,36 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                 owner_session_id = entry_name[: -len(review_pr_suffix)]
                 provenance_content = read_no_follow(os.path.join(active_dir, owner_session_id + ".provenance"))
                 owner_pid = None
+                # Fails closed the same way _lib.sh's
+                # _lib_review_pr_provenance_field does: a provenance file
+                # whose first line isn't exactly the literal "schema=1" is
+                # an unrecognized (e.g. pre-migration positional) format, so
+                # liveness can't be determined from it -- keep rather than
+                # evict, since defaulting to eviction here would delete a
+                # live session's artifacts under a format this reader
+                # doesn't understand.
+                unrecognized_provenance_format = False
                 if provenance_content is not None:
-                    fields = provenance_content.decode("utf-8", "replace").splitlines()
-                    # Field 3 (index 2), not field 4: the provenance file's
-                    # own field order is PR identity, headRefOid, PID, mode
-                    # -- matching the completion marker's field order (PR
-                    # identity, headRefOid, body hash, mode).
-                    if len(fields) >= 3 and fields[2].strip():
-                        owner_pid = fields[2].strip()
+                    provenance_lines = provenance_content.decode("utf-8", "replace").splitlines()
+                    if provenance_lines[:1] != ["schema=1"]:
+                        unrecognized_provenance_format = True
+                    else:
+                        # Keyed on "pid=", not a positional line index: the
+                        # provenance file is _lib_write_review_pr_provenance's
+                        # key=value schema (a `schema=1` header line, then one
+                        # KEY=VALUE line per field), additive by design -- a
+                        # later phase can add a field without shifting this
+                        # read's line position.
+                        for line in provenance_lines[1:]:
+                            if line.startswith("pid=") and line[len("pid="):].strip():
+                                owner_pid = line[len("pid="):].strip()
+                                break
                 owner_alive = owner_pid is not None and pid_alive(owner_pid)
-                if owner_alive:
+                if unrecognized_provenance_format:
+                    kept += 1
+                    if dry_run:
+                        lines.append(f"  keep: {dir_name}/{entry_name} (unrecognized provenance format, keeping conservatively)")
+                elif owner_alive:
                     kept += 1
                     if dry_run:
                         lines.append(f"  keep: {dir_name}/{entry_name} (owning PID {owner_pid} alive)")

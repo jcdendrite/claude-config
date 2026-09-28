@@ -38,6 +38,7 @@ from helpers import (
     write_marker,
     write_plan_review_marker,
     write_review_pr_completion_marker,
+    write_review_pr_provenance,
     write_scaled_timeout_shim,
     write_skill_review_marker,
 )
@@ -1343,20 +1344,20 @@ class TestMarkerDirectoryNamingConvention:
     SID = "test-session-naming"
 
     def _seed_review_pr_sibling(self, home, sid, tmp_path):
-        """review-pr's write arm reads a 4-line provenance file (PR identity,
-        headRefOid, PID, mode) rather than deriving its marker value from
-        repo state the way the other arms do. mode "diff-only" needs no
-        local-HEAD match, keeping this seeding independent of whatever
-        commit git_repo happens to be at. Seeded unconditionally alongside
-        the plans_dir seeding below so every skill in the loop shares the
-        same preconditions."""
+        """review-pr's write arm reads a key=value provenance file (schema=1
+        header, then pr_identity/head_ref_oid/pid/mode) rather than deriving
+        its marker value from repo state the way the other arms do. mode
+        "diff-only" needs no local-HEAD match, keeping this seeding
+        independent of whatever commit git_repo happens to be at. Seeded
+        unconditionally alongside the plans_dir seeding below so every skill
+        in the loop shares the same preconditions."""
         active_dir = home / ".claude" / ".review-pr-active.d"
         active_dir.mkdir(parents=True, exist_ok=True)
         findings_body = active_dir / f"{sid}.body"
         findings_body.write_text(
             f"**[Claude Code]** # findings\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
         )
-        (active_dir / f"{sid}.provenance").write_text(f"foo/bar#1\nabc123\n{os.getpid()}\ndiff-only\n")
+        write_review_pr_provenance(home, "foo/bar#1", "abc123", os.getpid(), mode="diff-only", session_id=sid)
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_lands_in_skill_derived_directory(
@@ -5452,11 +5453,10 @@ class TestMarkerScriptReviewPr:
         return home / ".claude" / ".review-pr-active.d" / f"{sid}.body"
 
     def _declare_provenance(self, home, pr_identity, head_ref_oid, mode="checkout", pid=None, sid=SID):
-        provenance = self._provenance_path(home, sid)
-        provenance.parent.mkdir(parents=True, exist_ok=True)
+        """_lib_write_review_pr_provenance's key=value schema (_lib.sh): a
+        `schema=1` header line, then one key=value line per field."""
         stored_pid = pid if pid is not None else os.getpid()
-        provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{stored_pid}\n{mode}\n")
-        return provenance
+        return write_review_pr_provenance(home, pr_identity, head_ref_oid, stored_pid, mode=mode, session_id=sid)
 
     def test_write_stores_pr_identity_head_ref_oid_body_hash_and_mode(
         self, isolated_home, git_repo, tmp_path
@@ -5671,10 +5671,10 @@ class TestMarkerScriptReviewPr:
     ):
         sid = self.SID
         _seed_session(isolated_home, sid)
-        # Only two of the four required lines.
+        # schema=1 header present, but only two of the four required keys.
         provenance = self._provenance_path(isolated_home, sid)
         provenance.parent.mkdir(parents=True, exist_ok=True)
-        provenance.write_text("foo/bar#42\nabc123\n")
+        provenance.write_text("schema=1\npr_identity=foo/bar#42\nhead_ref_oid=abc123\n")
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2, result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
@@ -5763,7 +5763,7 @@ class TestMarkerScriptReviewPr:
 
         if provenance_pid is not None:
             stored_pid = str(os.getpid()) if provenance_pid == "live" else "99999999"
-            (active_dir / f"{sid}.provenance").write_text(f"foo/bar#42\nabc123\n{stored_pid}\ncheckout\n")
+            write_review_pr_provenance(isolated_home, "foo/bar#42", "abc123", stored_pid, session_id=sid)
 
         result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr

@@ -1336,6 +1336,44 @@ def write_review_pr_completion_marker(
     return marker
 
 
+def review_pr_provenance_path(
+    home: Path, session_id: str = DEFAULT_TEST_SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / ".review-pr-active.d" / f"{session_id}.provenance"
+
+
+def write_review_pr_provenance(
+    home: Path,
+    pr_identity: str,
+    head_ref_oid: str,
+    pid: int | str,
+    mode: str = "checkout",
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+    **extra_fields: str,
+) -> Path:
+    """Write review-pr's `.provenance` sibling file directly, in
+    `_lib_write_review_pr_provenance`'s key=value schema (a `schema=1`
+    header line, then one `key=value` line per field) --
+    `_lib_review_pr_provenance_field` (_lib.sh) and marker-clear-stale.py's
+    own `pid=` read both read this shape. Written independently of the real
+    writer (matching write_review_pr_completion_marker's own precedent
+    above) so a test seeding provenance here checks marker.sh's/
+    marker-clear-stale.py's read side against known-correct content, not
+    against the production writer's own output. `extra_fields` covers a
+    later phase's additional keys (e.g. `fetched_sha`) without this
+    function's signature changing -- the schema is additive by design, see
+    _lib_write_review_pr_provenance's own comment."""
+    provenance = review_pr_provenance_path(home, session_id, config_dir)
+    provenance.parent.mkdir(parents=True, exist_ok=True)
+    fields = {"pr_identity": pr_identity, "head_ref_oid": head_ref_oid, "pid": str(pid), "mode": mode}
+    fields.update(extra_fields)
+    lines = ["schema=1"] + [f"{key}={value}" for key, value in fields.items()]
+    provenance.write_text("\n".join(lines) + "\n")
+    return provenance
+
+
 def plan_review_marker_path(
     home: Path, repo: Path, session_id: str, config_dir: Path | None = None
 ) -> Path:

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from helpers import SCRIPTS_DIR
 
-from .conftest import _seed_session, _shimmed_env
+from .conftest import _provenance_fields, _seed_session, _shimmed_env
 
 SCRIPT = SCRIPTS_DIR / "review-pr-acquire.sh"
 OWNER_REPO = "foo/bar"
@@ -272,11 +272,11 @@ class TestSuccessfulAcquire:
         assert json.loads(context_file.read_text()) == stdout_doc
 
         provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        lines = provenance.read_text().splitlines()
-        assert lines[0] == PR_IDENTITY
-        assert lines[1] == "a" * 40
-        assert lines[2].isdigit()
-        assert lines[3] == "acquired"
+        fields = _provenance_fields(provenance)
+        assert fields["pr_identity"] == PR_IDENTITY
+        assert fields["head_ref_oid"] == "a" * 40
+        assert fields["pid"].isdigit()
+        assert fields["mode"] == "acquired"
 
     def test_reviews_with_empty_body_are_excluded(self, isolated_home, tmp_path):
         result, call_log = _run(

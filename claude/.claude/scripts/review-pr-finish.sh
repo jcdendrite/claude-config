@@ -46,13 +46,8 @@ PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance
 PR_IDENTITY=""
 MODE=""
 if [[ -f "$PROVENANCE" ]]; then
-  PROVENANCE_CONTENT=$(_lib_capped cat -- "$PROVENANCE" 2>/dev/null) || PROVENANCE_CONTENT=""
-  PR_IDENTITY=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '1p')
-  # Field 4, not field 3: the provenance file's own field order is PR
-  # identity, headRefOid, PID, mode -- matching the completion marker's
-  # field order (PR identity, headRefOid, body hash, mode) rather than an
-  # independently-drifted order for the same shared field.
-  MODE=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '4p')
+  PR_IDENTITY=$(_lib_review_pr_provenance_field "$PROVENANCE" pr_identity) || PR_IDENTITY=""
+  MODE=$(_lib_review_pr_provenance_field "$PROVENANCE" mode) || MODE=""
 fi
 
 # Resolved and removed BEFORE any worktree removal below: REPO_HASH is
@@ -96,9 +91,12 @@ if [[ "$MODE" == "checkout" ]]; then
       # action -- a forged or stale provenance OWNER_REPO must not be able to
       # direct this script's own `git worktree remove --force`/`rm -rf` at a
       # colliding-but-unrelated worktree.
-      ORIGIN_URL=$(_lib_capped git -C "$MAIN_REPO_ROOT" remote get-url origin 2>/dev/null) || ORIGIN_URL=""
-      ORIGIN_OWNER_REPO=$(printf '%s\n' "$ORIGIN_URL" | sed -nE 's|.*[:/]([^/:]+/[^/]+)$|\1|p' | sed 's|\.git$||')
-      if [[ -z "$ORIGIN_OWNER_REPO" || "$ORIGIN_OWNER_REPO" != "$OWNER_REPO" ]]; then
+      ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$MAIN_REPO_ROOT") || ORIGIN_OWNER_REPO=""
+      REPO_MISMATCH=0
+      if [[ -z "$ORIGIN_OWNER_REPO" ]] || _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
+        REPO_MISMATCH=1
+      fi
+      if [[ "$REPO_MISMATCH" -eq 1 ]]; then
         echo "review-pr-finish.sh: provenance PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this repo's own origin remote ('$ORIGIN_OWNER_REPO'). Skipping worktree removal." >&2
       else
         WORKTREE_DIR=$(_lib_review_pr_worktree_dir "$MAIN_REPO_ROOT" "$OWNER_REPO" "$PR_NUMBER")

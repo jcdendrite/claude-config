@@ -271,6 +271,31 @@ def _direnv_shim_source_stalls_without_reading_stdin(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _provenance_fields(path: Path) -> dict:
+    """Parse a `.provenance` file's key=value lines into a dict, skipping
+    the `schema=1` header line -- the shape review-pr-acquire.sh/
+    -checkout.sh/-diff.sh write via _lib_write_review_pr_provenance
+    (_lib.sh) and marker.sh/marker-clear-stale.py read back by key. Shared
+    by every review-pr test file that asserts on written provenance
+    content, so none carries its own line-index-based parse that could
+    drift from the production key=value shape. Requires the first line to
+    be exactly `schema=1`, matching _lib_review_pr_provenance_field's own
+    fail-closed read, so a writer regression that drops the header fails
+    this parse instead of silently falling through to a fields dict missing
+    nothing the caller checks."""
+    lines = path.read_text().splitlines()
+    assert lines and lines[0] == "schema=1", (
+        f"provenance file {path} missing required 'schema=1' header line: {lines[:1]!r}"
+    )
+    fields: dict = {}
+    for line in lines[1:]:
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key] = value
+    return fields
+
+
 def _install_audit_script(home: Path) -> None:
     """Symlink the real audit-execution-surface.py into the isolated
     $HOME/.claude/skills/review-pr/ -- the installed-layout path

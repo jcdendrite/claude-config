@@ -214,11 +214,13 @@ class TestApproveIsNotReachable:
         assert "approve" not in code.lower()
 
     def test_exactly_two_gh_pr_review_invocations_exist_in_code(self):
-        """Scoped to the actual invocation prefix, not the bare substring
-        'gh pr review' -- the usage() heredoc text also names the command
-        in prose, which is not an invocation."""
+        """Scoped to the actual invocation prefix (via _lib_gh, which
+        prepends the capped, GH_HOST-stripped `env`/`gh` wrapping -- see
+        _lib.sh), not the bare substring 'gh pr review' -- the usage()
+        heredoc text also names the command in prose, which is not an
+        invocation."""
         code = _strip_comment_lines(SCRIPT.read_text())
-        assert code.count('gh pr review "$PR_NUMBER"') == 2
+        assert code.count('_lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER"') == 2
 
 
 class TestUsageErrors:

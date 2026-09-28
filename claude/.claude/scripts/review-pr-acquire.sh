@@ -75,17 +75,17 @@ fi
 ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"
 mkdir -p -- "$ACTIVE_DIR"
 
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below -- same
-# reasoning as review-pr-checkout.sh/review-pr-post.sh: adversarial PR
-# content could induce the calling agent to set GH_HOST ambiently,
-# silently redirecting a fact this script derives to an attacker-chosen
-# host.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
+# _lib_gh -- same reasoning as review-pr-checkout.sh/review-pr-post.sh:
+# adversarial PR content could induce the calling agent to set GH_HOST
+# ambiently, silently redirecting a fact this script derives to an
+# attacker-chosen host.
 
 # 10s: a network GET carrying no payload, matching review-pr-checkout.sh's
 # own budget for the same call shape.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
 PR_VIEW_FIELDS="title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,files,changedFiles,commits,reviews,reviewDecision,mergeable,mergeStateStatus"
-if ! PR_VIEW_JSON=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json "$PR_VIEW_FIELDS" 2>/dev/null); then
+if ! PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json "$PR_VIEW_FIELDS" 2>/dev/null); then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's metadata (gh pr view failed or timed out). Abort." >&2
   exit 2
 fi
@@ -106,7 +106,7 @@ fi
 # integer -- distinct from gh pr view's own "commits" field, which is a
 # capped array), so it doubles as the commits-reconciliation source below.
 GH_PR_REST_TIMEOUT_SECONDS=10
-if ! PR_REST_JSON=$(_lib_capped_for "$GH_PR_REST_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
+if ! PR_REST_JSON=$(_lib_gh "$GH_PR_REST_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's author_association (gh api failed or timed out). Abort." >&2
   exit 2
 fi
@@ -131,7 +131,7 @@ CHANGED_FILES_COUNT=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.changedFiles //
 GH_PR_PAGINATE_TIMEOUT_SECONDS=30
 FILES_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c '[.files[].path]' 2>/dev/null) || FILES_JSON="[]"
 if [[ -z "$CHANGED_FILES_COUNT" || "$FILES_COUNT" != "$CHANGED_FILES_COUNT" ]]; then
-  if ! RAW_FILES=$(_lib_capped_for "$GH_PR_PAGINATE_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
+  if ! RAW_FILES=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
     echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's files/changedFiles counts disagree and the full re-fetch (gh api --paginate) failed or timed out. Abort -- a partial or failed listing must never be treated as the full, or an empty, file set." >&2
     exit 2
   fi
@@ -148,7 +148,7 @@ COMMITS_ARRAY_COUNT=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.commits | lengt
 REST_COMMITS_TOTAL=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.commits // empty' 2>/dev/null) || REST_COMMITS_TOTAL=""
 COMMITS_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c '[.commits[].oid]' 2>/dev/null) || COMMITS_JSON="[]"
 if [[ -n "$REST_COMMITS_TOTAL" && "$COMMITS_ARRAY_COUNT" != "$REST_COMMITS_TOTAL" ]]; then
-  if ! RAW_COMMITS=$(_lib_capped_for "$GH_PR_PAGINATE_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[].sha' 2>/dev/null); then
+  if ! RAW_COMMITS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[].sha' 2>/dev/null); then
     echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's commit counts disagree and the full re-fetch (gh api --paginate) failed or timed out. Abort -- a partial or failed listing must never be treated as the full, or an empty, commit set." >&2
     exit 2
   fi
@@ -158,7 +158,7 @@ if [[ -n "$REST_COMMITS_TOTAL" && "$COMMITS_ARRAY_COUNT" != "$REST_COMMITS_TOTAL
   fi
 fi
 
-if ! CHECKS_JSON=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr checks "$PR_NUMBER" -R "$OWNER_REPO" --json name,state,bucket,link,description,workflow 2>/dev/null); then
+if ! CHECKS_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr checks "$PR_NUMBER" -R "$OWNER_REPO" --json name,state,bucket,link,description,workflow 2>/dev/null); then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's checks (gh pr checks failed or timed out). Abort." >&2
   exit 2
 fi
@@ -171,7 +171,7 @@ fi
 # matching review object on its own line; a local `jq -s` afterward
 # combines that stream into one JSON array, same as the files/commits
 # re-fetch encoding steps above.
-if ! RAW_REVIEWS=$(_lib_capped_for "$GH_PR_PAGINATE_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews" --paginate --jq '.[] | select(.body != "") | {id, author: .user.login, state, body}' 2>/dev/null); then
+if ! RAW_REVIEWS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews" --paginate --jq '.[] | select(.body != "") | {id, author: .user.login, state, body}' 2>/dev/null); then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's existing reviews (gh api --paginate failed or timed out). Abort." >&2
   exit 2
 fi
@@ -216,7 +216,8 @@ fi
 # their own independent re-derivation. marker.sh write review-pr accepts
 # only those two modes.
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
-if ! printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$CLAUDE_PID" "acquired" | _lib_write_no_follow "$PROVENANCE"; then
+if ! _lib_write_review_pr_provenance "$PROVENANCE" \
+  "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=acquired"; then
   echo "review-pr-acquire.sh: could not write provenance file $PROVENANCE. Abort." >&2
   exit 2
 fi

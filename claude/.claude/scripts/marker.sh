@@ -695,22 +695,19 @@ case "$SUBCOMMAND" in
         # their own independent re-derivation (mode checkout/diff-only): PR
         # identity, the reviewed headRefOid, the session's Claude PID, and
         # the mode -- never the findings-body text itself, so the findings
-        # never land in argv, shell history, or the process table. Same
-        # sibling-file shape as write plan-review's PLANMODE_SIBLING above,
-        # four lines instead of one. Mode is the fourth field here, matching
-        # the completion marker's own field order (PR identity, headRefOid,
-        # body hash, mode).
+        # never land in argv, shell history, or the process table. Read via
+        # _lib_review_pr_provenance_field's key=value schema (schema=1
+        # header, one KEY=VALUE line per field), not positional line
+        # numbers -- a field this arm doesn't know about yet (added by a
+        # later phase) is simply never read here rather than shifting every
+        # other field's position.
         PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
-        if ! PROVENANCE_CONTENT=$(_lib_capped cat "$PROVENANCE" 2>/dev/null); then
-          printf 'marker.sh: cannot read %s -- cannot compute the review-pr marker. Abort without writing a marker.\n' "$PROVENANCE" >&2
-          exit 2
-        fi
-        PR_IDENTITY=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '1p')
-        HEAD_REF_OID=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '2p')
-        PROVENANCE_PID=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '3p')
-        MODE=$(printf '%s\n' "$PROVENANCE_CONTENT" | sed -n '4p')
+        PR_IDENTITY=$(_lib_review_pr_provenance_field "$PROVENANCE" pr_identity) || PR_IDENTITY=""
+        HEAD_REF_OID=$(_lib_review_pr_provenance_field "$PROVENANCE" head_ref_oid) || HEAD_REF_OID=""
+        PROVENANCE_PID=$(_lib_review_pr_provenance_field "$PROVENANCE" pid) || PROVENANCE_PID=""
+        MODE=$(_lib_review_pr_provenance_field "$PROVENANCE" mode) || MODE=""
         if [ -z "$PR_IDENTITY" ] || [ -z "$HEAD_REF_OID" ] || [ -z "$MODE" ] || [ -z "$PROVENANCE_PID" ]; then
-          printf 'marker.sh: %s is missing PR identity, headRefOid, mode, or PID. Abort without writing a marker.\n' "$PROVENANCE" >&2
+          printf 'marker.sh: %s is missing, unreadable, or missing PR identity, headRefOid, mode, or PID. Abort without writing a marker.\n' "$PROVENANCE" >&2
           exit 2
         fi
         case "$PROVENANCE_PID" in

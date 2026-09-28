@@ -603,6 +603,23 @@ class TestRequireRespondPr:
     @pytest.mark.parametrize(
         "command",
         [
+            "gh api repos/Foo/Bar/pulls/5/comments",
+            "gh api repos/FOO/BAR/pulls/5/comments",
+        ],
+    )
+    def test_same_repo_different_case_still_denied(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        """A command targeting the current repo (origin foo/bar) but spelled
+        with different letter case must still hit the same-repo deny path,
+        not the cross-repo bypass's `exit 0` -- before the nocasematch fix,
+        COMMAND_REPO's case-differing spelling compared unequal to
+        CURRENT_REPO and this wrongly took the cross-repo bypass instead."""
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "gh api repos/other/repo/issues/5/comments --input reply.json",
             "gh api repos/other/repo/pulls/5/comments --input=reply.json",
             "gh api repos/other/repo/issues/comments/12345 --input reply.json",

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, head_sha, review_pr_completion_marker_path
+from helpers import SCRIPTS_DIR, head_sha, review_pr_completion_marker_path, write_review_pr_provenance
 
 from .conftest import _git_shim_that_fails_on_worktree_prune, _seed_session
 
@@ -75,14 +75,7 @@ def _write_provenance(
     home: Path, mode: str, head_ref_oid: str, pr_identity: str = PR_IDENTITY,
     session_id: str = SID, pid: int = 999,
 ) -> Path:
-    active_dir = home / ".claude" / ".review-pr-active.d"
-    active_dir.mkdir(parents=True, exist_ok=True)
-    provenance = active_dir / f"{session_id}.provenance"
-    # Field order matches the completion marker's own (PR identity,
-    # headRefOid, body hash/PID, mode): mode is the fourth field, not the
-    # third.
-    provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{pid}\n{mode}\n")
-    return provenance
+    return write_review_pr_provenance(home, pr_identity, head_ref_oid, pid, mode=mode, session_id=session_id)
 
 
 def _write_artifacts(home: Path, session_id: str = SID) -> list[Path]:

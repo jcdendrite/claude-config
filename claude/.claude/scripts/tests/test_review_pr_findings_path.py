@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
 from .conftest import _seed_session
 
@@ -28,13 +28,7 @@ def _write_provenance(
     home: Path, pr_identity: str = "foo/bar#42", head_ref_oid: str = "a" * 40,
     mode: str = "acquired", pid: int = 999, session_id: str = SID,
 ) -> Path:
-    active_dir = home / ".claude" / ".review-pr-active.d"
-    active_dir.mkdir(parents=True, exist_ok=True)
-    provenance = active_dir / f"{session_id}.provenance"
-    # Field order matches the completion marker's own (PR identity,
-    # headRefOid, PID, mode): PID is the third field, not mode.
-    provenance.write_text(f"{pr_identity}\n{head_ref_oid}\n{pid}\n{mode}\n")
-    return provenance
+    return write_review_pr_provenance(home, pr_identity, head_ref_oid, pid, mode=mode, session_id=session_id)
 
 
 def _run(home: Path, args: list[str] | None = None) -> subprocess.CompletedProcess:

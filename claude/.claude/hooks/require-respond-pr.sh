@@ -389,13 +389,15 @@ _extract_command_repo() {
 COMMAND_REPO=$(_extract_command_repo)
 
 if [ -n "$COMMAND_REPO" ]; then
-  # _lib_capped, not bare git: a stale index lock or a network-mounted .git
+  # _lib_origin_owner_repo wraps the same _lib_capped git call this arm
+  # used directly before: a stale index lock or a network-mounted .git
   # would otherwise block this call — and with it every gated Bash tool call
   # in the session — for as long as the filesystem takes to answer.
-  CURRENT_URL=$(_lib_capped git config --get remote.origin.url 2>/dev/null)
-  if [ -n "$CURRENT_URL" ]; then
-    CURRENT_REPO=$(printf '%s\n' "$CURRENT_URL" | sed -nE 's#.*[:/]([^/:]+/[^/]+)$#\1#p' | sed 's#\.git$##')
-    if [ -n "$CURRENT_REPO" ] && [ "$COMMAND_REPO" != "$CURRENT_REPO" ]; then
+  CURRENT_REPO=$(_lib_origin_owner_repo) || CURRENT_REPO=""
+  if [ -n "$CURRENT_REPO" ]; then
+    # Case-insensitive: GitHub treats owner/repo slugs case-insensitively,
+    # matching the mutating-method check's own nocasematch use above.
+    if _lib_case_insensitive_ne "$COMMAND_REPO" "$CURRENT_REPO"; then
       exit 0
     fi
   fi

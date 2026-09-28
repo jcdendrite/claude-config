@@ -904,3 +904,576 @@ Verification command: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`
 - **`--approve`.** Still never constructible: `review-pr-post.sh`'s two-element `case` is unchanged by this round, and the no-checkout path uses the same script.
 
 **Decision confirmed with the engineer this session:** remove the `review-pr` `activate`/`deactivate` marker-enum entries and `require-respond-pr.sh`'s review-pr read-release arm in this round (row 6), rather than leaving them dormant as a follow-up. Phase 1's Critical files already reflect this — the four-way consistency test asserts 21 valid shapes, not 23.
+
+---
+
+## Round 3: Foundation simplification (round 6 remediation)
+
+**Round 2's true status, corrected after this round's own plan-review
+surfaced the discrepancy.** Round 2 was implemented as a staged diff (46
+files, 5466 insertions, 1349 deletions) and round 6's five findings files
+review *that* diff, not the Round-1-shaped code otherwise sitting in this
+tree — every file round 6 cites (`review-pr-acquire.sh`,
+`review-pr-diff.sh`, `review-pr-finish.sh`, `review-pr-worktree-replace.py`,
+and others) exists only in that diff. The diff was never committed: a
+prior session in this chain ran this same round's Phase-0 sync step while
+Round 2's changes were still staged, `git merge` refused to run with
+staged changes present, and the session stashed them
+(`r6-sync-pr-review-skill-1790`) to unblock the merge — then never
+restored the stash. Both of this round's sync merges (`6e62c92c`,
+`9a244df4`) landed with Round 2's diff absent from the tree, which is why
+`/plan-review` on this round's own draft found no trace of Round 2's
+provenance file, `mode` field, or new scripts anywhere in the repo. The
+stash is pinned at branch `preserve/r6-sync-pr-review-skill-1790` (created
+this round, since the stash stack is shared across sessions and any
+session could otherwise pop or drop it) and is restored as this round's
+own Phase 0 continuation below, before any of Phases 1–6 begin. Round 2's
+diff has never been reconciled against `origin/main`'s content from either
+sync merge.
+
+### Context
+
+**Goal:** round 6 of `/code-review` on this same PR returned 5 specialist
+findings files (`agent-reviews/{ciso-reviewer,staff-backend-engineer,
+staff-platform-engineer,staff-sdet,comment-discipline-reviewer}-1790280879-
+pr-review-skill.md`). Before dispatching fixes, a `plan-architect` consult
+was run against those findings, scoped to: is there a wrong-foundation
+problem where one upstream change removes several findings rather than
+patching each; which findings (if any) qualify for DEFER; and what dispatch
+order to use.
+
+Mid-run, the engineer widened the same consult (via `SendMessage` to the
+still-running subagent, not a second dispatch) to the foundation of the
+**entire PR** — the engineer's own words: "The engineer suspects it is
+over-engineered and hardened against adversarial agents" — and asked it to
+read the cooperative-agent threat-model tiering that had landed on
+`origin/main` after this branch was created (`CLAUDE.md`'s "This repo's
+hooks default to guarding a **cooperative** agent" paragraph and
+`docs/hooks.md`'s "Threat-model tiers" section — both now present in this
+worktree as of this round's step 0 merge) and reclassify round 6's findings
+against it.
+
+**The consult's bottom line:** the wrong foundation is two keying choices —
+the per-PR shared worktree path (forcing a flock, an `.owner` sidecar,
+replace/remove scripts, and lock waits — the Round 2 `fcntl.flock` design),
+and the cwd-derived completion-marker key (forcing `finish` to run from
+inside the tree it deletes). Replacing both with lighter primitives deletes
+most of the round-6 platform and sdet findings instead of patching them.
+The two audit BLOCKERs (a filename containing a newline, and the 3000-file
+truncation cap) are genuinely in tier, since file names are untrusted PR
+content — one upstream change (a local merge-base diff instead of the REST
+file listing) fixes both. The CISO's "the agent holds post capability"
+foundation concern is an accurate description, not a defect: the fix is
+correcting the docs' "unbypassable by construction" overclaim and adding a
+cheap target binding, not building a harder boundary. Full consult text is
+not restated here; it is passed to each `code-writer` dispatch below as
+evidence, per this repo's existing convention for Round 2's own consults.
+
+**Engineer's 4 decisions, one `AskUserQuestion` call, all "(Recommended)"
+selected:**
+
+1. **Worktrees — "Simplify (Recommended)."** Replace the shared per-PR
+   worktree path and its lock/owner/replace/remove machinery with a
+   per-invocation `mktemp` worktree carrying the session id, discovered by
+   `finish` from `git worktree list --porcelain` rather than from
+   provenance. This reverses the Round 2 decision recorded there as
+   engineer-confirmed (the `fcntl.flock` rewrite) — named explicitly since
+   it undoes a prior round's own confirmed scope, not silently overridden.
+2. **Audit source — "Local git diff (Recommended)."** Replace the REST
+   file listing and the double `headRefOid` bracket in `checkout` mode with
+   a local `git diff-tree -r -z` merge-base diff, NUL-delimited, failing
+   closed on control characters. This replaces Round 1's M2 / row 22
+   ("both modes use `gh pr diff`") for `checkout` mode only; `diff-only`
+   mode keeps `gh pr diff` unchanged, since `gh pr diff`'s failure modes
+   (stale `baseRefOid`, missing objects) don't apply once `checkout` fetches
+   the base branch itself.
+3. **Post gate — "Doc-correct + target arg (Recommended)."** Correct the
+   "unbypassable by construction" overclaim in the PR body and
+   `docs/hooks.md`/`docs/scripts.md`/`REFERENCES.md`; add a
+   `<owner>/<repo>#<N>` target argument to `review-pr-post.sh`, checked
+   against both the marker's stored identity and the origin; pin
+   `commit_id` on the `gh api` post call; name a read-only token as a
+   documented operator option. The body-digest half of CISO finding 4 is
+   DEFERed (criterion 3) rather than built, since a human cannot compare a
+   digest against chat text the model wrote.
+4. **Sync-first ordering — "Sync first (Recommended)."** Merge
+   `origin/main` before any code changes, so the tier-header guidance and
+   the files it touches (`require-respond-pr.sh`,
+   `enforce-marker-script-shape.sh`, `docs/hooks.md`) land before this
+   round's own edits to those same files. Already done — see this session's
+   merge commits.
+
+**Revision (this session): scope reduced after an engineer usage-fit
+clarification plus a second `plan-architect` consult.** After Phase 1 was
+dispatched twice (the first dispatch was mis-scoped against an already-done
+section of this same plan file and is not repeated here), the engineer
+asked, in their own words, whether this branch was "going in the right
+direction" and flagged "overengineering," "because this work has been
+going on for a LONG while." A second `plan-architect` consult (scoped to
+that question, not restated here) recommended cutting Phase 2's local-diff
+audit rewrite (row 4) to a lighter fix, dropping row 1's PR-scoped `finish`
+argument, dropping row 9's `__typename`/`StatusContext` normalization,
+dropping row 13's `commentsComplete` flag, and deferring row 6's
+`commit_id` pin — collapsing five phases of remaining work (2-6) into
+three.
+
+Separately, the engineer clarified the skill's actual usage: the two real
+targets are (1) a PR authored by another contributor to a repository the
+engineer already administers, where that contributor is an org
+member/collaborator, and (2) the engineer's own work, reviewed by this
+harness. Asked directly, "Does either use case ever involve a PR author
+who isn't an org member/collaborator (a public fork, a first-time
+contributor, a bot)?" — the engineer answered "No." Because
+`claude-skills/skills/review-pr/` ships publicly to every consumer of this
+repo (per this repo's own "global skill bodies stay platform-agnostic"
+convention), the diff-only/untrusted-author path (Step 2's second branch)
+is **not** removed — a consumer of this shared skill may genuinely review
+outside contributions. What changes is this round's own effort allocation
+for that path: it adopts the consult's lighter fix (a floor-level defense
+against the two round-6 BLOCKERs) instead of the heavier local-diff-audit
+rewrite Decision 2 originally selected, since the heavier rewrite was
+sized for a threat the engineer's own usage never exercises. **Decision 2
+is reversed** — named explicitly since it undoes this round's own earlier
+confirmed scope, same as Decision 1 did to Round 2's. This also resolves
+the tension the consult's report flagged between row 7's disposition
+("adversarial PR content... I am nixing that concern right now") and row
+4's insider-grade rigor: both now read as effort-proportionate to the
+engineer's own risk tolerance for their own review targets, while the
+shipped skill still defends the untrusted-author path other consumers may
+actually need.
+
+The engineer also asked for a **new feature**, not itself a round-6
+finding: a `plan-architect` consult step added to `SKILL.md` Step 7, so
+`/review-pr`'s synthesis stage mirrors the engineer's own manual review
+process (code-review, then a plan-architect read of the findings, then
+iterate) rather than stopping at `/code-review` alone. Folded into Phase 4
+below.
+
+### Approach
+
+#### Assumption ledger
+
+```
+Root: round 6 found defects in a design (shared-path worktree locking,
+cwd-derived marker keying) that was itself over-scoped for this PR's actual
+threat model, so several findings are symptoms of that scope rather than
+independent defects.
+
+Givens:
+G9: the tier framework (CLAUDE.md's cooperative-agent paragraph,
+    docs/hooks.md's "Threat-model tiers") covers `hook-class: gate` hooks
+    only — beyond reach for non-gate scripts like review-pr-*.sh, which
+    route through /code-review's own DEFER criterion 3 instead
+    [plan-architect consult].
+G10: posting under the operator's identity is already capped at
+    cooperative strength by require-respond-pr.sh's pre-existing,
+    unscoped respond-pr arm (A18) — beyond reach: hardening the review-pr
+    marker chain against a forging main session cannot raise total system
+    strength, since that arm already permits it [plan-architect consult;
+    re-derives A18, already [verified] in Round 1].
+G11: neither of the engineer's own review targets (a repository the
+    engineer administers, reviewing a fellow org member/collaborator's PR;
+    or the engineer's own work) ever presents a PR authored by someone
+    outside the org/collaborator set [engineer-confirmed]. This bounds
+    only this round's own effort allocation on the diff-only/untrusted-
+    author path (Step 2's second branch) — that path stays in the shipped
+    skill for other public consumers, per REFERENCES.md's own
+    platform-agnostic convention; it is not asserted unreachable in
+    general.
+```
+
+| # | Row | Anchor |
+|---|---|---|
+| 1 | **[mechanism, revised this session — drops the PR-scoped argument] Per-invocation `mktemp` worktree, discovered rather than provenance-tracked.** `<main>/.claude/worktrees/review-pr-<sid>-<N>-XXXXXX` via `mktemp -d`, then `git worktree add --detach` into the empty directory. No two invocations share a path, so no lock, no owner file, no remove-before-add, no wait budget. `review-pr-finish.sh` takes **no argument**: it sweeps every worktree matching the session's `review-pr-<sid>-` prefix and logs each matched path plus the match count explicitly (never silent) — the single-slot provenance file assumes at most one review in flight per session, but nothing enforced that invariant, so a session with two PRs checked out at once (a cooperative-agent sequencing mistake, not an attack) must not have `finish` silently remove both without saying so. Its `rm -rf` fallback applies only to paths matching that exact prefix, and `git worktree prune` runs only after the fallback. A removal that fails leaves the directory discoverable, so a retry works. Deletes `review-pr-worktree-replace.py`, `review-pr-worktree-remove.py` (per Round 2's naming — the consult's "replace/remove scripts" phrasing), and their tests. `[plan-architect consult, this session — provenance is one file per session; a second checkout already overwrites the first review's identity, so `finish` is the only component that would be taught to handle two reviews at once for a case the schema doesn't otherwise support; a session-wide sweep with explicit per-match logging is the simpler primitive, not a capability loss]` **Known limitation, accepted, not fixed:** `staff-platform-engineer` (round-3 /plan-review, this session) found this sweep has no way to distinguish "my worktree" from a sibling review's still-in-flight worktree if two `/review-pr` calls ever run concurrently under one session id — the first to call `finish` would tear down both, mid-operation, not just the disclosed sequential-misuse case above. `[engineer-verified: selected "Accept as documented (Recommended)" over "Add a lightweight busy-check"]` — this skill's flow is human-approval-gated at multiple steps (checkout → review → present → approve → post), making concurrent same-session parallel review an unlikely usage pattern, and a busy-check would reintroduce the liveness machinery this round exists to remove. | anchors: root |
+| 2 | **[assumption] Cost of row 1, corrected: after this round, zero automatic mechanism ever reclaims an abandoned review-pr worktree — not "a later review of the same PR no longer reclaims" as originally stated.** `cleanup-idle-open-pr-worktrees.sh` matches candidates by local branch name, and the stashed Round 2 code's own comment already states the review-pr worktree is created `--detach` (no branch) and so was already invisible to that reaper before this round, for every review-pr worktree, not a subset. The only reclaim path that ever existed was Round 2's own same-PR-revisit self-heal (remove/prune/add on a second checkout of the identical PR); row 1 deletes that self-heal along with the rest of the replace machinery. `REFERENCES.md` (Phase 4) names a manual-reaper mitigation (a periodic `find <main>/.claude/worktrees -maxdepth 1 -name 'review-pr-*' -mtime +N -exec git worktree remove --force {} +`, or widening `cleanup-idle-open-pr-worktrees.sh`'s candidate discovery to match by directory-name pattern) even though it isn't built this round. `[engineer-verified: selected "Simplify (Recommended)" over "Keep flock design"]` `[verified: staff-platform-engineer, round-3 /plan-review]` | anchors: row1 |
+| 3 | **[mechanism] Marker rekeyed to the main repo root's hash, not cwd.** One helper, used by `marker.sh write review-pr`, `review-pr-post.sh`, `review-pr-finish.sh`, and `status`. Drops the checkout-mode local-HEAD check Round 2 added at `marker.sh`/`review-pr-post.sh`/`review-pr-finish.sh`/`review-pr-checkout.sh` (line ranges per the consult's own reading, unverified independently this round — see the Not-verified note below; `review-pr-checkout.sh` added to this touch-site list this session, matching the unverified consult citations that already named `review-pr-checkout.sh:177-223,274-317`) and SKILL.md's cd-into-the-tree-before-finish instruction. The remote `headRefOid` re-check (row 16, Round 2) is unaffected and remains the sole freshness binding in both modes. After this, `mode` selects only the `acquired`-refusal and the diff-only disclosure check. `[staff-platform-engineer, round-3 /plan-review, this session]` | anchors: root |
+| 4 | **[mechanism, revised this session — supersedes the local-diff-audit rewrite; mechanism corrected during this round's own `/plan-review`] Checkout-mode audit closes both round-6 BLOCKERs with two checks added to the existing REST-listing audit, no new temp refs, no new NUL-raw diff-parsing mode.** `review-pr-checkout.sh`'s file listing (line ~189) currently fetches `--jq '.[].filename'` — raw, newline-joined text, then splits on `\n` (line ~202). **A bare per-fragment control-character check over that split output cannot catch an embedded newline**, since the newline is consumed as the split delimiter before any fragment is inspected — this was `ciso-reviewer`'s round-6 BLOCKER in the first place. Fix: change the fetch to `--jq '.[].filename | @json'`, so each element is emitted as a JSON string literal (an embedded raw newline becomes the two-character escape `\n`, never a line break) — one JSON string per output line, matching row 10's already-adopted `@json`-per-element idiom elsewhere in this same round. Parse with `jq -R -s 'split("\n") | map(select(length > 0)) | map(fromjson)'` to recover the real filenames as a JSON array, then fail closed if any decoded element contains a C0 control character or DEL; fail closed if the array's length does not equal `.changed_files` (REST/snake_case — `TRUST_JSON` is fetched via a plain `gh api repos/{owner}/{repo}/pulls/{number}` call, not `gh pr view --json`, so every field it reads, including this one, is snake_case; **not** `changedFiles`, that camelCase spelling belongs to `gh pr view --json`/GraphQL, used elsewhere in `acquire.sh`). Apply the identical `@json`-per-element fetch and both checks to `review-pr-acquire.sh`'s own re-fetch (row 10's sibling site). The double `headRefOid` bracket and `gh pr diff` are unchanged in both modes — no Step 5 change. **Superseded, not built:** the local `git diff-tree -r -z` merge-base diff and the per-session-and-per-PR-number temp refs and their collision/cleanup handling and `audit-execution-surface.py`'s NUL-raw input mode and mode-`120000` symlink folding. **Not resolved, still open:** row 22's `[unverified]` assumption about `gh pr diff`'s server-side merge-base behavior — checkout mode's Step 5 diff generation still runs through `gh pr diff` exactly as before this row's revision, so row 22 stays exactly as load-bearing as it always was; this row does not reopen or resolve it, only declines to build the mechanism that would have made it moot. `[plan-architect consult, this session — the CISO and staff-platform-engineer round-6 findings this row answers each independently proposed a comparably light fix first (`ciso-reviewer-...md:81`: byte-exact-or-derive-from-git-objects; `staff-platform-engineer-...md:96`: compare the count against the already-fetched `changed_files`); the heavier rewrite was the plan's own later addition, not a round-6 ask.]` **Residual gap, corrected framing:** this fix is not "insider-only" in the sense the code enforces — `review-pr-checkout.sh` reaches checkout mode for any of `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` association (`SKILL.md` Step 2's existing trust branch, unchanged this round; row 12 pins these as the explicit allowlist), and `CONTRIBUTOR` (a non-collaborator with any past merged PR to the repo) is a broader class than "org member." G11 is why this residual gap is acceptable for the engineer's own review targets specifically (nobody but the engineer has ever had a merged PR to those repos), not because the code itself restricts checkout mode to org members. Separately, the count-match check has a known, accepted false-negative class: a composition-corrupted-but-count-preserved listing (one real filename silently swapped for a phantom one at the same cardinality) passes both checks — narrower than the pre-fix gap, not eliminated. `[ciso-reviewer + staff-backend-engineer, round-3 /plan-review, this session]` | anchors: root, G11 |
+| 5 | **[mechanism] `review-pr-post.sh`'s O_NOFOLLOW capture simplified.** Hash with `_lib_sha256_no_follow` and post from the path directly, dropping the `x`-sentinel mktemp-copy dance — it defended only against a concurrent same-user writer, an actor already covered by G8 (Round 2). Lowest-value item; done because the post block is being rewritten for row 3/6 anyway. | anchors: row3 |
+| 6 | **[mechanism] Post-gate doc correction plus a target argument.** `review-pr-post.sh` takes `<owner>/<repo>#<N>`, refusing unless it equals both the marker's stored identity and the origin (via `_lib_origin_owner_repo`, row 8). Posts via `gh api -X POST repos/O/R/pulls/N/reviews` with `event` and `-F body=@<path>`. "Unbypassable by construction" is corrected in the PR body, `docs/hooks.md`, `docs/scripts.md`, and `REFERENCES.md` to state that only `--approve` unreachability is unbypassable; the post gate otherwise catches cooperative mistakes, and the boundary against a steered session is the human (Step 8/9 approval plus the permission prompt on the non-allowlisted `review-pr-post.sh`, whose strength depends on the operator's permission mode — the docs say so). This scoping covers the cross-repo/wrong-target path only — it does not cover a same-repo, correct-target post whose body content was substituted after chat approval (row 7, DEFERed, engineer-confirmed). A read-only-token operator option is named in `REFERENCES.md` as a choice, not built. `[engineer-verified: selected "Doc-correct + target arg (Recommended)" over "Remove post capability"]` **Decision 3 is partially reversed this session** — named explicitly, matching the treatment Decisions 1 and 2 got: the original engineer-verified selection above included pinning `commit_id` on the `gh api` post call; that specific piece is walked back here, while the rest of Decision 3 (target argument, doc correction) stands as originally confirmed. `commit_id=<marker oid>` pinning is deferred this session, not built — a CISO FYI about a several-second race window, not a round-6 BLOCKER; it also relies on a REST parameter name corroborated this round only indirectly (GraphQL's `AddPullRequestReviewInput.commitOID` mirror mutation via introspection, not GitHub's REST reference for "Create a review for a pull request" directly) — cite that REST reference directly before building it in a follow-up. **This deferral is not covered by G10** — G10 is about a *forging* session (marker chain compromised), while the race this leaves open is a *legitimate* session's TOCTOU window (a third party force-pushes between `review-pr-post.sh`'s `headRefOid` re-check and its two POST calls, which are separate network round trips, not atomic). Named as its own accepted residual risk rather than anchored to a given that doesn't reach it. `[ciso-reviewer + staff-backend-engineer, round-3 /plan-review, this session]` | anchors: G10 |
+| 7 | **[mechanism] Body-digest half of CISO finding 4 is DEFER (criterion 3), engineer-confirmed after a follow-up `/plan-review` round raised it as fix-or-ask.** A human cannot compare a digest against chat text the model wrote, so the digest binds nothing it can be checked against — that half of the disposition stands unchanged. That same round's `ciso-reviewer` re-raised the underlying requirement itself (not just the digest mechanism) as in-tier — a session steered by adversarial PR content could rewrite the findings-body file and re-arm the auto-allowed `marker.sh write review-pr` after chat approval but before posting — and `/plan-review`'s own enforcement-invariant disposition rule required either a real fix or an explicit engineer accept-the-risk call before the verdict could finalize. `[engineer-verified: "Totally paranoid. 'a session steered by adversarial PR content' That requires adversarial bots having permission to review PRs or adversarial humans. I am nixing that concern right now."]` Same disposition for the CISO FYI on `marker.sh` scanning via a plain open but hashing via an O_NOFOLLOW open. Both join Round 1's existing DEFER table; the "PR-keyed worktree" and "210s arithmetic" DEFER rows from that table are removed instead, since row 1/3 delete the code they described. | anchors: row6 |
+| 8 | **[mechanism, revised this session — drops the FETCHED_SHA reference] Shared seams dispatched first, once, reused by every later phase.** `_lib_gh` (GH_HOST/GH_ENTERPRISE_TOKEN strip, timed-out-vs-failed classification — also covers the platform observability FYI); `_lib_origin_owner_repo` (case-insensitive compare), migrated into checkout, diff, post, and `require-respond-pr.sh:396`, replacing that duplication per the sibling-audit rule; a single provenance schema (key=value lines, `schema=1` line, one `_lib` writer/reader, a Python reader keyed on `pid=`, one `helpers.py` writer) replacing the ad-hoc schema drift the sdet/backend findings flagged — **explicitly additive by design**: Phase 2's marker-key data (row 3) adds keys to this schema after Phase 1 lands it (row 4's revision no longer adds a `FETCHED_SHA` field, since the lighter checkout-audit fix fetches no temp refs), so Phase 1's own dispatch must state the schema is meant to grow, not read "behavior-preserving" as "frozen," and later code-writers must not route a new field through a side channel (a second file, an env var) on the mistaken belief the schema is closed; `_lib_main_repo_root` from the first entry of `git worktree list --porcelain` — cite `git-worktree(1)`'s ordering guarantee for "first entry is the main worktree," or add a local fixture test asserting it across an actual multi-worktree repo, before Phase 1 ships the helper; a shared conftest `gh` shim covering the `GH_HOST` strip, the read-only shape for all three acquisition scripts, `--json` field validation, and real exit codes, failing the test if `GH_HOST`/`GH_ENTERPRISE_TOKEN` reach its environment. `[verified: staff-platform-engineer / ciso-reviewer, round-3 /plan-review]` | anchors: root |
+| 9 | **[mechanism, revised this session — drops union normalization] Zero-checks BLOCKER fixed via `statusCheckRollup`, taken raw.** Replace the separate `gh pr checks` call with `statusCheckRollup` in the existing `gh pr view --json` call — drops a call and needs no stderr matching. `statusCheckRollupContext` is a GraphQL union of `CheckRun` (Actions/Checks API: `status`/`conclusion`) and `StatusContext` (legacy Commit Status API — CircleCI, Jenkins, Buildkite: differently-named/valued `state`); `gh pr checks --json`'s own `bucket` field normalizes that union into one `pass`/`fail`/`pending`/`skipping`/`cancel` vocabulary, but nothing downstream of this fetch *acts* on the value — it's read-only context the model reads in Step 4/5, never branched on in code. Take the raw union through unchanged; document both entry shapes with one line in `REFERENCES.md` rather than re-deriving `bucket`'s mapping. This still fixes the zero-checks BLOCKER. `[verified: staff-backend-engineer, round-3 /plan-review — GraphQL introspection confirmed the union, and that `statusCheckRollup` returns `[]` with exit 0, never `null`, on a PR with no checks, across 4 empirically reproduced zero-check shapes; carried forward unchanged from the prior draft of this row]` **Superseded, not built:** the `__typename` branch and its `StatusContext`-shaped fixture PR. `[plan-architect consult, this session — grep confirmed `bucket` appears only in the acquire script's `--json` field list and one pass-through test assertion, never a branch condition; independently re-confirmed via direct read, staff-backend-engineer, round-3 /plan-review, this session]` | anchors: root |
+| 10 | **[mechanism, test scope trimmed this session] Truncation fixed at both the count and the argv-size axis.** List filenames byte-exact (`--jq '.[].filename \| @json'`, then `jq -s`), compare the count against `changedFiles`; `review-pr-acquire.sh` emits `filesComplete`/`commitsComplete` — the real gh CLI cap is **100**, not 250, matching this plan's own Round-1 line ("`commits` shares the same 100-cap") — `commitsComplete` must be derived against that real cap or a genuine re-fetched total (`gh pr view --json commits` exposes no `commitsCount`/`totalCommits` scalar the way `changedFiles` covers `files`, so a full re-fetch is the only authoritative alternative to the 100-cap comparison); `review-pr-diff.sh` refuses with a distinct message on truncation. Backend's argv-size finding is fixed the same way via one mktemp dir, one `EXIT` trap, and `jq --slurpfile`. A precheck for `changedFiles > 300` in diff-only mode gives a named stop, replacing the header-count heuristic that produced the 406 finding. `[verified: staff-backend-engineer, round-3 /plan-review — reproduced the 100-commit cap empirically against a 104-commit PR, contradicting this row's earlier "250" figure, which cited no source]` **One test for the argv fix, not a separate abort/signal-path test for ordinary error exits** (`set -e`, explicit `exit 1` — the `EXIT` trap already covers both, so a second test asserting the same cleanup mechanism twice there is redundant). **Signal-delivered termination (SIGTERM/SIGKILL) is a different, real gap, not covered by either test** — this repo's own `_lib_capped_for` documentation (`_lib.sh:119-125`) already states "a SIGKILLed child can leave lock files behind," cross-referencing `docs/hooks.md`'s "Gate deadlock recovery" section, and `SKILL.md`'s own Bash timeout arguments (Phase 4) make a harness-timeout-driven SIGTERM/SIGKILL a realistic path for these scripts, not hypothetical. Not built as a test this round — a one-line Known-gap note is added to `REFERENCES.md` in Phase 4 instead, naming this mktemp dir as one more site in the class `docs/hooks.md`'s "Gate deadlock recovery" section already documents as unsolved, rather than silently absorbing it into "redundant." `[plan-architect consult, this session; staff-platform-engineer, round-3 /plan-review, this session]` | anchors: root |
+| 11 | **[mechanism] Post-failure retry ambiguity resolved by consuming the marker.** Any post failure consumes the completion marker; the message states the outcome is unknown, to check the PR, and to re-arm via `marker.sh write review-pr`. | anchors: root |
+| 12 | **[mechanism, values pinned this session] `author_association` becomes an explicit allowlist: `MEMBER`, `OWNER`, `COLLABORATOR`, `CONTRIBUTOR`** — matching `SKILL.md` Step 2's existing trust branch (unchanged this round), not a new set invented for this row. Full 8-value matrix (also `FIRST_TIME_CONTRIBUTOR`, `NONE`, and GitHub's remaining defined values) plus an unknown value tested; a distinct exit code for a policy refusal (covering half of backend's exit-code FYI). `[ciso-reviewer, round-3 /plan-review, this session — flagged the values as unpinned in the prior draft]` | anchors: root |
+| 13 | **[mechanism, drops the completeness flag this session] Duplicate review bodies and missing inline-comment-only reviews, both fixed in acquisition.** Drop `reviews` from the `--json` fields (dedup fix, confirmed no other consumer reads that key); add a `pulls/N/comments` fetch (author, path, line, body) so Step 8's cross-reference dedup doesn't miss a prior reviewer who only left inline comments. **Superseded, not built:** a `commentsComplete` truncation signal for this fetch — unlike `files`/`commits`, `pulls/N/comments` has no known documented listing cap this round confirmed (`[unverified]`, plan-architect consult), so row 10's `*Complete`-flag pattern doesn't obviously transfer; keep the fetch itself, since it's a real round-6 finding, without inventing a completeness contract for an endpoint whose cap behavior isn't established. | anchors: row8 |
+| 14 | **[assumption] `marker-clear-stale.py`'s existing bugs (PID `0`, integer overflow, missing top-level guard) are fixed as part of this round's marker.sh/hook-test phase**, not deferred — they were already flagged pre-round-6 and this round is already touching the same liveness-key logic for row 1/3's provenance changes. `[engineer-verified: full-scope precedent set by Round 2's "nothing in this round is deferred to a follow-up PR"]` | anchors: root |
+| 15 | **[assumption] Retired `activate`/`deactivate review-pr` denial tests get no waiver.** `enforce-marker-script-shape.sh` is tagged `untrusted-input` on `origin/main` (per G9's tier framework), so its test coverage is held to the same standard regardless of round-6's foundation-simplification framing. | anchors: G9 |
+
+#### Additional round-6 items surfaced by the restore consult
+
+Six further round-6 items the original Round 3 draft omitted, each cheap
+and ADDRESS unless marked, folded into the phases below rather than given
+their own row numbers since none anchors a new mechanism:
+
+- **Prose-integer duplication (SDET).** The hand-maintained shape/count
+  integers in `enforce-marker-script-shape.sh`'s header comment and
+  `docs/scripts.md`, plus the duplicate `NON_ARRAY_SUBCOMMANDS` copy, are
+  deleted in favor of the row-9/row-10 derived-and-asserted count test —
+  fits this round's own simplifying direction, not a new item. Phase 4
+  (renumbered this session; was Phase 5 in the six-phase original).
+- **`_lib_parse_pr_identity` per-half rejection.** Current tests exercise
+  only one half of the owner/repo-or-number regex, so a malformed value
+  like `foo/..#5` currently passes. Add rejection cases for each half
+  independently. Phase 1 (sole owner — this session's Phase 1 dispatch
+  confirmed both per-half rejection cases now pass, closing this item;
+  a duplicate Phase-4 mention in Critical files below has been removed).
+- **Test subprocess timeouts.** Every new test subprocess call gets an
+  explicit `timeout=`; any wall-clock-bounded assertion that survives the
+  row-1/row-3 simplification (there should be few, since the lock-wait and
+  stale-age budgets it deletes were the main source) gets pytest's
+  `timing` marker. Phase 4 (renumbered).
+- **Positive `rm -rf` fallback test.** Row 1's Verification section
+  (main Verification below) already tests that the fallback never touches
+  a non-matching directory; add the positive case, that it actually
+  removes a matching one. Phase 2 (renumbered; was Phase 3).
+- **SDET small items.** A disjunctive stderr assertion, acquire-failure
+  tests that check only the exit code, and an over-specified
+  `select-tests.py` assertion — tightened where round 6's finding
+  identifies the specific test and file. Phase 4 (renumbered).
+- **Origin-only-remote layout and GHES.** A clone whose `origin` is the
+  operator's own fork (no `upstream` remote) is ADDRESSed by naming the
+  precondition in the refusal message and `REFERENCES.md`; actually
+  supporting a separate `upstream` remote is DEFER (criterion 3 — beyond
+  this skill's cooperative-agent scope for a first release). **Split
+  deliberately, not an error** (flagged by `staff-platform-engineer`,
+  round-3 /plan-review, this session, since the general collapse rule maps
+  old Phase 4 to new Phase 3, not new Phase 4): the refusal-message half
+  lands in Phase 3 (renumbered; was Phase 4), alongside the
+  acquire/checkout script edits it lives in; the `REFERENCES.md` half
+  lands in Phase 4 (renumbered; was Phase 6), alongside the rest of that
+  phase's doc pass.
+
+#### Post capability: option (b), not (a)
+
+The consult offered a hard alternative — remove posting capability
+entirely, human posts via `!` — and named it the engineer's call, not a
+default. The engineer selected doc-correct + target arg (row 6), so option
+(a) is out of scope for this round; `REFERENCES.md` names it as a documented
+operator choice rather than building it.
+
+#### Residual risk carried forward unchanged
+
+Round 2's "Residual risk, named rather than layered" section (self-attestation
+is inherent per G8; a model that fetches and checks out a PR tree by hand
+bypasses every check this skill prescribes) is unaffected by this round's
+changes and is not re-litigated here.
+
+#### Not independently re-verified this round
+
+The consult read `origin/main`'s tier-framework text from the main working
+tree via `Read`, not `git show origin/main:...` (it held no Bash tool), and
+did not confirm that tree equalled `origin/main` at read time — resolved now
+by this round's own step-0 merge, which pulled the real `origin/main` tier
+text into this worktree; re-diff `CLAUDE.md`/`docs/hooks.md` against the
+merge commit before citing them further. The consult's cited line numbers
+(`marker.sh:721-742`, `review-pr-post.sh:92-99,112-137`,
+`review-pr-finish.sh:58-74`, `review-pr-checkout.sh:177-223,274-317`,
+`SKILL.md:89`) are carried into Critical files below unverified by this
+session — the `code-writer` dispatch for each phase re-locates them against
+the current file rather than trusting the line numbers verbatim, since two
+rounds of edits sit between when the consult read them and when Phase 1
+starts.
+
+**From the restore consult, not settled this session:** whether the stash
+was ever applied and lost again before this session found it — three
+`reset: moving to HEAD` reflog entries (epochs 1790307389, 1790361548,
+1790453564) are otherwise unexplained; and whether PR #718's current body
+already describes Round 2's code (its cited DEFER rows, "PR-keyed
+worktree" and "210s arithmetic", match Round 2's design, while the
+Round-1-shaped `review-pr-checkout.sh` in the tree says "under 170s," not
+210s, suggesting the body was written against the stashed diff). Phase 0.5
+should check `gh pr view 718 --json body` against the restored code before
+Phase 4's `/pr-description` reconciliation (renumbered this session; was
+Phase 6 in the six-phase original), rather than assume the body already
+matches whichever code ends up committed.
+
+### Critical files
+
+**Phase 0 — sync (merge commits landed; conflict resolution still
+uncommitted).** `git merge origin/main` into `pr-review-skill`, resolving
+conflicts against the tier-header files this round also touches. The
+merge commits themselves landed this session (`9a244df4`, and an earlier
+377-file merge, `6e62c92c`, from the prior sync round), but the most
+recent merge's own conflicts — a union of this branch's `review-pr`
+marker enum entries with `origin/main`'s independently-added
+`verification` marker type, in `marker.sh`, `enforce-marker-script-shape.sh`,
+`settings.json`, and two test files — are still unresolved, uncommitted,
+literal `<<<<<<<` conflict markers in the working tree as of this
+round's own `/plan-review` pass (`ciso-reviewer`, round-3 review:
+`settings.json` does not currently parse as valid JSON, and both shell
+scripts fail `bash -n`). Resolve and commit these 5 files' conflicts as
+their own step — confirming `settings.json` parses and both scripts pass
+`bash -n` — before Phase 0.5 begins; Phase 0.5's own stash-apply will
+reopen the same 5 files with Round 2's registry shape, so this step's
+resolution is what Phase 0.5 applies on top of, not a parallel track.
+
+**Phase 0.5 — restore Round 2 (not yet done).** `git stash apply
+preserve/r6-sync-pr-review-skill-1790` (by the pinned branch name, never by
+stash-stack index, and `apply` not `pop` — that branch is the durable copy)
+onto the now-synced tree. Expect conflicts in the same 5 marker/hook/settings files
+Phase 0's own sync conflicted in (`marker.sh`,
+`enforce-marker-script-shape.sh`, `settings.json`, and their two test
+files), since Round 2's diff and `origin/main`'s independent `verification`
+marker addition both touch the same enum sites. Resolve by adding
+`verification` to Round 2's already-collapsed registry arrays, keeping
+Round 2's removal of the `activate`/`deactivate review-pr` arms (Round 2
+Critical files, Phase 1) rather than reintroducing them. Land the restore
+as its own commit before Phase 1 begins, so a broken restore is bisectable
+separately from this round's own edits. Verification command:
+`.venv/bin/python3 claude/.claude/scripts/select-tests.py`, same as every
+other phase.
+
+**Four further phases, each its own `code-writer` dispatch, strictly
+sequential — not parallelizable** (revised this session from the original
+six; the consult's cuts above collapse the old Phase 3 into the new Phase
+2, the old Phase 2 and Phase 4 into the new Phase 3, and the old Phase 5
+and Phase 6 into the new Phase 4). Phases 2 and 3 both touch
+`review-pr-checkout.sh`; phase 1's seams are consumed by every later phase;
+prose (phase 4) goes last so the comment-discipline pass doesn't polish text
+about to be deleted.
+
+- **Phase 1 — shared seams, behavior-preserving.** `_lib_gh`,
+  `_lib_origin_owner_repo` (+ migration into checkout/diff/post/
+  `require-respond-pr.sh:396`), the provenance schema rewrite (writer +
+  reader + `helpers.py`), `_lib_main_repo_root`, the marker-key helper (row
+  3), the shared conftest `gh` shim, and lib unit tests. **Landed this
+  session** (uncommitted): a `code-writer` dispatch built `_lib_gh`
+  (migrated into all four scripts plus `require-respond-pr.sh:396`),
+  `_lib_origin_owner_repo` (migrated into checkout/diff/finish/
+  require-respond-pr.sh, with a case-insensitive-compare fix bundled in),
+  the `schema=1`-header key=value provenance writer/reader plus
+  `helpers.py` support, confirmed `_lib_main_repo_root`'s existing
+  `--git-common-dir` implementation already satisfies row 8's ordering
+  requirement (cited `git-worktree(1)`'s `$GIT_COMMON_DIR` guarantee, no
+  rewrite needed), and closed the `_lib_parse_pr_identity` per-half
+  rejection gap ("Additional round-6 items," above). 135+40+160 targeted
+  tests pass; `select-tests.py`'s full-suite auto-widen (triggered by the
+  `helpers.py` edit) stalled under this machine's documented concurrent-
+  session contention and was not waited on — relying on CI. **Not
+  built, explicitly deferred:** the shared conftest `gh` shim — each of
+  `review-pr-{acquire,checkout,diff}.sh`'s own test file already carries a
+  passing, per-script `gh` shim with GH_HOST-leak coverage, so unifying
+  them is DRY consolidation of already-tested behavior, not new coverage;
+  judged out of this dispatch's budget. Phase 3's file-count-mismatch test
+  (row 4) needs one of these per-script shims extended to set a REST
+  `changed_files` value independent of the paginated file-listing
+  response — name this capability in whichever per-script shim Phase 3
+  extends, not a new unified one. **Not yet verified:** whether row 3's
+  marker-key helper itself (rekeying `marker.sh`'s `REPO_HASH` computation
+  off `_lib_main_repo_root` rather than cwd) was built — the dispatch
+  report doesn't claim it, and row 3's *consumption* in
+  `write`/`post`/`finish`/`status` is explicitly Phase 2's job regardless,
+  so confirm the helper itself exists before Phase 2 starts, and dispatch
+  it as part of Phase 1 completion if it doesn't. Run `/code-review` on
+  this landed diff before starting Phase 2.
+- **Phase 2 — worktree lifecycle + marker rekeying, tests land in this
+  phase.** Per-invocation `mktemp` worktrees, `finish` with no
+  PR-scoped argument (row 1, revised), `review-pr-finish.sh` rewritten to
+  discovery-based cleanup with per-match logging, deletion of
+  `review-pr-worktree-replace.py` / `review-pr-worktree-remove.py` and
+  their tests, and the marker-key helper's consumption in
+  `write`/`post`/`finish`/`status` (row 3). Tests land in this same phase,
+  not Phase 4 — three subprocess-level tests with real git (row 1,
+  revised): the session's own worktree is removed; another session's
+  worktree and a non-matching directory are untouched; a failed removal is
+  retryable and a matching one is followed by `git worktree prune`.
+- **Phase 3 — checkout, acquire, diff, post, tests land in this phase.**
+  The lighter checkout-audit fix (row 4, revised: control-character +
+  file-count checks, no temp refs, no NUL-raw diff mode), the identical
+  count check on `review-pr-acquire.sh`'s re-fetch, `statusCheckRollup`
+  taken raw with no `__typename` branch (row 9, revised), truncation +
+  argv-size fixes with `commitsComplete` derived against the real
+  100-commit cap and one test for the argv fix (row 10, revised),
+  `review-pr-diff.sh`'s truncation refusal and 300-file precheck,
+  post-failure marker consumption (row 11), the post-gate target argument
+  and doc correction with no `commit_id` pin (row 6, revised), O_NOFOLLOW
+  simplification (row 5), `author_association` allowlist (row 12), dedup +
+  inline-comments fetch with no completeness flag (row 13, revised).
+- **Phase 4 — docs, comment-discipline, SKILL.md, including the new
+  plan-architect consult step.** `docs/hooks.md`, `docs/scripts.md`,
+  `REFERENCES.md`, PR body corrections (row 6); the "unbypassable by
+  construction" correction's full site list — not just the three generic
+  docs, but also `review-pr-checkout.sh`'s own header comment,
+  `test_review_pr_checkout.py`'s module docstring, `SKILL.md`'s Step-2
+  section heading ("one atomic, unbypassable call"), and
+  `docs/scripts.md`'s stale mkdir-lock description of the concurrency
+  control (already inaccurate against the actual `fcntl.flock` design, and
+  fully incorrect once Phase 2 replaces that mechanism with no lock at
+  all); `REFERENCES.md`/`SKILL.md` naming the operator precondition that
+  `.claude/worktrees/` should be repo- or globally-`.gitignore`d in
+  whatever target repo `/review-pr` runs against; a one-line Known-gap note
+  on `require-respond-pr.sh`'s own header (or its tracking issue) stating
+  that its pre-existing `respond-pr` bypass arm is unscoped to
+  comment-shaped commands and also releases `gh pr review --approve`
+  uninspected (G10's gap); a second one-line Known-gap note in
+  `REFERENCES.md`, added this session, stating that the argv-size fix's
+  mktemp dir (row 10) is not proven clean on a signal-killed run, naming
+  it as one more site in the class `docs/hooks.md`'s "Gate deadlock
+  recovery" section already documents as unsolved; SKILL.md's Bash timeout arguments for
+  acquire/checkout/diff/finish; the Step 5 diff file consolidation;
+  removing the cd-before-finish instruction (row 3); PID `0`, integer
+  overflow, missing top-level guard for `marker-clear-stale.py` (row 14);
+  retired `activate`/`deactivate review-pr` test cleanup (row 15);
+  `timeout=` and the `timing` marker on new subprocess tests; the disjunctive-stderr-assertion,
+  acquire-failure-exit-code-only, and over-specified `select-tests.py`
+  small SDET items, tightened only where they sit in text already being
+  edited; the 21 comment-discipline items round 6 flagged whose underlying
+  code this round deletes (the 210s block, finish's owner/REPO_HASH
+  blocks, post's O_NOFOLLOW paragraph, the replace/remove docstrings) plus
+  the remainder addressed as-is. **New this session, engineer-requested,
+  not a round-6 finding:** add a `plan-architect` consult step to
+  `SKILL.md`, inserted after Step 7's tiering paragraph and before Step
+  8's "Present the full findings in chat" instruction — drafted text:
+
+  > Before presenting in step 8, consult `plan-architect` (`MODE=consult`):
+  > give it the tiered findings from this step and the diff or worktree
+  > path from step 2, and ask whether any finding signals a
+  > wrong-foundation issue in the PR rather than an independent defect, and
+  > whether the findings collectively look proportionate to the PR's
+  > actual risk. Step 8 still presents every `/code-review` finding in
+  > full, tiered as this step produced them, regardless of what the
+  > consult says — add the consult's view as its own clearly-labeled
+  > annotation alongside the findings it comments on, never as a filter
+  > that reorders, downgrades, or omits any of them. It is one more input
+  > the human weighs, not a gate and not a substitute for seeing the full
+  > list: it does not block step 8, and a finding it characterizes as
+  > low-priority or disproportionate is not thereby cleared or hidden.
+
+  Advisory input the reviewing session weighs before presenting to the
+  human, mirroring the engineer's own manual review process (code-review,
+  then a plan-architect read of the findings, then iterate). This is a
+  `SKILL.md` change, so `/skill-review` runs on it same as any other Step
+  edit — including this plan-review round, against the drafted text above.
+
+**Land as one squashed commit, not four observable ones** — same rationale
+Round 2 recorded: an intermediate phase boundary here is an implementation
+convenience, not a shippable checkpoint, since Phase 2's finish rewrite
+depends on Phase 1's provenance schema and Phase 3's post rewrite depends on
+Phase 2's marker-key helper.
+
+### Verification
+
+**Scoped, not full-suite** — same `select-tests.py` reasoning Round 2
+states in full; not restated here.
+
+- Round 6's 5 findings files' individual items disposition per the row
+  table above (ADDRESS as-is, ADDRESS simplified via deletion, or DEFER),
+  recorded via `review-ledger.sh append code-review` and reconciled into
+  PR #718's existing DEFER table via `/pr-description` rather than
+  appended blindly.
+- Discovery-based worktree tests (revised twice this session — three
+  subprocess-level tests per row 1's revision, plus two restored/added
+  items per `staff-sdet`, round-3 /plan-review, this session): a
+  **unit-level** test of the discovery/selection function fed a synthetic,
+  deliberately malformed `git worktree list --porcelain` string (a
+  missing `branch`/`HEAD` line, a truncated record) — real git cannot be
+  coerced into emitting malformed porcelain via subprocess tests without
+  corrupting `.git/worktrees` mid-test, so this edge case is only cheaply
+  reachable at the unit level; a **subprocess-level** test creating two
+  `review-pr-<sid>-*` worktrees in one session and asserting `finish`
+  removes both and logs a match count of 2, exercising row 1's own named
+  design case (a session with two PRs checked out at once) rather than
+  leaving it asserted-but-untested; two concurrent `review-pr-checkout.sh`
+  invocations against different PRs never collide; `finish` removes only
+  its own session's worktree, logs the removal, and leaves another live
+  session's untouched; a failed removal is retryable; a plain
+  non-matching directory under the same parent is never touched by the
+  pattern-matched `rm -rf` fallback, and a matching one is both removed
+  and followed by `git worktree prune`.
+- Marker-rekeying tests: `write review-pr`/`review-pr-post.sh`/
+  `review-pr-finish.sh`/`status` all resolve the same key from the main
+  repo root hash regardless of cwd; the checkout-mode local-HEAD check is
+  gone and its removal doesn't regress the remote `headRefOid` re-check,
+  which every Round 1/2 gate assertion (wrong PR, body-hash mismatch,
+  cross-session marker) still covers unchanged.
+- Checkout/acquire audit tests (revised twice this session — the lighter
+  fix, row 4, corrected mid-round after `ciso-reviewer` found the
+  original control-character check couldn't fire on its own target): a
+  **literal newline-embedded filename** (not a generic control-character
+  case) is refused via the `@json`-per-element fetch and decode, in both
+  `review-pr-checkout.sh` and `review-pr-acquire.sh`'s re-fetch — this is
+  the literal proof-of-concept `ciso-reviewer`'s round-6 BLOCKER named,
+  not a stand-in for it; a listed file count that disagrees with
+  `.changed_files` (REST field name, corrected from the prior draft's
+  `changedFiles`) is refused in both, using a per-script `gh` test shim
+  extended to set that field independent of the paginated listing
+  response (Phase 1's shared-shim item was not built — see Phase 1's
+  Critical-files note). No NUL-raw diff-parsing test, no
+  temp-ref-collision test, no mode-120000-symlink test, no shallow-clone
+  test — none of that mechanism is built this round.
+- Acquire/diff truncation tests: a paginated file list shorter than
+  `changedFiles` refuses with the distinct truncation message and sets
+  `filesComplete: false`; `commitsComplete` is derived against the real
+  100-commit cap (not 250) or a genuine re-fetched total; a file/body list
+  large enough to exceed `ARG_MAX` via the old shape passes cleanly
+  through the new `jq --slurpfile` path via its `EXIT`-trapped mktemp dir
+  (one test, not a separate abort/signal-path test); the new
+  `pulls/N/comments` fetch is exercised for the dedup case, with no
+  completeness-flag test (none is built — row 13, revised).
+- Checks-status test (revised this session — no `StatusContext` fixture,
+  no `__typename` branch): confirm `statusCheckRollup` returns `[]` with
+  exit 0 (never `null`) on a zero-checks PR.
+- Post-gate tests: a target argument mismatched against the marker's
+  identity or the origin denies; a post failure consumes the marker and
+  the re-arm message matches. No `commit_id` test — not built this round
+  (row 6, revised; deferred to a follow-up).
+- `marker-clear-stale.py` regression tests for PID `0`, integer overflow,
+  and the missing top-level guard.
+- **Skill gates** — `/skill-review` on the `review-pr` `SKILL.md` commit
+  (including the new plan-architect consult step); `claude-hook-review` on
+  `require-respond-pr.sh` / `enforce-marker-script-shape.sh`;
+  `/review-permissions` if `permissions.allow` changes;
+  `comment-discipline-reviewer` per `/code-review`'s dispatch table, since
+  this phase edits multiple durable docs and script header comments.
+- **Round 7** — a fresh `/code-review` pass once all four phases land,
+  since branch content changes substantially from round 6's reviewed
+  state; write a fresh completion marker rather than trusting round 6's.
+
+### Out of scope
+
+- **Option (a), removing post capability entirely.** The engineer selected
+  option (b) (row 6); named here as the alternative considered and
+  rejected, not silently dropped.
+- **`cleanup-idle-open-pr-worktrees.sh` reclaiming an abandoned
+  per-invocation worktree.** Cost of row 1, already accepted (row 2).
+- **A read-only GitHub token for review sessions.** Named in
+  `REFERENCES.md` as a documented operator option per the consult's
+  recommendation; not built, since it needs a credential this repo can't
+  ship (per `CLAUDE.md`'s "claude-config depends on no other repository").
+- **`require-respond-pr.sh`'s pre-existing unscoped `respond-pr` arm
+  (A18/G10).** Still sets total system strength, still pre-existing, still
+  a change to a gate other skills depend on — unchanged by this round, per
+  both Round 2's and this round's own consult.
+- **A repo-wide resolution of the tier framework's `untrusted-input`
+  carve-out against every other non-gate script.** This round applies G9's
+  reasoning to the `review-pr-*` scripts under review; auditing every other
+  script against the same framework is a separate, repo-wide effort.
+- **`commit_id` pinning on the post-gate `gh api` call (row 6).** Deferred
+  to a follow-up this session, per the second `plan-architect` consult —
+  a CISO FYI about a several-second race window, not a round-6 BLOCKER,
+  and its REST parameter name is corroborated this round only indirectly.
+- **The local merge-base-diff checkout-audit rewrite, `statusCheckRollup`
+  union normalization, and the `pulls/N/comments` completeness flag (rows
+  4, 9, 13).** Superseded this session by lighter fixes that still close
+  every round-6 BLOCKER — see each row's revision text. Not a capability
+  cut against round 6's own findings, only against machinery the plan
+  itself added in later `/plan-review` passes.
+- **`finish`'s PR-scoped removal argument (row 1).** Superseded this
+  session — a session-wide sweep with explicit per-match logging covers
+  the same cooperative-mistake case without teaching `finish` to handle a
+  multi-PR-per-session case the provenance schema doesn't otherwise
+  support.
+- **Removing the diff-only/untrusted-author review path entirely.**
+  Considered and rejected this session (G11) — neither of the engineer's
+  own review targets exercises it, but the skill ships publicly to
+  consumers who may.
+- **A busy-check protecting `finish`'s session-wide sweep against tearing
+  down a concurrently in-flight sibling review's worktree (row 1).**
+  Engineer-confirmed accept-as-documented this session — see row 1's own
+  text for the disclosed risk and the tradeoff against reintroducing
+  liveness machinery this round removes.
+- **A lightweight-fix walk-back of Round 3's original local-diff-audit
+  rewrite (Decision 2) and its `commit_id` pin (part of Decision 3) —
+  both reversed this session.** Named here per this section's own
+  precedent for logging a reversed decision, not just at the row.

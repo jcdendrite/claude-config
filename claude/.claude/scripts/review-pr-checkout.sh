@@ -94,20 +94,15 @@ fi
 # unaudited tree -- the headRefOid equality check later in this script
 # can't catch that, since both sides legitimately agree. Comparing
 # $OWNER_REPO against origin here, before either gh call, closes it.
-ORIGIN_URL=$(_lib_capped git -C "$REPO_ROOT" remote get-url origin 2>/dev/null) || ORIGIN_URL=""
-if [[ -z "$ORIGIN_URL" ]]; then
-  echo "review-pr-checkout.sh: could not resolve this worktree's origin remote. Abort before any fetch." >&2
+ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
+  echo "review-pr-checkout.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2
-fi
-# Same owner/repo extraction require-respond-pr.sh's own cross-repo check
-# uses, so both sides parse an origin URL identically: the last two
-# ':'- or '/'-delimited path segments, trailing '.git' stripped.
-ORIGIN_OWNER_REPO=$(printf '%s\n' "$ORIGIN_URL" | sed -nE 's|.*[:/]([^/:]+/[^/]+)$|\1|p' | sed 's|\.git$||')
-if [[ -z "$ORIGIN_OWNER_REPO" ]]; then
-  echo "review-pr-checkout.sh: could not parse an owner/repo out of this worktree's origin remote URL '$ORIGIN_URL'. Abort before any fetch." >&2
-  exit 2
-fi
-if [[ "$ORIGIN_OWNER_REPO" != "$OWNER_REPO" ]]; then
+}
+# Case-insensitive: GitHub treats owner/repo slugs case-insensitively, so a
+# PR identity spelled with different case than origin's own stored URL case
+# must still match. Same nocasematch idiom require-respond-pr.sh's own
+# mutating-method check uses.
+if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
   echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch -- see this script's header comment for the cross-repo substitution this check exists to close." >&2
   exit 2
 fi
@@ -139,7 +134,7 @@ fi
 # one -- a MEMBER/OWNER author paired with a cross-repository PR still
 # refuses via the cross-repo check further down, regardless of standing.
 GH_PR_TRUST_TIMEOUT_SECONDS=10
-if ! TRUST_JSON=$(_lib_capped_for "$GH_PR_TRUST_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
+if ! TRUST_JSON=$(_lib_gh "$GH_PR_TRUST_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
   echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's trust-classification data (gh api failed or timed out). Abort before any fetch -- a gh failure here must never be read as 'no restriction found'." >&2
   exit 2
 fi
@@ -165,16 +160,16 @@ if [[ -z "$HEAD_REPO_FULL_NAME" || "$HEAD_REPO_FULL_NAME" != "$BASE_REPO_FULL_NA
   exit 2
 fi
 
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below, same
-# reasoning as review-pr-post.sh's own calls: adversarial PR content could
-# induce the calling agent to set GH_HOST ambiently, silently redirecting a
-# fact this script is supposed to be deriving independently (the file list,
-# the headRefOid) to an attacker-chosen host.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
+# _lib_gh, same reasoning as review-pr-post.sh's own calls: adversarial PR
+# content could induce the calling agent to set GH_HOST ambiently, silently
+# redirecting a fact this script is supposed to be deriving independently
+# (the file list, the headRefOid) to an attacker-chosen host.
 
 # 10s: a network GET carrying no payload, the same budget review-pr-post.sh
 # uses for its own gh pr view identity re-fetch.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-HEAD_REF_OID=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
+HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort before any fetch of the PR's ref." >&2
   exit 2
@@ -188,7 +183,7 @@ GH_PR_FILES_TIMEOUT_SECONDS=30
 # which silently caps at 100 entries with no --paginate equivalent
 # (REFERENCES.md) -- this is exactly the full, paginated list the audit
 # below must see, self-fetched rather than trusted from Step 1's own read.
-if ! RAW_FILES=$(_lib_capped_for "$GH_PR_FILES_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
+if ! RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
   echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate failed or timed out). Abort before any fetch of the PR's ref -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
   exit 2
 fi
@@ -213,7 +208,7 @@ fi
 # at the fetch/checkout boundary, never at the moment this file list was
 # captured. Re-fetch headRefOid here and compare against the value captured
 # above, before the audit runs against a possibly-stale list.
-HEAD_REF_OID_RECHECK=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
+HEAD_REF_OID_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
 if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
   echo "review-pr-checkout.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort before any fetch of the PR's ref." >&2
   exit 2
@@ -380,7 +375,8 @@ fi
 # "acquired") can never write a completion marker.
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
 mkdir -p -- "$(dirname "$PROVENANCE")"
-if ! printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$CLAUDE_PID" "checkout" | _lib_write_no_follow "$PROVENANCE"; then
+if ! _lib_write_review_pr_provenance "$PROVENANCE" \
+  "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=checkout"; then
   echo "review-pr-checkout.sh: could not write provenance file $PROVENANCE -- cannot record this checkout. The worktree above was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
   exit 2
 fi

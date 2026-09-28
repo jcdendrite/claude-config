@@ -21,7 +21,13 @@ from pathlib import Path
 import pytest
 from helpers import SCRIPTS_DIR
 
-from .conftest import _build_repo_with_pr_ref, _install_audit_script, _seed_session, _shimmed_env
+from .conftest import (
+    _build_repo_with_pr_ref,
+    _install_audit_script,
+    _provenance_fields,
+    _seed_session,
+    _shimmed_env,
+)
 
 SCRIPT = SCRIPTS_DIR / "review-pr-checkout.sh"
 OWNER_REPO = "foo/bar"
@@ -309,6 +315,30 @@ class TestOwnerRepoOriginMismatch:
         assert not _worktree_dir(repo).exists()
 
 
+class TestOwnerRepoCaseInsensitiveMatch:
+    def test_pr_identity_case_differing_from_origin_still_checks_out(
+        self, isolated_home, tmp_path
+    ):
+        """GitHub treats owner/repo slugs case-insensitively, so a PR
+        identity spelled with different case than origin's own stored URL
+        case must still match, not be misread as a cross-repo target and
+        refused by TestOwnerRepoOriginMismatch's own check above."""
+        origin_owner_repo = "Foo-Org/Bar-Repo"
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, owner_repo=origin_owner_repo)
+        _install_audit_script(isolated_home)
+        result, call_log = _run(
+            repo, isolated_home, [f"foo-org/bar-repo#{PR_NUMBER}"], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        worktree_dir = Path(result.stdout.strip())
+        assert worktree_dir.exists()
+        checked_out_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert checked_out_head == pr_sha
+
+
 class TestMissingAuditScript:
     def test_uninstalled_skill_directory_aborts_before_any_fetch(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -468,21 +498,23 @@ class TestProvenanceWrite:
         assert result.returncode == 0, result.stderr
         provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
         assert provenance.exists()
-        lines = provenance.read_text().splitlines()
-        assert lines[0] == PR_IDENTITY
-        assert lines[1] == pr_sha
-        assert lines[2].isdigit()
-        assert lines[3] == "checkout"
+        fields = _provenance_fields(provenance)
+        assert fields["pr_identity"] == PR_IDENTITY
+        assert fields["head_ref_oid"] == pr_sha
+        assert fields["pid"].isdigit()
+        assert fields["mode"] == "checkout"
 
-    def test_successful_checkout_then_marker_write_pins_mode_as_last_line_of_both_files(
+    def test_successful_checkout_then_marker_write_pins_mode_field_in_both_files(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """Pins the shared 4-line schema convention across the two
-        artifacts review-pr-checkout.sh and marker.sh's `write review-pr`
-        arm produce: mode is the LAST positional field in both the
-        provenance file and the completion marker, not merely field index
-        3 -- a future field inserted at either end must not silently break
-        either side's own sed -n '4p' (marker.sh) / lines[-1] read."""
+        """Pins the shared "mode" field across the two artifacts
+        review-pr-checkout.sh and marker.sh's `write review-pr` arm
+        produce: the provenance file's key=value schema is read by key
+        (_lib_review_pr_provenance_field), immune to a future field being
+        added anywhere in the file, while the completion marker still uses
+        the older 4-line positional schema (mode is its LAST field, not
+        merely index 3) -- a future field inserted there must not silently
+        break marker.sh's own sed -n '4p' / this test's lines[-1] read."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
@@ -492,7 +524,7 @@ class TestProvenanceWrite:
         worktree_dir = Path(result.stdout.strip())
 
         provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        assert provenance.read_text().splitlines()[-1] == "checkout"
+        assert _provenance_fields(provenance)["mode"] == "checkout"
 
         findings_body = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.body"
         findings_body.write_text(f"**[Claude Code]** # findings\n\n{_ATTRIBUTION_TRAILER}\n")

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from helpers import SCRIPTS_DIR
+from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
 SCRIPT_PATH = SCRIPTS_DIR / "marker-clear-stale.py"
 
@@ -70,15 +70,6 @@ class TestPidAlive:
         assert _clear_stale.pid_alive("-1") is False
 
 
-def _write_review_pr_provenance(active_dir: Path, session_id: str, pid: str) -> None:
-    """Field order matches _lib_review_pr_completion_marker_fields's own
-    convention: PR identity, headRefOid, PID, mode -- PID is field index 2
-    (0-based), which sweep()'s REVIEW_PR_SUFFIXES branch reads."""
-    (active_dir / f"{session_id}.provenance").write_text(
-        "\n".join(["foo/bar#42", "abc123", pid, "checkout"]) + "\n"
-    )
-
-
 class TestSweepReviewPrSuffixBranch:
     """sweep()'s REVIEW_PR_SUFFIXES branch derives the owning PID from a
     sibling .provenance file rather than the entry's own content -- a
@@ -91,7 +82,10 @@ class TestSweepReviewPrSuffixBranch:
         active_dir = tmp_path / ".review-pr-active.d"
         active_dir.mkdir()
         (active_dir / "alive-session.body").write_text("findings\n")
-        _write_review_pr_provenance(active_dir, "alive-session", str(os.getpid()))
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", os.getpid(),
+            mode="checkout", session_id="alive-session", config_dir=tmp_path,
+        )
 
         # Two entries are swept, not one: the sibling .provenance file is
         # itself a REVIEW_PR_SUFFIXES entry (it ends in ".provenance"), whose
@@ -109,7 +103,10 @@ class TestSweepReviewPrSuffixBranch:
         proc = subprocess.Popen(["true"])
         proc.wait()
         (active_dir / "dead-session.body").write_text("findings\n")
-        _write_review_pr_provenance(active_dir, "dead-session", str(proc.pid))
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="dead-session", config_dir=tmp_path,
+        )
 
         # Both the .body entry and its self-referential .provenance entry
         # (see the live-sibling test above) are evicted.
@@ -117,6 +114,31 @@ class TestSweepReviewPrSuffixBranch:
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "dead-session.body").exists()
         assert not (active_dir / "dead-session.provenance").exists()
+
+    def test_review_pr_entry_with_legacy_positional_provenance_is_kept(self, tmp_path):
+        """Pre-migration provenance format (positional lines, no `schema=1`
+        header) must be kept rather than evicted -- liveness can't be
+        determined from a format this reader doesn't recognize, and
+        defaulting to eviction here would delete a live session's artifacts
+        under a format written before the schema migration. Mirrors
+        _lib.sh's _lib_review_pr_provenance_field, which fails closed the
+        same way on a missing `schema=1` header."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        (active_dir / "legacy-session.body").write_text("findings\n")
+        # Old positional format (pre-_lib_write_review_pr_provenance):
+        # PR_IDENTITY, HEAD_REF_OID, PID, MODE -- no `schema=1` header line,
+        # and no "pid=" key at all.
+        (active_dir / "legacy-session.provenance").write_text(
+            "\n".join(["foo/bar#42", "abc123", str(os.getpid()), "checkout"]) + "\n"
+        )
+
+        # Both the .body entry and its self-referential .provenance entry
+        # (see the live-sibling test above) are kept.
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (0, 2)
+        assert (active_dir / "legacy-session.body").exists()
+        assert (active_dir / "legacy-session.provenance").exists()
 
     def test_review_pr_entry_with_no_sibling_provenance_is_evicted(self, tmp_path):
         """No provenance file at all (never written, or already reaped) must

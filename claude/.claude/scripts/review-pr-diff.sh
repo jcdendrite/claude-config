@@ -81,17 +81,13 @@ fi
 # content-addressed, so an unchecked mismatch would let this script's audit
 # and diff run against a decoy repo's manufactured content while claiming
 # to describe the real PR.
-ORIGIN_URL=$(_lib_capped git -C "$REPO_ROOT" remote get-url origin 2>/dev/null) || ORIGIN_URL=""
-if [[ -z "$ORIGIN_URL" ]]; then
-  echo "review-pr-diff.sh: could not resolve this worktree's origin remote. Abort before any fetch." >&2
+ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
+  echo "review-pr-diff.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2
-fi
-ORIGIN_OWNER_REPO=$(printf '%s\n' "$ORIGIN_URL" | sed -nE 's|.*[:/]([^/:]+/[^/]+)$|\1|p' | sed 's|\.git$||')
-if [[ -z "$ORIGIN_OWNER_REPO" ]]; then
-  echo "review-pr-diff.sh: could not parse an owner/repo out of this worktree's origin remote URL '$ORIGIN_URL'. Abort before any fetch." >&2
-  exit 2
-fi
-if [[ "$ORIGIN_OWNER_REPO" != "$OWNER_REPO" ]]; then
+}
+# Case-insensitive: GitHub treats owner/repo slugs case-insensitively, same
+# reasoning as review-pr-checkout.sh's own identical check.
+if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
   echo "review-pr-diff.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch." >&2
   exit 2
 fi
@@ -102,18 +98,18 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 2
 fi
 
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below, same
-# reasoning as review-pr-checkout.sh.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
+# _lib_gh, same reasoning as review-pr-checkout.sh.
 
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-HEAD_REF_OID=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
+HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort." >&2
   exit 2
 fi
 
 GH_PR_FILES_TIMEOUT_SECONDS=30
-if ! RAW_FILES=$(_lib_capped_for "$GH_PR_FILES_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
+if ! RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate failed or timed out). Abort -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
   exit 2
 fi
@@ -126,7 +122,7 @@ fi
 # Same TOCTOU guard as review-pr-checkout.sh: a force-push landing between
 # the initial headRefOid fetch and the file-list fetch would leave the
 # audit running against a file list gh already considers stale.
-HEAD_REF_OID_RECHECK=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
+HEAD_REF_OID_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
 if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
   echo "review-pr-diff.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort." >&2
   exit 2
@@ -158,7 +154,7 @@ if [[ "$AUDIT_EXIT" -ne 0 ]]; then
 fi
 
 GH_PR_DIFF_TIMEOUT_SECONDS=30
-if ! DIFF_TEXT=$(_lib_capped_for "$GH_PR_DIFF_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr diff "$PR_NUMBER" -R "$OWNER_REPO" 2>/dev/null); then
+if ! DIFF_TEXT=$(_lib_gh "$GH_PR_DIFF_TIMEOUT_SECONDS" pr diff "$PR_NUMBER" -R "$OWNER_REPO" 2>/dev/null); then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's diff (gh pr diff failed or timed out). Abort." >&2
   exit 2
 fi
@@ -183,7 +179,8 @@ if ! printf '%s\n' "$DIFF_TEXT" | _lib_write_no_follow "$DIFF_FILE"; then
 fi
 
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
-if ! printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$CLAUDE_PID" "diff-only" | _lib_write_no_follow "$PROVENANCE"; then
+if ! _lib_write_review_pr_provenance "$PROVENANCE" \
+  "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=diff-only"; then
   echo "review-pr-diff.sh: could not write provenance file $PROVENANCE. Abort." >&2
   exit 2
 fi

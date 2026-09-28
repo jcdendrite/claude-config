@@ -19,7 +19,13 @@ from pathlib import Path
 import pytest
 from helpers import SCRIPTS_DIR
 
-from .conftest import _build_repo_with_pr_ref, _install_audit_script, _seed_session, _shimmed_env
+from .conftest import (
+    _build_repo_with_pr_ref,
+    _install_audit_script,
+    _provenance_fields,
+    _seed_session,
+    _shimmed_env,
+)
 
 SCRIPT = SCRIPTS_DIR / "review-pr-diff.sh"
 OWNER_REPO = "foo/bar"
@@ -240,11 +246,11 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
         assert "diff --git a/a.py b/a.py" in diff_path.read_text()
 
         provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        lines = provenance.read_text().splitlines()
-        assert lines[0] == PR_IDENTITY
-        assert lines[1] == pr_sha
-        assert lines[2].isdigit()
-        assert lines[3] == "diff-only"
+        fields = _provenance_fields(provenance)
+        assert fields["pr_identity"] == PR_IDENTITY
+        assert fields["head_ref_oid"] == pr_sha
+        assert fields["pid"].isdigit()
+        assert fields["mode"] == "diff-only"
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
         worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '%')}-{PR_NUMBER}"

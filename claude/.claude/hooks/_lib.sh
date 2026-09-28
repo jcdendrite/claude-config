@@ -150,6 +150,31 @@ _lib_status_consistent_with_cap_kill() {
   return 1
 }
 
+# _lib_gh SECONDS ARGS...
+# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for, with
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped from its environment first --
+# adversarial PR content could otherwise induce the calling agent to set
+# GH_HOST ambiently, silently redirecting a fact the caller is deriving to
+# an attacker-chosen host. Replaces the identical `env -u GH_HOST -u
+# GH_ENTERPRISE_TOKEN` prefix duplicated across review-pr-acquire.sh,
+# review-pr-checkout.sh, review-pr-diff.sh, and review-pr-post.sh.
+# _lib_capped_for wraps `env`, not the reverse: env(1) execs an external
+# binary by name, so it cannot invoke _lib_capped_for itself (a shell
+# function, not something on PATH).
+# Prints nothing of its own; callers keep wrapping the call in
+# `2>/dev/null` as before, since gh's own stderr can echo request
+# parameters back (REFERENCES.md). Returns _lib_capped_for's own exit
+# status unchanged -- 124/137/143 on a cap kill, gh's own status
+# otherwise -- so a caller that wants to distinguish "gh itself failed"
+# from "the call timed out" (rather than folding both into one "failed or
+# timed out" message, as every review-pr script does today) passes the
+# returned status through _lib_status_consistent_with_cap_kill.
+_lib_gh() {
+  local seconds="${1:?_lib_gh requires a seconds argument}"
+  shift
+  _lib_capped_for "$seconds" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh "$@"
+}
+
 # Caps the fallback loop, which takes one iteration per not-yet-existing trailing component of the target plus one for the existing ancestor it stops at.
 # A target with 64 or more missing components therefore fails closed.
 # 64 is an arbitrary ceiling far above the few missing components a legitimate target has, not a value derived from a latency budget or an external spec.
@@ -507,7 +532,14 @@ _lib_repo_root() {
 # the two agree from the main working tree, but --show-toplevel returns the
 # CURRENT worktree's own path when run from a linked worktree, while
 # --git-common-dir always points at the shared .git directory regardless of
-# which worktree the call is made from.
+# which worktree the call is made from. git-worktree(1)'s "Details" section
+# documents the guarantee this relies on: "$GIT_COMMON_DIR is set to point
+# back to the main worktree's $GIT_DIR" from any linked worktree, so
+# dirname(--git-common-dir) is the main worktree's root regardless of
+# git's own worktree-list ordering -- unlike deriving it from the first
+# entry of `git worktree list --porcelain`, this needs no ordering
+# guarantee at all. See TestLibMainRepoRoot in test_marker_lib.py for the
+# fixture test covering the main-tree-vs-linked-worktree case directly.
 # review-pr-checkout.sh and review-pr-finish.sh each anchor their own
 # WORKTREE_DIR reconstruction here (not at _lib_repo_root's own
 # possibly-linked-worktree result), so the two independent computations
@@ -651,6 +683,55 @@ _lib_review_pr_completion_marker_fields() {
   printf '%s\n%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash" "$mode"
 }
 
+# _lib_origin_owner_repo [REPO_ROOT]
+# Prints the origin remote's own owner/repo, parsed as the last two ':'- or
+# '/'-delimited path segments of its URL with a trailing '.git' stripped.
+# REPO_ROOT, when given, resolves origin via `git -C REPO_ROOT remote
+# get-url origin` (review-pr-checkout.sh's/review-pr-diff.sh's own prior
+# recipe); omitted, resolves it via `git config --get remote.origin.url`
+# against the caller's own cwd (require-respond-pr.sh's own prior recipe --
+# a PreToolUse hook has no independently-resolved REPO_ROOT to pass).
+# Replaces the byte-identical sed extraction all three previously carried.
+# Returns 1 with no output when origin is unset or its URL doesn't parse to
+# an owner/repo shape.
+# A GitHub owner/repo comparison must be case-insensitive (GitHub treats
+# slugs case-insensitively) -- this function only extracts the value, so
+# each caller compares its result the way require-respond-pr.sh's own
+# mutating-method check already does: `shopt -s nocasematch` around a
+# `[[ == ]]`/`[[ != ]]` test, then `shopt -u nocasematch`.
+_lib_origin_owner_repo() {
+  local repo_root="${1-}" url owner_repo
+  if [ -n "$repo_root" ]; then
+    url=$(_lib_capped git -C "$repo_root" remote get-url origin 2>/dev/null) || url=""
+  else
+    url=$(_lib_capped git config --get remote.origin.url 2>/dev/null) || url=""
+  fi
+  [ -n "$url" ] || return 1
+  owner_repo=$(printf '%s\n' "$url" | sed -nE 's|.*[:/]([^/:]+/[^/]+)$|\1|p' | sed 's|\.git$||')
+  [ -n "$owner_repo" ] || return 1
+  printf '%s' "$owner_repo"
+}
+
+# _lib_case_insensitive_ne A B
+# Returns 0 (true) when A and B differ case-insensitively, 1 (false) when
+# they match -- GitHub treats owner/repo slugs case-insensitively, so every
+# caller comparing two _lib_origin_owner_repo results (or one against a
+# PR-identity-derived owner/repo) must compare that way too. Replaces the
+# `shopt -s nocasematch` / `[[ ]]` / `shopt -u nocasematch` block formerly
+# duplicated across require-respond-pr.sh, review-pr-checkout.sh,
+# review-pr-diff.sh, and review-pr-finish.sh.
+_lib_case_insensitive_ne() {
+  local a="$1" b="$2" result
+  shopt -s nocasematch
+  if [[ "$a" != "$b" ]]; then
+    result=0
+  else
+    result=1
+  fi
+  shopt -u nocasematch
+  return "$result"
+}
+
 # _lib_parse_pr_identity PR_IDENTITY
 # Splits a <owner>/<repo>#<number> PR identity into owner/repo and number,
 # printing owner/repo then number on two lines, and returns 0. Returns 1
@@ -684,6 +765,60 @@ _lib_parse_pr_identity() {
 # carries no leading dot (e.g. "body", "provenance", "diff", "context.json").
 _lib_review_pr_artifact_path() {
   printf '%s/.review-pr-active.d/%s.%s' "$1" "$2" "$3"
+}
+
+# _lib_write_review_pr_provenance PROVENANCE_PATH KEY=VALUE [KEY=VALUE ...]
+# Writes PROVENANCE_PATH as a `schema=1` header line followed by one
+# KEY=VALUE line per remaining argument, through _lib_write_no_follow
+# (refuses a symlink at PROVENANCE_PATH). review-pr-acquire.sh/-checkout.sh/
+# -diff.sh each call this with the four fields they know today
+# (pr_identity, head_ref_oid, pid, mode) -- replacing the positional
+# four-line format ("$PR_IDENTITY\n$HEAD_REF_OID\n$CLAUDE_PID\n$MODE\n")
+# those scripts and marker.sh's `write review-pr` arm previously each
+# carried their own copy of. The schema is additive by design, not frozen
+# at today's four fields: a later phase recording another fact (e.g. the
+# locally re-derived commit SHA, or a worktree/marker key) passes one more
+# KEY=VALUE argument here rather than adding a second provenance file or an
+# env var -- this is the schema's only writer, so
+# _lib_review_pr_provenance_field below sees every field the same way
+# regardless of which caller added it.
+_lib_write_review_pr_provenance() {
+  local path="$1"
+  shift
+  { printf 'schema=1\n'; printf '%s\n' "$@"; } | _lib_write_no_follow "$path"
+}
+
+# _lib_review_pr_provenance_field PROVENANCE_PATH KEY
+# Prints KEY's value from PROVENANCE_PATH's key=value lines and returns 0,
+# or returns 1 with no output if the file is unreadable, its first line
+# isn't exactly `schema=1`, or KEY is absent or holds an empty value.
+# Matches each line against "KEY=" as a fixed prefix (no globbing, no
+# regex), so a value that itself contains '=' (none do today) still
+# round-trips correctly.
+# A caller reads only the keys it knows about, so a provenance file
+# carrying additional keys a newer writer added (e.g. a later phase's
+# fetched_sha) is read correctly by an older caller that has never heard of
+# them -- see _lib_write_review_pr_provenance's own comment for why the
+# schema is additive by design.
+_lib_review_pr_provenance_field() {
+  local path="$1" key="$2"
+  [ -n "$path" ] && [ -n "$key" ] || return 1
+  local content
+  content=$(_lib_capped cat "$path" 2>/dev/null) || return 1
+  local first_line
+  first_line=$(printf '%s\n' "$content" | sed -n '1p')
+  [ "$first_line" = "schema=1" ] || return 1
+  local line value=""
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*)
+        value="${line#"$key"=}"
+        break
+        ;;
+    esac
+  done <<< "$content"
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
 }
 
 # _lib_review_pr_worktree_dir MAIN_REPO_ROOT OWNER_REPO PR_NUMBER

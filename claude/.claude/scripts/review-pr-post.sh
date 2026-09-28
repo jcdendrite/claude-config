@@ -155,11 +155,11 @@ PR_NUMBER=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '2p')
 # 10s: a network GET carrying no payload, more slack than _lib_capped's 5s
 # local-read default but less than the write-path headroom
 # GH_PR_REVIEW_TIMEOUT_SECONDS gives the POST calls below.
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped for the same reason as those calls:
-# an ambient GH_HOST would otherwise let adversarial PR content redirect
-# even this identity check to a different host.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped via _lib_gh for the same reason as
+# those calls: an ambient GH_HOST would otherwise let adversarial PR
+# content redirect even this identity check to a different host.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-CURRENT_PR_HEAD=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || CURRENT_PR_HEAD=""
+CURRENT_PR_HEAD=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || CURRENT_PR_HEAD=""
 if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
   echo "review-pr-post.sh: PR $OWNER_REPO#$PR_NUMBER's current headRefOid does not match the completion marker's recorded HEAD -- PR_NUMBER/OWNER_REPO may not name the reviewed PR. Abort without posting." >&2
   exit 2
@@ -173,19 +173,19 @@ fi
 # carrying a body file, not a local git/index read, so it needs more slack
 # than a request with no payload.
 GH_PR_REVIEW_TIMEOUT_SECONDS=20
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from gh's environment on both calls:
-# an ambient GH_HOST (adversarial PR content could induce the calling agent
-# to set one) would otherwise silently redirect the post to a different
-# host before this script's own checks have any say in it.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped via _lib_gh from gh's environment on
+# both calls: an ambient GH_HOST (adversarial PR content could induce the
+# calling agent to set one) would otherwise silently redirect the post to a
+# different host before this script's own checks have any say in it.
 case "$1" in
   comment)
-    if ! _lib_capped_for "$GH_PR_REVIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr review "$PR_NUMBER" --comment -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
+    if ! _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --comment -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
       echo "review-pr-post.sh: gh pr review --comment failed or timed out. Completion marker left intact for a retry." >&2
       exit 2
     fi
     ;;
   request-changes)
-    if ! _lib_capped_for "$GH_PR_REVIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr review "$PR_NUMBER" --request-changes -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
+    if ! _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --request-changes -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
       echo "review-pr-post.sh: gh pr review --request-changes failed or timed out. Completion marker left intact for a retry." >&2
       exit 2
     fi

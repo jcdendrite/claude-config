@@ -1524,6 +1524,13 @@ def test_parse_pr_identity_returns_owner_repo_and_number(tmp_path: Path) -> None
         # path-traversal shape.
         pytest.param("../..#5", id="traversal_segments"),
         pytest.param("..#5", id="single_dot_segment"),
+        # Each half independently: "../..#5" above has both halves bad, which
+        # doesn't distinguish a regex that validates each half from one that
+        # only checks the owner-side (or the whole string) loosely. A
+        # legitimate owner paired with a traversal repo, and vice versa, pin
+        # that both '/'-delimited segments are checked on their own.
+        pytest.param("foo/..#5", id="repo_half_traversal_only"),
+        pytest.param("../foo#5", id="owner_half_traversal_only"),
     ],
 )
 def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity: str) -> None:
@@ -1540,6 +1547,126 @@ def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path
     result = _parse_pr_identity("my-org/my.repo#5")
     assert result.returncode == 0, result.stderr
     assert result.stdout == "my-org/my.repo\n5\n"
+
+
+# --- _lib_gh -----------------------------------------------------------
+
+
+def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
+    """PATH dir holding a fake `gh` that records argv and
+    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
+    exit_code."""
+    shim_dir = tmp_path / "gh-shim"
+    shim_dir.mkdir()
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        record = {{
+            "args": sys.argv[1:],
+            "GH_HOST": os.environ.get("GH_HOST"),
+            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
+        }}
+        with open({str(call_log)!r}, "a") as f:
+            f.write(json.dumps(record) + chr(10))
+        sys.exit({exit_code})
+    """))
+    gh_shim.chmod(0o755)
+    return shim_dir
+
+
+class TestLibGh:
+    """Direct unit coverage for _lib_gh -- the one call every review-pr
+    script routes its own `gh` invocations through, replacing each site's
+    identical `env -u GH_HOST -u GH_ENTERPRISE_TOKEN` prefix."""
+
+    def test_strips_gh_host_and_enterprise_token_and_forwards_argv(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log)
+        env = {
+            **os.environ,
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_HOST": "attacker-chosen-host.example",
+            "GH_ENTERPRISE_TOKEN": "leaked-token",
+        }
+        result = _run_lib_call('_lib_gh 5 pr view 42 -R foo/bar --json headRefOid', env=env)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(call_log.read_text())
+        assert record["args"] == ["pr", "view", "42", "-R", "foo/bar", "--json", "headRefOid"]
+        assert record["GH_HOST"] is None
+        assert record["GH_ENTERPRISE_TOKEN"] is None
+
+    def test_propagates_ghs_own_nonzero_exit_status(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
+        env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = _run_lib_call('_lib_gh 5 pr view 42', env=env)
+        assert result.returncode == 1
+
+
+# --- _lib_origin_owner_repo ----------------------------------------------
+
+
+class TestLibOriginOwnerRepo:
+    """Direct unit coverage for _lib_origin_owner_repo -- the one shared
+    extraction review-pr-checkout.sh, review-pr-diff.sh, and
+    review-pr-finish.sh (REPO_ROOT form) and require-respond-pr.sh's own
+    cross-repo check (cwd form) all call, replacing each site's own
+    byte-identical sed extraction."""
+
+    def test_extracts_owner_repo_via_explicit_repo_root(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/foo/bar.git"],
+            cwd=repo, check=True,
+        )
+        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    def test_extracts_owner_repo_from_cwd_when_repo_root_omitted(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
+            cwd=repo, check=True,
+        )
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_origin_owner_repo'],
+            cwd=repo, capture_output=True, text=True, env=dict(os.environ),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    def test_fails_closed_with_no_origin_remote(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibCaseInsensitiveNe:
+    """Direct unit coverage for _lib_case_insensitive_ne -- the shared
+    nocasematch comparison require-respond-pr.sh, review-pr-checkout.sh,
+    review-pr-diff.sh, and review-pr-finish.sh each call on a pair of
+    _lib_origin_owner_repo results, since GitHub treats owner/repo slugs
+    case-insensitively."""
+
+    def test_exact_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_case_differing_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "Foo/Bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_genuine_mismatch_returns_true(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/baz"', env=dict(os.environ))
+        assert result.returncode == 0
 
 
 # --- _lib_is_no_gate_release_agent ---------------------------------------
@@ -6214,6 +6341,93 @@ class TestLibReviewPrArtifactPath:
         )
         assert result.returncode == 0
         assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.context.json"
+
+
+class TestLibReviewPrProvenanceSchema:
+    """Direct unit coverage for _lib_write_review_pr_provenance and
+    _lib_review_pr_provenance_field -- the one writer and reader
+    review-pr-acquire.sh/-checkout.sh/-diff.sh, marker.sh's `write
+    review-pr` arm, review-pr-finish.sh, and marker-clear-stale.py's own
+    "pid=" read (Python, not this lib) all agree on, replacing the prior
+    positional four-line format."""
+
+    def test_round_trips_every_written_field(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        write = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout',
+            env=dict(os.environ),
+        )
+        assert write.returncode == 0, write.stderr
+        assert provenance.read_text().splitlines()[0] == "schema=1"
+
+        for key, expected in (
+            ("pr_identity", "foo/bar#42"),
+            ("head_ref_oid", "abc123"),
+            ("pid", "999"),
+            ("mode", "checkout"),
+        ):
+            read = _run_lib_call(
+                f'_lib_review_pr_provenance_field "{provenance}" {key}', env=dict(os.environ)
+            )
+            assert read.returncode == 0, read.stderr
+            assert read.stdout == expected
+
+    def test_unknown_key_returns_one_with_no_output(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" nonexistent_key', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_file_with_no_schema_header_is_rejected_even_with_a_matching_key_value_line(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy positional-format file, or anything else missing the
+        `schema=1` header, must fail closed rather than being partially
+        read -- even when a line happens to look like a valid key=value
+        pair."""
+        provenance = tmp_path / "sess.provenance"
+        provenance.write_text("pr_identity=foo/bar#42\nhead_ref_oid=abc123\n")
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pr_identity', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_field_unknown_to_this_reader_does_not_break_reading_the_known_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """The schema is additive by design: a file carrying a key this
+        call never asks for (modeling a later phase's own added field, e.g.
+        fetched_sha) must not disturb any other field's read."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout fetched_sha=deadbeef',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" mode', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "checkout"
+
+    def test_writer_refuses_a_symlinked_destination(self, tmp_path: Path) -> None:
+        real = tmp_path / "real.provenance"
+        real.write_text("pre-existing\n")
+        link = tmp_path / "sess.provenance"
+        link.symlink_to(real)
+        result = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{link}" pr_identity=foo/bar#42', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert real.read_text() == "pre-existing\n", "a symlinked destination must never be followed and truncated"
 
 
 class TestLibReviewPrWorktreeDir:
