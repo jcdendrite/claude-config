@@ -1588,14 +1588,11 @@ class TestSingleAccountWithinStatedPrecision:
     this check into _pooled_dominance_breach and _render_pooled_block."""
 
     @pytest.mark.parametrize("w_max", [0.5, 0.99])
-    def test_point_outside_ci_breaches_regardless_of_swing_bound_formula(self, w_max):
-        """p_estimate=100.0 sits strictly outside [85.0, 95.0]: the
-        fail-closed backstop returns True before the swing-bound formula
-        runs at all. w_max=0.5 gives max_swing=50.0, which the swing-bound
-        formula alone would also call a breach here. w_max=0.99 gives
-        max_swing=1.0, which the swing-bound formula alone would call
-        *not* a breach -- parametrized to prove the backstop fires
-        independently of what that formula alone would say.
+    def test_point_outside_ci_breaches_regardless_of_the_primary_formula(self, w_max):
+        """p_estimate=100.0 sits strictly outside [85.0, 95.0], so the
+        fail-closed backstop returns True before the exact-interval
+        containment formula runs at all. Parametrized over a low and a high
+        w_max to prove the backstop fires independently of w_max.
         """
         assert review_rounds._single_account_within_stated_precision(w_max, 100.0, 85.0, 95.0) is True
 
@@ -1604,24 +1601,45 @@ class TestSingleAccountWithinStatedPrecision:
         self, p_estimate, ci_lo, ci_hi,
     ):
         """p_estimate exactly at ci_lo or ci_hi is non-strictly inside
-        [ci_lo, ci_hi], so the backstop does not fire. w_max=0.99 makes the
-        swing-bound formula alone return False, since max_swing=1.0 is not
-        <= the boundary's own min(p_estimate - ci_lo, ci_hi - p_estimate),
-        which is 0.0 here.
+        [ci_lo, ci_hi], so the backstop does not fire. w_max=0.99 puts the
+        exact interval outside the CI on the side p_estimate sits at:
+
+        - p_estimate=85.0: exact_lo=(85.0-1.0)/0.99=84.848..., which
+          ci_lo=85.0 does not contain from below.
+        - p_estimate=95.0: exact_hi=95.0/0.99=95.959..., which ci_hi=95.0
+          does not contain from above.
         """
         assert review_rounds._single_account_within_stated_precision(0.99, p_estimate, ci_lo, ci_hi) is False
 
-    def test_primary_formula_breaches_at_its_own_exact_swing_bound_equality(self):
-        """The fail-closed backstop's own boundary case above
-        (p_estimate exactly on ci_lo/ci_hi) can't distinguish the primary
-        swing-bound formula's `<=` from a hypothetical `<`, since it never
-        puts max_swing anywhere near min(p_estimate - ci_lo, ci_hi -
-        p_estimate). p_estimate=50.0 sits strictly inside [30.0, 90.0], so
-        the backstop doesn't fire; min(50.0 - 30.0, 90.0 - 50.0) = 20.0, and
-        w_max=0.8 gives max_swing=(1 - 0.8)*100 = 20.0 -- exact equality on
-        the primary formula's own `<=`, which must still resolve to breach.
+    def test_primary_formula_breaches_at_its_own_exact_containment_boundary(self):
+        """p_estimate=50.0 sits strictly inside [37.5, 62.5], so the
+        backstop doesn't fire. w_max=0.8 puts the exact consistent-value
+        interval for the dominant account at
+        [(50.0 - 20.0) / 0.8, 50.0 / 0.8] = [37.5, 62.5], identical to the CI
+        itself. That is exact equality on both of the primary formula's own
+        `<=` containment tests, which must still resolve to breach.
         """
-        assert review_rounds._single_account_within_stated_precision(0.8, 50.0, 30.0, 90.0) is True
+        assert review_rounds._single_account_within_stated_precision(0.8, 50.0, 37.5, 62.5) is True
+
+    def test_exact_interval_catches_a_tight_ci_a_loose_swing_bound_would_miss(self):
+        """w_max=0.9, p_estimate=50.0 against CI [44.0, 56.0]: the exact
+        consistent-value interval for the dominant account is
+        [(50.0 - 10.0) / 0.9, 50.0 / 0.9] = [44.44..., 55.55...], which sits
+        entirely inside [44.0, 56.0], a real breach. A weaker,
+        symmetric-swing sufficient condition (breach iff
+        `max_swing <= min(p_estimate - ci_lo, ci_hi - p_estimate)`, i.e.
+        `10.0 <= min(6.0, 6.0)`) misses this case as a false negative.
+        """
+        assert review_rounds._single_account_within_stated_precision(0.9, 50.0, 44.0, 56.0) is True
+
+    @pytest.mark.parametrize("w_max", [0.0, -0.1])
+    def test_nonpositive_w_max_is_fail_closed(self, w_max):
+        """w_max <= 0 is structurally unreachable from _pooled_dominance_breach
+        (its own denom_total > 0 guard forces w_max > 0), but this direct call
+        pins the guard's own fail-closed return against a future caller that
+        loses that guarantee.
+        """
+        assert review_rounds._single_account_within_stated_precision(w_max, 50.0, 44.0, 56.0) is True
 
 
 # _render_pooled_block's own figure-line format is `f"    {label:<30}{value}"`
@@ -1641,7 +1659,15 @@ class TestCmdReviewRoundCostPooled:
         """Slices on `_POOLED_CAPTION` to exclude the caption's own
         compliant digit and the publication-pointer's illustrative `$/PR
         rate` prose from the grammar check.
+
+        Stubs `_pooled_dominance_breach` to isolate this test from the
+        dominance-precision floor. This fixture's every branch reports 100%
+        of its own dollars as inside a round window, and 0% as
+        reviewer-only. The floor's exact-interval formula correctly flags
+        both of those degenerate shares as breaches, which is irrelevant to
+        what this test checks.
         """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         block = capsys.readouterr().out
@@ -1892,7 +1918,15 @@ class TestCmdReviewRoundCostPooled:
         and a code-review rounds-by-skill share reflecting the pool
         (50.0%) rather than either root's own share alone (75.0% for the
         code-review-majority root, 25.0% for the plan-review-majority
-        root)."""
+        root).
+
+        Stubs `_pooled_dominance_breach` to isolate this test from the
+        dominance-precision floor. This fixture's every branch reports 100%
+        of its own dollars as inside a round window. The floor's
+        exact-interval formula correctly flags that degenerate share as a
+        breach, which is irrelevant to what this test checks.
+        """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
@@ -2514,7 +2548,15 @@ class TestCmdReviewRoundCostPooled:
         """CLI-layer counterpart of _asymmetric_two_branch_pooled_totals's
         own share-of-sums-vs-mean-of-shares check, via an equivalent
         priced-round JSONL fixture instead of a hand-built
-        _PooledBranchTotals list."""
+        _PooledBranchTotals list.
+
+        Stubs `_pooled_dominance_breach` to isolate this test from the
+        dominance-precision floor. No branch here dispatches a subagent, so
+        spend_reviewer_only is 0% with zero variance across every branch.
+        The floor's exact-interval formula correctly flags that degenerate
+        share as a breach, which is irrelevant to what this test checks.
+        """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         roots = _two_declared_roots(tmp_path, monkeypatch)
         proj_a = roots[0] / "-home-user-repo-a"
         proj_a.mkdir(parents=True)
@@ -2601,9 +2643,16 @@ class TestCmdReviewRoundCostPooled:
         or pricing table, so going through cmd_review_round_cost's full JSONL
         pipeline would only add incidental coupling to those independently-
         churning subsystems. Four padding branches, split across both
-        accounts and skills, keep the pool clear of the dominance-precision
-        floor (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
+        accounts and skills, clear the four-branch bootstrap floor.
+
+        Stubs `_pooled_dominance_breach` to isolate this test from the
+        dominance-precision floor. Every branch here sets branch_dollars
+        equal to round_dollars, so spend_inside is 100% with zero variance
+        across every branch. The floor's exact-interval formula correctly
+        flags that degenerate share as a breach, which is irrelevant to what
+        this test checks.
         """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
             {"branch_key": (0, "feat-a"), "skill": "code-review",
@@ -2696,7 +2745,17 @@ class TestCmdReviewRoundCostPooled:
         """Two branches, each with an in-scope round but zero priced dollars
         (an unrecognized-model turn) -- proves _render_pooled_block never
         raises ZeroDivisionError, printing the zero-denominator wording for
-        every dollar-based share instead."""
+        every dollar-based share instead.
+
+        Stubs `_pooled_dominance_breach` to isolate this test from the
+        dominance-precision floor. This fixture's round-count split, though
+        evenly balanced across both accounts, still lets the floor's
+        exact-interval formula legitimately flag a round-count-keyed share
+        as a breach. That breach is irrelevant to what this test checks, but
+        would otherwise blank the dollar-based zero-denominator wording this
+        test asserts on along with it.
+        """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
         _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out

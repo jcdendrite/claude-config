@@ -747,23 +747,33 @@ def _single_account_within_stated_precision(
     the precision its own already-computed 95% CI claims.
 
     Every pooled share is a sum of per-branch sums each belonging to one
-    account, so P = Σ_a w_a·p_a. Swapping every non-dominant account's
-    combined true share `p_r` to the opposite extreme (0% or 100%)
-    therefore moves P by at most `(1 - w_max) * 100` percentage points
-    from the dominant account's own share `p_dominant`. A breach happens
-    when that worst-case swing still lands inside `[ci_lo, ci_hi]`. That
-    means the published CI contains `p_dominant` at the CI's own stated
-    precision. That is a true positive for exactly the per-account
-    dimension CLAUDE.md's redaction rule bars.
+    account, so P = w_max·d + (1 - w_max)·r, where `d` is the dominant
+    account's own true share and `r` is the combined true share of every
+    other account. Solving for `d` as `r` ranges over its full `[0, 100]`
+    domain gives the exact set of `d` values consistent with the observed
+    point estimate `p_estimate`: `[(p_estimate - (1 - w_max) * 100) / w_max,
+    p_estimate / w_max]`, clipped to `[0, 100]`. A breach happens when that
+    exact interval sits entirely inside `[ci_lo, ci_hi]` -- meaning the
+    published CI pins the dominant account's own true share down to the
+    CI's own stated precision. That is a true positive for exactly the
+    per-account dimension CLAUDE.md's redaction rule bars.
     """
     if not (ci_lo <= p_estimate <= ci_hi):
         # Fail-closed backstop: a percentile bootstrap over few branches can
-        # place the point estimate outside its own resampled interval, which
-        # makes p_estimate - ci_lo or ci_hi - p_estimate negative and the
-        # swing-bound test below can never trip on a nonnegative bound.
+        # place the point estimate outside its own resampled interval. The
+        # exact-interval containment test below has no meaningful answer
+        # against such an inconsistent CI.
         return True
-    max_swing = (1.0 - w_max) * 100.0
-    return max_swing <= min(p_estimate - ci_lo, ci_hi - p_estimate)
+    if w_max <= 0:
+        # Structurally unreachable in production: _pooled_dominance_breach's
+        # own caller only reaches this function after a denom_total > 0
+        # check, and w_max is a ratio of one account's contribution to that
+        # positive total, so w_max > 0 always holds there. Fail closed
+        # anyway, since dividing by w_max below would otherwise raise.
+        return True
+    exact_lo = max(0.0, (p_estimate - (1.0 - w_max) * 100.0) / w_max)
+    exact_hi = min(100.0, p_estimate / w_max)
+    return ci_lo <= exact_lo and exact_hi <= ci_hi
 
 
 def _pooled_dominance_breach(

@@ -11,6 +11,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcript** — one session log file under `<config-dir>/projects/<project-dir>/*.jsonl`. A session's subagent records are merged into their parent's file by `read_session_file`, never counted as their own transcript.
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
+- **project directory that fails to resolve** (a symlink loop, or otherwise unreadable) — aborts the whole invocation with an uncaught error on every subcommand except `review-round-cost --pooled`, which records it as a scan gap instead.
 - **turn** — one assistant reply record.
 - **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
 - **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.
