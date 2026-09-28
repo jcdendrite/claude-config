@@ -631,13 +631,202 @@ class TestDenyInvisibleCommitContent:
         ) == "allow"
 
     # ------------------------------------------------------------------ #
+    # The --continue family: this gate's own commit-shape gap             #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_bare_continue_form_allowed(self, verb):
+        """Once the fast-reject and both arms recognize the --continue
+        family, a bare `--continue` with nothing chained ahead of it must
+        still allow -- a regression that widened only the fast-reject while
+        leaving either arm's test at literal `commit` would instead deny
+        every sync in the repo. Also confirms the worktree-target check
+        stays keyed on literal `commit`, so this --continue form never
+        reaches that deny either."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"git {verb} --continue")) == "allow"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_chained_mutation_ahead_of_continue_denied(self, verb):
+        """The TOCTOU gap this gate exists to close: a chained `git add`
+        ahead of a `--continue` form is invisible to every other commit
+        gate's `git diff --cached` snapshot exactly as it is ahead of a bare
+        `git commit` -- including the rebase form, which the two
+        review-marker gates' own rebase carve-out does not reach, so this
+        gate is the only one still armed on it."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f"git add f && git {verb} --continue"),
+        ) == "deny"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_chained_mutation_ahead_of_continue_deny_names_concluding_command(self, verb):
+        """The deny message must never point the agent at a bare `git
+        commit` -- which does not advance a merge/rebase/cherry-pick/revert
+        and is itself marker-gated -- and must instead name both the
+        offending fragment and the --continue form this call actually
+        detected."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f"git add f && git {verb} --continue"),
+        )
+        assert reason is not None
+        assert "git commit" not in reason
+        assert "git add f" in reason
+        assert f"git {verb} --continue" in reason
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_wrapper_token_with_continue_denied_names_concluding_command(self, verb):
+        """The wrapper/commit co-occurrence pre-check's new reach: a
+        --continue form co-occurring with a wrapper token denies, attributed
+        to the pre-check rather than an arm, and names the actual verb
+        rather than a hard-coded 'git commit'."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'bash -c "git {verb} --continue"'),
+        )
+        assert reason is not None
+        assert "git commit" not in reason
+        assert f"git {verb} --continue" in reason
+        assert "execution-wrapper token" in reason
+
+    def test_marker_chain_then_merge_continue_allowed(self):
+        """The sanctioned chain survives for a form the marker gate cares
+        about -- this gate never reaches either arm's predicate for
+        marker.sh's own fragment, so it allows regardless of what
+        require-code-review.sh does with the marker."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("marker.sh write code-review && git merge --continue"),
+        ) == "allow"
+
+    def test_marker_chain_then_rebase_continue_allowed(self):
+        """The sanctioned chain survives for the rebase form too, even
+        though require-code-review.sh never consumes this marker for
+        `rebase --continue` (the marker gates' own narrower carve-out) --
+        a pointless but harmless chain from this gate's perspective, since
+        it never reaches either arm's predicate for marker.sh's fragment."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("marker.sh write code-review && git rebase --continue"),
+        ) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("git commit -m x && git merge --continue", id="commit_then_continue"),
+            pytest.param("git merge --continue && git commit -m x", id="continue_then_commit"),
+            pytest.param("git merge --continue && git cherry-pick --continue", id="continue_then_continue"),
+        ],
+    )
+    def test_mixed_commit_and_continue_fragments_denied(self, command):
+        """Two commit-concluding fragments deny regardless of which shapes
+        they are or which order they appear in -- arm 2's count is keyed on
+        the broad commit-concluding predicate, not on literal `commit`."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    def test_mixed_continue_fragments_deny_names_both_shapes(self):
+        """Neither fragment here is a literal `git commit`, so the
+        multi-invocation message must name what it actually found rather
+        than assume both were `git commit`."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git merge --continue && git cherry-pick --continue"),
+        )
+        assert reason is not None
+        assert "git commit" not in reason
+        assert "git merge --continue" in reason
+        assert "git cherry-pick --continue" in reason
+
+    def test_mutation_after_continue_fragment_allowed(self):
+        """The ordered walk's existing rationale is unchanged by the
+        --continue widening: a mutation *after* the concluding fragment is
+        harmless, since it never reaches this commit's `git diff --cached`
+        snapshot -- the case most likely to regress into an over-deny."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git merge --continue && git add f"),
+        ) == "allow"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase"])
+    def test_quoted_git_word_continue_form_denied_same_as_unquoted(self, verb):
+        """Quote parity for the new predicate (arm 2's single-safe-word
+        masking exception): a quoted `git` word ahead of a --continue form
+        behaves exactly like the unquoted form, same shape as
+        test_quoted_git_word_chained_add_then_commit_denied."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'git add f && "git" {verb} --continue'),
+        ) == "deny"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase"])
+    def test_quoted_continue_flag_denied_same_as_unquoted(self, verb):
+        """Same quote-parity property as above, for the `--continue` flag
+        itself rather than the `git` word."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'git add f && git {verb} "--continue"'),
+        ) == "deny"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_sed_absent_from_path_denied_for_continue_form(self, tmp_path, verb):
+        """Fail-closed is preserved at the swapped fast-reject call site:
+        _lib_command_concludes_commit's internal quote-strip depends on sed
+        exactly as _lib_command_invokes_git_subcmd's did, for a --continue
+        form and not only for a bare `git commit`."""
+        farm_dir = tmp_path / f"path-without-sed-{verb.replace('-', '_')}"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f"git {verb} --continue"),
+            extra_env={"PATH": restricted_path},
+        ) == "deny"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_quote_embedded_decoy_continue_verb_reaches_arm_two_message(self, verb):
+        """Extends the existing quote-embedded-decoy technique
+        (test_quote_embedded_decoy_fragment_denied) to a --continue verb:
+        the decoy's fake concluding fragment is revealed as literal text by
+        quote-stripping, but arm 2's masking erases it, so the real
+        `git add secret` ahead of the real trailing commit still denies and
+        the deny message still names the real concluding shape (a literal
+        `git commit`, not the decoy verb)."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'echo "foo && git {verb} --continue" && git add secret && git commit -m x'),
+        )
+        assert reason is not None
+        assert "git add secret" in reason
+        assert "git commit" in reason
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_quote_embedded_decoy_continue_verb_reaches_arm_one_message(self, verb):
+        """Isolates arm 1's own copy of the ordered-mutation deny message,
+        which the plain chained-`--continue` fixture above can never reach
+        on its own -- arm 2 always runs first and denies identically for
+        that shape (see test_chained_mutation_ahead_of_continue_denied).
+        Wrapping a mutating-then-concluding sequence inside one quoted echo
+        argument makes arm 2's masking blank it away entirely (nothing left
+        that invokes git, so arm 2 passes silently), while quote-stripping
+        reveals it to arm 1 as two real fragments -- a mutating `git add`
+        and a concluding `--continue` form -- so only arm 1 denies here,
+        naming the actual verb rather than a hard-coded 'git commit'."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'echo "git add secret && git {verb} --continue"'),
+        )
+        assert reason is not None
+        assert "git commit" not in reason
+        assert f"git {verb} --continue" in reason
+
+    # ------------------------------------------------------------------ #
     # Missing-binary fork points — each must fail closed (deny), not      #
     # silently allow an unscanned git commit                              #
     # ------------------------------------------------------------------ #
 
     def test_grep_absent_from_path_denied(self, tmp_path):
         """GH-783 swapped the fast-reject's own grep-based match for
-        _lib_command_invokes_git_subcmd (sed/tr and a bash word-walk, no
+        _lib_command_concludes_commit (sed/tr and a bash word-walk, no
         grep), but the wrapper/commit co-occurrence pre-check downstream of
         the fast-reject still runs its own `grep -qE` over the raw command
         text -- grep remains a real dependency of this hook via that
@@ -694,7 +883,7 @@ class TestDenyInvisibleCommitContent:
     def test_sed_absent_from_path_denied(self, tmp_path):
         """`_lib_strip_shell_quotes` computing COMMAND_UNQUOTED is the
         earliest sed fork this hook reaches — the fast-reject's own
-        internal quote-strip (inside _lib_command_invokes_git_subcmd) also
+        internal quote-strip (inside _lib_command_concludes_commit) also
         depends on sed, but COMMAND_UNQUOTED forks first — so a missing sed
         denies every Bash call, not only ones mentioning `git commit`."""
         farm_dir = tmp_path / "path-without-sed"
@@ -709,7 +898,7 @@ class TestDenyInvisibleCommitContent:
     def test_tr_absent_from_path_denied(self, tmp_path):
         """tr backs `_lib_strip_shell_quotes`, called first for
         COMMAND_UNQUOTED and again inside the fast-reject's own
-        _lib_command_invokes_git_subcmd — so a missing tr denies every
+        _lib_command_concludes_commit — so a missing tr denies every
         Bash call, not only ones mentioning `git commit`."""
         farm_dir = tmp_path / "path-without-tr"
         farm_dir.mkdir()
@@ -734,6 +923,25 @@ class TestDenyInvisibleCommitContent:
             bash_input("echo hi"),
             extra_env={"PATH": restricted_path},
         ) == "deny"
+
+    def test_stripped_fragments_split_failure_denies_with_split_reason(
+        self, sed_call_counting_shim
+    ):
+        """SPLIT_EXIT on the STRIPPED_FRAGMENTS split (the _lib_split_fragments
+        call this diff relocated to run right after the fast-reject) has no
+        prior test coverage: a fully-absent sed always fails the earlier
+        COMMAND_UNQUOTED strip first, never reaching this call. sed_call_counting_shim
+        lets the 4 sed calls ahead of this one (COMMAND_UNQUOTED's strip, plus
+        the fast-reject's own internal strip and split) succeed and fails only
+        the 5th, which is STRIPPED_FRAGMENTS's own first internal sed call."""
+        extra_env = sed_call_counting_shim(4)
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git commit -m x"),
+            extra_env=extra_env,
+        )
+        assert reason is not None
+        assert "could not split the command into fragments" in reason
 
     def test_xargs_absent_from_path_denied(self, tmp_path):
         """xargs backs only `_lib_commit_fragment_has_worktree_target`'s

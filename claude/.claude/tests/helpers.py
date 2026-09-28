@@ -975,13 +975,23 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     return clone
 
 
-def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
+def build_conflicted_merge(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
     """Build a real conflicted two-way merge inside `repo`: branch "theirs"
     off the checked-out branch, edit `file_name` differently on each side,
     then `git merge theirs` on the original branch. Leaves MERGE_HEAD and
     unresolved conflict markers staged. `repo` must already have a
     configured user.email/user.name. Returns the merged-in branch's tip
-    oid -- MERGE_HEAD's expected content."""
+    oid -- MERGE_HEAD's expected content.
+
+    resolve_to_head=True (additive, opt-in -- existing callers leave it
+    False and are unaffected) additionally resolves the conflict by
+    writing `file_name` back to HEAD's own pre-merge content and staging
+    it, leaving MERGE_HEAD present but the index clean (`git diff
+    --cached` empty against HEAD) -- the merge-form instance of the row-34
+    bypass fixture's precondition, matching build_conflicted_cherry_pick's
+    own resolve_to_head."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "theirs")
@@ -1000,6 +1010,9 @@ def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
         f"expected merge conflict, got: {result.stdout}{result.stderr}"
     )
     assert (absolute_git_dir(repo) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    if resolve_to_head:
+        target.write_text("ours-edit\n")
+        _run_git(repo, "add", file_name)
     return theirs_oid
 
 
@@ -1040,13 +1053,24 @@ def build_conflicted_merge_with_clean_addition(
     return theirs_oid
 
 
-def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
+def build_conflicted_cherry_pick(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
     """Build a real conflicted cherry-pick inside `repo`: branch "source"
     off the checked-out branch, commit a conflicting edit to `file_name` on
     each side, then `git cherry-pick` the source commit back onto the
     original branch. Leaves CHERRY_PICK_HEAD and unresolved conflict
     markers staged. Returns the cherry-picked commit's oid -- CHERRY_PICK_HEAD's
-    expected content."""
+    expected content.
+
+    resolve_to_head=True (additive, opt-in -- the four existing callers
+    leave it False and are unaffected) additionally resolves the conflict
+    by writing `file_name` back to HEAD's own pre-cherry-pick content and
+    staging it, leaving CHERRY_PICK_HEAD present but the index clean
+    (`git diff --cached` empty against HEAD) -- the row-34 bypass fixture's
+    precondition, where a resolution that reintroduces no novel content
+    leaves nothing for require-code-review.sh's empty-staged-diff early
+    exit to see."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "source")
@@ -1065,6 +1089,9 @@ def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
         f"expected cherry-pick conflict, got: {result.stdout}{result.stderr}"
     )
     assert (absolute_git_dir(repo) / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
+    if resolve_to_head:
+        target.write_text("base-edit\n")
+        _run_git(repo, "add", file_name)
     return source_oid
 
 
@@ -1074,7 +1101,12 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     `git revert A`. Reverting the tip essentially never conflicts, so this
     three-commit shape is required to exercise the conflicting case. Leaves
     REVERT_HEAD and unresolved conflict markers staged. Returns commit A's
-    oid -- REVERT_HEAD's expected content."""
+    oid -- REVERT_HEAD's expected content. Commit A is an ancestor of HEAD
+    by construction here (a genuine revert always reverts its own history),
+    so REVERT_HEAD reaches the HEAD trust anchor -- unlike
+    build_conflicted_cherry_pick's/build_conflicted_merge's own default
+    fork-branch shape. See build_conflicted_revert_of_unmerged_commit for
+    the unreached-anchor counterpart."""
     target = _seed_tracked_file(repo, file_name)
     target.write_text("A-edit\n")
     _run_git(repo, "add", file_name)
@@ -1091,6 +1123,50 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     )
     assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
     return commit_a
+
+
+def build_conflicted_revert_of_unmerged_commit(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
+    """Build a real conflicted revert of a commit that never merged into
+    `repo`'s checked-out branch: branch "source" off the checked-out
+    branch, commit a conflicting edit to `file_name` on each side, then
+    `git revert` the source commit's oid from the checked-out branch.
+    Unlike build_conflicted_revert's own linear-history shape (where the
+    reverted commit is always an ancestor of HEAD), REVERT_HEAD here
+    reaches no trusted anchor -- the same property
+    build_conflicted_cherry_pick's default shape gives CHERRY_PICK_HEAD.
+    Leaves REVERT_HEAD and unresolved conflict markers staged. Returns the
+    source commit's oid -- REVERT_HEAD's expected content.
+
+    resolve_to_head=True additionally resolves the conflict by writing
+    `file_name` back to HEAD's own pre-revert content and staging it,
+    leaving REVERT_HEAD present but the index clean (`git diff --cached`
+    empty against HEAD) -- the revert-form instance of the row-34 bypass
+    fixture's precondition, matching build_conflicted_merge's and
+    build_conflicted_cherry_pick's own resolve_to_head."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    _run_git(repo, "checkout", "-qb", "source")
+    target.write_text("source-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"source edits {file_name}")
+    source_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("base-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"base edits {file_name}")
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", source_oid], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected revert conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    if resolve_to_head:
+        target.write_text("base-edit\n")
+        _run_git(repo, "add", file_name)
+    return source_oid
 
 
 def build_conflicted_revert_with_clean_gated_removal(

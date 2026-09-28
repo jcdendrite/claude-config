@@ -103,7 +103,8 @@
 #  - The editor-flow commit (`git commit` / `git commit --amend` with no
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
-#  - A chained `git add ... && git commit` staging content after this hook's
+#  - A chained `git add ... && git commit` (or `&& git <merge|rebase|
+#    cherry-pick|revert> --continue`) staging content after this hook's
 #    staged-diff scan is denied by deny-invisible-commit-content.sh, so that
 #    shape does not reach this hook's PII/credential scan. That coverage is
 #    bounded by deny-invisible-commit-content.sh's own Known gaps list.

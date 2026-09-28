@@ -6296,6 +6296,149 @@ class TestCommandConcludesCommit:
         commit."""
         assert _command_concludes_commit("git rebase origin/main && echo --continue") == 1
 
+    # The tests above exercise only 2 of the 8 `--continue` abbreviation
+    # alternatives in _lib_command_concludes_commit_shape's own case
+    # statement (the full spelling and `--cont`) and carry no
+    # case-sensitivity or empty-command assertion -- closing both gaps
+    # here, additively, so TestCommandConcludesCommit's existing cases stay
+    # untouched as the regression proof that extracting
+    # _lib_fragment_concludes_commit_shape left this predicate's own
+    # behavior unchanged.
+
+    @pytest.mark.parametrize(
+        "abbreviation",
+        ["--c", "--co", "--con", "--conti", "--contin", "--continu"],
+    )
+    def test_broad_predicate_true_for_remaining_continue_abbreviations(
+        self, abbreviation: str
+    ) -> None:
+        assert _command_concludes_commit(f"git merge {abbreviation}") == 0
+
+    def test_broad_predicate_case_sensitive_on_continue_flag(self) -> None:
+        """`--Continue` is not one of the case statement's alternatives --
+        the match is case-sensitive, and a differently-cased spelling must
+        not be silently accepted."""
+        assert _command_concludes_commit("git merge --Continue") == 1
+
+    def test_broad_predicate_false_for_empty_command(self) -> None:
+        assert _command_concludes_commit("") == 1
+
+
+def _fragment_concludes_commit_via_extraction(fragment: str, env: dict | None = None) -> int:
+    """Mirrors what deny-invisible-commit-content.sh's arm 1 and arm 2 each
+    do: extract the fragment's own subcommand, then feed FRAGMENT and that
+    SUBCMD to _lib_fragment_concludes_commit -- rather than a hand-picked
+    SUBCMD, so a regression in the extraction step itself would also show
+    up here."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; subcmd=$(_lib_extract_git_subcmd "$1"); _lib_fragment_concludes_commit "$1" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommit:
+    """Differential coverage for _lib_fragment_concludes_commit_shape, the
+    predicate extracted from _lib_command_concludes_commit_shape's own loop
+    body so deny-invisible-commit-content.sh's arm 1 (raw/stripped-text
+    SUBCMD extraction) and arm 2 (masked-text SUBCMD extraction) share one
+    definition of the --continue grammar. Asserts the
+    fragment-level answer, via its public _lib_fragment_concludes_commit
+    wrapper, agrees with the unextracted command-level predicate's answer
+    for the equivalent single-fragment command -- the regression proof the
+    extraction itself does not otherwise get, since TestCommandConcludesCommit
+    only ever exercises the whole-command entry point."""
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git commit",
+            "git -c core.editor=true commit",
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git merge --c",
+            "git merge --continu",
+        ],
+    )
+    def test_true_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 0
+        assert _command_concludes_commit(fragment) == 0
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git status",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git merge origin/main",
+            "git cherry-pick abc123",
+        ],
+    )
+    def test_false_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 1
+        assert _command_concludes_commit(fragment) == 1
+
+
+def _fragment_concludes_commit_via_arm(fragment: str, transform: str, env: dict | None = None) -> int:
+    """Runs one of deny-invisible-commit-content.sh's two real arm
+    pipelines: TRANSFORM='strip' applies _lib_strip_shell_quotes (arm 1's
+    own transform) and TRANSFORM='mask' applies _lib_mask_shell_quotes
+    (arm 2's own transform) to FRAGMENT before extracting SUBCMD and
+    feeding both to _lib_fragment_concludes_commit -- so a quoted fixture
+    actually exercises the transform each arm runs, not a bypass of both."""
+    transform_fn = "_lib_strip_shell_quotes" if transform == "strip" else "_lib_mask_shell_quotes"
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; transformed=$({transform_fn} "$1"); '
+            'subcmd=$(_lib_extract_git_subcmd "$transformed"); '
+            '_lib_fragment_concludes_commit "$transformed" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommitQuotedDifferential:
+    """The class above never actually invokes _lib_strip_shell_quotes or
+    _lib_mask_shell_quotes, since _fragment_concludes_commit_via_extraction
+    calls _lib_extract_git_subcmd on the raw fragment -- every one of its
+    fixtures is unquoted, so stripping, masking, and raw text are
+    byte-identical and the two arms' own transforms are never actually
+    exercised. These fixtures carry a quoted `git` word and a quoted,
+    abbreviated `--continue` form for a non-merge/rebase verb, so arm 1's
+    quote-stripped extraction and arm 2's quote-masked extraction each run
+    for real and must still agree with each other and with the unextracted
+    command-level predicate's answer for the equivalent whole command."""
+
+    @pytest.mark.parametrize(
+        "fragment,expected",
+        [
+            ('"git" cherry-pick "--c"', 0),
+            ('"git" revert "--c"', 0),
+            ('"git" cherry-pick abc123', 1),
+        ],
+    )
+    def test_stripped_and_masked_arms_agree_with_command_level_predicate(
+        self, fragment: str, expected: int
+    ) -> None:
+        stripped_result = _fragment_concludes_commit_via_arm(fragment, "strip")
+        masked_result = _fragment_concludes_commit_via_arm(fragment, "mask")
+        assert stripped_result == masked_result == _command_concludes_commit(fragment) == expected
+
 
 # --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash --
 #

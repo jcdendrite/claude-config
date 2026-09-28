@@ -1572,26 +1572,57 @@ _lib_command_invokes_git_subcmd() {
 _LIB_CONTINUE_VERBS_ALL="merge rebase cherry-pick revert"
 _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 
+# _lib_fragment_concludes_commit_shape FRAGMENT SUBCMD VERBS
+# Private. True iff FRAGMENT alone is `git commit` (SUBCMD = commit), or
+# `git <verb> --continue` for a verb in the whitespace-separated VERBS list
+# (SUBCMD = that verb and `--continue` is one of the verb's own arguments,
+# not merely present somewhere else in FRAGMENT). Matches any unambiguous
+# prefix of `--continue` (`--c` through `--continu`), since git's option
+# parser accepts the same abbreviations (gitcli(1), "ENHANCED OPTION
+# PARSER"). This also matches a few prefixes git itself would reject as
+# ambiguous against another long option on the same verb -- a false
+# positive here only denies a command git would have rejected anyway, never
+# a bypass.
+# Caller contract: FRAGMENT must already have passed
+# _lib_fragment_invokes_git, and SUBCMD must be that same fragment's
+# _lib_extract_git_subcmd result -- this function performs neither check
+# nor extraction itself. Extracted from _lib_command_concludes_commit_shape's
+# own loop body so a per-fragment walk over an already-split command (arm 1
+# and arm 2 of deny-invisible-commit-content.sh) shares this file's one
+# definition of the --continue grammar rather than a second copy.
+# Plain boolean, not tri-state: _lib_extract_git_subcmd_args forks nothing
+# (_lib_git_argv_from_subcmd is a pure bash word-walk), so there is no fork
+# here whose failure the tri-state contract below needs to signal.
+_lib_fragment_concludes_commit_shape() {
+  local fragment="$1" subcmd="$2" verbs="$3"
+  [ "$subcmd" = commit ] && return 0
+  local verb is_continue_verb=false
+  for verb in $verbs; do
+    if [ "$subcmd" = "$verb" ]; then
+      is_continue_verb=true
+      break
+    fi
+  done
+  $is_continue_verb || return 1
+  local arg
+  while IFS= read -r arg; do
+    case "$arg" in
+      --continue | --c | --co | --con | --cont | --conti | --contin | --continu)
+        return 0
+        ;;
+    esac
+  done < <(_lib_extract_git_subcmd_args "$fragment")
+  return 1
+}
+
 # _lib_command_concludes_commit_shape COMMAND VERBS
-# Private. True iff any fragment of COMMAND is `git commit` (in any form
-# _lib_command_invokes_git_subcmd already recognizes), or `git <verb>
-# --continue` for a verb in the whitespace-separated VERBS list. A clean
-# merge, rebase, or cherry-pick creates its commit inside the initiating
-# command with no separate `git commit` call, so this is the only PreToolUse
-# shape a conflict-resolution commit takes.
-# `--continue` must be one of the matched verb's own arguments, not merely
-# present somewhere else in COMMAND -- `_lib_extract_git_subcmd_args` is
-# checked per matching fragment rather than grepping the whole command
-# string, so `git rebase origin/main && echo --continue` does not match.
-# Matches any unambiguous prefix of `--continue` (`--c` through `--continu`),
-# since git's option parser accepts the same abbreviations (gitcli(1),
-# "ENHANCED OPTION PARSER"). This also matches a few prefixes git itself
-# would reject as ambiguous against another long option on the same verb --
-# a false positive here only denies a command git would have rejected
-# anyway, never a bypass.
+# Private. True iff any fragment of COMMAND concludes a commit per
+# _lib_fragment_concludes_commit_shape above, for the verb set VERBS. A
+# clean merge, rebase, or cherry-pick creates its commit inside the
+# initiating command with no separate `git commit` call, so this is the
+# only PreToolUse shape a conflict-resolution commit takes.
 # Tri-state via exit status, same 0/1/2 contract as
-# _lib_command_invokes_git_subcmd, which this delegates the `commit` check
-# to directly.
+# _lib_command_invokes_git_subcmd.
 _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
@@ -1601,29 +1632,14 @@ _lib_command_concludes_commit_shape() {
   # count that precedes it. Reordering these two calls changes that count.
   command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
   fragments=$(_lib_split_fragments "$command_unquoted") || return 2
-  local subcmd verb is_continue_verb arg
+  local subcmd
   while IFS= read -r fragment; do
     [ -z "$fragment" ] && continue
     _lib_fragment_invokes_git "$fragment" || continue
     subcmd=$(_lib_extract_git_subcmd "$fragment")
-    if [ "$subcmd" = commit ]; then
+    if _lib_fragment_concludes_commit_shape "$fragment" "$subcmd" "$verbs"; then
       return 0
     fi
-    is_continue_verb=false
-    for verb in $verbs; do
-      if [ "$subcmd" = "$verb" ]; then
-        is_continue_verb=true
-        break
-      fi
-    done
-    $is_continue_verb || continue
-    while IFS= read -r arg; do
-      case "$arg" in
-        --continue | --c | --co | --con | --cont | --conti | --contin | --continu)
-          return 0
-          ;;
-      esac
-    done < <(_lib_extract_git_subcmd_args "$fragment")
   done <<< "$fragments"
   return 1
 }
@@ -1641,7 +1657,9 @@ _lib_command_concludes_commit_shape() {
 # review.
 # Called from the five mechanical gates: guard-settings-session-keys.sh,
 # check-skill-length.sh, check-claude-md-length.sh, deny-pii-in-commits.sh,
-# and deny-private-project-refs.sh.
+# and deny-private-project-refs.sh -- and from deny-invisible-commit-content.sh's
+# fast-reject, since that gate's chained-mutation check is what keeps those
+# five gates' own empty-diff carve-out sound for the same shapes.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1664,6 +1682,23 @@ _lib_command_concludes_commit() {
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
+}
+
+# _lib_fragment_concludes_commit FRAGMENT SUBCMD
+# Public, plain-boolean sibling of _lib_fragment_concludes_commit_shape
+# above, fixed to the broad $_LIB_CONTINUE_VERBS_ALL set -- the same shape
+# set _lib_command_concludes_commit tests at the whole-command level. For a
+# caller that already walks a command's fragments one at a time and has
+# each fragment's own _lib_extract_git_subcmd result on hand
+# (deny-invisible-commit-content.sh's arm 1 and arm 2), this answers "does
+# this fragment alone conclude a commit" without re-deriving the
+# --continue grammar or re-forking _lib_command_concludes_commit's own
+# strip-and-split. No narrower, marker-gated sibling exists at this
+# fragment level: nothing calls one, and an unused narrow wrapper would
+# only invite deny-invisible-commit-content.sh -- whose recourse on a bad
+# commit is mechanical, never a review -- to reach for the wrong predicate.
+_lib_fragment_concludes_commit() {
+  _lib_fragment_concludes_commit_shape "$1" "$2" "$_LIB_CONTINUE_VERBS_ALL"
 }
 
 # Print a tool fragment's subcommand-word sequence, one word per line, after

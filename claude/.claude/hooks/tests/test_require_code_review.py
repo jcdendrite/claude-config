@@ -16,8 +16,11 @@ from helpers import (
     SKILLS_DIR,
     bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_cherry_pick,
+    build_conflicted_merge,
     build_conflicted_rebase,
     build_conflicted_revert,
+    build_conflicted_revert_of_unmerged_commit,
     build_noconflict_rebase_edit_stop,
     build_path_without,
     edit_input,
@@ -1641,5 +1644,186 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
                 cwd=worktree,
             )
             == "allow"
+        )
+
+
+def _init_repo_on_branch(path: Path, branch: str) -> None:
+    """Same minimal-repo shape as test_lib.py's own private helper of this
+    name -- kept as a file-local copy rather than a cross-test-file import,
+    since neither test file exports it via helpers.py."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
+
+
+class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
+    """A cherry-pick or merge whose conflict is resolved to HEAD's own
+    pre-operation content leaves CHERRY_PICK_HEAD/MERGE_HEAD present but the
+    index clean (`git diff --cached` empty). Since neither ref is reachable
+    from a remote-tracking ref (no origin is configured here) or from HEAD
+    (a diverged sibling), GATE_DIFF_BASE is empty exactly as in the ordinary
+    no-in-progress-state case, so a bare `git <verb> --continue` takes
+    require-code-review.sh's empty-staged-diff early exit with no marker
+    required -- the exposure this class pins as suite fact. Chaining a real
+    staged file ahead of the `--continue` in the same Bash call closes it:
+    deny-invisible-commit-content.sh recognizes that shape and denies before
+    the marker gate ever runs. Splitting the same two commands into separate
+    Bash calls also closes it, since the second call's index is dirty and
+    the early exit does not fire.
+
+    The cherry-pick-form assertions below reproduced the exposure as
+    written (git accepted the resolve-to-HEAD-then-`--continue` sequence and
+    the early exit fired), confirmed by actually running them rather than
+    only tracing the code; the merge-form assertions repeat the same
+    three-part proof on an independent construction, since merge is the
+    shape whose over-gating on an ordinary sync originally motivated
+    gating these commit shapes at all."""
+
+    # --- cherry-pick form ---
+
+    def test_bare_cherry_pick_continue_allows_via_empty_diff_early_exit(
+        self, isolated_home, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git cherry-pick --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_cherry_pick_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git cherry-pick --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_cherry_pick_continue_denies_on_dirty_index(
+        self, isolated_home, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git cherry-pick --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    # --- merge form: a fork-branch merge can reach neither trusted anchor
+    # exactly as an unmerged-source cherry-pick can, and merge is the
+    # motivating case for gating --continue commit content at all ---
+
+    def test_bare_merge_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git merge --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_merge_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git merge --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_merge_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git merge --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    # --- revert form: build_conflicted_revert_of_unmerged_commit gives
+    # REVERT_HEAD the same unreached-anchor property CHERRY_PICK_HEAD has
+    # by default, and revert is in _LIB_CONTINUE_VERBS_MARKER_GATED
+    # alongside merge/cherry-pick ---
+
+    def test_bare_revert_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git revert --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_revert_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git revert --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_revert_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git revert --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
         )
 

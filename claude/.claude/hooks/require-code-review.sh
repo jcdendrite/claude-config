@@ -31,6 +31,12 @@
 #   completed against the identical staged state.
 # - The marker auto-invalidates as soon as the staging area changes, so
 #   re-staging after review correctly forces a re-review.
+#
+# Known gaps this gate does not close:
+#  - The rebase carve-out's split-across-two-Bash-calls exposure: staging
+#    unrelated content as its own Bash call, then running `git rebase
+#    --continue` as a separate call, folds that content into the rebased
+#    commit with no gate in this family ever requiring a review.
 
 set -uo pipefail
 
@@ -120,7 +126,9 @@ GATE_DIFF_BASE_STATUS=$?
 # different base.
 # deny-invisible-commit-content.sh depends on this branch meaning "this
 # commit authors an empty commit" -- do not remove either half
-# independently.
+# independently. That dependency now covers every shape
+# _lib_command_concludes_marker_gated_commit matches (git commit and the
+# three non-rebase --continue forms), not literal git commit alone.
 if [ -z "$GATE_DIFF_BASE" ]; then
   EMPTY_DIFF_CHECK=$(_lib_capped git -C "$REPO_ROOT" diff --cached 2>/dev/null)
   if [ -z "$EMPTY_DIFF_CHECK" ]; then
