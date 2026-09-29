@@ -5738,7 +5738,7 @@ class TestMarkerScriptReviewPr:
             "the write must not follow the symlink and truncate its target"
         )
 
-    @pytest.mark.parametrize("suffix", [".body", ".provenance", ".diff", ".context.json"])
+    @pytest.mark.parametrize("suffix", [".body", ".diff", ".context.json"])
     @pytest.mark.parametrize(
         "provenance_pid,expect_evicted",
         [
@@ -5750,9 +5750,10 @@ class TestMarkerScriptReviewPr:
     def test_clear_stale_review_pr_artifact_reaped_only_once_provenance_pid_is_dead(
         self, isolated_home, git_repo, suffix, provenance_pid, expect_evicted
     ):
-        """Every review-pr artifact suffix holds content, never a PID of its
-        own, so staleness is gated on the PID recorded in the sibling
-        .provenance file: kept while that PID is alive
+        """Every review-pr artifact suffix except .provenance holds content,
+        never a PID of its own, so staleness is gated on the PID recorded in
+        the sibling .provenance file (the .provenance file's own liveness is
+        covered in test_marker_clear_stale.py): kept while that PID is alive
         (provenance_pid="live"), reaped once it's confirmed dead or no
         .provenance file exists at all (provenance_pid=None)."""
         sid = self.SID

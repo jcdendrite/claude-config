@@ -105,7 +105,12 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                 # liveness can't be determined from it -- keep rather than
                 # evict, since defaulting to eviction here would delete a
                 # live session's artifacts under a format this reader
-                # doesn't understand.
+                # doesn't understand. An empty file is the load-bearing case:
+                # the provenance writer truncates before it writes, so a
+                # concurrent sweep can observe an empty file for a live
+                # review. No age bound applies, so a writer that crashed
+                # mid-write pins its sibling artifacts until they are
+                # removed by hand.
                 unrecognized_provenance_format = False
                 if provenance_content is not None:
                     provenance_lines = provenance_content.decode("utf-8", "replace").splitlines()

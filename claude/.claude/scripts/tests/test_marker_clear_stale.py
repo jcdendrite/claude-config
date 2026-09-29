@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
 SCRIPT_PATH = SCRIPTS_DIR / "marker-clear-stale.py"
@@ -75,7 +76,7 @@ class TestSweepReviewPrSuffixBranch:
     sibling .provenance file rather than the entry's own content -- a
     separate rule from the generic single-file PID+mtime branch every other
     sweep() test here exercises. Calls sweep() directly (already imported
-    via importlib above), not the CLI, since these three cases are about the
+    via importlib above), not the CLI, since these cases are about the
     branch's own eviction logic, not its stdout formatting."""
 
     def test_review_pr_entry_with_a_live_sibling_pid_is_kept(self, tmp_path):
@@ -139,6 +140,56 @@ class TestSweepReviewPrSuffixBranch:
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "legacy-session.body").exists()
         assert (active_dir / "legacy-session.provenance").exists()
+
+    @pytest.mark.parametrize("strip_pid_line", [True, False], ids=["no_pid_line", "empty_pid_value"])
+    def test_review_pr_entry_with_schema_1_provenance_lacking_a_pid_is_evicted(
+        self, tmp_path, strip_pid_line
+    ):
+        """A well-formed schema=1 provenance file that carries no usable
+        owner PID (no `pid=` line, or `pid=` with an empty value) is
+        recognized, so the owner is known to be undeterminable rather than
+        the format being unrecognized: the .body and the .provenance file
+        itself are both evicted. The helper renders its empty-string pid as
+        a bare `pid=` line; `no_pid_line` then removes that line."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        (active_dir / "no-pid-session.body").write_text("findings\n")
+        provenance = write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", "",
+            mode="checkout", session_id="no-pid-session", config_dir=tmp_path,
+        )
+        if strip_pid_line:
+            provenance.write_text(
+                "".join(
+                    line for line in provenance.read_text().splitlines(keepends=True)
+                    if not line.startswith("pid=")
+                )
+            )
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (2, 0)
+        assert not (active_dir / "no-pid-session.body").exists()
+        assert not provenance.exists()
+
+    def test_review_pr_entry_with_an_empty_provenance_file_is_kept(self, tmp_path):
+        """An empty provenance file must be kept, not evicted: the writer
+        (_lib_write_no_follow) opens with O_TRUNC before it writes, so a
+        concurrent sweep can observe an empty file for a live review.
+        Keeping it is what makes that window safe. No age bound applies, so
+        a writer that crashed mid-write leaves an empty file that pins its
+        sibling artifacts until they are removed by hand; the file is aged
+        to the epoch here to pin that."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        (active_dir / "truncated-session.body").write_text("findings\n")
+        empty_provenance = active_dir / "truncated-session.provenance"
+        empty_provenance.write_text("")
+        os.utime(empty_provenance, (0, 0))
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (0, 2)
+        assert (active_dir / "truncated-session.body").exists()
+        assert (active_dir / "truncated-session.provenance").exists()
 
     def test_review_pr_entry_with_no_sibling_provenance_is_evicted(self, tmp_path):
         """No provenance file at all (never written, or already reaped) must
