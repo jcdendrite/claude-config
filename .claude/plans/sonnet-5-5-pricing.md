@@ -12,8 +12,7 @@ Alternatives set aside: prefix-matching model IDs to price unknown `claude-sonne
 
 Assumption ledger:
 - Root problem: `claude-sonnet-5-5` has no rate row, so its turns are excluded from priced spend.
-- Given: `claude-sonnet-5-5` is the string Claude Code writes to `message.model`. `[verified: grep of the local transcript store for "model":"claude-sonnet-5[-0-9a-z]*", 2026-09-28 — the exact string "claude-sonnet-5-5" occurs, with no dated-suffix variant]`. The engineer's report that PR cost is missing data is consistent with this.
-- Row 1 (anchors: root): base input $2/MTok. `[verified: platform.claude.com/docs/en/about-claude/pricing, fetched 2026-09-28: "Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok"]`.
+- Given: `claude-sonnet-5-5` is the string Claude Code writes to `message.model`. `[verified: grep of the local transcript store for "model":"claude-sonnet-5[-0-9a-z]*", 2026-09-28 — the exact string "claude-sonnet-5-5" occurs, with no dated-suffix variant]`.- Row 1 (anchors: root): base input $2/MTok. `[verified: platform.claude.com/docs/en/about-claude/pricing, fetched 2026-09-28: "Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok"]`.
 - Row 2 (anchors: row1): no cache-read override needed. `[verified: same page, "All other models use the standard 0.1x multiplier"; footnotes 1 and 2 name only Fable 5.1, Mythos 5.1, and Opus 5.5]`. $2 × 0.1 = $0.20 matches the published cache-hit price.
 - Row 3 (anchors: root): the nudge hook already resolves the 1M window for this ID. `[verified: nudge-handoff-near-context-cap.sh:123, arm "claude-sonnet-5-*" matches "claude-sonnet-5-5"]`. No hook change.
 
