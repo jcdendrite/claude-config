@@ -51,6 +51,15 @@ def _write_json(path: Path, data: dict) -> Path:
     return path
 
 
+def _digits_beyond_int_conversion_limit() -> str:
+    """A digit string one past int()'s conversion limit, so int() raises
+    ValueError. Skips the calling test when the limit is disabled (0)."""
+    limit = sys.get_int_max_str_digits()
+    if limit == 0:
+        pytest.skip("int() string-conversion limit is disabled")
+    return "9" * (limit + 1)
+
+
 def _registry_entry_json(**overrides) -> dict:
     data = {
         "sessionId": "sess-aaa",
@@ -280,7 +289,7 @@ def test_coerce_pid_rejects_none():
 
 def test_coerce_pid_rejects_digit_string_beyond_int_conversion_limit():
     """int() raises ValueError past sys.get_int_max_str_digits() on CPython 3.11+."""
-    assert _mod._coerce_pid("9" * 5000) is None
+    assert _mod._coerce_pid(_digits_beyond_int_conversion_limit()) is None
 
 
 def test_same_process_by_proc_starttime_returns_none_for_unicode_digit_stored_value():
@@ -290,7 +299,8 @@ def test_same_process_by_proc_starttime_returns_none_for_unicode_digit_stored_va
 
 def test_same_process_by_proc_starttime_returns_none_for_oversized_digit_stored_value():
     fake_ticks = _fake_proc_starttime_ticks({100: 2})
-    assert _mod._same_process_by_proc_starttime("9" * 5000, 100, proc_starttime_ticks=fake_ticks) is None
+    oversized_digits = _digits_beyond_int_conversion_limit()
+    assert _mod._same_process_by_proc_starttime(oversized_digits, 100, proc_starttime_ticks=fake_ticks) is None
 
 
 def test_safe_mtime_returns_value_for_existing_file(tmp_path):
@@ -372,6 +382,16 @@ def test_render_report_resume_command_shell_quotes_a_hostile_cwd():
     )
     output = _mod.render_report(_blank_report(rows=[row]), redact=False)
     assert "cd '/tmp/evil; rm -rf ~' && claude --resume s1" in output
+
+
+@pytest.mark.parametrize(
+    ("unparsed_registry", "registry_phrase"),
+    [(1, "1 registry entry could not be parsed or listed"), (2, "2 registry entries could not be parsed or listed")],
+)
+def test_render_report_unparsed_note_counts_registry_and_lock(unparsed_registry, registry_phrase):
+    output = _mod.render_report(_blank_report(unparsed_registry=unparsed_registry, unparsed_lock=3), redact=False)
+    assert registry_phrase in output
+    assert "3 lock file(s) could not be parsed" in output
 
 
 # ---------------------------------------------------------------------------
@@ -719,8 +739,10 @@ def test_read_registry_unicode_digit_filename_stem_does_not_raise(tmp_path):
     assert entries[0].pid_mismatch is False
 
 
-@pytest.mark.parametrize("pid_json", ['"' + "9" * 5000 + '"', "9" * 5000], ids=["string", "integer-literal"])
-def test_read_registry_oversized_pid_counts_as_unparsed_not_crash(tmp_path, pid_json):
+@pytest.mark.parametrize("quoted", [True, False], ids=["string", "integer-literal"])
+def test_read_registry_oversized_pid_counts_as_unparsed_not_crash(tmp_path, quoted):
+    oversized_digits = _digits_beyond_int_conversion_limit()
+    pid_json = f'"{oversized_digits}"' if quoted else oversized_digits
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
     (sessions_dir / "100.json").write_text('{"sessionId": "s1", "pid": ' + pid_json + "}")
@@ -894,8 +916,10 @@ def test_read_lock_top_level_json_array_returns_none_not_crash(tmp_path):
     assert _mod._read_lock(lock_path) is None
 
 
-@pytest.mark.parametrize("pid_json", ['"' + "9" * 5000 + '"', "9" * 5000], ids=["string", "integer-literal"])
-def test_read_lock_oversized_pid_returns_none_not_crash(tmp_path, pid_json):
+@pytest.mark.parametrize("quoted", [True, False], ids=["string", "integer-literal"])
+def test_read_lock_oversized_pid_returns_none_not_crash(tmp_path, quoted):
+    oversized_digits = _digits_beyond_int_conversion_limit()
+    pid_json = f'"{oversized_digits}"' if quoted else oversized_digits
     lock_path = tmp_path / "scheduled_tasks.lock"
     lock_path.write_text('{"sessionId": "s2", "pid": ' + pid_json + "}")
     assert _mod._read_lock(lock_path) is None
@@ -1454,6 +1478,19 @@ def test_read_session_end_records_top_level_json_array_degrades_to_no_record(tmp
     (records_dir / "100").write_text(json.dumps([1, 2, 3]))
     records, _ = _mod._read_session_end_records([tmp_path])
     assert records == {}
+
+
+def test_read_session_end_records_oversized_integer_literal_degrades_to_no_record_not_crash(tmp_path):
+    """json.loads raises ValueError (not JSONDecodeError) for an integer literal
+    past int()'s conversion limit; the sibling record must still be read."""
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    oversized_digits = _digits_beyond_int_conversion_limit()
+    (records_dir / "100").write_text('{"sessionId": "s-oversized", "reason": ' + oversized_digits + "}")
+    _write_session_end_record(tmp_path, 200, session_id="s-valid")
+    records, found = _mod._read_session_end_records([tmp_path])
+    assert found is True
+    assert [record.session_id for record in records.values()] == ["s-valid"]
 
 
 def test_read_session_end_records_empty_session_id_degrades_to_no_record(tmp_path):
@@ -3905,10 +3942,8 @@ def test_main_threads_explicit_config_dir_flag_into_render_report(tmp_path, monk
 # --json output
 # ---------------------------------------------------------------------------
 
-# The literal values a --json consumer filters on. Adding one needs a
-# docs/scripts.md update, and renaming one or changing its meaning also bumps
-# schema_version, so the values are spelled out here rather than read back from
-# the module's CLASS_* constants.
+# The literal values a --json consumer filters on. They are spelled out here,
+# not read from CLASS_*, so a rename fails this test.
 _ALL_CLASSIFICATIONS = (
     "resumable", "possible-crash", "transcript-only", "crashed-no-transcript", "live-process",
     "confirmed-clean-exit", "unknown",

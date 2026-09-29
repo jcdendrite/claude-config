@@ -172,9 +172,7 @@ REFUSE_UNPARSED_REGISTRY_ENTRIES = "unparsed_registry_entries"
 REFUSE_UNPARSED_LOCK_FILES = "unparsed_lock_files"
 REFUSE_NO_REGISTRY_DIRECTORY = "no_registry_directory"
 
-# Bump on removing or renaming a --json field, changing a field's type, or
-# changing a classification's guarantee or consumer action. Adding a field or
-# changing the evidence rules behind a classification does not bump it.
+# Bump rules: docs/scripts.md, `--json` contract, Stability.
 JSON_SCHEMA_VERSION = 1
 
 # "other" also fires on non-deliberate exits (docs/hooks.md's
@@ -1673,8 +1671,9 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
         )
     if report.unparsed_registry or report.unparsed_lock:
         lines.append(
-            f"NOTE: {report.unparsed_registry} registry entr{'y' if report.unparsed_registry == 1 else 'ies'} and "
-            f"{report.unparsed_lock} lock file(s) could not be parsed and are excluded above."
+            f"NOTE: {report.unparsed_registry} registry entr{'y' if report.unparsed_registry == 1 else 'ies'} "
+            f"could not be parsed or listed, and {report.unparsed_lock} lock file(s) could not be parsed; "
+            "all are excluded above."
         )
     if report.pid_mismatches:
         lines.append(
