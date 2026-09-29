@@ -36,7 +36,13 @@ not something you can resolve. If none match, proceed without a layer.
 
 - **What and why.** What change is being made — summarized so the reviewer
   gets its shape without reading the whole diff — and why: the context you
-  had as the author, and decisions that are not visible in the source.
+  had as the author, and decisions that are not visible in the source. When a
+  change that reads as routine — a rename, a version bump, anything
+  cosmetic-looking — closes a real bug or risk, lead the first line of prose
+  with that risk, or a reviewer discounts the change as a nit. Never attach a
+  risk that a genuinely routine change does not close. When the why spans
+  several distinct gaps, give each gap its own line or bullet — a paragraph
+  folding them together hides how many separate problems are being closed.
 - **A first line of prose that stands alone.** The first line of prose, read after the attribution trailer below, is what a reader skimming a list of PRs sees; it has to carry the change by itself.
 - **No list of commit subjects.** A bulleted `git log` of the branch is
   chronology, not a summary: it re-narrates how the work arrived instead of
@@ -153,6 +159,8 @@ Markers, illustrative rather than exhaustive:
   **Current state, not branch history** above.
 - Two sections saying the same thing — a Summary bullet restating a list in
   Context. Keep it in the section where the reader looks for it.
+- A first line or Summary that leads with, or states only, the mechanical
+  change when the change closes a real bug or gap; see **What and why** above.
 - Any span a reader arriving cold would stop on and ask "what is this?"
 
 If nothing fires after a careful read, say so — naming the sections
