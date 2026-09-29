@@ -69,10 +69,11 @@
 # A matched WRITE is never released, with or without a marker: every `gh pr
 # review`/`reviews` write is denied unconditionally, redirecting to
 # ~/.claude/scripts/review-pr-post.sh. That script independently
-# re-verifies the HEAD (in `checkout` mode), PR identity, and findings-body
-# hash recorded by /review-pr's own completion marker (see that script's
+# re-verifies the PR identity and findings-body hash recorded by /review-pr's
+# own completion marker, and re-fetches the PR's live remote headRefOid to
+# compare against the marker's recorded one (see that script's
 # header, and _lib_review_pr_completion_marker_fields in _lib.sh for the
-# read it shares with marker.sh's `write review-pr` arm) before it ever
+# read it shares with marker.sh's `status` arm) before it ever
 # calls gh. `--approve` is not a reachable code path in that script, so
 # this gate needs no approve-spelling denylist of its own.
 # Named accepted gap: this gate decides per whole command, like every other

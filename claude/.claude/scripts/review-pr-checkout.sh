@@ -41,12 +41,14 @@ PR's own changed files, for any git-tracked symlink (mode 120000) among
 them, which audit-execution-surface.py's path-only match cannot see, and
 aborts the same way on a hit. A pre-existing symlink elsewhere in the tree
 that this PR does not touch is out of scope. A second run against the same
-PR replaces the prior worktree. On success, rewrites this session's
-provenance file with mode "checkout" (PR identity, the verified headRefOid,
-this session's Claude PID, the mode) after this script's own independent
-re-derivation -- never trusting review-pr-acquire.sh's own mode "acquired"
-write. Prints the worktree's absolute path on stdout as the sole output of
-a successful run.
+PR gets its own new worktree under the main tree's .claude/worktrees/,
+named for this session and the PR number plus a random suffix;
+review-pr-finish.sh removes every worktree of the session. On success,
+rewrites this session's provenance file with mode "checkout" (PR identity,
+the verified headRefOid, this session's Claude PID, the mode) after this
+script's own independent re-derivation -- never trusting
+review-pr-acquire.sh's own mode "acquired" write. Prints the worktree's
+absolute path on stdout as the sole output of a successful run.
 EOF
 }
 
@@ -311,59 +313,54 @@ if [[ -n "$SYMLINK_ENTRIES" ]]; then
   exit 2
 fi
 
-# _lib_main_repo_root, not $REPO_ROOT: review-pr-finish.sh reconstructs
-# WORKTREE_DIR the same way, under the main tree, regardless of which tree
-# this script itself is standing in -- both must derive WORKTREE_DIR
-# identically or a checkout run from a linked worktree orphans its own
-# worktree on cleanup. Every other use of $REPO_ROOT in this script (fetch,
-# ls-tree, remote get-url) is unaffected: those correctly hit the shared
-# object/ref/config store from either tree.
+# _lib_main_repo_root, not $REPO_ROOT: the worktree is created under the main
+# tree regardless of which tree this script itself stands in, and
+# review-pr-finish.sh discovers it from the same root. Every other use of
+# $REPO_ROOT in this script (fetch, ls-tree, remote get-url) is unaffected:
+# those correctly hit the shared object/ref/config store from either tree.
 MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
   echo "review-pr-checkout.sh: could not resolve this repository's main tree root. Abort with no worktree created." >&2
   exit 2
 }
-WORKTREE_DIR=$(_lib_review_pr_worktree_dir "$MAIN_REPO_ROOT" "$OWNER_REPO" "$PR_NUMBER")
-# `git worktree add` (inside review-pr-worktree-replace.py below) creates
-# WORKTREE_DIR's own leading directories itself, but the lock file lives
-# alongside it and needs its own parent directory to exist beforehand, on
-# this repo's very first review-pr run.
-mkdir -p -- "$(dirname "$WORKTREE_DIR")"
 
-# Resolved before the worktree-replace call below so SESSION_ID can be
-# passed into review-pr-worktree-replace.py, which writes the
-# WORKTREE_DIR.owner ownership sidecar itself, inside its own locked
-# section -- atomic with the worktree creation itself. See that script's
-# own header for why a caller-side write of that sidecar after the lock is
-# released is unsafe.
 SESSION_AND_PID=$(_lib_resolve_claude_pid) || {
-  echo "review-pr-checkout.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run) -- cannot record provenance or ownership. Abort before creating a worktree." >&2
+  echo "review-pr-checkout.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run) -- cannot name the worktree or record provenance. Abort before creating a worktree." >&2
   exit 2
 }
 SESSION_ID="${SESSION_AND_PID%% *}"
 CLAUDE_PID="${SESSION_AND_PID##* }"
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
-  echo "review-pr-checkout.sh: resolved session id '$SESSION_ID' is not a valid path component -- cannot record provenance or ownership. Abort before creating a worktree." >&2
+  echo "review-pr-checkout.sh: resolved session id '$SESSION_ID' is not a valid path component -- cannot name the worktree or record provenance. Abort before creating a worktree." >&2
   exit 2
 fi
 
-# Serializes concurrent invocations against the same PR through the whole
-# remove/prune/add sequence, so one invocation's `worktree remove` can never
-# delete a directory the other has already started reading from. Keyed to
-# WORKTREE_DIR (unique per owner/repo/PR-number), so a concurrent run
-# against a DIFFERENT PR never blocks on this one. review-pr-worktree-
-# replace.py holds an fcntl.flock on WORKTREE_DIR.lock for the sequence's
-# whole duration, which releases automatically on process exit (including
-# SIGKILL), so a crashed holder is never observed as still holding it.
-# 210s sizes the wait deadline to the locked section's own worst-case hold
-# time under the lock, not to crash recovery: 7 git/rm calls x 30s
-# (_review_pr_worktree.py's GIT_OP_TIMEOUT_SECONDS), covering the rollback
-# path's second remove_worktree call alongside the base sequence's own. A
-# waiter that times out is behind a legitimately slow, still-alive holder.
-WORKTREE_REPLACE_SCRIPT="$(dirname "$0")/review-pr-worktree-replace.py"
-WORKTREE_REPLACE_LOCK_WAIT_DEADLINE_SECONDS=210
-WORKTREE_DIR_OUTPUT=$(python3 "$WORKTREE_REPLACE_SCRIPT" "$MAIN_REPO_ROOT" "$WORKTREE_DIR" "$FETCHED_SHA" "$SESSION_ID" "$WORKTREE_REPLACE_LOCK_WAIT_DEADLINE_SECONDS") || WORKTREE_DIR_OUTPUT=""
-if [[ -z "$WORKTREE_DIR_OUTPUT" ]]; then
-  echo "review-pr-checkout.sh: could not replace the review worktree at $WORKTREE_DIR (lock contention, a git worktree operation failed, or the ownership sidecar could not be written -- see review-pr-worktree-replace.py's own message above). Abort." >&2
+# Every invocation gets its own mktemp directory, so no two runs share a path
+# and nothing needs a lock. review-pr-finish.sh finds the directory again by
+# the session-scoped name (_lib_review_pr_worktree_template).
+if ! mkdir -p -- "$MAIN_REPO_ROOT/.claude/worktrees" \
+  || ! WORKTREE_DIR=$(mktemp -d "$(_lib_review_pr_worktree_template "$MAIN_REPO_ROOT" "$SESSION_ID" "$PR_NUMBER")"); then
+  echo "review-pr-checkout.sh: could not create a directory for the review worktree under $MAIN_REPO_ROOT/.claude/worktrees. Abort with no worktree created." >&2
+  exit 2
+fi
+
+if WORKTREE_ADD_OUTPUT=$(_lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" worktree add --detach "$WORKTREE_DIR" "$FETCHED_SHA" 2>&1); then
+  WORKTREE_ADD_STATUS=0
+else
+  WORKTREE_ADD_STATUS=$?
+fi
+if [[ "$WORKTREE_ADD_STATUS" -ne 0 ]]; then
+  # The diagnostic prints before any cleanup that can itself fail, so it
+  # states what cleanup is attempted rather than what it achieved.
+  ADD_FAILURE_CLEANUP_NOTE="Removing that directory and pruning its registration next; if a registered leftover remains, ~/.claude/scripts/review-pr-finish.sh finds it and retries its removal."
+  if _lib_status_consistent_with_cap_kill "$WORKTREE_ADD_STATUS"; then
+    echo "review-pr-checkout.sh: git worktree add for $WORKTREE_DIR exited $WORKTREE_ADD_STATUS, consistent with the ${_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS}s local git cap firing (a stalled git or filesystem, or a tree too large for the cap): $WORKTREE_ADD_OUTPUT. Abort. $ADD_FAILURE_CLEANUP_NOTE" >&2
+  else
+    echo "review-pr-checkout.sh: git worktree add failed for $WORKTREE_DIR: $WORKTREE_ADD_OUTPUT. Abort. $ADD_FAILURE_CLEANUP_NOTE" >&2
+  fi
+  # WORKTREE_DIR is the fresh mktemp path above, so nothing else owns it.
+  # Prune skips a locked registration.
+  _lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" rm -rf -- "${WORKTREE_DIR:?}" || true
+  _lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" worktree prune >/dev/null 2>&1 || true
   exit 2
 fi
 
@@ -374,11 +371,14 @@ fi
 # review-pr reads this sibling file; an acquire-only session (mode still
 # "acquired") can never write a completion marker.
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
-mkdir -p -- "$(dirname "$PROVENANCE")"
+if ! mkdir -p -- "$(dirname "$PROVENANCE")"; then
+  echo "review-pr-checkout.sh: could not create the provenance directory $(dirname "$PROVENANCE") -- cannot record this checkout. The worktree at $WORKTREE_DIR was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
+  exit 2
+fi
 if ! _lib_write_review_pr_provenance "$PROVENANCE" \
   "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=checkout"; then
-  echo "review-pr-checkout.sh: could not write provenance file $PROVENANCE -- cannot record this checkout. The worktree above was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
+  echo "review-pr-checkout.sh: could not write provenance file $PROVENANCE -- cannot record this checkout. The worktree at $WORKTREE_DIR was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
   exit 2
 fi
 
-printf '%s\n' "$WORKTREE_DIR_OUTPUT"
+printf '%s\n' "$WORKTREE_DIR"

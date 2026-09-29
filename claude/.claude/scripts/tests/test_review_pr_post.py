@@ -243,19 +243,61 @@ class TestMissingCompletionMarker:
         assert "completion marker" in result.stderr
         assert _read_calls(call_log) == []
 
-
-class TestHeadMismatch:
-    def test_stale_head_ref_oid_fails_closed(self, isolated_home, git_repo, tmp_path):
-        """A mid-review push moved HEAD after the marker was written -- the
-        marker's stored headRefOid no longer names the tree about to be
-        posted against."""
+    def test_another_sessions_marker_at_the_same_repo_hash_does_not_authorize_a_post(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Every session of a repo shares one repo-hash prefix, so the
+        `.<session-id>` suffix is the only isolation between their markers.
+        The other session's marker is otherwise valid for this session's
+        body and for the remote head."""
         _seed_session(isolated_home, SID)
-        body_file, body_hash = _write_findings_body(isolated_home)
-        _write_marker(isolated_home, git_repo, "0" * 40, body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        other_sessions_marker = write_review_pr_completion_marker(
+            isolated_home, git_repo, PR_IDENTITY, marker_head, body_hash, f"{SID}-other"
+        )
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+        )
         assert result.returncode != 0
-        assert "HEAD" in result.stderr
+        assert "completion marker" in result.stderr
         assert _read_calls(call_log) == []
+        assert other_sessions_marker.exists(), "another session's marker must not be consumed"
+
+
+class TestLocalHeadIsNotConsulted:
+    def test_checkout_mode_posts_when_only_the_remote_head_matches_the_marker(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The marker is keyed to the main tree root, so the current tree's
+        HEAD need not be the reviewed commit. The remote headRefOid re-check
+        (TestPrIdentityCrossCheck) is the freshness binding in checkout mode
+        too."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        reviewed_head = "0" * 40
+        assert reviewed_head != head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, reviewed_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=reviewed_head
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_read_pr_review_calls(call_log)) == 1
+
+    def test_marker_resolves_from_a_linked_worktree_of_the_repo(self, isolated_home, git_repo, tmp_path):
+        """The marker path hashes the main tree's root, so running the post
+        from any linked worktree finds the same marker."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        linked_worktree = tmp_path / "linked-post-worktree"
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree)], cwd=git_repo, check=True)
+        result, call_log = _run(
+            linked_worktree, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_read_pr_review_calls(call_log)) == 1
 
 
 class TestBodyHashMismatch:
@@ -347,7 +389,7 @@ class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
 class TestPrIdentityCrossCheck:
     """PR_NUMBER/OWNER_REPO are validated by regex shape alone before this
     check -- neither proves the marker's PR identity actually names the PR
-    the marker's HEAD/body-hash checks ran against. This class pins the
+    the marker's body-hash check ran against. This class pins the
     `gh pr view` re-fetch that closes that gap."""
 
     def test_pr_view_head_mismatch_fails_closed(self, isolated_home, git_repo, tmp_path):
@@ -415,20 +457,14 @@ class TestHappyPath:
 
 
 class TestModeGating:
-    """The local HEAD comparison only makes sense in `checkout` mode, where
-    a reviewed tree exists -- in `diff-only` mode there is no local tree,
-    and the remote headRefOid re-check (TestPrIdentityCrossCheck) is the
-    sole freshness binding."""
+    """Both known modes post once the remote headRefOid re-check
+    (TestPrIdentityCrossCheck) passes; any other mode refuses."""
 
-    def test_diff_only_mode_skips_local_head_check_but_still_posts(
+    def test_diff_only_mode_still_posts(
         self, isolated_home, git_repo, tmp_path
     ):
         _seed_session(isolated_home, SID)
         body_file, body_hash = _write_findings_body(isolated_home)
-        # A headRefOid that matches neither the local repo's HEAD nor
-        # anything else locally derivable -- proving the local-HEAD
-        # comparison genuinely does not run in this mode, not merely that
-        # it happens to pass.
         remote_head = "f" * 40
         write_review_pr_completion_marker(
             isolated_home, git_repo, PR_IDENTITY, remote_head, body_hash, SID, mode="diff-only"

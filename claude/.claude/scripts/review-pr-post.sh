@@ -10,9 +10,9 @@ Usage: ~/.claude/scripts/review-pr-post.sh <comment|request-changes>
 
 Posts the /review-pr findings body recorded by this session's `marker.sh
 write review-pr` completion marker, as the named gh pr review verdict.
-Before posting, verifies: a completion marker exists for this repo and
-session; the worktree's current HEAD still equals the marker's recorded
-headRefOid; the findings-body file's sha256 still equals the marker's
+Before posting, verifies: a completion marker exists for this repo (keyed
+to its main tree root, so any tree of it resolves the same marker) and
+session; the findings-body file's sha256 still equals the marker's
 recorded hash; and the marker's PR number/owner/repo names a real PR whose
 current headRefOid still matches the marker's recorded HEAD. Fails closed
 (no gh call) on any missing or mismatched piece.
@@ -63,13 +63,8 @@ SESSION_ID=$("$(dirname "$0")/marker.sh" resolve-session-id) || {
   exit 2
 }
 
-REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
-if [[ -z "$REPO_ROOT" ]]; then
-  echo "review-pr-post.sh: not inside a git repository. Abort without posting." >&2
-  exit 2
-fi
-REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT") || {
-  echo "review-pr-post.sh: could not compute the repo hash. Abort without posting." >&2
+REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
+  echo "review-pr-post.sh: not inside a git repository, or the repo hash could not be computed. Abort without posting." >&2
   exit 2
 }
 
@@ -82,22 +77,13 @@ MARKER_HEAD_REF_OID=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '2p')
 MARKER_BODY_HASH=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '3p')
 MARKER_MODE=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '4p')
 
-# The local HEAD comparison only makes sense in `checkout` mode, where a
-# reviewed tree actually exists -- in `diff-only` mode there is no local
-# tree to compare, and the remote headRefOid re-check further below is the
-# sole freshness binding. An out-of-enum mode (a corrupted or hand-written
+# The remote headRefOid re-check further below is the sole freshness
+# binding in both modes. An out-of-enum mode (a corrupted or hand-written
 # provenance file -- any process that can write files can write this
 # skill's own state) refuses rather than falling through to either known
 # branch by default.
 case "$MARKER_MODE" in
-  checkout)
-    CURRENT_HEAD=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) || CURRENT_HEAD=""
-    if [[ -z "$CURRENT_HEAD" || "$CURRENT_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
-      echo "review-pr-post.sh: worktree HEAD does not match the reviewed headRefOid recorded by the completion marker -- the diff moved since the review ran. Abort without posting." >&2
-      exit 2
-    fi
-    ;;
-  diff-only) ;;
+  checkout | diff-only) ;;
   *)
     echo "review-pr-post.sh: completion marker mode '$MARKER_MODE' is neither checkout nor diff-only. Abort without posting." >&2
     exit 2
@@ -146,8 +132,8 @@ OWNER_REPO=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '1p')
 PR_NUMBER=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '2p')
 
 # PR_NUMBER/OWNER_REPO are validated above by shape only -- neither check
-# proves this number actually names the PR the marker's HEAD/body-hash
-# checks above were run against. Re-fetch the PR's own current headRefOid
+# proves this number actually names the PR the marker's body-hash check
+# above was run against. Re-fetch the PR's own current headRefOid
 # and compare it to the marker's recorded value: a mismatch means
 # PR_NUMBER/OWNER_REPO does not name the reviewed PR, so abort before
 # constructing a review against the wrong one.

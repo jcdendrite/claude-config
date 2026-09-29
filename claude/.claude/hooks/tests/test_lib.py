@@ -6430,46 +6430,180 @@ class TestLibReviewPrProvenanceSchema:
         assert real.read_text() == "pre-existing\n", "a symlinked destination must never be followed and truncated"
 
 
-class TestLibReviewPrWorktreeDir:
-    """Direct unit coverage for _lib_review_pr_worktree_dir -- the naming
-    convention review-pr-checkout.sh (creates the worktree) and
-    review-pr-finish.sh (removes it) must derive identically."""
+class TestLibReviewPrWorktreeTemplate:
+    """Direct unit coverage for _lib_review_pr_worktree_template -- the
+    naming convention review-pr-checkout.sh creates worktrees under and
+    _lib_review_pr_select_session_worktrees (below) discovers them by."""
 
-    def test_builds_the_worktree_path_with_owner_slash_repo_joined_by_a_percent(self) -> None:
+    def test_builds_the_mktemp_template_from_session_and_pr_number(self) -> None:
         result = _run_lib_call(
-            '_lib_review_pr_worktree_dir "/repo" "foo/bar" "42"', env=dict(os.environ)
+            '_lib_review_pr_worktree_template "/repo" "sess-1" "42"', env=dict(os.environ)
         )
         assert result.returncode == 0
-        assert result.stdout == "/repo/.claude/worktrees/review-pr-foo%bar-42"
+        assert result.stdout == "/repo/.claude/worktrees/review-pr-sess-1-42-XXXXXX"
 
-    def test_owner_repo_with_no_slash_is_passed_through_unmodified(self) -> None:
-        """Defensive characterization, not a validated input shape -- owner/
-        repo is expected to always contain exactly one '/' (enforced by
-        _lib_parse_pr_identity upstream of every real caller), so this pins
-        what happens if that invariant is ever violated rather than
-        asserting it should be."""
-        result = _run_lib_call(
-            '_lib_review_pr_worktree_dir "/repo" "no-slash" "7"', env=dict(os.environ)
-        )
-        assert result.returncode == 0
-        assert result.stdout == "/repo/.claude/worktrees/review-pr-no-slash-7"
 
-    def test_owner_repo_pairs_that_collided_under_the_old_hyphen_join_now_differ(self) -> None:
-        """foo/bar-baz#5 and foo-bar/baz#5 both previously resolved to
-        review-pr-foo-bar-baz-5 -- the '-' join couldn't tell which hyphen was
-        the original OWNER_REPO slash and which was already part of an owner
-        or repo name."""
-        first = _run_lib_call(
-            '_lib_review_pr_worktree_dir "/repo" "foo/bar-baz" "5"', env=dict(os.environ)
+_PORCELAIN_HEAD = "HEAD " + "a" * 40
+
+
+def _porcelain_record(path: str, *extra_lines: str) -> str:
+    """One `git worktree list --porcelain` record: a path line, then a HEAD
+    line and `detached` unless `extra_lines` replaces them."""
+    tail = extra_lines or (_PORCELAIN_HEAD, "detached")
+    return "\n".join([f"worktree {path}", *tail]) + "\n"
+
+
+# mktemp's random suffix differs per draw, so several draws make a selector
+# class narrower than [A-Za-z0-9] fail with near certainty. A class of only
+# lowercase letters and digits passes one draw with probability (36/62)^6,
+# about 4%.
+_TEMPLATE_CONTRACT_DRAWS = 20
+
+
+class TestLibReviewPrSelectSessionWorktrees:
+    """Direct unit coverage for _lib_review_pr_select_session_worktrees --
+    the discovery function review-pr-finish.sh's sweep relies on. Fed
+    synthetic porcelain text, so shapes real git cannot be coerced into
+    emitting (a record missing HEAD, a truncated record) stay reachable."""
+
+    MAIN = "/repo"
+    SESSION = "sess-1"
+    WORKTREES_DIR = "/repo/.claude/worktrees"
+
+    def _select(self, porcelain: str, session_id: str | None = None) -> subprocess.CompletedProcess:
+        session = self.SESSION if session_id is None else session_id
+        return subprocess.run(
+            [
+                "bash", "-c",
+                f'. {_LIB_SH}; _lib_review_pr_select_session_worktrees "$1" "$2" "$3"',
+                "select", porcelain, self.MAIN, session,
+            ],
+            capture_output=True, text=True, check=False,
         )
-        second = _run_lib_call(
-            '_lib_review_pr_worktree_dir "/repo" "foo-bar/baz" "5"', env=dict(os.environ)
+
+    def test_selects_only_this_sessions_worktrees_from_a_mixed_listing(self) -> None:
+        own_first = f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"
+        own_second = f"{self.WORKTREES_DIR}/review-pr-sess-1-7-Zz09Qq"
+        porcelain = "\n".join([
+            _porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"),
+            _porcelain_record(own_first),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-2-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-extra-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/feature-branch"),
+            _porcelain_record("/elsewhere/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/nested/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(own_second),
+        ])
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [own_first, own_second]
+
+    def test_no_matching_worktree_prints_nothing_and_succeeds(self) -> None:
+        result = self._select(_porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_malformed_porcelain_neither_crashes_nor_hides_the_well_formed_matches(self) -> None:
+        """A record missing its HEAD/detached lines, a `worktree` line with
+        no path, a truncated `worktre` line, and a final record cut off
+        mid-line must each be skipped or tolerated without disturbing the
+        matches around them."""
+        missing_tail = f"{self.WORKTREES_DIR}/review-pr-sess-1-1-AAAAAA"
+        well_formed = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-BBBBBB"
+        porcelain = (
+            f"worktree {missing_tail}\n\n"
+            "worktree \n" f"{_PORCELAIN_HEAD}\n\n"
+            f"worktre {self.WORKTREES_DIR}/review-pr-sess-1-3-CCCCCC\n\n"
+            + _porcelain_record(well_formed)
+            + "\n"
+            f"worktree {self.WORKTREES_DIR}/review-pr-sess-1-4-DD"
         )
-        assert first.returncode == 0
-        assert second.returncode == 0
-        assert first.stdout != second.stdout
-        assert first.stdout == "/repo/.claude/worktrees/review-pr-foo%bar-baz-5"
-        assert second.stdout == "/repo/.claude/worktrees/review-pr-foo-bar%baz-5"
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [missing_tail, well_formed]
+
+    def test_a_session_whose_id_extends_this_ones_with_a_digit_led_segment_is_not_selected(self) -> None:
+        """`sess-1-2`'s worktree, `review-pr-sess-1-2-42-aB3dE9`, leaves the
+        remainder `2-42-aB3dE9` after `sess-1`'s prefix. Only the strict
+        six-alphanumeric tail stops that reading as digits `2`, then a
+        suffix."""
+        extended_session_worktree = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-42-aB3dE9"
+        porcelain = _porcelain_record(extended_session_worktree)
+
+        for_sess_1 = self._select(porcelain, "sess-1")
+        for_sess_1_2 = self._select(porcelain, "sess-1-2")
+
+        assert for_sess_1.returncode == 0, for_sess_1.stderr
+        assert for_sess_1.stdout == ""
+        assert for_sess_1_2.returncode == 0, for_sess_1_2.stderr
+        assert for_sess_1_2.stdout.splitlines() == [extended_session_worktree]
+
+    @pytest.mark.parametrize(
+        "worktree_name",
+        [
+            "review-pr-sess-1-42-aB3dE",
+            "review-pr-sess-1-42-aB3dE9x",
+            "review-pr-sess-1-42-aB3d_9",
+            "review-pr-sess-1-42-aB3d.9",
+            "review-pr-sess-1-42-aB3d 9",
+            "review-pr-sess-1--aB3dE9",
+        ],
+        ids=["suffix-5", "suffix-7", "underscore-in-suffix", "dot-in-suffix", "space-in-suffix", "empty-number"],
+    )
+    def test_a_name_outside_the_strict_tail_shape_is_not_selected(self, worktree_name: str) -> None:
+        result = self._select(_porcelain_record(f"{self.WORKTREES_DIR}/{worktree_name}"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/repo/.claude/worktrees/../review-pr-sess-1-42-aB3dE9",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/..",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/../review-pr-sess-1-42-Zz09Qq",
+        ],
+        ids=["parent-first", "trailing-dotdot", "sibling-via-dotdot"],
+    )
+    def test_a_path_with_a_dotdot_segment_is_not_selected(self, path: str) -> None:
+        result = self._select(_porcelain_record(path))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_every_directory_the_checkout_template_creates_is_selected(self, tmp_path: Path) -> None:
+        """Creator/discoverer contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template must match the selector's tail
+        shape, so changing one side alone cannot orphan review worktrees."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              selected=$(_lib_review_pr_select_session_worktrees "worktree $created" "$1" "$2") || exit 11
+              if [ "$selected" != "$created" ]; then
+                printf 'created %s, selected [%s]\\n' "$created" "$selected" >&2
+                exit 12
+              fi
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), self.SESSION, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
+
+    @pytest.mark.parametrize("session_id", ["", "../evil", "a/b", "has space"])
+    def test_invalid_session_id_fails_without_output(self, session_id: str) -> None:
+        result = self._select(
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"), session_id
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
 
 
 # --- _lib_config_lines -------------------------------------------------

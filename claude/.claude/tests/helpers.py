@@ -1303,10 +1303,23 @@ def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
     )
 
 
+def git_main_tree_root(repo: Path) -> str:
+    """The main working tree's root for any tree of `repo`'s repository:
+    the parent of `git rev-parse --path-format=absolute --git-common-dir`.
+    This is the same formula as `_lib_main_repo_root`, not an independent
+    oracle, and every caller passes a main tree, where it agrees with
+    `git_toplevel`. TestLibReviewPrMarkerRepoHash anchors the production key
+    against `--show-toplevel` separately."""
+    common_git_dir = _run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return str(Path(common_git_dir).parent)
+
+
 def review_pr_completion_marker_path(
     home: Path, repo: Path, session_id: str, config_dir: Path | None = None
 ) -> Path:
-    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    """`repo` may be any tree of the repository: the key hashes the main
+    tree's root, which is what every review-pr script derives."""
+    repo_hash = hashlib.sha256(git_main_tree_root(repo).encode()).hexdigest()
     config_dir = config_dir if config_dir is not None else home / ".claude"
     return config_dir / "review-pr-markers" / f"{repo_hash}.{session_id}"
 
@@ -1328,8 +1341,8 @@ def write_review_pr_completion_marker(
     write_plan_review_marker, which shells out to the production hash
     function) so a test seeding a marker here checks require-respond-pr.sh's
     read side against known-correct content, not against marker.sh's own
-    output. mode defaults to "checkout", the only mode under which the
-    local-HEAD comparison this marker's headRefOid field feeds applies."""
+    output. `repo` may be any tree of the repository, since the marker path
+    hashes the main tree's root. mode defaults to "checkout"."""
     marker = review_pr_completion_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{pr_identity}\n{head_ref_oid}\n{body_hash}\n{mode}\n")

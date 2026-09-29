@@ -278,6 +278,30 @@ _status_report_completion_marker() {
   return 1
 }
 
+# _status_report_review_pr_marker CONFIG_DIR REPO_HASH SESSION_ID CURRENT_HEAD_REF_OID
+# Prints "  review-pr: live|historical|absent (...)" for `status`. Reads only this
+# session's own marker, through _lib_review_pr_completion_marker_fields (the
+# reader review-pr-post.sh uses), never a glob over the repo hash's prefix:
+# another session's marker must not read as this session's. Live means the
+# marker's second line, the reviewed headRefOid, equals CURRENT_HEAD_REF_OID
+# (this session's provenance value). No local HEAD is involved, since no
+# reviewed tree need be the current one. A marker the reader rejects as
+# malformed reads as absent.
+_status_report_review_pr_marker() {
+  local config_dir="$1" repo_hash="$2" session_id="$3" current_head_ref_oid="$4"
+  local marker_fields marker_head_ref_oid
+  if ! marker_fields=$(_lib_review_pr_completion_marker_fields "$config_dir" "$repo_hash" "$session_id"); then
+    printf '  review-pr: absent (no readable marker for this session)\n'
+    return 0
+  fi
+  marker_head_ref_oid=$(printf '%s\n' "$marker_fields" | sed -n '2p')
+  if [ -n "$current_head_ref_oid" ] && [ "$marker_head_ref_oid" = "$current_head_ref_oid" ]; then
+    printf '  review-pr: live (the marker for this session matches the reviewed headRefOid)\n'
+  else
+    printf '  review-pr: historical (marker for this session present, headRefOid does not match the current review)\n'
+  fi
+}
+
 # _status_reconciliation_flag LABEL REPO_ROOT [PATHSPEC...]
 # Prints a flag line when the working tree holds unstaged changes overlapping
 # PATHSPEC (the whole repo when no pathspec is given) -- called only when the
@@ -723,34 +747,21 @@ case "$SUBCOMMAND" in
         # write this skill's own state, an accepted residual risk). Refuse
         # rather than falling through to either known branch by default.
         case "$MODE" in
-          checkout)
-            REPO_ROOT=$(_resolve_repo_root) || exit 2
-            CURRENT_HEAD=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
-            if [ -z "$CURRENT_HEAD" ] || [ "$CURRENT_HEAD" != "$HEAD_REF_OID" ]; then
-              printf 'marker.sh: worktree HEAD does not match the headRefOid recorded by %s. Abort without writing a marker.\n' "$PROVENANCE" >&2
-              exit 2
-            fi
-            ;;
-          diff-only)
-            # _lib_repo_root, not _resolve_repo_root: that function's own
-            # _refuse_main_tree_under_enforcement guard exists because a
-            # marker's contents are keyed to the resolved tree, but a
-            # diff-only marker's contents describe a remote diff and claim
-            # nothing about any tree -- and MODE itself comes from a
-            # script-written provenance file, never from an argument.
-            # Skipping the guard here is what keeps the no-checkout path
-            # postable from the main tree of an enforcement-enabled repo.
-            REPO_ROOT=$(_lib_repo_root) || {
-              printf 'marker.sh: not inside a git repository\n' >&2
-              exit 2
-            }
-            ;;
+          checkout | diff-only) ;;
           *)
             printf 'marker.sh: %s has mode %s, which is neither checkout nor diff-only. Abort without writing a marker.\n' "$PROVENANCE" "$MODE" >&2
             exit 2
             ;;
         esac
-        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # Keyed to the main tree's root, not the current tree's, in both
+        # modes: the marker binds a session to a PR review, not to a tree,
+        # so it needs no _resolve_repo_root main-tree refusal and can be
+        # written from wherever the session stands. The remote headRefOid
+        # re-check in review-pr-post.sh is the freshness binding.
+        REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
+          printf 'marker.sh: not inside a git repository, or the repo hash could not be computed\n' >&2
+          exit 2
+        }
         # The findings-body path is derived here, never read from provenance,
         # so no path-equality guard is needed before using it.
         FINDINGS_BODY_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
@@ -1029,23 +1040,17 @@ case "$SUBCOMMAND" in
       printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, the diff is empty -- often because this branch already has a merged PR -- or resolution timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
     fi
 
-    # review-pr: same recipe as ready-for-review's HEAD check above -- the
-    # marker's second line is the reviewed headRefOid, so a whole-line match
-    # against the current HEAD reports live the same way a ready-for-review
-    # marker does, without needing the PR identity or body hash the
-    # completion marker also stores. Meaningful only in `checkout` mode,
-    # where a local reviewed tree actually exists.
-    REVIEW_PR_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
-    _status_report_completion_marker review-pr "$CONFIG_DIR/review-pr-markers" "$REPO_HASH_PREFIX" "$REVIEW_PR_VALUE"
-    # A `diff-only` marker has no local tree to compare against HEAD, so a
-    # hash mismatch there is not a confirmed staleness claim the way it is
-    # for `checkout` mode -- flagged below, following the same "could not
-    # verify" precedent cumulative-review sets above, rather than reporting
-    # "historical" as though a real mismatch had been confirmed.
-    REVIEW_PR_MARKER_FIELDS=$(_lib_review_pr_completion_marker_fields "$CONFIG_DIR" "$REPO_HASH" "$SESSION_ID") || REVIEW_PR_MARKER_FIELDS=""
-    REVIEW_PR_MARKER_MODE=$(printf '%s\n' "$REVIEW_PR_MARKER_FIELDS" | sed -n '4p')
-    if [ "$REVIEW_PR_MARKER_MODE" = "diff-only" ]; then
-      printf '  review-pr: could not verify (diff-only mode has no local tree to compare against HEAD -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
+    # review-pr: keyed to the main tree's root (_lib_review_pr_marker_repo_hash),
+    # not REPO_HASH above, so every tree of the repo reads the same marker.
+    # This report is reachable only where the lines above are, because the
+    # `status` arm's _resolve_repo_root exits first from the main tree of a
+    # worktree-enforced repo that has a linked worktree. The else branch runs
+    # only when the main-root lookup or its hash fails after that succeeded.
+    if REVIEW_PR_REPO_HASH=$(_lib_review_pr_marker_repo_hash); then
+      REVIEW_PR_VALUE=$(_lib_review_pr_provenance_field "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)" head_ref_oid) || REVIEW_PR_VALUE=""
+      _status_report_review_pr_marker "$CONFIG_DIR" "$REVIEW_PR_REPO_HASH" "$SESSION_ID" "$REVIEW_PR_VALUE"
+    else
+      printf '  review-pr: could not verify (the main tree root or its repo hash could not be resolved)\n' >&2
     fi
 
     printf '\nActive-bypass markers (this session):\n'

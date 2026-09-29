@@ -14,15 +14,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
 from .conftest import (
     _build_repo_with_pr_ref,
+    _git_shim_that_fails_on_worktree_subcommand,
     _install_audit_script,
     _provenance_fields,
     _seed_session,
@@ -37,8 +37,21 @@ SID = "test-session-review-pr-checkout"
 _ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 
-def _worktree_dir(repo: Path) -> Path:
-    return repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '%')}-{PR_NUMBER}"
+def _review_worktrees(repo: Path) -> list[Path]:
+    """Every review worktree this session's checkout runs created for
+    PR_NUMBER under repo's main tree -- each run's directory is named
+    review-pr-<session-id>-<number>-<random suffix>."""
+    worktrees_dir = repo / ".claude" / "worktrees"
+    return sorted(worktrees_dir.glob(f"review-pr-{SID}-{PR_NUMBER}-??????")) if worktrees_dir.is_dir() else []
+
+
+def _registered_worktree_paths(repo: Path) -> list[Path]:
+    """Every worktree path `git worktree list --porcelain` reports for repo,
+    resolved so a symlinked temp root compares equal to git's own spelling."""
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    return [Path(line.removeprefix("worktree ")).resolve() for line in listing.splitlines() if line.startswith("worktree ")]
 
 
 def _local_pr_ref_names(repo: Path) -> str:
@@ -211,6 +224,7 @@ def _run(
     fail_trust_check: bool = False,
     malformed_trust_check: bool = False,
     extra_env: dict | None = None,
+    path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     # A successful checkout writes provenance, which needs a live session
     # -- seeded unconditionally, harmlessly idempotent for the many tests
@@ -229,6 +243,8 @@ def _run(
         "HOME": str(home),
     }
     env.pop("CLAUDE_CONFIG_DIR", None)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
@@ -312,7 +328,7 @@ class TestOwnerRepoOriginMismatch:
         assert "origin" in result.stderr
         assert _read_calls(call_log) == []
         assert _local_pr_ref_names(repo) == ""
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
 class TestOwnerRepoCaseInsensitiveMatch:
@@ -374,7 +390,7 @@ class TestTrustClassificationRefuses:
         assert result.returncode != 0
         assert "review-pr-diff.sh" in result.stderr
         assert _local_pr_ref_names(repo) == ""
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
         # No files pagination either -- the block fires before it.
         assert not any(c[:1] == ["api"] and c[1].endswith("/files") for c in _read_calls(call_log))
 
@@ -391,7 +407,7 @@ class TestTrustClassificationRefuses:
         assert result.returncode != 0
         assert "review-pr-diff.sh" in result.stderr
         assert _local_pr_ref_names(repo) == ""
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_deleted_fork_null_head_repo_refuses(self, isolated_home, repo_with_pr_ref, tmp_path):
         """A null `head.repo` (REST payload) means the PR's fork was
@@ -405,7 +421,7 @@ class TestTrustClassificationRefuses:
         )
         assert result.returncode != 0
         assert "review-pr-diff.sh" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     @pytest.mark.parametrize("author_association", ["MEMBER", "OWNER"])
     def test_member_or_owner_author_paired_with_cross_repo_still_refuses(
@@ -424,7 +440,7 @@ class TestTrustClassificationRefuses:
         )
         assert result.returncode != 0
         assert "review-pr-diff.sh" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_member_same_repo_still_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
         _install_audit_script(isolated_home)
@@ -434,7 +450,7 @@ class TestTrustClassificationRefuses:
             head_ref_oid=pr_sha, files=["a.py"], author_association="MEMBER",
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        assert [Path(result.stdout.strip())] == _review_worktrees(repo)
 
     def test_trust_block_fires_before_the_paginated_file_list_call(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -467,7 +483,7 @@ class TestTrustClassificationRefuses:
             head_ref_oid=pr_sha, files=["a.py"], fail_trust_check=True,
         )
         assert result.returncode != 0
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_trust_check_malformed_response_aborts(self, isolated_home, repo_with_pr_ref, tmp_path):
         """A malformed (non-JSON) trust-check response is distinct from an
@@ -479,7 +495,7 @@ class TestTrustClassificationRefuses:
             head_ref_oid=pr_sha, files=["a.py"], malformed_trust_check=True,
         )
         assert result.returncode != 0
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
 class TestProvenanceWrite:
@@ -556,12 +572,11 @@ class TestInvokedFromALinkedWorktree:
     def test_worktree_dir_lands_under_the_main_tree_not_the_linked_worktree(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """review-pr-checkout.sh must anchor WORKTREE_DIR under the main
+        """review-pr-checkout.sh must create the worktree under the main
         tree even when the session invoking it is standing in a linked
-        worktree of the same repo, matching review-pr-finish.sh's own
-        independent reconstruction of the identical path -- a divergence
-        here orphans the review worktree on cleanup, since finish.sh's
-        existence guard would check the wrong path."""
+        worktree of the same repo -- review-pr-finish.sh discovers review
+        worktrees only under the main tree's .claude/worktrees, so a
+        worktree created anywhere else is orphaned on cleanup."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         linked_worktree = tmp_path / "session-worktree"
@@ -576,10 +591,9 @@ class TestInvokedFromALinkedWorktree:
         )
         assert result.returncode == 0, result.stderr
 
-        expected_worktree_dir = _worktree_dir(repo)
         actual_worktree_dir = Path(result.stdout.strip())
-        assert actual_worktree_dir == expected_worktree_dir
-        assert expected_worktree_dir.exists()
+        assert [actual_worktree_dir] == _review_worktrees(repo)
+        assert actual_worktree_dir.exists()
         assert not str(actual_worktree_dir).startswith(str(linked_worktree))
 
 
@@ -596,7 +610,7 @@ class TestAuditCleanProceedsToCheckout:
         assert result.returncode == 0, result.stderr
 
         worktree_dir = Path(result.stdout.strip())
-        assert worktree_dir == _worktree_dir(repo)
+        assert [worktree_dir] == _review_worktrees(repo)
         assert (worktree_dir / "pr_file.txt").exists(), "worktree must hold the PR commit's own content"
         checked_out_head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True
@@ -627,11 +641,13 @@ class TestAuditCleanProceedsToCheckout:
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[]
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        assert [Path(result.stdout.strip())] == _review_worktrees(repo)
 
-    def test_second_run_against_same_pr_replaces_prior_worktree(
+    def test_second_run_against_same_pr_gets_its_own_worktree(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
+        """Every invocation creates a fresh mktemp worktree, so a second run
+        never replaces or collides with the first run's."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         first, _ = _run(
@@ -645,7 +661,11 @@ class TestAuditCleanProceedsToCheckout:
             head_ref_oid=pr_sha, files=["src/app.py"],
         )
         assert second.returncode == 0, second.stderr
-        assert Path(second.stdout.strip()) == _worktree_dir(repo)
+        first_dir, second_dir = Path(first.stdout.strip()), Path(second.stdout.strip())
+        assert first_dir != second_dir
+        assert _review_worktrees(repo) == sorted([first_dir, second_dir])
+        for worktree_dir in (first_dir, second_dir):
+            assert (worktree_dir / "pr_file.txt").exists()
 
 
 class TestAuditStopAbortsBeforeFetch:
@@ -666,7 +686,7 @@ class TestAuditStopAbortsBeforeFetch:
         assert _local_pr_ref_names(repo) == "", (
             "an audit-stop verdict must never fetch refs/pull/<N>/head into a local ref"
         )
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
         # Both self-fetched facts (headRefOid, file list) had to be read
         # before the audit could run at all -- only the ref fetch is
@@ -691,7 +711,7 @@ class TestHeadRefOidMismatch:
         )
         assert result.returncode != 0
         assert "force-push" in result.stderr or "headRefOid" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
 class TestHeadRefOidDriftDuringFileListFetch:
@@ -718,7 +738,7 @@ class TestHeadRefOidDriftDuringFileListFetch:
         assert _local_pr_ref_names(repo) == "", (
             "a drift-detected-mid-audit abort must never fetch refs/pull/<N>/head into a local ref"
         )
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
         calls = _read_calls(call_log)
         pr_view_calls = [c for c in calls if c[:2] == ["pr", "view"]]
@@ -744,7 +764,7 @@ class TestMalformedGhApiOutput:
         assert result.returncode != 0
         assert "file list" in result.stderr
         assert _local_pr_ref_names(repo) == ""
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_head_ref_oid_fetch_failure_aborts_before_any_files_audit(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -756,7 +776,7 @@ class TestMalformedGhApiOutput:
         )
         assert result.returncode != 0
         assert "headRefOid" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_partial_files_listing_before_failure_is_discarded(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -776,7 +796,7 @@ class TestMalformedGhApiOutput:
         assert result.returncode != 0
         assert "file list" in result.stderr
         assert _local_pr_ref_names(repo) == ""
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
 class TestAuditRejectsMalformedInput:
@@ -825,7 +845,7 @@ class TestAuditRejectsMalformedInput:
         )
         assert result.returncode != 0
         assert "rejected its own self-fetched file list as malformed input" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
 class TestGhHostStripped:
@@ -870,7 +890,7 @@ class TestSymlinkDetection:
         assert result.returncode != 0
         assert "notes.txt" in result.stderr
         assert "symlink" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
     def test_pre_existing_symlink_on_base_branch_untouched_by_this_pr_does_not_stop(
         self, isolated_home, tmp_path
@@ -889,7 +909,7 @@ class TestSymlinkDetection:
             head_ref_oid=pr_sha, files=["pr_file.txt"],
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        assert [Path(result.stdout.strip())] == _review_worktrees(repo)
         # The pre-existing symlink really is present at the checked-out
         # commit -- proving this test's own premise, not merely that
         # checkout succeeded for an unrelated reason.
@@ -915,46 +935,184 @@ class TestSymlinkDetection:
         assert result.returncode != 0
         assert symlink_name in result.stderr
         assert "symlink" in result.stderr
-        assert not _worktree_dir(repo).exists()
+        assert _review_worktrees(repo) == []
 
 
-class TestWorktreeReplaceIntegration:
-    """The worktree lock/replace sequence's own concurrency properties
-    (mutual exclusion, automatic release on a SIGKILLed holder, deadline
-    exceeded) are unit-tested directly against review-pr-worktree-
-    replace.py in test_review_pr_worktree_replace.py -- this only pins that
-    review-pr-checkout.sh actually delegates to it and reacts sensibly to a
-    transient contention, rather than re-testing the lock primitive itself
-    through this script's much heavier subprocess-and-gh-shim harness."""
+def _shim_that_fails(tmp_path: Path, tool: str) -> Path:
+    """A PATH shim directory holding one `tool` that always exits 1."""
+    shim_dir = tmp_path / f"{tool}_failing_shim"
+    shim_dir.mkdir()
+    shim = shim_dir / tool
+    shim.write_text(f"#!/usr/bin/env bash\necho 'synthetic {tool} failure' >&2\nexit 1\n")
+    shim.chmod(0o755)
+    return shim_dir
 
-    def test_transient_lock_contention_is_waited_out_not_treated_as_failure(
+
+class TestWorktreeAddFailure:
+    def test_failed_git_worktree_add_aborts_and_leaves_no_directory_behind(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The mktemp directory exists before `git worktree add` runs, so a
+        failed add must remove it: review-pr-finish.sh discovers worktrees
+        only through `git worktree list`, so it never sweeps a leftover
+        directory git did not register."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add"),
+        )
+        assert result.returncode != 0
+        assert "git worktree add failed" in result.stderr
+        assert "local git cap" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_failed_add_leaves_the_acquire_step_provenance_untouched(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Provenance is rewritten to mode `checkout` only after the add
+        succeeds: nothing local corroborates that mode afterwards, so a
+        failed add must not have recorded it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        provenance = write_review_pr_provenance(
+            isolated_home, PR_IDENTITY, pr_sha, 999, mode="acquired", session_id=SID
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add"),
+        )
+        assert result.returncode != 0
+        assert _provenance_fields(provenance)["mode"] == "acquired"
+
+    def test_add_exit_status_from_a_cap_kill_is_named_in_the_message(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """One status exercises the message branch; _lib_status_consistent_with_cap_kill
+        has its own direct tests for the full status set."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add", exit_status=124),
+        )
+        assert result.returncode == 2
+        assert "exited 124" in result.stderr
+        assert "local git cap" in result.stderr
+        assert "review-pr-finish.sh" in result.stderr
+        assert _review_worktrees(repo) == []
+
+
+    def test_failed_add_deletes_only_the_fresh_directory_not_an_earlier_same_session_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The failure-path `rm -rf` targets the fresh mktemp directory alone.
+        An earlier run's worktree for the same session and PR carries the same
+        name shape, so a widened delete would take it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        first, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert first.returncode == 0, first.stderr
+        earlier_worktree = Path(first.stdout.strip())
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add"),
+        )
+
+        assert result.returncode == 2
+        assert "git worktree add failed" in result.stderr
+        assert _review_worktrees(repo) == [earlier_worktree], "only the fresh directory is deleted"
+        assert (earlier_worktree / "pr_file.txt").exists()
+        assert earlier_worktree.resolve() in _registered_worktree_paths(repo)
+
+
+class TestProvenanceDirectoryCreationFailure:
+    def test_a_file_where_the_provenance_directory_belongs_aborts_with_exit_two(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """`mkdir -p` cannot create a directory over a regular file. Under
+        `set -e` an unguarded call would exit with mkdir's own status 1. The
+        worktree already exists by then, and the message names finish as the
+        cleanup."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        (isolated_home / ".claude").mkdir(exist_ok=True)
+        (isolated_home / ".claude" / ".review-pr-active.d").write_text("not a directory\n")
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 2
+        assert "could not create the provenance directory" in result.stderr
+        assert "review-pr-finish.sh" in result.stderr
+        assert result.stdout == ""
+        assert len(_review_worktrees(repo)) == 1
+
+    def test_a_symlink_where_the_provenance_file_belongs_aborts_with_exit_two(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The provenance write refuses a symlink at its destination. Under
+        `set -e` an unguarded call would exit with the write pipeline's own
+        status 1. The worktree already exists by then, and the message names
+        finish as the cleanup."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        symlink_target = tmp_path / "symlink_target"
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        active_dir.mkdir(parents=True)
+        (active_dir / f"{SID}.provenance").symlink_to(symlink_target)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 2
+        assert "could not write provenance file" in result.stderr
+        assert "review-pr-finish.sh" in result.stderr
+        assert result.stdout == ""
+        assert not symlink_target.exists(), "the write must not follow the symlink"
+        assert len(_review_worktrees(repo)) == 1
+
+
+class TestWorktreeDirectoryCreationFailure:
+    """The worktree's parent directory or its mktemp directory cannot be
+    created: the script aborts through its own exit-2 contract, before git
+    is asked to add anything and before provenance is rewritten."""
+
+    def test_mktemp_failure_aborts_with_exit_two_and_no_provenance(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        lock_path = Path(f"{_worktree_dir(repo)}.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        holder = subprocess.Popen(
-            [
-                sys.executable, "-c",
-                "import fcntl, sys, time\n"
-                "f = open(sys.argv[1], 'a+')\n"
-                "fcntl.flock(f, fcntl.LOCK_EX)\n"
-                "print('locked', flush=True)\n"
-                "time.sleep(2)\n",
-                str(lock_path),
-            ],
-            stdout=subprocess.PIPE,
-            text=True,
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_shim_that_fails(tmp_path, "mktemp"),
         )
-        try:
-            assert holder.stdout.readline().strip() == "locked"
-            result, _ = _run(
-                repo, isolated_home, [PR_IDENTITY], tmp_path,
-                head_ref_oid=pr_sha, files=["a.py"],
-            )
-            assert result.returncode == 0, result.stderr
-            assert Path(result.stdout.strip()) == _worktree_dir(repo)
-        finally:
-            holder.wait(timeout=10)
+        assert result.returncode == 2
+        assert "could not create a directory for the review worktree" in result.stderr
+        assert result.stdout == ""
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance").exists()
+        assert _review_worktrees(repo) == []
+
+    def test_a_file_where_the_worktrees_directory_belongs_aborts_with_exit_two(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """`mkdir -p` cannot create a directory over a regular file. Under
+        `set -e` an unguarded call would exit with mkdir's own status 1."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        (repo / ".claude").mkdir(exist_ok=True)
+        (repo / ".claude" / "worktrees").write_text("not a directory\n")
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 2
+        assert "could not create a directory for the review worktree" in result.stderr
+        assert result.stdout == ""
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance").exists()

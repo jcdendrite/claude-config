@@ -540,10 +540,11 @@ _lib_repo_root() {
 # entry of `git worktree list --porcelain`, this needs no ordering
 # guarantee at all. See TestLibMainRepoRoot in test_marker_lib.py for the
 # fixture test covering the main-tree-vs-linked-worktree case directly.
-# review-pr-checkout.sh and review-pr-finish.sh each anchor their own
-# WORKTREE_DIR reconstruction here (not at _lib_repo_root's own
-# possibly-linked-worktree result), so the two independent computations
-# agree.
+# review-pr-checkout.sh creates review worktrees under this root,
+# review-pr-finish.sh discovers them from it, and
+# _lib_review_pr_marker_repo_hash keys the completion marker to it. All three
+# anchor here rather than at _lib_repo_root's possibly-linked-worktree result,
+# so they agree from any tree.
 # Exit 1, empty stdout: not inside a git repository, git is absent, or the
 # call timed out.
 _lib_main_repo_root() {
@@ -572,6 +573,23 @@ _marker_lib_repo_hash() {
   local digest
   digest=$(_lib_hash_diff_text "$1") || return 1
   printf '%s\n' "$digest"
+}
+
+# _lib_review_pr_marker_repo_hash
+# Prints the repo hash keying review-pr's completion marker
+# ($CONFIG_DIR/review-pr-markers/<hash>.<session-id>). It hashes the MAIN
+# tree's root (_lib_main_repo_root), not the current tree's, so `marker.sh
+# write review-pr`, `marker.sh status`, review-pr-post.sh, and
+# review-pr-finish.sh all resolve the same key from any tree of the repo.
+# `marker.sh status` is reachable only where _resolve_repo_root allows it: it
+# exits 2 from the main tree of a worktree-enforced repo that has a live
+# linked worktree.
+# Exit 1, empty stdout: not inside a git repository, git is absent, the call
+# timed out, or hashing failed.
+_lib_review_pr_marker_repo_hash() {
+  local main_repo_root
+  main_repo_root=$(_lib_main_repo_root) || return 1
+  _marker_lib_repo_hash "$main_repo_root"
 }
 
 # _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
@@ -655,9 +673,8 @@ _lib_marker_value_present() {
 # script-generated with no append operation, so a trailing line can only
 # appear via direct tampering.
 # mode is "checkout" or "diff-only", carried through from the provenance
-# file `marker.sh write review-pr` read when it wrote this marker. It
-# selects which freshness binding review-pr-post.sh applies -- a local HEAD
-# comparison makes sense only when a reviewed tree exists.
+# file `marker.sh write review-pr` read when it wrote this marker.
+# review-pr-post.sh accepts only those two values.
 #
 # Deliberately session-scoped, unlike _lib_marker_value_present's
 # cross-session glob above: this authorization is bound to the session that
@@ -737,8 +754,8 @@ _lib_case_insensitive_ne() {
 # printing owner/repo then number on two lines, and returns 0. Returns 1
 # with no output when the number segment is not purely numeric, or the
 # owner/repo segment doesn't match the tightened shape below. Shared by
-# review-pr-checkout.sh, review-pr-post.sh, review-pr-acquire.sh,
-# review-pr-diff.sh, and review-pr-finish.sh, so none of them carries its
+# review-pr-checkout.sh, review-pr-post.sh, review-pr-acquire.sh, and
+# review-pr-diff.sh, so none of them carries its
 # own copy of this split and its validation.
 #
 # Rejects a bare `.`/`..` segment, which a naive [A-Za-z0-9._-]+ class would
@@ -821,17 +838,69 @@ _lib_review_pr_provenance_field() {
   printf '%s' "$value"
 }
 
-# _lib_review_pr_worktree_dir MAIN_REPO_ROOT OWNER_REPO PR_NUMBER
-# Prints $MAIN_REPO_ROOT/.claude/worktrees/review-pr-<owner>%<repo>-<number>
-# -- the review-pr checkout worktree's path, shared by review-pr-checkout.sh
-# (creates it) and review-pr-finish.sh (removes it), so the two cannot
-# derive the naming convention differently from each other. The OWNER_REPO
-# slash becomes '%', not '-': _lib_parse_pr_identity's owner/repo charset is
-# [A-Za-z0-9._-], which never contains '%', so the marker can't collide with
-# a hyphen already inside an owner or repo name.
-_lib_review_pr_worktree_dir() {
-  local main_repo_root="$1" owner_repo="$2" pr_number="$3"
-  printf '%s/.claude/worktrees/review-pr-%s-%s' "$main_repo_root" "${owner_repo//\//%}" "$pr_number"
+# Cap for each local git or rm call that creates or removes a review worktree:
+# review-pr-checkout.sh's `worktree add` and its failure-path rm -rf and
+# prune, and review-pr-finish.sh's list, remove, rm -rf, and prune.
+# It is a hang backstop for a stalled filesystem or git, not a latency budget,
+# following _lib_jq's 5s backstop. 30s is a chosen ceiling, not a measured or
+# documented figure.
+# Cost scales with the checked-out tree's size and disk speed, plus any
+# clean/smudge filters git runs while populating the tree.
+# A cap kill can strand a worktree registration or lock file, because a
+# SIGKILLed git cannot clean up after itself.
+_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS=30
+
+# _lib_review_pr_worktree_name_prefix SESSION_ID
+# Prints review-pr-<session-id>-, the leading part of every worktree
+# directory name review-pr-checkout.sh creates for that session. Shared by
+# the template below and the discovery helper after it, so creation and
+# cleanup cannot derive the naming convention differently from each other.
+_lib_review_pr_worktree_name_prefix() {
+  printf 'review-pr-%s-' "$1"
+}
+
+# _lib_review_pr_worktree_template MAIN_REPO_ROOT SESSION_ID PR_NUMBER
+# Prints the `mktemp -d` template for one review-pr checkout:
+# $MAIN_REPO_ROOT/.claude/worktrees/review-pr-<session-id>-<number>-XXXXXX.
+# The six-character random suffix makes every invocation's path unique, and
+# _lib_review_pr_select_session_worktrees below expects exactly that shape.
+_lib_review_pr_worktree_template() {
+  local main_repo_root="$1" session_id="$2" pr_number="$3"
+  printf '%s/.claude/worktrees/%s%s-XXXXXX' "$main_repo_root" "$(_lib_review_pr_worktree_name_prefix "$session_id")" "$pr_number"
+}
+
+# _lib_review_pr_select_session_worktrees PORCELAIN MAIN_REPO_ROOT SESSION_ID
+# Prints, one per line, the path of every worktree in PORCELAIN (the text of
+# `git worktree list --porcelain`) that a review-pr-checkout.sh run for
+# SESSION_ID created. Prints nothing when none match. Returns 1 only when
+# SESSION_ID is not a valid path component.
+# A path matches only when it sits directly under
+# $MAIN_REPO_ROOT/.claude/worktrees and its name is
+# review-pr-<session-id>-<digits>-<six alphanumerics>. The strict tail keeps
+# a session whose id is a hyphen-extended prefix of another's from matching
+# that other session's worktrees.
+# Only `worktree <path>` lines are read, so a record missing its HEAD or
+# branch line, or a truncated trailing record, cannot disturb the records
+# around it. A `worktree` line with no path is skipped.
+_lib_review_pr_select_session_worktrees() {
+  local porcelain="$1" main_repo_root="$2" session_id="$3"
+  _lib_valid_session_id_component "$session_id" || return 1
+  local worktrees_dir="$main_repo_root/.claude/worktrees"
+  local name_prefix
+  name_prefix=$(_lib_review_pr_worktree_name_prefix "$session_id")
+  local line path name remainder
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "?*) path="${line#worktree }" ;;
+      *) continue ;;
+    esac
+    [[ "$path" == "$worktrees_dir/"* ]] || continue
+    name="${path#"$worktrees_dir"/}"
+    [[ "$name" != */* && "$name" == "$name_prefix"* ]] || continue
+    remainder="${name#"$name_prefix"}"
+    [[ "$remainder" =~ ^[0-9]+-[A-Za-z0-9]{6}$ ]] || continue
+    printf '%s\n' "$path"
+  done <<< "$porcelain"
 }
 
 # _lib_sha256_no_follow PATH

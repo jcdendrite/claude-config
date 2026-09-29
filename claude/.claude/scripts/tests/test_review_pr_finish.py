@@ -1,24 +1,36 @@
 """Tests for review-pr-finish.sh -- the single cleanup call for
 /review-pr's deliver step, run on every exit path (posted, declined, or
 aborted). Idempotent, and safe to run with nothing in flight.
+
+The worktree sweep's selection rules (which paths count as this session's)
+are covered against synthetic porcelain text in test_lib.py's
+TestLibReviewPrSelectSessionWorktrees; the subprocess tests here use real
+git and cover one case per branch of the sweep itself.
 """
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import subprocess
-import sys
+import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, head_sha, review_pr_completion_marker_path, write_review_pr_provenance
+from helpers import (
+    SCRIPTS_DIR,
+    git_main_tree_root,
+    head_sha,
+    review_pr_completion_marker_path,
+    write_review_pr_provenance,
+)
 
-from .conftest import _git_shim_that_fails_on_worktree_prune, _seed_session
+from .conftest import _git_shim_that_fails_on_worktree_subcommand, _seed_session
 
 SCRIPT = SCRIPTS_DIR / "review-pr-finish.sh"
-OWNER_REPO = "foo/bar"
-PR_NUMBER = "42"
-PR_IDENTITY = f"{OWNER_REPO}#{PR_NUMBER}"
+PR_IDENTITY = "foo/bar#42"
 SID = "test-session-review-pr-finish"
+OTHER_SID = "test-session-someone-else"
 
 
 @pytest.fixture
@@ -28,25 +40,8 @@ def isolated_home(tmp_path):
     return home
 
 
-def _worktree_dir(repo: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER) -> Path:
-    return repo / ".claude" / "worktrees" / f"review-pr-{owner_repo.replace('/', '%')}-{pr_number}"
-
-
-def _build_repo_with_review_worktree(
-    tmp_path: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER,
-    *, with_origin: bool = True,
-) -> tuple[Path, Path, str]:
-    """A repo with a linked worktree at the shape review-pr-checkout.sh
-    creates -- returns (repo, worktree_dir, head_sha).
-
-    with_origin=True (the default) adds an `origin` remote whose own path
-    embeds owner_repo's two path segments, mirroring conftest.py's
-    _build_repo_with_pr_ref -- so review-pr-finish.sh's own origin-identity
-    check (comparing the provenance-declared owner/repo against the
-    worktree's actual origin) sees the same value a test's provenance
-    declares. with_origin=False models a repo with no origin remote
-    configured at all, distinct from a remote that resolves to a
-    *different* owner/repo (TestOwnerRepoOriginMismatch below)."""
+def _build_repo(tmp_path: Path) -> tuple[Path, str]:
+    """A repo with one commit -- returns (repo, head_sha)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -55,27 +50,54 @@ def _build_repo_with_review_worktree(
     (repo / "file.txt").write_text("main\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    sha = head_sha(repo)
-
-    if with_origin:
-        bare = tmp_path / "remote" / owner_repo
-        bare.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", "--bare"], cwd=bare, check=True)
-        subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
-
-    worktree_dir = _worktree_dir(repo, owner_repo, pr_number)
-    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "worktree", "add", "--detach", str(worktree_dir), sha], cwd=repo, check=True
-    )
-    return repo, worktree_dir, sha
+    return repo, head_sha(repo)
 
 
-def _write_provenance(
-    home: Path, mode: str, head_ref_oid: str, pr_identity: str = PR_IDENTITY,
-    session_id: str = SID, pid: int = 999,
+def _add_review_worktree(
+    repo: Path, sha: str, session_id: str = SID, pr_number: str = "42", suffix: str = "aB3dE9",
 ) -> Path:
-    return write_review_pr_provenance(home, pr_identity, head_ref_oid, pid, mode=mode, session_id=session_id)
+    """A linked worktree at the shape review-pr-checkout.sh creates:
+    <repo>/.claude/worktrees/review-pr-<session-id>-<number>-<suffix>."""
+    worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{session_id}-{pr_number}-{suffix}"
+    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree_dir), sha], cwd=repo, check=True)
+    return worktree_dir
+
+
+def _add_neighbors(repo: Path, sha: str) -> tuple[list[Path], Path]:
+    """The four shapes finish must never remove: a registered worktree of
+    another session, a registered worktree of a session whose id extends
+    this one's, a registered worktree carrying this session's name prefix
+    with a suffix one character short of mktemp's six, and a plain
+    unregistered directory carrying this session's name prefix. Returns
+    (the three registered worktrees, the plain directory, which holds
+    keep.txt)."""
+    other_session = _add_review_worktree(repo, sha, session_id=OTHER_SID)
+    prefix_extended_session = _add_review_worktree(repo, sha, session_id=f"{SID}-extra")
+    broken_tail_lookalike = _add_review_worktree(repo, sha, suffix="aB3dE")
+    plain_directory = repo / ".claude" / "worktrees" / f"review-pr-{SID}-notes"
+    plain_directory.mkdir()
+    (plain_directory / "keep.txt").write_text("keep\n")
+    return [other_session, prefix_extended_session, broken_tail_lookalike], plain_directory
+
+
+def _assert_neighbors_survive(repo: Path, registered_neighbors: list[Path], plain_directory: Path) -> None:
+    registered = _registered_worktree_paths(repo)
+    for neighbor in registered_neighbors:
+        assert neighbor.exists(), f"{neighbor.name} is not this session's and must not be deleted"
+        assert str(neighbor) in registered, f"{neighbor.name} must stay registered"
+    assert (plain_directory / "keep.txt").exists(), "an unregistered directory must not be swept"
+
+
+def _registered_worktree_paths(repo: Path) -> list[str]:
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    return [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
+
+
+def _write_provenance(home: Path, mode: str, head_ref_oid: str, session_id: str = SID) -> Path:
+    return write_review_pr_provenance(home, PR_IDENTITY, head_ref_oid, 999, mode=mode, session_id=session_id)
 
 
 def _write_artifacts(home: Path, session_id: str = SID) -> list[Path]:
@@ -91,33 +113,27 @@ def _write_artifacts(home: Path, session_id: str = SID) -> list[Path]:
     return paths
 
 
-def _write_completion_marker(home: Path, repo_for_hash: Path, session_id: str = SID) -> Path:
-    marker = review_pr_completion_marker_path(home, repo_for_hash, session_id)
+def _write_completion_marker(home: Path, main_repo: Path, session_id: str = SID) -> Path:
+    marker = review_pr_completion_marker_path(home, main_repo, session_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{PR_IDENTITY}\nabc\ndef\ncheckout\n")
     return marker
 
 
-def _run(cwd: Path, home: Path) -> subprocess.CompletedProcess:
+def _provenance_path(home: Path, session_id: str = SID) -> Path:
+    return home / ".claude" / ".review-pr-active.d" / f"{session_id}.provenance"
+
+
+def _run(cwd: Path, home: Path, *, path_prefix: Path | None = None) -> subprocess.CompletedProcess:
+    """path_prefix, when given, is prepended to a real, inherited PATH --
+    needed only when a test must override one specific external tool (git,
+    rm, sha256sum) the script or a helper it shells out to calls
+    internally."""
     env = {"HOME": str(home)}
-    env.pop("CLAUDE_CONFIG_DIR", None)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{os.environ.get('PATH', '')}"
     return subprocess.run(
-        ["bash", str(SCRIPT)], cwd=cwd, env=env, capture_output=True, text=True,
-    )
-
-
-def _run_with_extra_path(cwd: Path, home: Path, shim_dir: Path) -> subprocess.CompletedProcess:
-    """Same invocation as _run, but with shim_dir prepended to a real,
-    inherited PATH -- needed only when a test must override one specific
-    external tool (git, sha256sum) the script or a helper it shells out to
-    calls internally."""
-    env = {**os.environ, "HOME": str(home), "PATH": f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
-    # CLAUDE_CONFIG_DIR takes priority over HOME in _lib_config_dir -- must
-    # not leak in from the ambient test-runner environment, or this
-    # invocation would resolve outside the isolated `home` fixture.
-    env.pop("CLAUDE_CONFIG_DIR", None)
-    return subprocess.run(
-        ["bash", str(SCRIPT)], cwd=cwd, env=env, capture_output=True, text=True,
+        ["bash", str(SCRIPT)], cwd=cwd, env=env, capture_output=True, text=True, timeout=60,
     )
 
 
@@ -134,13 +150,32 @@ def _sha256sum_shim_that_produces_no_output(tmp_path: Path) -> Path:
     return shim_dir
 
 
+def _rm_shim_that_fails_on_recursive_delete(tmp_path: Path) -> Path:
+    """An `rm` PATH shim failing every `rm -rf`, delegating any other
+    invocation (the script's own artifact `rm -f`) to the real rm."""
+    real_rm = shutil.which("rm")
+    shim_dir = tmp_path / "rm_shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "rm"
+    shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        if [[ "$1" == "-rf" ]]; then
+          echo "synthetic rm failure" >&2
+          exit 1
+        fi
+        exec {shlex.quote(real_rm)} "$@"
+    """))
+    shim.chmod(0o755)
+    return shim_dir
+
+
 class TestUsageErrors:
     def test_any_argument_exits_two_with_usage(self, isolated_home, tmp_path):
         _seed_session(isolated_home, SID)
         env = {"HOME": str(isolated_home)}
-        env.pop("CLAUDE_CONFIG_DIR", None)
         result = subprocess.run(
             ["bash", str(SCRIPT), "unexpected"], cwd=tmp_path, env=env, capture_output=True, text=True,
+            timeout=60,
         )
         assert result.returncode == 2
         assert "Usage" in result.stderr
@@ -160,258 +195,312 @@ class TestNothingInFlight:
         assert second.returncode == 0, second.stderr
 
 
-class TestCheckoutModeRemovesWorktreeAndArtifacts:
-    def test_removes_every_artifact_and_the_worktree(self, isolated_home, tmp_path):
+class TestArtifactAndMarkerRemoval:
+    def test_removes_provenance_artifacts_and_marker(self, isolated_home, tmp_path):
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        repo, worktree_dir, sha = _build_repo_with_review_worktree(tmp_path)
         _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
         artifact_paths = _write_artifacts(isolated_home)
-        marker = _write_completion_marker(isolated_home, worktree_dir)
+        marker = _write_completion_marker(isolated_home, repo)
+
+        result = _run(repo, isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        for p in artifact_paths:
+            assert not p.exists()
+        assert not _provenance_path(isolated_home).exists()
+        assert not marker.exists()
+
+    def test_marker_is_removed_when_run_from_inside_a_linked_worktree(self, isolated_home, tmp_path):
+        """The marker is keyed to the main tree's root, so running from a
+        linked worktree removes the same marker."""
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        marker = _write_completion_marker(isolated_home, repo)
+        linked_worktree = tmp_path / "linked-session-worktree"
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree), sha], cwd=repo, check=True)
+
+        result = _run(linked_worktree, isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+
+
+class TestSessionWideWorktreeSweep:
+    def test_removes_the_sessions_own_worktree_even_when_run_from_inside_it(self, isolated_home, tmp_path):
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        worktree_dir = _add_review_worktree(repo, sha)
 
         result = _run(worktree_dir, isolated_home)
         assert result.returncode == 0, result.stderr
 
         assert not worktree_dir.exists()
-        # The lock file itself is never removed: flock keys on inode, not
-        # path, so deleting it while another process holds or awaits a lock
-        # on that inode would let a third process reacquire a fresh lock on
-        # the recreated path concurrently.
-        assert Path(f"{worktree_dir}.lock").exists()
-        for p in artifact_paths:
-            assert not p.exists()
-        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        assert not provenance.exists()
-        assert not marker.exists()
+        assert str(worktree_dir) not in _registered_worktree_paths(repo)
+        assert "found 1 review worktree(s)" in result.stderr
+        assert f"removed review worktree {worktree_dir}" in result.stderr
 
-    def test_is_idempotent_after_a_successful_checkout_mode_run(self, isolated_home, tmp_path):
+    def test_leaves_other_sessions_and_non_matching_directories_untouched(self, isolated_home, tmp_path):
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        repo, worktree_dir, sha = _build_repo_with_review_worktree(tmp_path)
-        _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
-        _write_artifacts(isolated_home)
-        _write_completion_marker(isolated_home, worktree_dir)
+        own_worktree = _add_review_worktree(repo, sha)
+        registered_neighbors, plain_directory = _add_neighbors(repo, sha)
 
-        first = _run(worktree_dir, isolated_home)
-        assert first.returncode == 0, first.stderr
+        result = _run(repo, isolated_home)
+        assert result.returncode == 0, result.stderr
 
-        # cwd for the second run can no longer be the removed worktree --
-        # the repo's own main tree is where a session would actually sit
-        # once the worktree it was standing in is gone.
-        second = _run(repo, isolated_home)
-        assert second.returncode == 0, second.stderr
+        assert not own_worktree.exists()
+        _assert_neighbors_survive(repo, registered_neighbors, plain_directory)
 
+    def test_leaves_other_sessions_artifacts_and_marker_untouched(self, isolated_home, tmp_path):
+        repo, _ = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        other_artifacts = _write_artifacts(isolated_home, OTHER_SID)
+        other_marker = _write_completion_marker(isolated_home, repo, OTHER_SID)
 
-class TestDiffOnlyModeTouchesNoWorktree:
-    def test_removes_artifacts_and_marker_without_touching_any_worktree(
+        result = _run(repo, isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        for p in other_artifacts:
+            assert p.exists(), f"{p.name} belongs to another session and must survive"
+        assert other_marker.exists()
+
+    def test_zero_matches_is_logged_with_the_inspected_directory(self, isolated_home, tmp_path):
+        repo, _ = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+
+        result = _run(repo, isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        assert "found 0 review worktree(s)" in result.stderr
+        assert f"{git_main_tree_root(repo)}/.claude/worktrees" in result.stderr
+
+    def test_two_worktrees_in_one_session_are_both_removed_and_the_count_is_logged(
         self, isolated_home, tmp_path
     ):
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        (repo / "file.txt").write_text("main\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        sha = head_sha(repo)
-
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        _write_provenance(isolated_home, mode="diff-only", head_ref_oid=sha)
-        artifact_paths = _write_artifacts(isolated_home)
-        marker = _write_completion_marker(isolated_home, repo)
+        first = _add_review_worktree(repo, sha, pr_number="42", suffix="AAAAAA")
+        second = _add_review_worktree(repo, sha, pr_number="7", suffix="BBBBBB")
 
-        worktree_dir = _worktree_dir(repo)
-        assert not worktree_dir.exists(), "diff-only mode never creates a worktree in the first place"
+        result = _run(repo, isolated_home)
+        assert result.returncode == 0, result.stderr
+
+        assert not first.exists()
+        assert not second.exists()
+        assert "found 2 review worktree(s)" in result.stderr
+        assert f"removed review worktree {first}" in result.stderr
+        assert f"removed review worktree {second}" in result.stderr
+
+    def test_a_failed_removal_leaves_the_worktree_for_a_retry(self, isolated_home, tmp_path):
+        """Both `git worktree remove` and the `rm -rf` fallback fail, so the
+        worktree stays registered and on disk, discoverable by the next run
+        -- which, with the failure gone, removes it."""
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        worktree_dir = _add_review_worktree(repo, sha)
+        artifact_paths = _write_artifacts(isolated_home)
+        failing_git = _git_shim_that_fails_on_worktree_subcommand(tmp_path, "remove")
+        failing_rm = _rm_shim_that_fails_on_recursive_delete(tmp_path)
+        shim_dir = tmp_path / "combined_shims"
+        shim_dir.mkdir()
+        (shim_dir / "git").symlink_to(failing_git / "git")
+        (shim_dir / "rm").symlink_to(failing_rm / "rm")
+
+        first = _run(repo, isolated_home, path_prefix=shim_dir)
+        assert first.returncode == 0, first.stderr
+        assert f"could not remove review worktree {worktree_dir}" in first.stderr
+        assert worktree_dir.exists()
+        assert str(worktree_dir) in _registered_worktree_paths(repo)
+        for p in artifact_paths:
+            assert not p.exists(), "artifact cleanup must proceed when a worktree removal fails"
+
+        second = _run(repo, isolated_home)
+        assert second.returncode == 0, second.stderr
+        assert not worktree_dir.exists()
+        assert str(worktree_dir) not in _registered_worktree_paths(repo)
+
+    def test_git_removal_failure_falls_back_to_deleting_only_this_sessions_directory_and_pruning(
+        self, isolated_home, tmp_path
+    ):
+        """The fallback is finish's only `rm -rf`, so it runs here with
+        every neighbor shape present: a widened delete would take one."""
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        worktree_dir = _add_review_worktree(repo, sha)
+        registered_neighbors, plain_directory = _add_neighbors(repo, sha)
+
+        result = _run(
+            repo, isolated_home, path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "remove"),
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert not worktree_dir.exists()
+        assert "deleted the directory instead" in result.stderr
+        # The registration outlives a plain `rm -rf` unless the fallback's
+        # own `git worktree prune` ran afterwards.
+        assert str(worktree_dir) not in _registered_worktree_paths(repo)
+        _assert_neighbors_survive(repo, registered_neighbors, plain_directory)
+
+    def test_fallback_on_a_locked_worktree_warns_that_a_registration_may_remain(
+        self, isolated_home, tmp_path
+    ):
+        """`git worktree prune` skips a locked registration, so a fallback
+        delete of a locked worktree can leave the registration behind. The
+        message must not present the worktree as fully handled, and a later
+        unshimmed run must clear the leftover registration."""
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        worktree_dir = _add_review_worktree(repo, sha)
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", "held by another session", str(worktree_dir)],
+            cwd=repo, check=True,
+        )
+
+        result = _run(
+            repo, isolated_home, path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "remove"),
+        )
+        assert result.returncode == 0, result.stderr
+
+        assert not worktree_dir.exists()
+        assert "deleted the directory instead" in result.stderr
+        assert "registration for it may remain" in result.stderr
+        assert "a later run of this script retries it" in result.stderr
+        assert str(worktree_dir) in _registered_worktree_paths(repo), "the prune skips a locked registration"
+
+        retry = _run(repo, isolated_home)
+        assert retry.returncode == 0, retry.stderr
+        assert str(worktree_dir) not in _registered_worktree_paths(repo), retry.stderr
+
+    def test_a_locked_worktree_is_removed_by_git_rather_than_the_fallback(self, isolated_home, tmp_path):
+        """A single `--force` refuses a locked worktree, and the collision
+        guard locks a review worktree once the session writes into it, so
+        finish must force twice and leave no registration behind."""
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        worktree_dir = _add_review_worktree(repo, sha)
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", "held by another session", str(worktree_dir)],
+            cwd=repo, check=True,
+        )
 
         result = _run(repo, isolated_home)
         assert result.returncode == 0, result.stderr
 
         assert not worktree_dir.exists()
-        for p in artifact_paths:
-            assert not p.exists()
-        assert not marker.exists()
+        assert str(worktree_dir) not in _registered_worktree_paths(repo)
+        assert f"removed review worktree {worktree_dir}" in result.stderr
+        assert "deleted the directory instead" not in result.stderr
 
-
-class TestAcquireOnlyModeRemovesArtifactsOnly:
-    def test_mode_acquired_removes_artifacts_but_touches_no_worktree(self, isolated_home, tmp_path):
-        """mode "acquired" (Step 1 ran, but neither review-pr-checkout.sh
-        nor review-pr-diff.sh ever did) must still clean up cleanly -- no
-        worktree was ever created for this mode either."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        (repo / "file.txt").write_text("main\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        sha = head_sha(repo)
-
+    def test_a_registration_whose_directory_is_already_gone_is_cleared(self, isolated_home, tmp_path):
+        """A user's own `rm -rf` of a review worktree leaves it registered;
+        the next finish must still clear the registration."""
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        _write_provenance(isolated_home, mode="acquired", head_ref_oid=sha)
-        artifact_paths = _write_artifacts(isolated_home)
+        worktree_dir = _add_review_worktree(repo, sha)
+        shutil.rmtree(worktree_dir)
+        assert str(worktree_dir) in _registered_worktree_paths(repo)
 
         result = _run(repo, isolated_home)
         assert result.returncode == 0, result.stderr
-        for p in artifact_paths:
-            assert not p.exists()
-        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        assert not provenance.exists()
 
+        assert "found 1 review worktree(s)" in result.stderr
+        assert str(worktree_dir) not in _registered_worktree_paths(repo)
 
-class TestOwnerRepoOriginMismatch:
-    """Mirrors review-pr-checkout.sh's/review-pr-diff.sh's own
-    TestOwnerRepoOriginMismatch/TestOriginMismatch classes: a forged or
-    stale provenance OWNER_REPO must not be able to direct this script's
-    own `git worktree remove --force`/`rm -rf` at a colliding-but-unrelated
-    worktree."""
-
-    def test_mismatched_owner_repo_never_removes_the_colliding_worktree(
+    def test_prune_failure_after_the_fallback_is_reported_and_still_exits_zero(
         self, isolated_home, tmp_path
     ):
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        repo, _own_worktree_dir, sha = _build_repo_with_review_worktree(tmp_path)
-        decoy_owner_repo = "decoy-owner/decoy-repo"
-        # A forged provenance identity can compute the same path as a real,
-        # unrelated in-progress worktree.
-        # That collision must not cause the removal call to delete the
-        # colliding worktree.
-        decoy_worktree_dir = _worktree_dir(repo, decoy_owner_repo, PR_NUMBER)
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", str(decoy_worktree_dir), sha],
-            cwd=repo, check=True,
-        )
-        _write_provenance(
-            isolated_home, mode="checkout", head_ref_oid=sha,
-            pr_identity=f"{decoy_owner_repo}#{PR_NUMBER}",
-        )
+        worktree_dir = _add_review_worktree(repo, sha)
         artifact_paths = _write_artifacts(isolated_home)
 
-        result = _run(repo, isolated_home)
-        assert result.returncode == 0, result.stderr
-        assert "origin" in result.stderr
-
-        assert decoy_worktree_dir.exists(), "an origin mismatch must never remove a colliding worktree"
-        for p in artifact_paths:
-            assert not p.exists(), "artifact cleanup must still proceed when worktree removal is skipped"
-
-    def test_no_origin_remote_configured_never_removes_the_worktree(self, isolated_home, tmp_path):
-        """Distinct runtime state from a populated-but-mismatched origin
-        above: `git remote get-url origin` itself fails, so ORIGIN_URL and
-        ORIGIN_OWNER_REPO are both empty rather than merely unequal to
-        OWNER_REPO -- the empty-string branch of the same check must fail
-        closed identically."""
-        _seed_session(isolated_home, SID)
-        repo, worktree_dir, sha = _build_repo_with_review_worktree(tmp_path, with_origin=False)
-        _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
-        artifact_paths = _write_artifacts(isolated_home)
-
-        result = _run(repo, isolated_home)
-        assert result.returncode == 0, result.stderr
-        assert "origin" in result.stderr
-
-        assert worktree_dir.exists(), "no origin remote at all must never remove the worktree"
-        for p in artifact_paths:
-            assert not p.exists(), "artifact cleanup must still proceed when worktree removal is skipped"
-
-
-class TestLockContention:
-    """review-pr-finish.sh's own worktree removal acquires the same lock
-    review-pr-worktree-replace.py uses for the identical WORKTREE_DIR
-    (both now import _review_pr_worktree.acquire_lock) -- this pins
-    that review-pr-finish.sh reacts sensibly to a transient contention,
-    mirroring test_review_pr_checkout.py's own
-    TestWorktreeReplaceIntegration rather than re-testing the lock
-    primitive itself (already unit-tested directly in
-    test_review_pr_worktree_replace.py)."""
-
-    def test_transient_lock_contention_is_waited_out_not_treated_as_failure(
-        self, isolated_home, tmp_path
-    ):
-        _seed_session(isolated_home, SID)
-        repo, worktree_dir, sha = _build_repo_with_review_worktree(tmp_path)
-        _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
-        lock_path = Path(f"{worktree_dir}.lock")
-
-        holder = subprocess.Popen(
-            [
-                sys.executable, "-c",
-                "import fcntl, sys, time\n"
-                "f = open(sys.argv[1], 'a+')\n"
-                "fcntl.flock(f, fcntl.LOCK_EX)\n"
-                "print('locked', flush=True)\n"
-                "time.sleep(2)\n",
-                str(lock_path),
-            ],
-            stdout=subprocess.PIPE,
-            text=True,
+        result = _run(
+            repo, isolated_home,
+            path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "remove", "prune"),
         )
-        try:
-            assert holder.stdout.readline().strip() == "locked"
-            result = _run(repo, isolated_home)
-            assert result.returncode == 0, result.stderr
-            assert not worktree_dir.exists()
-        finally:
-            holder.wait(timeout=10)
+        assert result.returncode == 0, result.stderr
+
+        assert not worktree_dir.exists()
+        assert "git worktree prune failed" in result.stderr
+        for p in artifact_paths:
+            assert not p.exists()
 
 
 class TestInteriorFailureStillReachesExitZero:
     """The usage banner promises "Always exits 0, whether or not anything
-    was in flight" -- pinned here against three independent interior
-    failures, each guarded by its own `if ...; then ... else ...` rather
-    than left for `set -e` to propagate: a failing `git worktree prune`
-    inside review-pr-worktree-remove.py, a failing repo-hash computation
-    upstream of any worktree handling, and a `_lib_repo_root` resolution
-    failure upstream of that repo-hash computation itself. Without any of
-    the three guards, `set -e` would abort the script before it ever
-    reaches the artifact `rm -f` at the bottom."""
+    was in flight" -- pinned here against each interior failure after the
+    session is known that `set -e` would otherwise propagate: an
+    uncomputable marker key, an unresolvable main tree root, a failing
+    `git worktree list`, and a failing `rm -f` on the marker or an
+    artifact. The first three are guarded by their own `if ...; then ...
+    else ...`, the last by `|| true`."""
 
-    @pytest.mark.parametrize(
-        "shim_factory,expected_stderr_substring,marker_survives",
-        [
-            pytest.param(
-                _git_shim_that_fails_on_worktree_prune,
-                "could not remove review worktree",
-                False,
-                id="worktree_prune_failure",
-            ),
-            pytest.param(
-                _sha256sum_shim_that_produces_no_output,
-                "could not compute the repo hash",
-                True,
-                id="repo_hash_computation_failure",
-            ),
-        ],
-    )
-    def test_exits_zero_and_still_removes_artifacts(
-        self, isolated_home, tmp_path, shim_factory, expected_stderr_substring, marker_survives
-    ):
+    def test_repo_hash_computation_failure_skips_only_the_marker_cleanup(self, isolated_home, tmp_path):
+        repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
-        repo, worktree_dir, sha = _build_repo_with_review_worktree(tmp_path)
         _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
         artifact_paths = _write_artifacts(isolated_home)
-        marker = _write_completion_marker(isolated_home, worktree_dir)
+        marker = _write_completion_marker(isolated_home, repo)
+        worktree_dir = _add_review_worktree(repo, sha)
 
-        shim_dir = shim_factory(tmp_path)
-        result = _run_with_extra_path(worktree_dir, isolated_home, shim_dir)
+        result = _run(repo, isolated_home, path_prefix=_sha256sum_shim_that_produces_no_output(tmp_path))
 
         assert result.returncode == 0, result.stderr
-        assert expected_stderr_substring in result.stderr
+        assert "could not compute the review-pr marker key" in result.stderr
         for p in artifact_paths:
             assert not p.exists()
-        provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
-        assert not provenance.exists()
-        # worktree_prune_failure: the hash still resolves, so marker
-        # cleanup proceeds normally. repo_hash_computation_failure: the
-        # hash never resolves, so marker cleanup is skipped and the marker
-        # survives.
-        assert marker.exists() == marker_survives
+        assert not _provenance_path(isolated_home).exists()
+        assert not worktree_dir.exists(), "the worktree sweep does not depend on the marker key"
+        assert marker.exists(), "the hash never resolved, so the marker path is unknown and must survive"
 
-    def test_repo_root_resolution_failure_still_removes_artifacts(self, isolated_home, tmp_path):
-        """_lib_repo_root fails outside any git repository -- a step
-        upstream of the two hash-adjacent failures above, since
-        _marker_lib_repo_hash is never even called without a resolved repo
-        root. The repo-hash section's own guard must skip marker cleanup
-        without aborting the artifact removal below."""
+    def test_worktree_list_failure_skips_the_sweep_but_still_removes_the_files(self, isolated_home, tmp_path):
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
+        artifact_paths = _write_artifacts(isolated_home)
+        marker = _write_completion_marker(isolated_home, repo)
+        worktree_dir = _add_review_worktree(repo, sha)
+
+        result = _run(
+            repo, isolated_home, path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "list"),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "could not list this repository's worktrees" in result.stderr
+        for p in artifact_paths:
+            assert not p.exists()
+        assert not _provenance_path(isolated_home).exists()
+        assert not marker.exists()
+        assert worktree_dir.exists(), "a skipped sweep deletes nothing"
+
+    @pytest.mark.parametrize("unremovable", ["artifact", "marker"])
+    def test_an_unremovable_file_does_not_stop_the_rest_of_the_cleanup(
+        self, isolated_home, tmp_path, unremovable
+    ):
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, SID)
+        _write_provenance(isolated_home, mode="checkout", head_ref_oid=sha)
+        artifact_paths = _write_artifacts(isolated_home)
+        marker = _write_completion_marker(isolated_home, repo)
+        worktree_dir = _add_review_worktree(repo, sha)
+        # `rm -f` refuses a directory, so one sitting at the path makes that
+        # removal fail even when the tests run as root.
+        blocked = marker if unremovable == "marker" else artifact_paths[0]
+        blocked.unlink()
+        blocked.mkdir()
+        (blocked / "occupant.txt").write_text("occupant\n")
+
+        result = _run(repo, isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert blocked.is_dir()
+        for removable in [*artifact_paths, marker]:
+            if removable != blocked:
+                assert not removable.exists(), f"{removable.name} must still be removed"
+        assert not _provenance_path(isolated_home).exists()
+        assert not worktree_dir.exists(), "the worktree sweep must still run"
+
+    def test_outside_a_git_repository_still_removes_artifacts(self, isolated_home, tmp_path):
         _seed_session(isolated_home, SID)
         _write_provenance(isolated_home, mode="diff-only", head_ref_oid="a" * 40)
         artifact_paths = _write_artifacts(isolated_home)
@@ -419,22 +508,23 @@ class TestInteriorFailureStillReachesExitZero:
         result = _run(tmp_path, isolated_home)
 
         assert result.returncode == 0, result.stderr
-        assert "could not resolve the current repository root" in result.stderr
+        assert "could not compute the review-pr marker key" in result.stderr
+        assert "could not resolve this repository's main tree root" in result.stderr
         for p in artifact_paths:
             assert not p.exists()
 
 
 class TestInteriorFailureBeforeSessionIsKnownStillExitsZero:
     """Two more "Always exits 0" guards, each a step upstream of session/
-    provenance resolution: CONFIG_DIR (review-pr-finish.sh lines ~34-37)
-    and SESSION_ID (lines ~39-42). Without either guard, `set -e` would
-    abort the script non-zero before any cleanup is even attempted -- and
-    there is nothing to clean up in either case, since CONFIG_DIR/
-    SESSION_ID are what locate every other artifact."""
+    provenance resolution: CONFIG_DIR and SESSION_ID. Without either guard,
+    `set -e` would abort the script non-zero before any cleanup is even
+    attempted -- and there is nothing to clean up in either case, since
+    CONFIG_DIR/SESSION_ID are what locate every other artifact."""
 
     def test_config_dir_resolution_failure_exits_zero(self, tmp_path):
         result = subprocess.run(
             ["bash", str(SCRIPT)], cwd=tmp_path, env={"HOME": ""}, capture_output=True, text=True,
+            timeout=60,
         )
         assert result.returncode == 0, result.stderr
         assert "could not resolve the Claude Code config directory" in result.stderr

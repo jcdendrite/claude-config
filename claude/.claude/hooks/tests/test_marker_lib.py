@@ -312,10 +312,11 @@ class TestLibRepoRoot:
 
 
 class TestLibMainRepoRoot:
-    """Direct coverage for _lib_main_repo_root -- review-pr-checkout.sh's
-    and review-pr-finish.sh's shared WORKTREE_DIR anchor, which must resolve
-    to the same main-tree path regardless of which worktree of the repo the
-    caller is standing in."""
+    """Direct coverage for _lib_main_repo_root -- the anchor for
+    review-pr-checkout.sh's worktree parent directory, review-pr-finish.sh's
+    worktree discovery, and the review-pr completion marker key, which must
+    resolve to the same main-tree path regardless of which worktree of the
+    repo the caller is standing in."""
 
     def test_matches_lib_repo_root_from_the_main_tree(self, tmp_path):
         repo = tmp_path / "main-repo-root-repo"
@@ -333,9 +334,8 @@ class TestLibMainRepoRoot:
     def test_from_a_linked_worktree_returns_the_main_tree_root_not_the_worktree_path(self, tmp_path):
         """_lib_repo_root (--show-toplevel) returns the current worktree's
         own path when invoked from a linked worktree; _lib_main_repo_root
-        must always return the main tree's path instead, matching
-        review-pr-finish.sh's independent reconstruction of the same
-        WORKTREE_DIR."""
+        must always return the main tree's path instead, so every consumer
+        agrees on one root from any tree."""
         repo = tmp_path / "main-repo"
         _init_repo(repo)
         (repo / "file.txt").write_text("first\n")
@@ -367,6 +367,52 @@ class TestLibMainRepoRoot:
             ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
             cwd=outside, capture_output=True, text=True,
         )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibReviewPrMarkerRepoHash:
+    """Direct coverage for _lib_review_pr_marker_repo_hash -- the one key
+    `marker.sh write review-pr`, `marker.sh status`, review-pr-post.sh, and
+    review-pr-finish.sh all derive the review-pr completion marker path
+    from, which must not depend on which tree of the repo the caller
+    stands in. `marker.sh status` is reachable only where _resolve_repo_root
+    allows it: it exits 2 from the main tree of a worktree-enforced repo
+    that has a live linked worktree."""
+
+    @staticmethod
+    def _repo_hash_from(cwd: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_review_pr_marker_repo_hash'],
+            cwd=cwd, capture_output=True, text=True,
+        )
+
+    def test_main_tree_and_linked_worktree_resolve_the_same_key_as_the_main_root_hash(self, tmp_path):
+        repo = tmp_path / "marker-key-repo"
+        _init_repo(repo)
+        (repo / "file.txt").write_text("first\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        linked_worktree = tmp_path / "marker-key-linked"
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree)], cwd=repo, check=True)
+        subdirectory = repo / "sub"
+        subdirectory.mkdir()
+
+        main_root = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        expected = hashlib.sha256(main_root.encode()).hexdigest()
+
+        for cwd in (repo, linked_worktree, subdirectory):
+            result = self._repo_hash_from(cwd)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == expected, f"key differs when run from {cwd}"
+
+    def test_fails_closed_outside_a_git_repository(self, tmp_path):
+        outside = tmp_path / "marker-key-not-a-repo"
+        outside.mkdir()
+        result = self._repo_hash_from(outside)
         assert result.returncode != 0
         assert result.stdout == ""
 

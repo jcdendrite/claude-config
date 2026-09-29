@@ -62,7 +62,6 @@ tied to a specific citation.
 - **Embedded `python3 -c`/heredoc Python is for syscalls bash cannot
   express** (`O_NOFOLLOW`, `rename(2)`, `flock`) — anything with control
   flow or data structures of its own is a `.py` file with its own test
-  file instead. `review-pr-worktree-replace.py` is the worked case on the
-  far side of that line: it holds subprocess calls and argument parsing,
-  and calls the shared `acquire_lock`/`remove_worktree` primitives, so it
-  is a script, not an inline snippet.
+  file instead. `marker-clear-stale.py` is the worked case on the far side
+  of that line: it sweeps a directory tree and applies per-entry eviction
+  rules, so it is a script, not an inline snippet.

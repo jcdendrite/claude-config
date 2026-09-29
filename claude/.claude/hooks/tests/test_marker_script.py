@@ -30,6 +30,7 @@ from helpers import (
     push_conflicting_edit_to_origin,
     read_input,
     revert_subtraction_base,
+    review_pr_completion_marker_path,
     run_hook,
     scaled_shim_sleep,
     skill_review_marker_path,
@@ -3040,22 +3041,40 @@ class TestMarkerScriptStatusCompletionMarkers:
         assert "ready-for-review: absent" in result.stdout
 
     # ── review-pr ──────────────────────────────────────────────────────
-    # Same HEAD-keyed recipe as ready-for-review above: the completion
-    # marker's second line (headRefOid) is compared as a whole line against
-    # `git rev-parse HEAD`, so status needs no PR identity or body hash to
-    # classify it.
+    # The completion marker's second line (headRefOid) is compared as a
+    # whole line against the headRefOid in this session's provenance file,
+    # so status classifies a marker without a local reviewed tree and
+    # without the PR identity or body hash the marker also stores.
 
-    def test_review_pr_live_when_hash_matches_head(self, isolated_home, git_repo):
+    def test_review_pr_live_when_marker_head_matches_session_provenance(self, isolated_home, git_repo):
         _seed_session(isolated_home, self.SID)
+        reviewed_head = "1" * 40
+        write_review_pr_provenance(isolated_home, "foo/bar#42", reviewed_head, os.getpid(), session_id=self.SID)
         write_review_pr_completion_marker(
-            isolated_home, git_repo, "foo/bar#42", head_sha(git_repo), "a" * 64, self.SID
+            isolated_home, git_repo, "foo/bar#42", reviewed_head, "a" * 64, self.SID
         )
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert "review-pr: live" in result.stdout
 
-    def test_review_pr_historical_when_marker_head_is_stale(self, isolated_home, git_repo):
+    def test_review_pr_live_when_status_runs_from_a_linked_worktree(self, isolated_home, git_repo, tmp_path):
+        """The marker is keyed to the main tree's root, so `status` run from
+        any linked worktree reads the same marker."""
         _seed_session(isolated_home, self.SID)
+        reviewed_head = "1" * 40
+        write_review_pr_provenance(isolated_home, "foo/bar#42", reviewed_head, os.getpid(), session_id=self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", reviewed_head, "a" * 64, self.SID
+        )
+        linked_worktree = tmp_path / "linked-status-worktree"
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree)], cwd=git_repo, check=True)
+        result = _run(["status"], cwd=linked_worktree, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: live" in result.stdout
+
+    def test_review_pr_historical_when_marker_head_differs_from_session_provenance(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_review_pr_provenance(isolated_home, "foo/bar#42", "1" * 40, os.getpid(), session_id=self.SID)
         write_review_pr_completion_marker(
             isolated_home, git_repo, "foo/bar#42", "0" * 40, "a" * 64, self.SID
         )
@@ -3068,6 +3087,84 @@ class TestMarkerScriptStatusCompletionMarkers:
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert "review-pr: absent" in result.stdout
+
+    def test_review_pr_another_sessions_marker_does_not_read_as_live(self, isolated_home, git_repo):
+        """The repo hash is shared by every session and tree, so only the
+        session-id suffix keeps sessions apart: session B's status must not
+        report session A's marker, even at the same headRefOid."""
+        _seed_session(isolated_home, self.SID)
+        reviewed_head = "1" * 40
+        write_review_pr_provenance(isolated_home, "foo/bar#42", reviewed_head, os.getpid(), session_id=self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", reviewed_head, "a" * 64, "another-session"
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: absent" in result.stdout
+        assert "review-pr: live" not in result.stdout
+
+    def test_review_pr_session_id_that_extends_another_sessions_is_not_confused_with_it(
+        self, isolated_home, git_repo
+    ):
+        """A marker filename prefix-matches a longer session id: the read
+        must be exact, not a prefix glob."""
+        _seed_session(isolated_home, self.SID)
+        reviewed_head = "1" * 40
+        write_review_pr_provenance(isolated_home, "foo/bar#42", reviewed_head, os.getpid(), session_id=self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", reviewed_head, "a" * 64, f"{self.SID}-extra"
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: absent" in result.stdout
+
+    def test_review_pr_marker_without_provenance_reports_historical_not_live(
+        self, isolated_home, git_repo
+    ):
+        """A crash, or a finish that ran, can leave a marker with no
+        provenance: nothing to compare its headRefOid against, so the report
+        prints it as historical, never live."""
+        _seed_session(isolated_home, self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", "1" * 40, "a" * 64, self.SID
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: historical" in result.stdout
+        assert "review-pr: live" not in result.stdout
+
+    def test_review_pr_marker_missing_its_head_ref_oid_line_reads_as_absent(self, isolated_home, git_repo):
+        """The reader rejects a marker with an empty field, so status reports
+        no readable marker rather than classifying it as historical."""
+        _seed_session(isolated_home, self.SID)
+        write_review_pr_provenance(isolated_home, "foo/bar#42", "1" * 40, os.getpid(), session_id=self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", "", "a" * 64, self.SID
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: absent (no readable marker for this session)" in result.stdout
+
+    def test_review_pr_repo_hash_failure_reports_could_not_verify_on_stderr_and_omits_the_stdout_line(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """An empty sha256sum result fails the repo hash, so the report prints
+        `could not verify` on stderr, prints no review-pr line on stdout, and
+        still reaches the active-bypass section."""
+        _seed_session(isolated_home, self.SID)
+        empty_sha256sum_dir = tmp_path / "empty-sha256sum-bin"
+        empty_sha256sum_dir.mkdir()
+        empty_sha256sum = empty_sha256sum_dir / "sha256sum"
+        empty_sha256sum.write_text("#!/usr/bin/env bash\nexit 0\n")
+        empty_sha256sum.chmod(0o755)
+        result = _run(
+            ["status"], cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{empty_sha256sum_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: could not verify" in result.stderr
+        assert "review-pr:" not in result.stdout
+        assert "Active-bypass markers" in result.stdout, "the report must continue past the review-pr line"
 
     # ── unreadable marker ──────────────────────────────────────────────
 
@@ -4830,6 +4927,10 @@ class TestMarkerScriptStatusUsageBannerCompleteness:
         assert status_body_match, "status) case body not found"
         status_body = self._strip_comment_lines(status_body_match.group(1))
         checked = set(re.findall(r"_status_report_completion_marker (\S+)", status_body))
+        # review-pr reads only this session's own marker through its own
+        # reporter, so its call carries no label argument to scan for.
+        if re.search(r"_status_report_review_pr_marker\b", status_body):
+            checked.add("review-pr")
         assert named == checked, (
             f"usage() names {named} but status) body checks {checked} -- "
             "wire the difference into both, or drop it from the banner"
@@ -5461,8 +5562,8 @@ class TestMarkerScriptReviewPr:
     def test_write_stores_pr_identity_head_ref_oid_body_hash_and_mode(
         self, isolated_home, git_repo, tmp_path
     ):
-        """The write arm's stored headRefOid field must equal the worktree
-        HEAD it was declared against, and the stored body-hash field must be
+        """The write arm's stored headRefOid field must equal the one the
+        provenance file declared, and the stored body-hash field must be
         the findings-body file's actual sha256 -- not a copy of whatever the
         provenance file happened to say."""
         sid = self.SID
@@ -5490,22 +5591,29 @@ class TestMarkerScriptReviewPr:
         assert lines[2] == expected_hash
         assert lines[3] == "checkout"
 
-    def test_write_diff_only_mode_skips_local_head_check(
-        self, isolated_home, git_repo, tmp_path
+    def _write_findings_body_for_mode(self, home, mode, sid=SID):
+        """A findings body passing the attribution check for `mode`:
+        diff-only additionally requires the reduced-coverage disclosure."""
+        findings_body = self._fixed_body_path(home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        disclosure = f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n" if mode == "diff-only" else ""
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body\n\n{disclosure}{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        return findings_body
+
+    @pytest.mark.parametrize("mode", ["checkout", "diff-only"])
+    def test_write_records_a_head_ref_oid_matching_no_local_head_in_either_mode(
+        self, isolated_home, git_repo, mode
     ):
-        """diff-only mode has no reviewed local tree, so the write must
-        succeed with a headRefOid that matches nothing local -- proving the
-        HEAD comparison genuinely does not run in this mode, not merely
-        that it happens to pass."""
+        """Neither mode compares anything against the current tree's HEAD:
+        the marker binds the session to the PR review, and the remote
+        headRefOid re-check in review-pr-post.sh is the freshness binding."""
         sid = self.SID
         _seed_session(isolated_home, sid)
-        findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text(
-            f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
-        )
-        remote_head = "f" * 40
-        self._declare_provenance(isolated_home, "foo/bar#42", remote_head, mode="diff-only", sid=sid)
+        self._write_findings_body_for_mode(isolated_home, mode, sid)
+        remote_head = "0" * 40
+        self._declare_provenance(isolated_home, "foo/bar#42", remote_head, mode=mode, sid=sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -5513,24 +5621,92 @@ class TestMarkerScriptReviewPr:
         marker = marker_dir / next(f.name for f in marker_dir.iterdir())
         lines = marker.read_text().splitlines()
         assert lines[1] == remote_head
-        assert lines[3] == "diff-only"
+        assert lines[3] == mode
 
-    def test_write_checkout_mode_refuses_on_head_mismatch(
+    def test_write_from_a_linked_worktree_keys_the_marker_to_the_main_tree_root(
         self, isolated_home, git_repo, tmp_path
     ):
+        """The marker path must not depend on cwd: written from a linked
+        worktree, it lands at the same <main-root-hash>.<session-id> path
+        review-pr-post.sh and review-pr-finish.sh read from any tree."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("**[Claude Code]** # findings body\n")
-        self._declare_provenance(isolated_home, "foo/bar#42", "0" * 40, mode="checkout", sid=sid)
+        findings_body.write_text(f"**[Claude Code]** # findings body\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n")
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        linked_worktree = tmp_path / "linked-review-worktree"
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree)], cwd=git_repo, check=True)
 
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        assert "HEAD" in result.stderr
+        result = _run(["write", "review-pr"], cwd=linked_worktree, home=isolated_home)
+        assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == []
+        assert [f.name for f in marker_dir.iterdir()] == [
+            review_pr_completion_marker_path(isolated_home, git_repo, sid).name
+        ]
+
+    @pytest.mark.parametrize("mode", ["checkout", "diff-only"])
+    @pytest.mark.parametrize("cwd_tree", ["main-tree", "linked-worktree"])
+    def test_write_is_allowed_under_worktree_enforcement_with_a_live_linked_worktree(
+        self, isolated_home, opted_in_repo, tmp_path, mode, cwd_tree
+    ):
+        """The review worktree is itself a live linked worktree, so a marker
+        write from the main tree of an enforcement-opted-in repo must not be
+        refused the way other skills' main-tree writes are. Both trees
+        write the one key derived from the main tree's root."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_findings_body_for_mode(isolated_home, mode, sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(opted_in_repo), mode=mode, sid=sid)
+        linked_worktree = tmp_path / "linked-enforced-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature", str(linked_worktree)],
+            cwd=opted_in_repo, check=True, capture_output=True,
+        )
+        cwd = opted_in_repo if cwd_tree == "main-tree" else linked_worktree
+
+        result = _run(["write", "review-pr"], cwd=cwd, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        assert [f.name for f in marker_dir.iterdir()] == [
+            review_pr_completion_marker_path(isolated_home, opted_in_repo, sid).name
+        ]
+
+    def test_write_still_refuses_an_out_of_enum_mode_under_worktree_enforcement(
+        self, isolated_home, opted_in_repo, tmp_path
+    ):
+        """Dropping the main-tree refusal is scoped to the tree check: an
+        out-of-enum mode is refused in the same enforced setup."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="bogus-mode", sid=sid)
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature", str(tmp_path / "linked-enforced-worktree")],
+            cwd=opted_in_repo, check=True, capture_output=True,
+        )
+
+        result = _run(["write", "review-pr"], cwd=opted_in_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "neither checkout nor diff-only" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        assert (list(marker_dir.iterdir()) if marker_dir.exists() else []) == []
+
+    def test_write_outside_any_repository_exits_two_and_writes_no_marker(self, isolated_home, tmp_path):
+        """No repository means no main-tree root to key the marker to: the
+        write must refuse rather than key it to an empty or garbage hash."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_findings_body_for_mode(isolated_home, "diff-only", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", "0" * 40, mode="diff-only", sid=sid)
+        outside_repo = tmp_path / "not-a-repo"
+        outside_repo.mkdir()
+
+        result = _run(["write", "review-pr"], cwd=outside_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "not inside a git repository" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        assert (list(marker_dir.iterdir()) if marker_dir.exists() else []) == []
 
     def test_write_refuses_mode_acquired(self, isolated_home, git_repo):
         """An acquire-only session has run neither the checkout audit nor

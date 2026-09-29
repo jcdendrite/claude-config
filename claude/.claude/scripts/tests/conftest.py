@@ -340,22 +340,30 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
-def _git_shim_that_fails_on_worktree_prune(tmp_path: Path) -> Path:
-    """A `git` PATH shim that fails only "git ... worktree prune",
-    delegating every other invocation to the real git binary -- shared by
-    test_review_pr_worktree_remove.py's and
-    test_review_pr_worktree_replace.py's own CLI-level tests, each proving
-    _review_pr_worktree.remove_worktree's RuntimeError on a failed prune
-    surfaces through that caller's own exit code and stderr message."""
+def _git_shim_that_fails_on_worktree_subcommand(
+    tmp_path: Path, *subcommands: str, exit_status: int = 1
+) -> Path:
+    """A `git` PATH shim that fails only "git ... worktree <subcommand>"
+    for each named subcommand (e.g. `add`, `remove`, `prune`) with
+    `exit_status`, delegating every other invocation to the real git
+    binary -- shared by the review-pr checkout and finish tests, each
+    proving a failed worktree operation surfaces through that script's own
+    exit code and stderr message. At least one subcommand is required: an
+    empty list would emit a syntactically invalid shim."""
+    if not subcommands:
+        raise ValueError("name at least one worktree subcommand for the shim to fail")
     real_git = shutil.which("git")
+    failing_conditions = " || ".join(
+        f'[[ "$*" == *{shlex.quote(f"worktree {subcommand}")}* ]]' for subcommand in subcommands
+    )
     shim_dir = tmp_path / f"git_shim_{uuid.uuid4().hex}"
     shim_dir.mkdir()
     git_shim = shim_dir / "git"
     git_shim.write_text(textwrap.dedent(f"""\
         #!/usr/bin/env bash
-        if [[ "$*" == *"worktree prune"* ]]; then
-          echo "synthetic prune failure" >&2
-          exit 1
+        if {failing_conditions}; then
+          echo "synthetic worktree failure" >&2
+          exit {exit_status}
         fi
         exec {shlex.quote(real_git)} "$@"
     """))
