@@ -34,6 +34,25 @@ class TestDenyInvisibleCommitContent:
         """`;` separator, not just `&&`, must also be walked."""
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git add f ; git commit -m x")) == "deny"
 
+    def test_ampersand_chained_add_then_commit_denied(self):
+        """GH-1063: `_lib_split_fragments` leaves the bare `&` unsplit, so the
+        two commands reach the walk as one fragment whose first git
+        subcommand, `add`, mutates."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git add f & git commit -m x")) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        ["git status & git commit -a -m x", "git status & git add . & git commit -m x"],
+        ids=["read-only-first-commit-all", "read-only-first-then-add"],
+    )
+    def test_read_only_first_ampersand_glued_fragment_allowed_known_gap(self, command):
+        """Accepted known gap (GH-1063): the walk judges a `&`-glued fragment
+        by its first git subcommand only, so a read-only first command hides
+        a later mutation or `-a`. The `&&` control below denies the same
+        content."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "allow"
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command.replace(" & ", " && "))) == "deny"
+
     def test_quoted_git_word_chained_add_then_commit_denied(self):
         """GH-783: this is test_chained_add_then_commit_denied's own
         fixture with two quote characters added around the second `git`.
@@ -925,16 +944,16 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_stripped_fragments_split_failure_denies_with_split_reason(
-        self, sed_call_counting_shim
+        self, sed_split_stage_shim
     ):
         """SPLIT_EXIT on the STRIPPED_FRAGMENTS split (the _lib_split_fragments
-        call this diff relocated to run right after the fast-reject) has no
-        prior test coverage: a fully-absent sed always fails the earlier
-        COMMAND_UNQUOTED strip first, never reaching this call. sed_call_counting_shim
-        lets the 4 sed calls ahead of this one (COMMAND_UNQUOTED's strip, plus
-        the fast-reject's own internal strip and split) succeed and fails only
-        the 5th, which is STRIPPED_FRAGMENTS's own first internal sed call."""
-        extra_env = sed_call_counting_shim(4)
+        call that runs right after the fast-reject) has no other test
+        coverage: a fully-absent sed always fails the earlier COMMAND_UNQUOTED
+        strip first, never reaching this call. sed_split_stage_shim lets the
+        first split (the fast-reject's own) succeed and fails the second,
+        which is STRIPPED_FRAGMENTS's. The reason must be the unmasked
+        split's, not the later masked split's."""
+        extra_env = sed_split_stage_shim(1)
         reason = run_hook_reason(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git commit -m x"),

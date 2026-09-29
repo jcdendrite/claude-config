@@ -6289,6 +6289,36 @@ class TestCommandConcludesCommit:
         assert _command_concludes_commit("git commit -m x", env=env) == 2
         assert _command_concludes_marker_gated_commit("git commit -m x", env=env) == 2
 
+    @pytest.mark.parametrize(
+        ("command", "expected_status_without_shim"),
+        [("git commit -m x", 0), ("", 1), ("ls", 1)],
+        ids=["concluding-commit", "empty-command", "non-git-command"],
+    )
+    def test_failed_fragment_read_returns_could_not_determine(
+        self, command: str, expected_status_without_shim: int
+    ) -> None:
+        """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
+        the fragment loop; the matcher must report undetermined, not no-match.
+        The `read` shim stands in for that failure without touching the
+        filesystem. Without the shim, the sentinel must not over-deny."""
+
+        def run(prelude: str) -> int:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. {_LIB_SH}; {prelude} _lib_command_concludes_marker_gated_commit "$1"',
+                    "bash",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+
+        assert run("read() { return 1; }") == 2
+        assert run("") == expected_status_without_shim
+
     def test_continue_flag_outside_matched_verb_does_not_conclude_commit(self) -> None:
         """The fragment-boundary case _lib_command_concludes_commit_shape's
         own comment names: `--continue` present elsewhere in COMMAND, not
@@ -6322,6 +6352,179 @@ class TestCommandConcludesCommit:
 
     def test_broad_predicate_false_for_empty_command(self) -> None:
         assert _command_concludes_commit("") == 1
+
+    # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so the shared
+    # matcher tries each `&`-separated piece of a fragment as its own command.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git add . & git commit -m x",
+            "git status & git merge --continue",
+        ],
+    )
+    def test_both_predicates_true_for_concluding_shape_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    def test_rebase_continue_after_single_ampersand_keeps_the_rebase_carve_out(self) -> None:
+        command = "git status & git rebase --continue"
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 1
+
+    def test_ampersand_inside_a_quoted_global_flag_value_still_reaches_commit(self) -> None:
+        assert _command_concludes_commit('git -c "user.name=a&b" commit -m x') == 0
+        assert _command_concludes_marker_gated_commit('git -c "user.name=a&b" commit -m x') == 0
+
+    def test_fd_redirection_ampersand_does_not_conclude_a_commit(self) -> None:
+        assert _command_concludes_commit("git log 2>&1") == 1
+        assert _command_concludes_marker_gated_commit("git log 2>&1") == 1
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sleep 1 & (git commit -m x)",
+            "(git add) & (git commit -m x)",
+            "git status &(git commit -m x)",
+            "git status & ( git commit -m x )",
+        ],
+    )
+    def test_both_predicates_true_for_parenthesized_commit_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        """Each `&`-separated piece gets the same leading-`(` / trailing-`)`
+        strip a top-level fragment gets."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    @pytest.mark.parametrize("initial_noglob", [False, True], ids=["glob-on", "noglob-on"])
+    @pytest.mark.parametrize(
+        ("command", "expected_status"),
+        [("git status & git commit -m x", 0), ("git status & git log", 1)],
+        ids=["concluding-commit", "no-match"],
+    )
+    def test_ampersand_pass_restores_the_callers_ifs_and_noglob_state(
+        self, initial_noglob: bool, command: str, expected_status: int
+    ) -> None:
+        """Pass 2 word-splits on newlines with globbing off. It must hand
+        both settings back as it found them, on a match and on a no-match
+        input alike, or every later word-split in the sourcing hook changes."""
+        noglob_setup = "set -f; " if initial_noglob else ""
+        harness = (
+            f". {_LIB_SH}; {noglob_setup}IFS=$' \\t\\n'; "
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            'case $- in *f*) glob_state=noglob;; *) glob_state=glob;; esac; '
+            '[ "$IFS" = $\' \\t\\n\' ] && ifs_restored=true || ifs_restored=false; '
+            'printf "%s|%s|%s" "$status" "$glob_state" "$ifs_restored"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", command], capture_output=True, text=True, check=False
+        )
+        expected_glob_state = "noglob" if initial_noglob else "glob"
+        assert result.stdout == f"{expected_status}|{expected_glob_state}|true"
+
+    @pytest.mark.parametrize("nounset", [False, True], ids=["nounset-off", "nounset-on"])
+    def test_ampersand_pass_leaves_an_unset_ifs_unset(self, nounset: bool) -> None:
+        """An unset IFS word-splits like the default; restoring it as an empty
+        string instead would disable word-splitting for every later loop in
+        the sourcing hook."""
+        nounset_setup = "set -u; " if nounset else ""
+        harness = (
+            f". {_LIB_SH}; unset IFS; {nounset_setup}"
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            '[ -z "${IFS+set}" ] && ifs_state=unset || ifs_state=set; '
+            'printf "%s|%s" "$status" "$ifs_state"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", "git status & git commit -m x"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.stdout == "0|unset"
+
+    @pytest.mark.parametrize(
+        "command",
+        ['bash -c "git commit -m x"', 'eval "git commit -m x"'],
+    )
+    def test_quoted_wrapper_text_naming_a_commit_is_recognized(self, command: str) -> None:
+        """Quote-stripping leaves `git commit` as bare words inside a
+        `bash -c` or `eval` string, so the wrapper does not hide it."""
+        assert _command_concludes_commit(command) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "c=commit; git $c -m x",
+            "git ci -m x",
+            "bash ./do-commit.sh",
+            "git \\\ncommit -m x",
+            'git -c "user.name=A B" commit -m x',
+        ],
+        ids=[
+            "variable-word",
+            "git-alias",
+            "script-file",
+            "backslash-newline-continuation",
+            "quoted-space-in-global-flag-value",
+        ],
+    )
+    def test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized(
+        self, command: str
+    ) -> None:
+        """A commit whose words never appear together in the command text
+        (a variable, an alias, a script file, a line continuation, a space
+        inside a quoted global-flag value that quote-stripping turns into a
+        word boundary) is a documented residual of matching command text;
+        pinned so a later fix flips it deliberately."""
+        assert _command_concludes_commit(command) == 1
+
+    # The matcher is a quote-blind word walk over quote-stripped text, so a
+    # command that only names a commit command as an argument, or quotes an
+    # `&` inside another command's argument, is read as concluding one. That
+    # over-match is the accepted fail-toward-deny posture; each case below pins
+    # it so a later narrowing flips these deliberately.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo git commit",
+            'grep "git commit" docs/x.md',
+            "man git commit",
+            'git log --grep "fix & git commit hook"',
+        ],
+        ids=["echo-argument", "grep-quoted-argument", "man-argument", "quoted-ampersand-in-argument"],
+    )
+    def test_accepted_over_match_command_naming_a_commit_reaches_both_predicates(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+
+class TestSplitFragmentsPipefailContract:
+    """_lib_split_fragments' first sed stage failing leaves the second stage
+    reading empty input and succeeding, so the pipeline reports the failure
+    only under `set -o pipefail`; the call-site contract in its header
+    requires a sourcing caller to set it."""
+
+    @pytest.mark.parametrize(
+        ("pipefail_setting", "expected_status"),
+        [("set -o pipefail", 1), ("set +o pipefail", 0)],
+        ids=["pipefail-on-reports-failure", "pipefail-off-hides-failure"],
+    )
+    def test_first_stage_only_failure_is_reported_only_under_pipefail(
+        self, pipefail_setting: str, expected_status: int
+    ) -> None:
+        harness = (
+            f". {_LIB_SH}; {pipefail_setting}; "
+            # Fails only the first stage, keyed on its script starting `s/;/`.
+            "sed() { case \"$2\" in 's/;/'*) return 1;; esac; command sed \"$@\"; }; "
+            'fragments=$(_lib_split_fragments "git add . ; git status"); '
+            'printf "%s|%s" "$?" "$fragments"'
+        )
+        result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=False)
+        assert result.stdout == f"{expected_status}|"
 
 
 def _fragment_concludes_commit_via_extraction(fragment: str, env: dict | None = None) -> int:

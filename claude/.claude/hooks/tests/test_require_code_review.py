@@ -522,6 +522,47 @@ class TestRequireCodeReview:
             == "deny"
         )
 
+    def test_chain_on_a_later_line_of_a_multi_line_command_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """The sanctioned chain must begin the whole command. A per-line
+        anchor would accept this command because its second line alone is
+        the sanctioned shape, e.g. a quoted line in a commit-message
+        heredoc."""
+        cmd = (
+            "echo preparing\n"
+            "~/.claude/scripts/marker.sh write code-review && git commit -m foo"
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_chain_followed_by_multi_line_commit_message_still_authorizes(
+        self, isolated_home, git_repo
+    ):
+        """A chain that begins the command keeps its authorization when the
+        commit's own message spans lines: the whole-command anchor lets the
+        tail carry a newline. Gate-local: enforce-marker-script-shape.sh's
+        single-line tail is the stricter layer."""
+        cmd = (
+            '~/.claude/scripts/marker.sh write code-review && git commit -m "subject\n'
+            "\n"
+            'body line"'
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_chained_skill_review_marker_does_not_authorize_code_review(
         self, isolated_home, git_repo
     ):
@@ -535,6 +576,25 @@ class TestRequireCodeReview:
                     "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
                     session_id=DEFAULT_TEST_SESSION_ID,
                 ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_different_skill_chain_with_target_write_quoted_in_commit_tail_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """The target-skill check reads only the chain before `git`. A
+        `marker.sh write code-review` line quoted in the commit's own
+        arguments must not stand in for a code-review write in the chain."""
+        cmd = (
+            "~/.claude/scripts/marker.sh write skill-review && git commit -m "
+            '"subject\n\n~/.claude/scripts/marker.sh write code-review\n"'
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
                 cwd=git_repo,
             )
             == "deny"

@@ -943,6 +943,46 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
         )
 
 
+def test_skill_management_gate_has_no_if_matcher() -> None:
+    """The plugin's skill-review gate self-filters on its in-body
+    commit-shape predicate, so its hooks.json entry carries no `if` key: a
+    `Bash(git commit *)` glob would never dispatch the hook for a
+    `--continue` form or a `git -C <dir> commit` spelling. Declared-config
+    check only, same limit as test_self_filtering_bash_gate_has_no_if_matcher."""
+    hook = _REPO_ROOT / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook.name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert "if" not in entry, (
+            f"{hook.name}: PreToolUse entry carries an 'if' key "
+            f"({entry.get('if')!r}) — this gate's header declares "
+            f"unconditional dispatch"
+        )
+
+
+@pytest.mark.parametrize(
+    ("plugin_name", "hook_name"),
+    [
+        ("plugin-semver", "require-plugin-version-bump.sh"),
+        ("npm-semver", "require-npm-version-bump.sh"),
+    ],
+)
+def test_version_bump_plugin_gate_keeps_its_commit_if_matcher(
+    plugin_name: str, hook_name: str
+) -> None:
+    """The two version-bump plugins' gates still rely on a literal
+    `Bash(git commit *)` `if` filter; dropping it from skill-management's gate
+    does not extend to them."""
+    hook = _REPO_ROOT / "plugins" / plugin_name / "hooks" / hook_name
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook_name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert entry.get("if") == "Bash(git commit *)", (
+            f"{hook_name}: expected its `Bash(git commit *)` `if` filter to be "
+            f"unchanged, got {entry.get('if')!r}"
+        )
+
+
 # ------------------------------------------------------------------ #
 # Layer 1 — Static checks                                            #
 # ------------------------------------------------------------------ #

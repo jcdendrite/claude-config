@@ -1437,10 +1437,11 @@ _lib_commit_fragment_has_worktree_target() {
 # fail closed on non-zero, rather than proceeding with a silently empty
 # fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
 # computation for the pattern.
-# Spends 2 sed calls per invocation -- reordering this relative to
-# _lib_strip_shell_quotes or _lib_command_concludes_commit_shape changes the
-# invocation count sed_call_counting_shim's docstring (conftest.py) pins.
+# The two-stage sed pipeline reports a first-stage failure only under
+# `set -o pipefail`, so a sourcing caller must have it set.
+# Spends 2 sed calls per invocation.
 _lib_split_fragments() {
+  # sed_split_stage_shim (conftest.py) keys on the first-stage script starting `s/;/`.
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
@@ -1590,9 +1591,10 @@ _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 # own loop body so a per-fragment walk over an already-split command (arm 1
 # and arm 2 of deny-invisible-commit-content.sh) shares this file's one
 # definition of the --continue grammar rather than a second copy.
-# Plain boolean, not tri-state: _lib_extract_git_subcmd_args forks nothing
-# (_lib_git_argv_from_subcmd is a pure bash word-walk), so there is no fork
-# here whose failure the tri-state contract below needs to signal.
+# Plain boolean, not tri-state: _lib_extract_git_subcmd_args runs no sed or tr
+# (_lib_git_argv_from_subcmd is a pure bash word-walk), so no sed/tr failure
+# needs signalling here. The `< <(...)` read below forks a subshell whose
+# failure is not detected, so it reads as no match.
 _lib_fragment_concludes_commit_shape() {
   local fragment="$1" subcmd="$2" verbs="$3"
   [ "$subcmd" = commit ] && return 0
@@ -1627,20 +1629,52 @@ _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
   local command_unquoted fragments fragment
-  # This is the first sed call of this function's own call sequence --
-  # sed_call_counting_shim's docstring (conftest.py) pins the invocation
-  # count that precedes it. Reordering these two calls changes that count.
   command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
   fragments=$(_lib_split_fragments "$command_unquoted") || return 2
-  local subcmd
-  while IFS= read -r fragment; do
-    [ -z "$fragment" ] && continue
-    _lib_fragment_invokes_git "$fragment" || continue
-    subcmd=$(_lib_extract_git_subcmd "$fragment")
-    if _lib_fragment_concludes_commit_shape "$fragment" "$subcmd" "$verbs"; then
-      return 0
+  local subcmd pass piece saved_ifs saved_opts ifs_was_set candidates=$fragments newline=$'\n' walked
+  # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so pass 2 walks each `&`-separated piece.
+  # Pass 2 only adds candidates, so it can only gain matches, and it is skipped when no `&` is present.
+  # It splits only the fragments containing `&`.
+  # Each piece gets the leading-`(` / trailing-`)` strip _lib_split_fragments gives a fragment, so `x & (git commit)` matches.
+  # A piece without the substring `git` cannot invoke it, so it is dropped before that strip.
+  for pass in 1 2; do
+    if [ "$pass" -eq 2 ]; then
+      [[ "$fragments" == *'&'* ]] || break
+      candidates=""
+      # Word-splitting on newlines is faster than a `read` loop over a large string.
+      # IFS is restored exactly, unset-ness included.
+      ifs_was_set=${IFS+set}
+      saved_ifs=${IFS-}
+      saved_opts=$-
+      set -f
+      IFS=$newline
+      for fragment in $fragments; do
+        [[ "$fragment" == *'&'* ]] || continue
+        for piece in ${fragment//&/$newline}; do
+          [[ "$piece" == *git* ]] || continue
+          piece=${piece#"${piece%%[![:space:]]*}"}
+          piece=${piece#\(}
+          piece=${piece%"${piece##*[![:space:]]}"}
+          piece=${piece%\)}
+          candidates+="$piece$newline"
+        done
+      done
+      if [ -n "$ifs_was_set" ]; then IFS=$saved_ifs; else unset IFS; fi
+      if [[ "$saved_opts" != *f* ]]; then set +f; fi
     fi
-  done <<< "$fragments"
+    walked=false
+    while IFS= read -r fragment; do
+      walked=true
+      [ -z "$fragment" ] && continue
+      _lib_fragment_invokes_git "$fragment" || continue
+      subcmd=$(_lib_extract_git_subcmd "$fragment")
+      if _lib_fragment_concludes_commit_shape "$fragment" "$subcmd" "$verbs"; then
+        return 0
+      fi
+    done <<< "$candidates"
+    # A here-string always supplies at least one line (bash appends a newline, even for empty input), so an unentered loop means its redirect failed.
+    $walked || return 2
+  done
   return 1
 }
 
@@ -2049,16 +2083,21 @@ _lib_chains_marker_write_before_commit() {
   # Step 1: command matches the sanctioned chained shape (mirrors
   # enforce-marker-script-shape.sh's VALID_CHAINED_COMMIT_PATTERN). One or
   # more marker.sh write fragments joined by `&&`, then git commit. Anchored
-  # so wrapper commands cannot trick the gate.
-  if ! printf '%s' "$command" | grep -qE \
-    "^[[:space:]]*((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+(commit([[:space:]].*)?|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue([[:space:]].*)?)$"; then
-    return 1
-  fi
-  # Step 2: target skill is among the chained writes. A chain like
-  # `marker.sh write skill-review && git commit` must not authorize a
+  # so wrapper commands cannot trick the gate. `=~` anchors `^`/`$` to the
+  # whole string and lets `.` cross a newline, so the chain must begin the
+  # whole command and only the commit's tail may span further lines.
+  # The commit's `.*` argument tail is looser than enforce-marker-script-shape.sh's
+  # single-line `[^&|;<>]*` tail, so that hook is the stricter layer.
+  # Group 1 captures the chain, the writes before the `git` token.
+  local chained_shape_re='^[[:space:]]*(((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+)git[[:space:]]+(commit([[:space:]].*)?|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue([[:space:]].*)?)$'
+  [[ "$command" =~ $chained_shape_re ]] || return 1
+  local chain_writes=${BASH_REMATCH[1]}
+  # Step 2: target skill is among the chained writes, searched in the chain
+  # only so a write named in the commit's arguments cannot satisfy it. A chain
+  # like `marker.sh write skill-review && git commit` must not authorize a
   # code-review-gated commit.
-  printf '%s' "$command" | grep -qE \
-    "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
+  local target_write_re="(~|/[A-Za-z0-9_./-]+)/\\.claude/scripts/marker\\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|&)"
+  [[ "$chain_writes" =~ $target_write_re ]]
 }
 
 # Shared parenthetical explaining worktree_required's config-dir-or-home
@@ -2825,9 +2864,7 @@ _lib_config_lines() {
 # output back through it — a second pass can further collapse an
 # already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
 # pass, `ab` on a second).
-# Spends 1 sed call per invocation -- reordering this relative to
-# _lib_split_fragments or _lib_command_concludes_commit_shape changes the
-# invocation count sed_call_counting_shim's docstring (conftest.py) pins.
+# Spends 1 sed call per invocation.
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')

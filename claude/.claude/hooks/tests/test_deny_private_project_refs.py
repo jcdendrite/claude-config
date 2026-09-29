@@ -767,8 +767,7 @@ class TestDenyPrivateProjectRefs:
         its own fragment loop finds no literal `git commit`. This hook is
         fail-closed, so an undetermined match must still deny rather than
         silently reaching an unscanned allow. See sed_call_counting_shim's
-        docstring for the call-count mechanics behind `sed_call_counting_shim(3)`
-        below."""
+        docstring for why only the status-2 outcome is asserted."""
         extra_env = sed_call_counting_shim(3)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,

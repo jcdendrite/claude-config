@@ -256,13 +256,10 @@ def sed_call_counting_shim(tmp_path):
     for the first `fail_after` invocations (tracked via a counter file in
     tmp_path) and fails (exit 1, no output) on every invocation after that.
 
-    deny-pii-in-commits.sh and deny-private-project-refs.sh each spend
-    exactly 3 sed invocations reaching their own fragment loop's "no
-    literal git commit found" outcome for a single, unquoted, chainless
-    fragment (2 inside _lib_split_fragments, 1 inside
-    _lib_strip_shell_quotes). `install(3)` lets the pre-loop sed calls
-    succeed and fails only _lib_command_concludes_commit's own first sed
-    call. Update this count if either hook's call sequence changes.
+    The counter file is unlocked, so concurrent pipeline stages race on it
+    and the failing invocation is not deterministic. Assert only the
+    invariant a caller can rely on: some sed call fails and the hook exits
+    with status 2.
     """
     real_sed = shutil.which("sed")
     if not real_sed:
@@ -279,6 +276,52 @@ def sed_call_counting_shim(tmp_path):
             f"if [ \"$count\" -gt {fail_after} ]; then\n"
             "  exit 1\n"
             "fi\n"
+            f'exec {real_sed} "$@"\n'
+        )
+        fake_binary.chmod(0o755)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@pytest.fixture
+def sed_split_stage_shim(tmp_path):
+    """`install(succeed_first_calls)` writes a `sed` shim that fails only the
+    FIRST stage of `_lib_split_fragments`'s two-stage sed pipeline, and only
+    after `succeed_first_calls` such invocations succeeded (0 fails the first
+    one). Every other sed invocation execs the real binary.
+
+    The shim keys on its script argument (the first stage's script starts
+    `s/;/`), not on a global call count: the pipeline's two stages start
+    concurrently, so a global counter's order across them is nondeterministic.
+    First-stage invocations are one per split and never concurrent, so
+    counting only those is deterministic.
+
+    The second stage still succeeds on the empty input a failed first stage
+    leaves, so the split reports the failure only under `set -o pipefail`.
+    A test built on this shim goes red when a hook drops `pipefail`.
+    """
+    real_sed = shutil.which("sed")
+    if not real_sed:
+        pytest.skip("sed not found in PATH")
+
+    def install(succeed_first_calls: int = 0) -> dict[str, str]:
+        counter_file = tmp_path / "sed-split-stage-count"
+        counter_file.write_text("0")
+        fake_binary = tmp_path / "sed"
+        fake_binary.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            "    's/;/'*)\n"
+            f"      count=$(( $(cat {shlex.quote(str(counter_file))}) + 1 ))\n"
+            f"      printf '%s' \"$count\" > {shlex.quote(str(counter_file))}\n"
+            f'      if [ "$count" -gt {succeed_first_calls} ]; then\n'
+            "        exit 1\n"
+            "      fi\n"
+            "      ;;\n"
+            "  esac\n"
+            "done\n"
             f'exec {real_sed} "$@"\n'
         )
         fake_binary.chmod(0o755)

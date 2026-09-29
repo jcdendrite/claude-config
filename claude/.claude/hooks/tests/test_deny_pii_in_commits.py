@@ -1588,6 +1588,34 @@ class TestDenyPiiInCommits:
             cwd=git_repo,
         ) == "deny"
 
+    def test_ampersand_chained_add_then_commit_detected(self, isolated_home, git_repo, pii_patterns):
+        """`git add . & git commit` -- _lib_split_fragments leaves the bare
+        `&` unsplit (GH-1063), so the commit is reached through the shared
+        predicate's `&` pass, and the already-staged SSN is scanned."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git add . & git commit -m wip"),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_commit_all_behind_ampersand_leaves_worktree_only_content_unscanned_known_gap(
+        self, isolated_home, git_repo, pii_patterns
+    ):
+        """Accepted known gap (GH-1063): a `git commit -a` behind a bare `&`
+        is recognized as a commit but sets no worktree rescan, so a
+        credential that `-a` autostages stays unscanned. The unglued form
+        below is the control that denies the same worktree-only content."""
+        pii_patterns("# no user patterns\n")
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\nSSN {SSN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo) == "deny"
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git status & git commit -a -m wip"),
+            cwd=git_repo,
+        ) == "allow"
+
     # ------------------------------------------------------------------ #
     # Fail-closed on malformed JSON                                       #
     # ------------------------------------------------------------------ #
@@ -1635,8 +1663,7 @@ class TestDenyPiiInCommits:
         its own fragment loop finds no literal `git commit`. This hook is
         fail-closed, so an undetermined match must still deny rather than
         silently reaching an unscanned allow. See sed_call_counting_shim's
-        docstring for the call-count mechanics behind `sed_call_counting_shim(3)`
-        below."""
+        docstring for why only the status-2 outcome is asserted."""
         extra_env = sed_call_counting_shim(3)
         reason = run_hook_reason(
             DENY_PII_IN_COMMITS_HOOK,

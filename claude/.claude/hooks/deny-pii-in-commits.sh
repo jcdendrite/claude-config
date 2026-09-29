@@ -303,14 +303,18 @@ while IFS= read -r git_fragment; do
   fi
 done <<< "$GIT_FRAGMENTS"
 
-# The fragment loop above only recognizes a literal `git commit`. A `git
+# The fragment loop above only recognizes a `git commit` that
+# _lib_split_fragments isolates as its own fragment. A `git
 # <merge|rebase|cherry-pick|revert> --continue` concludes a commit too, with
-# no separate `git commit` call for the loop to see — checked here, once,
-# via the broad predicate (this scanner's recourse is mechanical, so it
-# stays armed on `git rebase --continue` same as every other `--continue`
-# form). No worktree-target rescan: none of those four verbs accepts
-# `-a`/`--`/a bare pathspec, so HEAD_SCAN_NEEDED is correctly left at
-# whatever the loop above set.
+# no separate `git commit` call for the loop to see, and so does a `git
+# commit` behind a bare `&` (GH-1063), which the splitter leaves glued to
+# the preceding text. Both are checked here, once, via the broad predicate
+# (this scanner's recourse is mechanical, so it stays armed on `git rebase
+# --continue` same as every other `--continue` form).
+# No worktree-target rescan for the `--continue` forms: none of those four
+# verbs accepts `-a`/`--`/a bare pathspec.
+# The fallback also sets no rescan for a `git commit` behind a bare `&`, so
+# content that `-a` or a pathspec autostages there stays unscanned.
 if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   _lib_command_concludes_commit "$COMMAND"
   CONCLUDES_COMMIT_STATUS=$?

@@ -1,13 +1,13 @@
 #!/bin/bash
 # hook-class: gate
 # tier-threat-model: cooperative
-# Gate: require /skill-review before git commit when SKILL.md files are staged,
+# Gate: require /skill-review before a commit-concluding command (git commit,
+# or git merge/cherry-pick/revert --continue) when SKILL.md files are staged,
 # verified via marker file.
 #
-# WARNING: Do NOT remove the internal git commit check below.
-# The "if" field in settings.json is unreliable — it has been observed
-# to fire this hook on ALL Bash commands (e.g., git reset, date).
-# The internal grep is the actual gate. The "if" field is a hint only.
+# WARNING: Do NOT remove the internal commit-shape check below.
+# hooks.json carries no "if" pre-filter for this hook: it is dispatched on
+# every Bash tool call, and the in-body predicate is the sole dispatch gate.
 #
 # How it works:
 # - The /skill-review skill writes
@@ -42,9 +42,19 @@
 #   conflicted SKILL.md leaves the index equal to HEAD, so a HEAD-relative
 #   prefilter would disarm on exactly the commit that discards upstream's
 #   reviewed content.
+# - Known gap: `git rebase --continue` never reaches this gate (the predicate's
+#   rebase carve-out); see _lib_command_concludes_marker_gated_commit's header
+#   in _lib.sh.
 # - Known gap: a conflict-free merge/cherry-pick/revert still reaches a commit
 #   with no gate firing; see "Known gap: the ungated clean merge" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
+# - Known gap: the gate evaluates only the payload-cwd index at PreToolUse, so
+#   a commit targeting another tree (`-C`, `--git-dir`, `--work-tree`) or
+#   staging in the same call is not seen. The stowed
+#   deny-invisible-commit-content.sh is a partial backstop that plugin-only
+#   installs lack; see "Known gap: the plugin matcher" in
+#   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md
+#   and TestSkillReviewGateEvaluationScopeResiduals.
 # - The structural validator's path list excludes deletions by the diff's own status
 #   (`--diff-filter=d`), and a staged deletion reaches the marker check, which covers
 #   it through the base-relative hash.
@@ -114,19 +124,33 @@ fi
 _lib_parse_tool_input_or_deny "Blocked by skill-review gate: could not parse tool-input JSON."
 
 # Filter by tool name in the hook itself rather than relying on the
-# settings.json matcher — the "if" field is a hint only (see the warning
-# above), and a non-Bash payload yields an empty COMMAND that would otherwise
-# reach the git-commit grep and pass by accident rather than by intent.
+# hooks.json matcher: a non-Bash payload yields an empty COMMAND that would
+# otherwise reach the commit-shape predicate and pass by accident rather than
+# by intent.
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands — exit 0 (no opinion) for everything else.
-# Match `git commit` at the start of the command OR after a shell separator
-# (`&&`, `||`, `;`, `|`, `&`), so chained forms like `git add . && git commit`
-# are also caught. The trailing `([[:space:]]|$)` ensures we don't match
-# `git commit-tree` or other `git commit`-prefixed subcommands.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'; then
+# Only gate commands that conclude a review-marker-gated commit — exit 0 (no
+# opinion) for everything else.
+# - Uses the fragment-aware predicate _lib_command_concludes_marker_gated_commit,
+#   so `git -C <dir> commit`, `git -c <k>=<v> commit`, `env git commit`, and
+#   quoted-`git` forms reach the gate along with plain `git commit`.
+# - `git merge/cherry-pick/revert --continue` reach the gate.
+# - `git rebase --continue` is excluded (the rebase carve-out: REBASE_HEAD
+#   reaches no trusted anchor in the ordinary case, so gating it here would
+#   mean a full review at every conflicted step of a rebase). The exclusion
+#   lives in the predicate's verb set, not in a hook-local check.
+# - Fails closed on an undetermined match (sed/tr missing, killed, or
+#   erroring inside the helper, or a fragment read that never ran) rather
+#   than silently letting an unscanned commit through the review gate.
+_lib_command_concludes_marker_gated_commit "$COMMAND"
+COMMIT_MATCH_STATUS=$?
+if [ "$COMMIT_MATCH_STATUS" -eq 1 ]; then
+  exit 0
+fi
+if [ "$COMMIT_MATCH_STATUS" -ne 0 ]; then
+  emit_deny "Blocked by skill-review gate: could not determine whether this command concludes a review-gated commit (status ${COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored, or the shell could not create a temp file to read a large command. Failing closed rather than letting an unscanned git commit bypass the review gate. This block covers every Bash call, not only commit-shaped ones, while sed/tr is broken; in an interactive session, repair it with the ! shell escape, which runs outside the tool-call path this hook gates."
   exit 0
 fi
 
@@ -362,7 +386,8 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
 fi
 
 # Honor in-chain marker writes. When the same Bash call chains
-# `marker.sh write skill-review` before `git commit`, the on-disk marker
+# `marker.sh write skill-review` before the commit-concluding command
+# (`git commit` or a `--continue` form), the on-disk marker
 # does not exist yet at PreToolUse time (the chain has not run), so the
 # usual marker check below would deny. The in-chain marker.sh invocation
 # is the same evidence the on-disk marker would later provide -- marker.sh
