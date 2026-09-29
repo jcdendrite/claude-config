@@ -1,12 +1,12 @@
-"""Synthetic two-commit fixture repositories for A-bench: a fresh repository
+"""Synthetic two-commit fixture repositories for the review bench: a fresh repository
 built from `git archive` trees only (never a `git worktree`/clone of the real
 repo, so a reviewer's `git log --all` cannot reach a later commit), holding
 exactly `base_commit` then `head_commit`, plus a `.bench/` directory excluded
 via `.git/info/exclude`.
 
 Builds three kinds of directory:
-- an arm fixture (`build_arm_fixture`): the two-commit tree plus an
-  installed `bench-<lens>.md` arm file under `.claude/agents/`;
+- a defect fixture (`build_defect_fixture`): the two-commit tree, to which
+  the caller adds a `bench-<lens>.md` arm file under `.claude/agents/`;
 - the arm-neutral precision-judge fixture (`build_precision_judge_fixture`):
   the same tree, with no `bench-<lens>` file;
 - the recall-judge directory (`build_recall_judge_dir`): no fixture tree at
@@ -15,6 +15,7 @@ Builds three kinds of directory:
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -22,11 +23,10 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from review_bench.defects import ConfirmedDefect
+from review_bench.defects import ConfirmedDefect, _validate_sha
 
-# read-scope's own chars-per-token estimate, duplicated here rather than
-# imported -- read_scope.py is mid-extraction by #1116 (small-duplicated-
-# value exception).
+# Duplicated from read_scope's chars-per-token estimate to avoid importing that
+# module; runner.py carries the same constant.
 _READ_SCOPE_CHARS_PER_TOKEN = 4
 
 # A default Read truncates at this many estimated tokens.
@@ -42,13 +42,27 @@ _LOCAL_GIT_TIMEOUT_S = 10.0
 # defect produce byte-identical commits -- a real author/date would leak
 # when the fixture was actually built, which is not part of what a run
 # measures.
-_FIXTURE_AUTHOR_NAME = "A-bench fixture"
+_FIXTURE_AUTHOR_NAME = "review-bench fixture"
 _FIXTURE_AUTHOR_EMAIL = "review-bench@localhost"
 _FIXTURE_COMMIT_DATE = "2000-01-01T00:00:00+00:00"
 _FIXTURE_BASE_COMMIT_MESSAGE = "base"
 
 _BENCH_DIR_NAME = ".bench"
+_COMMIT_SUBJECT_FILE_NAME = "commit-subject.txt"
 _GIT_INFO_EXCLUDE_LINE = f"/{_BENCH_DIR_NAME}/\n"
+
+
+# The top-level keys `.claude/settings.json` has held across this repository's
+# history (`git log -p -- .claude/settings.json`). A key outside this set could
+# carry executable config (hooks, env, apiKeyHelper, statusLine, MCP servers)
+# into the session that runs in the fixture.
+_ALLOWED_PROJECT_SETTINGS_KEYS = frozenset({"attribution", "claudeMdExcludes", "enabledPlugins", "permissions"})
+_PROJECT_SETTINGS_RELPATH = Path(".claude") / "settings.json"
+_FORBIDDEN_PROJECT_CONFIG_RELPATHS = (Path(".mcp.json"), Path(".claude") / "settings.local.json")
+
+
+class UnsafeFixtureConfigError(ValueError):
+    pass
 
 
 def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -95,10 +109,64 @@ def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None
         tar.extractall(dest_dir, filter="data")
 
 
+def _refuse_unsafe_project_settings(raw_settings: bytes) -> None:
+    """Fails closed on a `.claude/settings.json` that is unparseable, is not a
+    JSON object, or holds a top-level key outside this repository's history."""
+    try:
+        settings = json.loads(raw_settings.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise UnsafeFixtureConfigError(f"fixture tree's {_PROJECT_SETTINGS_RELPATH} is unparseable: {exc}") from exc
+    if not isinstance(settings, dict):
+        raise UnsafeFixtureConfigError(f"fixture tree's {_PROJECT_SETTINGS_RELPATH} is not a JSON object")
+    unexpected_keys = sorted(set(settings) - _ALLOWED_PROJECT_SETTINGS_KEYS)
+    if unexpected_keys:
+        raise UnsafeFixtureConfigError(
+            f"fixture tree's {_PROJECT_SETTINGS_RELPATH} has top-level key(s) {unexpected_keys} outside the "
+            f"set seen in this repository's history {sorted(_ALLOWED_PROJECT_SETTINGS_KEYS)}"
+        )
+
+
+def _refuse_executable_project_config(dest_dir: Path) -> None:
+    """Fails closed on an extracted head tree whose project config a session
+    would load with more than this repository's own settings history has ever
+    held."""
+    for relpath in _FORBIDDEN_PROJECT_CONFIG_RELPATHS:
+        if os.path.lexists(dest_dir / relpath):
+            raise UnsafeFixtureConfigError(f"fixture tree holds {relpath}, which a session would load")
+    settings_path = dest_dir / _PROJECT_SETTINGS_RELPATH
+    if settings_path.is_file():
+        _refuse_unsafe_project_settings(settings_path.read_bytes())
+
+
+def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -> None:
+    """The refusal `build_two_commit_repo` applies to the extracted head tree,
+    read straight from `commit`'s tree so a preflight can run it before any
+    fixture exists. Raises ValueError for a commit that is not a 40-hex SHA,
+    so none can read as a git option, UnsafeFixtureConfigError, or
+    CalledProcessError / TimeoutExpired when git fails."""
+    _validate_sha("commit", commit)
+    config_relpaths = [relpath.as_posix() for relpath in (*_FORBIDDEN_PROJECT_CONFIG_RELPATHS, _PROJECT_SETTINGS_RELPATH)]
+    listing = subprocess.run(
+        ["git", "ls-tree", "-z", "--name-only", commit, "--", *config_relpaths], cwd=source_repo, check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+    ).stdout
+    present = {os.fsdecode(raw_path) for raw_path in listing.split(b"\0") if raw_path}
+    for relpath in _FORBIDDEN_PROJECT_CONFIG_RELPATHS:
+        if relpath.as_posix() in present:
+            raise UnsafeFixtureConfigError(f"fixture tree holds {relpath}, which a session would load")
+    if _PROJECT_SETTINGS_RELPATH.as_posix() in present:
+        raw_settings = subprocess.run(
+            ["git", "show", f"{commit}:{_PROJECT_SETTINGS_RELPATH.as_posix()}"], cwd=source_repo, check=True,
+            timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+        ).stdout
+        _refuse_unsafe_project_settings(raw_settings)
+
+
 def _commit_snapshot(dest_dir: Path, message: str) -> None:
     _run_git(["add", "-A"], cwd=dest_dir)
     subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
+        ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+         "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
         check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, text=True,
         env={**os.environ, **_git_commit_env()},
     )
@@ -112,13 +180,15 @@ def _head_commit_subject(source_repo: Path, commit: str) -> str:
 def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: Path) -> None:
     """Build `dest_dir` as a fresh git repository holding exactly two
     commits: `defect.base_commit`'s tree, then `defect.head_commit`'s tree.
-    `dest_dir` must exist and be empty."""
+    `dest_dir` must exist and be empty. Raises UnsafeFixtureConfigError, before
+    committing the head tree, when its project config is not inert."""
     _run_git(["init", "-q"], cwd=dest_dir)
     _extract_commit_tree(source_repo, defect.base_commit, dest_dir)
     _commit_snapshot(dest_dir, _FIXTURE_BASE_COMMIT_MESSAGE)
 
     _clear_dir_contents(dest_dir)
     _extract_commit_tree(source_repo, defect.head_commit, dest_dir)
+    _refuse_executable_project_config(dest_dir)
     subject = _head_commit_subject(source_repo, defect.head_commit)
     _commit_snapshot(dest_dir, subject)
 
@@ -135,9 +205,24 @@ class ChangedFileStat:
     over_read_cap: bool
 
 
+def changed_paths_between(repo_dir: Path, base: str, head: str) -> list[str]:
+    """Paths that differ between base and head. NUL-delimited so git never
+    C-quotes a non-ASCII or special-character name, and rename-free so a
+    rename lists both its old and new path."""
+    result = subprocess.run(
+        ["git", "diff", "-z", "--name-only", "--no-renames", base, head], cwd=repo_dir, check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+    )
+    return [os.fsdecode(raw_path) for raw_path in result.stdout.split(b"\0") if raw_path]
+
+
+def fix_commit_paths(repo_dir: Path, defect: ConfirmedDefect) -> list[str]:
+    """Paths the defect's fix commit changed against its first parent."""
+    return changed_paths_between(repo_dir, f"{defect.fix_commit}^", defect.fix_commit)
+
+
 def _changed_paths(dest_dir: Path) -> list[str]:
-    result = _run_git(["diff", "--name-only", "HEAD~1", "HEAD"], cwd=dest_dir)
-    return [line for line in result.stdout.splitlines() if line]
+    return changed_paths_between(dest_dir, "HEAD~1", "HEAD")
 
 
 def _stat_changed_file(dest_dir: Path, rel_path: str) -> ChangedFileStat:
@@ -172,6 +257,13 @@ def _write_bench_diffs(dest_dir: Path) -> None:
     (bench_dir / "change-function-context.diff").write_text(function_context_diff)
 
 
+def _write_commit_subject(dest_dir: Path) -> None:
+    """The mined commit subject reaches the reviewer only as this data file,
+    never through a session prompt."""
+    subject = _head_commit_subject(dest_dir, "HEAD")
+    (dest_dir / _BENCH_DIR_NAME / _COMMIT_SUBJECT_FILE_NAME).write_text(subject + "\n")
+
+
 def _exclude_bench_dir(dest_dir: Path) -> None:
     """Excludes .bench/ via .git/info/exclude, never .gitignore -- the
     fixture's committed tree must match the real repo's history exactly at
@@ -184,11 +276,12 @@ def _exclude_bench_dir(dest_dir: Path) -> None:
 
 
 def write_bench_artifacts(dest_dir: Path) -> list[ChangedFileStat]:
-    """Write `.bench/change.diff`, `.bench/change-function-context.diff`, and
-    `.bench/changed-files.tsv` into an already-built two-commit `dest_dir`,
-    and exclude `.bench/` from git. Returns the per-file stats written to
-    the TSV."""
+    """Write `.bench/change.diff`, `.bench/change-function-context.diff`,
+    `.bench/changed-files.tsv`, and `.bench/commit-subject.txt` into an
+    already-built two-commit `dest_dir`, and exclude `.bench/` from git.
+    Returns the per-file stats written to the TSV."""
     _write_bench_diffs(dest_dir)
+    _write_commit_subject(dest_dir)
     stats = [_stat_changed_file(dest_dir, path) for path in _changed_paths(dest_dir)]
     _write_changed_files_tsv(dest_dir, stats)
     _exclude_bench_dir(dest_dir)
@@ -205,7 +298,7 @@ class FixtureRepo:
 def build_defect_fixture(source_repo: Path, defect: ConfirmedDefect, dest_dir: Path) -> FixtureRepo:
     """Build the full two-commit tree plus `.bench/` artifacts for `defect`
     under `dest_dir`. Shared by arm fixtures and the precision-judge
-    fixture -- callers install (or don't install) a `bench-<lens>.md` file
+    fixture -- callers copy in (or don't copy in) a `bench-<lens>.md` file
     afterward."""
     build_two_commit_repo(source_repo, defect, dest_dir)
     stats = write_bench_artifacts(dest_dir)

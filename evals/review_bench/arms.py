@@ -1,5 +1,5 @@
-"""Arm construction for A-bench: the current-rule (arm 1) and
-function-context (arm 2) `bench-<lens>.md` files, snapshotted from
+"""Arm construction for the review bench: the current-rule and
+function-context `bench-<lens>.md` files, snapshotted from
 production and installed into a fixture's `.claude/agents/`.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ ARM_CURRENT_RULE = "current-rule"
 ARM_FUNCTION_CONTEXT = "function-context"
 KNOWN_ARMS: frozenset[str] = frozenset({ARM_CURRENT_RULE, ARM_FUNCTION_CONTEXT})
 
-# Arm 1's own tool allowlist: production's Read/Grep/Glob subset, with Bash
+# Every arm's tool allowlist: production's Read/Grep/Glob subset, with Bash
 # and Write removed. A `tools:` allowlist withholds an unlisted tool from the
 # subagent outright. An arm therefore cannot run Bash or Write regardless of
 # ambient CLI permission behavior.
@@ -31,7 +31,7 @@ ARM_MODEL_FRONTMATTER_VALUE = "inherit"
 # clause verified to occur exactly once in that lens's current production
 # body. Any other duty in the same sentence as the clause (e.g. staff-sdet's
 # "AND the code they test") is not part of the clause, and stays in the body
-# untouched after arm 2's substitution.
+# untouched after the function-context substitution.
 LENS_READ_CLAUSES: dict[str, str] = {
     "staff-backend-engineer": "Read every changed file fully",
     "staff-frontend-engineer": "Read every changed component and hook (or composable / reactive primitive) fully",
@@ -42,7 +42,7 @@ LENS_READ_CLAUSES: dict[str, str] = {
     "comment-discipline-reviewer": "Read every changed file fully",
 }
 
-# Arm 2's function-context read-rule clause -- kept verbatim, character for
+# The function-context arm's read-rule clause -- kept verbatim, character for
 # character, wherever it's substituted.
 FUNCTION_CONTEXT_CLAUSE = (
     "Read the change through its function-context diff "
@@ -55,8 +55,8 @@ FUNCTION_CONTEXT_CLAUSE = (
 
 class ArmSnapshotError(ValueError):
     """Raised when a production lens file fails one of snapshot_arm's
-    loud-failure checks: a missing ARM_TOOLS entry, or (for arm 2) a read
-    clause that doesn't match exactly once."""
+    loud-failure checks: a missing ARM_TOOLS entry, or (for the function-context arm) a
+    read clause that doesn't match exactly once."""
 
 
 _FRONTMATTER_FIELD_RE = re.compile(r"(?m)^(\w+):\s*(.*)$")
@@ -120,7 +120,7 @@ def render_arm_agent(arm: str, lens: str, *, agents_dir: Path = AGENTS_DIR) -> s
     if arm not in KNOWN_ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {sorted(KNOWN_ARMS)}")
     if lens not in LENS_READ_CLAUSES:
-        raise ValueError(f"{lens!r} has no known read clause -- not one of the seven lenses A-bench covers")
+        raise ValueError(f"{lens!r} has no known read clause -- not one of the seven lenses the review bench covers")
 
     text = _production_agent_text(lens, agents_dir)
     frontmatter, body = _split_frontmatter(text)
@@ -155,9 +155,8 @@ def snapshot_arm(arm: str, lenses: list[str] | None = None, *, agents_dir: Path 
 
 
 def install_arm(rendered: dict[str, str], agents_dir: Path) -> None:
-    """Write each lens's rendered `bench-<lens>.md` into `agents_dir` -- a
-    fixture's `.claude/agents/`, which the fixture excludes from git via
-    its own `.git/info/exclude` (fixture_repo.py)."""
+    """Write each lens's rendered `bench-<lens>.md` into `agents_dir`. Runs
+    copy the snapshot files themselves (runner.build_defect_fixture_spec)."""
     agents_dir.mkdir(parents=True, exist_ok=True)
     for lens, text in rendered.items():
         (agents_dir / f"bench-{lens}.md").write_text(text)
@@ -166,6 +165,6 @@ def install_arm(rendered: dict[str, str], agents_dir: Path) -> None:
 def write_arm_snapshot(arm: str, dest_dir: Path, *, lenses: list[str] | None = None) -> None:
     """`snapshot-arms`' own entry point, run once at freeze time: render and
     write every lens's `bench-<lens>.md` directly under `dest_dir`
-    (evals/review_bench/arms/<arm>/), the committed snapshot `install_arm`
-    later copies into each run's fixture."""
+    (evals/review_bench/arms/<arm>/), the committed snapshot
+    runner.build_defect_fixture_spec copies into each run's fixture."""
     install_arm(snapshot_arm(arm, lenses), dest_dir)

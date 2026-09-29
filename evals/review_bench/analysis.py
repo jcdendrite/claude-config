@@ -1,5 +1,5 @@
 """Statistics, freeze/invalidation checks, and the import-closure manifest
-for A-bench. Standard library only (`statistics`, `math`, `random`,
+for the review bench. Standard library only (`statistics`, `math`, `random`,
 `hashlib`, `ast`) -- no numerical dependency. evals/README.md's "Frozen
 conditions and invalidation" section documents the manifest/precondition
 checks' observable behavior.
@@ -23,7 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from statistics import NormalDist, mean, stdev
 
-from review_bench import runner
+from review_bench import adjudicate, defects, runner
+from review_bench import arms as arms_mod
 from review_bench.adjudicate import PrecisionFinding, RecallLabel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -31,11 +32,9 @@ EVALS_DIR = REPO_ROOT / "evals"
 REVIEW_BENCH_DIR = EVALS_DIR / "review_bench"
 CONFIG_SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
-STATUS_OK = runner.STATUS_OK
-# Defined in runner.py (which this module already imports), not here, since
-# runner.read_run_records is one of its raisers and analysis imports runner
-# rather than the reverse. Re-exported so existing `analysis.HarnessInvalidatedError`
-# call sites (run_review_bench.py) don't need updating.
+# Defined in runner.py because runner.read_run_records is one of its raisers
+# and analysis imports runner, not the reverse. Re-exported for
+# run_review_bench.py's `analysis.HarnessInvalidatedError` catches.
 HarnessInvalidatedError = runner.HarnessInvalidatedError
 
 # --- Design constants -----------------------------------------------------
@@ -326,9 +325,9 @@ def partial_and_paged_counts(records: Sequence[runner.RunRecord]) -> dict[str, d
 
 
 def whole_file_read_adherence(records: Sequence[runner.RunRecord]) -> dict[str, float]:
-    """Mean whole-file-reads-of-changed-files per run, per arm -- arm 2's
-    reads are the rule-violation diagnostic, arm 1's are the coverage
-    diagnostic."""
+    """Mean whole-file-reads-of-changed-files per run, per arm -- the
+    function-context arm's reads are the rule-violation diagnostic, the
+    current-rule arm's are the coverage diagnostic."""
     totals: dict[str, list[int]] = defaultdict(list)
     for record in records:
         totals[record.arm].append(record.whole_file_reads_of_changed_files)
@@ -341,6 +340,20 @@ def missing_run_counts_by_reason(records: Sequence[runner.RunRecord]) -> dict[st
         if record.status != runner.STATUS_OK:
             counts[record.arm][record.missing_reason or "unknown"] += 1
     return {arm: dict(reasons) for arm, reasons in counts.items()}
+
+
+def cost_totals_by_arm(records: Sequence[runner.RunRecord]) -> dict[str, dict[str, float | int]]:
+    """Per-arm summed total_cost_usd over the runs that recorded one, beside
+    how many of the arm's runs that covers -- a run with no cost is left out
+    of the sum, never counted as zero."""
+    totals: dict[str, dict[str, float | int]] = defaultdict(lambda: {"total_cost_usd": 0.0, "runs_priced": 0, "runs": 0})
+    for record in records:
+        arm_totals = totals[record.arm]
+        arm_totals["runs"] += 1
+        if record.total_cost_usd is not None:
+            arm_totals["total_cost_usd"] += record.total_cost_usd
+            arm_totals["runs_priced"] += 1
+    return dict(totals)
 
 
 def out_of_session_counts_by_arm(records: Sequence[runner.RunRecord]) -> dict[str, int]:
@@ -372,7 +385,7 @@ def recall_diff_over_read_cap_stratum(
     over_cap_defect_ids: Sequence[str], arm_baseline: str, arm_x: str,
 ) -> float:
     """recall_X - recall_baseline, restricted to kept defects flagged
-    over_read_cap -- files over one Read call, where arm 2's rule changes
+    over_read_cap -- files over one Read call, where the function-context rule changes
     behavior the most."""
     stratum = [defect_id for defect_id in kept_defect_ids if defect_id in set(over_cap_defect_ids)]
     return arm_recall(recall_counts_by_defect, stratum, arm_x) - arm_recall(recall_counts_by_defect, stratum, arm_baseline)
@@ -483,17 +496,18 @@ def closure_manifest_hash(closure: Mapping[str, str]) -> str:
 # conditions and invalidation" section) -------------------------------------
 
 
-def load_baseline_conditions(path: Path) -> tuple[str, str, Mapping[str, str]]:
-    """(cli_version, ambient_config_commit, harness_closure) from a baseline
-    conditions.json/baseline.json file, for check_environment_matches_baseline
-    and check_manifest_matches. Raises HarnessInvalidatedError -- naming the
-    file and the unreadable/missing/malformed field -- rather than letting a
-    raw OSError/ValueError/KeyError/TypeError escape to cmd_analyze."""
+def load_frozen_conditions(path: Path) -> dict:
+    """The parsed conditions.json (or baseline.json), with the `environment`
+    and `harness_closure` fields every comparison reads checked for shape. Raises
+    HarnessInvalidatedError -- naming the file and the unreadable/missing/
+    malformed field -- rather than letting a raw OSError/ValueError/KeyError/
+    TypeError escape to a subcommand."""
     try:
         conditions = json.loads(path.read_text())
         environment = conditions["environment"]
-        cli_version = environment["cli_version"]
-        ambient_config_commit = environment["ambient_config_commit"]
+        absent = [key for key in ("cli_version", "ambient_config_commit") if key not in environment]
+        if absent:
+            raise KeyError(absent)
         harness_closure = conditions["harness_closure"]
         if not isinstance(harness_closure, dict):
             raise TypeError(f"harness_closure must be an object, got {type(harness_closure).__name__}")
@@ -502,7 +516,7 @@ def load_baseline_conditions(path: Path) -> tuple[str, str, Mapping[str, str]]:
             f"invalidated -- rerun all arms: baseline conditions file "
             f"({path}) is unreadable or missing an expected field: {exc!r}"
         ) from exc
-    return cli_version, ambient_config_commit, harness_closure
+    return conditions
 
 
 def check_manifest_matches(current_closure: Mapping[str, str], frozen_closure: Mapping[str, str]) -> None:
@@ -527,11 +541,129 @@ def check_manifest_matches(current_closure: Mapping[str, str], frozen_closure: M
     )
 
 
+def hash_directory(directory: Path) -> str:
+    """One combined hash over every file under directory, sorted by relative
+    path. Raises HarnessInvalidatedError for a missing or file-less directory,
+    since an empty listing hashes to a constant that would freeze nothing."""
+    files = sorted(path for path in directory.rglob("*") if path.is_file()) if directory.is_dir() else []
+    if not files:
+        raise HarnessInvalidatedError(f"{directory} is missing or holds no files -- there is nothing to hash")
+    parts = [f"{path.relative_to(directory)}:{hashlib.sha256(path.read_bytes()).hexdigest()}" for path in files]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def compute_frozen_fields(defects_path: Path, arms_root: Path) -> dict:
+    """Every conditions.json field derived from files on disk. `freeze`
+    records these; `analyze`, `run`, and `judge` recompute them and compare
+    (evals/README.md's "Frozen conditions and invalidation" section). The
+    harness closure is computed here too, so all of them hash the same set."""
+    try:
+        defects_json_bytes = defects_path.read_bytes()
+    except OSError as exc:
+        raise HarnessInvalidatedError(f"defects file {defects_path} is unreadable: {exc}") from exc
+    closure = compute_harness_closure()
+    return {
+        "defect_ids": sorted(defect.id for defect in defects.load_confirmed_defects(defects_path)),
+        "harness_closure_hash": closure_manifest_hash(closure),
+        "harness_closure": closure,
+        "arm_dir_hashes": {
+            arm: hash_directory(arms_root / arm) for arm in (arms_mod.ARM_CURRENT_RULE, arms_mod.ARM_FUNCTION_CONTEXT)
+        },
+        "judge_agent_hashes": {
+            "bench-judge-recall": hashlib.sha256(adjudicate.RECALL_JUDGE_AGENT_FILE.read_bytes()).hexdigest(),
+            "bench-judge-precision": hashlib.sha256(adjudicate.PRECISION_JUDGE_AGENT_FILE.read_bytes()).hexdigest(),
+        },
+        "defects_json_hash": hashlib.sha256(defects_json_bytes).hexdigest(),
+        "prompt_template_hashes": {
+            "review_prompt": hashlib.sha256(runner.REVIEW_PROMPT_TEMPLATE.encode()).hexdigest(),
+            "dispatch_prompt": hashlib.sha256(runner.DISPATCH_PROMPT_TEMPLATE.encode()).hexdigest(),
+            "judge_inner_prompt": hashlib.sha256(adjudicate.JUDGE_INNER_PROMPT_TEMPLATE.encode()).hexdigest(),
+        },
+    }
+
+
+# The compute_frozen_fields entries compared field by field; the closure is
+# compared separately so a mismatch names the changed files.
+_FROZEN_DIGEST_FIELDS = (
+    "defects_json_hash", "defect_ids", "arm_dir_hashes", "judge_agent_hashes", "prompt_template_hashes",
+)
+
+
+def _differing_field_names(frozen: Mapping, current: Mapping) -> list[str]:
+    names: list[str] = []
+    for field in _FROZEN_DIGEST_FIELDS:
+        frozen_value, current_value = frozen.get(field), current[field]
+        if frozen_value == current_value:
+            continue
+        if isinstance(frozen_value, dict) and isinstance(current_value, dict):
+            names.extend(
+                f"{field}[{key}]"
+                for key in sorted(set(frozen_value) | set(current_value))
+                if frozen_value.get(key) != current_value.get(key)
+            )
+        else:
+            names.append(field)
+    return names
+
+
+def check_against_frozen_conditions(
+    frozen: Mapping, current: Mapping, *, k: int | None = None, seed: int | None = None,
+) -> None:
+    """Raises HarnessInvalidatedError as "invalidated -- rerun all arms" naming
+    every frozen field that differs from `current` (compute_frozen_fields'
+    output). A differing `k` or campaign `seed`, when given, raises instead
+    with the frozen value to pass."""
+    check_manifest_matches(current["harness_closure"], frozen["harness_closure"])
+    differing = _differing_field_names(frozen, current)
+    if differing:
+        raise HarnessInvalidatedError(f"invalidated -- rerun all arms: frozen field(s) differ: {differing}")
+    if k is not None and frozen.get("k") != k:
+        raise HarnessInvalidatedError(
+            f"--k {k} differs from the frozen k {frozen.get('k')!r} -- pass --k {frozen.get('k')!r}"
+        )
+    if seed is not None and frozen.get("campaign_seed") != seed:
+        raise HarnessInvalidatedError(
+            f"--seed {seed} differs from the frozen campaign_seed {frozen.get('campaign_seed')!r}"
+            f" -- pass --seed {frozen.get('campaign_seed')!r}"
+        )
+
+
+def check_environment_reading_matches_frozen(environment: runner.EnvironmentRecord, frozen: Mapping) -> None:
+    """Raises HarnessInvalidatedError when the CLI version or ambient config
+    commit read now differs from the frozen environment."""
+    frozen_environment = frozen["environment"]
+    if (
+        environment.cli_version != frozen_environment["cli_version"]
+        or environment.ambient_config_commit != frozen_environment["ambient_config_commit"]
+    ):
+        raise HarnessInvalidatedError(
+            "invalidated -- rerun all arms: current environment "
+            f"({environment.cli_version!r}, {environment.ambient_config_commit!r}) differs from the frozen one "
+            f"({frozen_environment['cli_version']!r}, {frozen_environment['ambient_config_commit']!r})"
+        )
+
+
+def check_record_defect_ids_match(records: Sequence[runner.RunRecord], frozen_defect_ids: Sequence[str]) -> None:
+    """Raises HarnessInvalidatedError when the records name a defect that is
+    not frozen, or a frozen defect has no record."""
+    recorded, frozen = {record.defect_id for record in records}, set(frozen_defect_ids)
+    unfrozen, unrecorded = sorted(recorded - frozen), sorted(frozen - recorded)
+    if unfrozen or unrecorded:
+        raise HarnessInvalidatedError(
+            "invalidated -- rerun all arms: reviewer records and frozen defects disagree "
+            f"(records name unfrozen defects: {unfrozen}; frozen defects with no records: {unrecorded})"
+        )
+
+
 def check_freeze_preconditions(
     *, current_manifest_hash: str, last_smoke_manifest_hash: str, k_to_freeze: int, smoke_full_k: int,
-    provenance_failures: Sequence[tuple[str, str]], local_excerpts_present: bool,
+    provenance_failures: Sequence[tuple[str, str]], review_round_defects_without_excerpt: Sequence[str],
 ) -> None:
-    """Raises HarnessInvalidatedError naming the failing precondition."""
+    """Raises HarnessInvalidatedError naming the failing precondition.
+    `review_round_defects_without_excerpt` holds the ID of each
+    `source: review-round` record with no non-empty `.local/` excerpt: a
+    shortlist file alone does not supply one, and an SZZ shortlist carries
+    none."""
     if current_manifest_hash != last_smoke_manifest_hash:
         raise HarnessInvalidatedError(
             "freeze: current harness closure manifest does not match the last passing smoke campaign's"
@@ -540,8 +672,11 @@ def check_freeze_preconditions(
         raise HarnessInvalidatedError(
             f"freeze: K being frozen ({k_to_freeze}) does not match the smoke campaign's full-K fixture ({smoke_full_k})"
         )
-    if not local_excerpts_present:
-        raise HarnessInvalidatedError("freeze: .local/ excerpts are absent -- provenance cannot be checked")
+    if review_round_defects_without_excerpt:
+        names = ", ".join(review_round_defects_without_excerpt)
+        raise HarnessInvalidatedError(
+            f"freeze: .local/ holds no excerpt for review-round record(s) {names} -- provenance cannot be checked"
+        )
     if provenance_failures:
         names = ", ".join(f"{defect_id} ({reason})" for defect_id, reason in provenance_failures)
         raise HarnessInvalidatedError(f"freeze: defects.json record(s) failed provenance check: {names}")

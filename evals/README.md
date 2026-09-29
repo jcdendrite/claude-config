@@ -434,7 +434,7 @@ for the measured discrepancy and what a valid re-verification requires.
 
 ## Review bench
 
-A-bench (`evals/review_bench/`) measures whether a reviewer read-rule change
+The review bench (`evals/review_bench/`) measures whether a reviewer read-rule change
 preserves review quality — recall and adjudicated precision on a curated set
 of this repo's own known-defect PRs — before that change is allowed to
 merge. This file's own "Why local only — never CI" section above applies
@@ -445,18 +445,19 @@ the cost scales faster (see "Runtime cost" below).
 ### Usage
 
 ```bash
-# Mine defect candidates (source 2 first -- transcripts age out):
+# Mine defect candidates (mine-rounds first -- transcripts age out):
 python evals/run_review_bench.py mine-rounds
 python evals/run_review_bench.py mine-szz
 
-# After hand-editing a candidate's description in .local/, promote it:
+# After writing a candidate's description in .local/, approve it at the
+# [y/N/q] prompt (needs a terminal):
 python evals/run_review_bench.py confirm
 
 # Snapshot both frozen arms from production at the freeze commit:
 python evals/run_review_bench.py snapshot-arms
 
-# Dry-run against the real CLI, with optional fault injection:
-python evals/run_review_bench.py smoke --k 2 --inject-fault wrong-agent
+# Dry-run one defect against the real CLI, with optional fault injection:
+python evals/run_review_bench.py smoke --defect-id <id> --k 2 --inject-fault wrong-agent
 
 # The real campaign (baseline or a later arm's rerun):
 python evals/run_review_bench.py run --k 10 --records-dir evals/review_bench/.local/runs
@@ -484,6 +485,29 @@ own miner output) can carry real session or finding-excerpt text and is
 gitignored for that reason — never copy its content into a committed file or
 another private-project-adjacent surface.
 
+`confirm` is the engineer's approval step. It checks every `.local/` candidate
+that has a description and is not yet in `defects.json`: the schema, and the
+description-provenance check against every `.local/` excerpt. It prompts
+`[y/N/q]` for each candidate that passes, showing the candidate's ID, source,
+lens, short SHAs, `fix_date`, path, commit subjects, description, and the
+miner's inclusion guesses, two of which are labeled "unchecked default". `y`
+promotes the candidate. Any other answer, `Y` and `yes` included, skips it, and
+it stays in `.local/`. `q` or end of input stops the loop and writes the
+candidates accepted so far. Ctrl-C during the prompts writes and pins nothing.
+After the last prompt, `confirm` pins each accepted candidate's fix commit under
+`refs/review-bench/`, then appends the candidates to `defects.json`. An
+interrupt in that pin-and-write phase can leave earlier pins in place and
+writes no defect. `confirm` aborts, exiting 1, when `defects.json` differs from
+what it loaded once the prompts end. It prints
+model-derived text with control characters as backslash escapes. An empty
+description marks a candidate as not yet written up. That is a completeness
+check, not approval.
+
+`confirm` needs a terminal on stdin. Without one it runs every check, prints
+the rejections, writes and pins nothing, prints how many candidates await the
+engineer at a terminal, and exits 2 when any do. No flag or environment
+variable supplies an answer in place of a terminal.
+
 ### Frozen conditions and invalidation
 
 `freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
@@ -493,32 +517,68 @@ missing-run rule, the later-arm certification rule, the confirmed defect
 IDs, and sha256 hashes of the harness's own import closure, both arm
 directories, the judge agent files, `defects.json`, and the prompt templates.
 
-`analyze` recomputes every one of those hashes on each run. A mismatch
-against the frozen manifest exits 2, naming the changed, added, or removed
-file. Two further checks sit alongside the hash comparison, and either can
-exit 2 without a single hash differing — this section is their canonical
-home:
+`freeze` fails, exiting 2, on a missing or empty arm directory. It refuses to
+overwrite an existing `conditions.json`; delete the file deliberately to freeze
+again.
 
-- **Within one campaign, across its blocks.** Each block records its own
-  environment (`claude --version` plus the ambient config's own commit) at
-  its own start and end; a block whose two readings disagree reruns whole,
-  before `analyze` ever sees it. `analyze` then checks the whole campaign:
-  every block must agree with every other block. A CLI update landing
-  between two blocks leaves each block internally consistent, so only this
-  cross-block check can see it. A campaign whose blocks disagree makes
-  `analyze` exit 2, naming each environment and the defect IDs of the blocks
-  recorded under it.
+Given `--baseline-conditions-path`, as a later arm's analysis is, `analyze`
+recomputes every one of those hashes through the same `compute_frozen_fields`
+function `freeze` records them with. A mismatch against the frozen manifest
+exits 2, naming the changed, added, or removed file or field. In that mode
+`analyze` also exits 2 when `--k` differs from the frozen K, or when the
+reviewer records and the frozen defect IDs disagree in either direction. Without
+`--baseline-conditions-path`, the baseline's own `analyze` checks that its
+records carry one environment and checks no frozen field. `analyze` and `judge`
+exit 2 when a reviewer or judge records path they read does not exist; only
+`judge`'s own output file may be absent. `run` and `judge` recompute the same
+hashes and compare the CLI version and ambient config commit before their
+first dispatch, and `run` also compares `--k` and holds `--seed` to the frozen
+campaign seed. `run` exits 2 when `conditions.json` does not exist. `judge`
+prints a note and proceeds, because the smoke campaign's judges run before the
+freeze. `smoke` never checks, since it precedes the freeze. Two further checks
+sit alongside the hash comparison, and either can exit 2 without a single hash
+differing — this section is their canonical home:
+
+- **Within one campaign, across its blocks.** Each block records the CLI
+  version and the ambient config's own commit at its start and at its end.
+  Every block's start and end readings must equal one reference environment: the environment
+  frozen in `conditions.json` for `run` and `judge`, and the campaign's first
+  reading for `smoke` and for `judge` before any freeze. Any mismatch halts
+  the campaign with exit 2. Nothing reruns, and the halted block writes no
+  records. A `judge` block is one defect's two judge runs, read at its start,
+  after its recall run, and at its end. The recall record is written after
+  the second reading, so a halt at the end keeps that record, which two
+  matching readings bracket, and writes no precision record. Recovery takes
+  one of two paths:
+  restore the environment and resume with the same `--campaign-id`, which
+  reruns the partial block whole after the resume sweep; or, if the
+  environment cannot be restored, as after a CLI update, re-freeze and rerun
+  all arms in one campaign. The re-freeze path never sweeps the halted
+  campaign. That campaign's write-ahead log, `write-ahead.jsonl` in its run
+  store, lists what it left behind, so delete those `review-bench-`
+  directories and session stores from it, checking each first, not by name
+  prefix. `analyze` then checks the whole campaign as a
+  backstop: every record must carry one CLI version and one ambient config
+  commit, and a campaign whose blocks disagree makes `analyze` exit 2, naming
+  each environment and the defect IDs of the blocks recorded under it.
 - **Between campaigns.** A later arm's own campaign environment must match
   the frozen baseline's exactly. A mismatch exits 2 as "invalidated — rerun
   all arms", even when every hash still matches — an environment drift is a
   threat to validity a content hash cannot see.
 
+Operating rule: the ambient config checkout stays at the frozen commit from
+`freeze` through the last `judge` run, with no uncommitted edits. Merging the
+PR that adds `conditions.json` does not require pulling that checkout. Add no
+`git worktree add`, in either repository, while a campaign runs.
+
 `freeze` itself refuses, exiting 2 and naming the failing precondition,
 unless the current harness closure manifest matches the last smoke campaign
 that passed, K matches that smoke campaign's own full-K fixture (its judge
-caps were sized at that K), and every `defects.json` record still passes the
-description-provenance check against the `.local/` excerpts, which must be
-present.
+caps were sized at that K), every `defects.json` record still passes the
+description-provenance check against the `.local/` excerpts, and `.local/`
+holds a non-empty excerpt for every record whose `source` is `review-round`.
+A shortlist file alone does not satisfy that last check: an SZZ shortlist
+carries no excerpt.
 
 ### Building a later arm
 
@@ -535,8 +595,17 @@ arms; a later arm's own snapshot is a hand-applied diff of
 verdicts, plus every secondary column: Read tokens per run, `PARTIAL
 view`/paged-read counts, whole-file-read adherence, missing-run counts by
 reason, out-of-session read counts, split agreement, and the observed
-standard deviation of the per-defect difference. Two caveats govern how to
-read it:
+standard deviation of the per-defect difference. In baseline mode (no
+`--baseline-conditions-path`), `--out` also writes each arm's recall and
+pooled precision with a paired-bootstrap interval, the per-defect detection
+rates, the arm 2 minus arm 1 pooled-precision difference with its interval,
+the sensitivity verdict with its interval limits, and N and the effective N
+after the sub-K/2 drop against N_min, with the dropped counts. Every `--out`
+report carries `confirmed_defects`, the size of the confirmed set. The recall
+drop count is taken against that set, so a defect with no valid recall label
+counts as dropped. `analyze` exits 2, printing a message and writing no
+report, when no defect is kept for recall. Two caveats
+govern how to read it:
 
 - **Pairing protects the difference, not the absolute figures.** The
   reviewer model may have already seen this public repo's later fixes.
@@ -557,38 +626,103 @@ read it:
 
 `smoke`, `run`, and `judge` each write ahead to their own local run store:
 one entry per directory as soon as it exists, and one per session ID before
-that run launches. Each also holds a lock file naming its own PID while it
-runs. A hard interruption — a killed process, a crash — skips the ordinary
-end-of-block cleanup, but a resumed attempt's own sweep deletes exactly what
-its own abandoned attempt recorded, then reruns that block whole. While a run
-store's lock names a live PID, a resuming attempt refuses to start rather
-than racing the run still in progress.
+that run launches. Each also holds an exclusive advisory lock (`flock`) on
+its run store's lock file while it runs, and writes its own PID into that
+file for the refusal message. For `run` and `smoke`, end-of-block cleanup
+runs once the block's runs finish, its end-of-block environment reading
+matches, and its records are appended. That is before a systemic-failure stop
+and before the block is marked complete. It does not run on Ctrl-C, SIGHUP or
+SIGTERM, an environment halt, an error in a run or a record write, a kill, or
+a crash, and those exits leave that block's fixture directories and session
+stores in place. For `judge`, cleanup runs inline after each judge run, before
+the environment checks, so a judge halt leaves nothing behind. Only a
+resume under the same `--campaign-id` sweeps what a `run` or `smoke` exit left:
+its own sweep deletes
+exactly what its own abandoned attempt recorded, then reruns that block whole.
+The sweep deletes only a `review-bench-` directory directly under the system
+temp dir, and a session store directly under the projects root; any other
+logged path aborts the sweep with nothing deleted. Resume with the `TMPDIR`
+the interrupted attempt ran under, since the sweep compares each logged
+directory against the current system temp dir. While
+another process holds a run store's lock, a resuming attempt refuses to start
+rather than racing the run still in progress. The kernel drops the lock when
+its holder dies, so no stale lock file needs clearing by hand. The lock does
+not cover the killed run's `claude -p` children, which can keep running after
+the lock drops. Nothing enforces the timeout on such a child once its runner is
+dead, so waiting before resuming is a heuristic, not a guarantee. After a hard
+kill, wait at least the command's own timeout before resuming: `REVIEWER_TIMEOUT_S`
+in `review_bench/runner.py` for `smoke` and `run`, and the judge's own
+timeout (`RECALL_JUDGE_TIMEOUT_S` or `PRECISION_JUDGE_TIMEOUT_S`) for `judge`.
+A resumed sweep that runs first deletes the directories such a child is still
+using, and the child's output is never recorded.
 
-The one residual this can't close is a directory created in the instant
-before its own write-ahead record is written. List such directories by their
-`review-bench-` prefix, while no lock is held, and inspect each one before
-deleting it.
+Each `claude -p` child leads its own session, so a terminal hangup never
+reaches it. The CLI's `main()` therefore routes SIGHUP and SIGTERM into
+`KeyboardInterrupt`, the same path Ctrl-C takes: `abort_launches()` and a kill
+of each child's whole process group. Only SIGKILL and a machine crash are hard
+kills that skip this child-kill path. A SIGHUP that was already ignored when
+the command started, as under `nohup`, stays ignored, so a detached campaign
+survives a logout. An interrupted `run_review_bench.py` command prints its
+campaign ID with `resume with --campaign-id <id>` and exits 128 plus the
+signal number: 130 for Ctrl-C, 143 for SIGTERM, and 129 for SIGHUP.
+`measure_subagent_model_resolution.py` routes SIGHUP and SIGTERM the same way
+and honors an ignored SIGHUP.
 
-A `smoke`/`run` campaign that crashes between one block's `RunRecord`s
-being appended to `records_path` and that block being marked complete
-leaves the block un-marked. The sweep above only removes per-run
-directories and session stores named by a still-pending write-ahead
-entry — it never touches anything already written to `records_path`. A
-resume under the same `--campaign-id` reruns that whole block and appends
-its records a second time into the same file. `read_run_records` dedups
-by `(campaign_id, defect_id, arm, run_index)`, keeping the later record
-for a repeated identity and discarding the earlier one, so the rerun's
-records replace the first attempt's rather than joining them — the same
-replace-not-join rule the environment-drift rerun follows within one
-`run_defect_block` call.
+Before its first dispatch, `smoke` and `run` check that every pending
+defect's three commits resolve in the source repo, that its head tree holds no
+project config a session must not load (see "Out-of-session reads"), and that
+both arms have a snapshot file for its lens, then print the run count and the
+nominal cost cap product; any problem exits 2 with the full list. After each block they print its ok and
+missing counts by reason. A block whose runs are all missing stops the
+campaign with exit 2 and is left un-marked, so resuming under the same
+`--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
+it forces every run to fail. `smoke` requires `--defect-id`, and `judge`
+skips a defect that has no completed reviewer run.
+
+Each campaign gets its own run store, nested under its `--campaign-id`, so
+`smoke` followed by `run` never shares completion state. A resume passes the
+same `--campaign-id`; each command prints the ID and store path before it
+takes the lock. A campaign ID is 1–64 characters from `[A-Za-z0-9_.-]`,
+starting with a letter or digit.
+
+Five residuals remain.
+- A directory can be created in the instant before its own write-ahead record
+  is written. List such directories by their `review-bench-` prefix, while no
+  lock is held, and inspect each one before deleting it.
+- A halted or interrupted `run` or `smoke` campaign that is never resumed
+  keeps its fixture directories and session stores until someone deletes them,
+  and its write-ahead log names them.
+- `judge` catches a `CalledProcessError` or `TimeoutExpired` from one
+  defect's judging, prints `skipped`, and continues. A judge directory recorded
+  before its fixture install raised is never removed, and the campaign exits 0.
+- An arm's representative session that has no `<id>.jsonl` leaves the arm's
+  shared session store in place, and the completed block is never swept.
+- A `claude -p` child of a hard-killed runner can outlive the lock (see above).
+
+A leftover session store holds raw dispatcher and reviewer transcripts,
+including the tool results of out-of-session reads. Recovery path 2 leaves a
+halted campaign's leftovers by design. Nothing bounds their retention except
+whatever bounds `projects/`, and `/tmp` fixture retention is unverified.
+
+A crash between a block's records being appended and the block being marked
+complete reruns that block on resume, and `read_run_records` deduplicates the
+repeated records, keeping the later one. See `runner.read_run_records`.
 
 ### Out-of-session reads
 
 A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
 and its own session store is recorded in that run's `out_of_session_paths`
-and does not fail the run on its own. Only a read of the live checkout's own
-copy of a changed file, or of the ambient config's `projects/` root, fails
-the run. `smoke`, `run`, `judge`, and `analyze` all print every recorded
+and does not fail the run on its own. Only a read of a live checkout's own
+copy of a file the introducing commit or the fix commit changed, or of the
+ambient config's `projects/` root, fails the run. The live checkouts are the
+top level of every worktree of this repository, from `git worktree list`, and
+of every worktree of the repository the ambient config resolves into, read
+once when the command starts. `git worktree list -z` needs Git 2.36 or newer;
+an older git fails the command, and the run exits 2 before dispatch. A read
+through a stowed `~/.claude` symlink resolves into one of them. A read of a
+plugin cache copy under `<config-dir>/plugins/cache/` resolves into none, so
+it is only recorded, and the path-list review is what catches it. The adherence diagnostic
+counts whole-file reads of the introducing commit's files alone. `smoke`, `run`, `judge`, and `analyze` all print every recorded
 path to the terminal, once per run it was recorded against, for the
 engineer's own review — the engineer reviews the smoke campaign's list
 before the go/no-go and the baseline campaign's before shipping it.
@@ -596,20 +730,55 @@ Committed results — `analyze`'s own JSON report, `conditions.json`,
 `results/baseline.json` — carry only the per-arm count, never a path,
 because a path can name a private project.
 
+A Glob is checked at the directory its pattern names before any wildcard,
+joined onto its `path` (an absolute pattern overrides `path`). A leading `~`
+or `$VAR` in a path is expanded before the check. Printed paths show control
+characters as backslash escapes, since the path is model output.
+
+A run's transcript and subagent sidecar are checked only once no file's size
+has changed across two consecutive polls, so a partly written transcript is
+never classified. A fixture tree (a reviewer arm's or the precision judge's)
+is built only when its head tree's `.claude/settings.json` holds no top-level
+key outside those this repository's own history has held and the tree holds
+neither `.mcp.json` nor `.claude/settings.local.json`; otherwise the build
+refuses. `smoke` and `run` apply the same check to every pending defect's head
+commit in their preflight, so a refusal exits 2 before any dispatch. The
+preflight reads git's tree while the build reads the archive extraction, so a
+symlinked `.claude/settings.json` or an `export-ignore` or `export-subst`
+attribute can make the two verdicts differ. The build re-checks the extracted
+tree and fails closed.
+
+`main()` runs with an owner-only umask, so run records and everything under
+`evals/review_bench/.local/` are created without group or other bits. A
+`.local/` directory that predates that and carries group or other bits is
+restricted to 0700 at startup, and the command exits 2 if it cannot be.
+
 ### Runtime cost
 
-- **Reviewer runs:** `2 x N x K`, 2,520 at N = 126 and K = 10. At
-  `measure_subagent_model_resolution.REPRESENTATIVE_DISPATCH_COST_USD`'s
-  $1.15-per-dispatch mean, that is about $2,900. If `--max-budget-usd` bounds
-  only the dispatcher's own overhead rather than the subagent's spend, the
-  ceiling is about $29,000 at
-  `measure_subagent_model_resolution.PER_RUN_BUDGET_CAP_USD`'s $11.50 cap
-  (about $58,000 if every run retried once at the cap).
-- **Judge runs:** one recall and one precision judge run per defect,
-  uncosted until the smoke campaign's own full-K fixture measures them —
-  their caps start at the reviewer's own bootstrap values (see
-  `review_bench/runner.py`'s own `RECALL_JUDGE_BUDGET_CAP_USD` /
-  `PRECISION_JUDGE_BUDGET_CAP_USD` comments) until that measurement exists.
+- **Reviewer runs:** `2 x N x K`, 2,520 at N = 126 and K = 10. The expected
+  cost is that count times
+  `measure_subagent_model_resolution.REPRESENTATIVE_DISPATCH_COST_USD`. A
+  ceiling exists only if `--max-budget-usd` bounds the subagent's spend, and not
+  only the dispatcher's own overhead. If it does, the ceiling is that count times
+  `measure_subagent_model_resolution.PER_RUN_BUDGET_CAP_USD`, doubled if every
+  run retried once at the cap. A block that halts or is interrupted reruns whole
+  on resume, and its earlier spend is not recorded. If the flag bounds only the
+  dispatcher, no ceiling exists, and each run's timeout is its only spend
+  bound. `smoke` and `run` print the run count and the nominal cap product
+  (runs times the per-run cap, unverified as a bound on spend) before their
+  first dispatch. The cost totals `smoke`, `run`, `judge`, and `analyze` print
+  leave out every run with no recorded cost, a timed-out run among them, and
+  may omit subagent spend, so the invoice can exceed them. This README states
+  no dollar figure:
+  `REPRESENTATIVE_DISPATCH_COST_USD` was derived with a command that does not
+  refuse a wider corpus, so it is not a publication instrument (`docs/private-project-redaction.md` § "This repository, one account").
+  `analyze` prints dollar totals, per reviewer arm and per judge kind, to
+  stderr for the engineer. Its `--out` report, which is committed, carries
+  none. Only the gitignored run records hold per-run costs.
+- **Judge runs:** one recall and one precision judge run per defect. Their caps
+  and timeouts equal the reviewer's. Change the `RECALL_JUDGE_BUDGET_CAP_USD` and
+  `PRECISION_JUDGE_BUDGET_CAP_USD` constants in `review_bench/runner.py` once a
+  judge has its own measured values.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
   K = 10, so 630 slots at N = 126. Each minute of median run duration adds

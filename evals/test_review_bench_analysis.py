@@ -5,11 +5,12 @@ campaign. No test launches `claude`.
 from __future__ import annotations
 
 import json
+import shutil
 import statistics
 from pathlib import Path
 
 import pytest
-from review_bench import analysis, runner
+from review_bench import adjudicate, analysis, defects, runner
 from review_bench.adjudicate import PrecisionFinding, RecallLabel
 
 ARM_BASELINE = "current-rule"
@@ -21,6 +22,7 @@ def _run_record(
     ambient_config_commit: str = "deadbeef", missing_reason: str | None = None, status: str = "ok",
     out_of_session_paths: tuple[str, ...] = (), read_tokens_est: int = 10, partial_view_reads: int = 0,
     paged_followups: int = 0, whole_file_reads_of_changed_files: int = 0, over_read_cap: bool = False,
+    total_cost_usd: float | None = None,
 ) -> runner.RunRecord:
     return runner.RunRecord(
         campaign_id="c1", defect_id=defect_id, arm=arm, run_index=0, opaque_run_id=opaque_run_id,
@@ -30,6 +32,7 @@ def _run_record(
         partial_view_reads=partial_view_reads, paged_followups=paged_followups,
         whole_file_reads_of_changed_files=whole_file_reads_of_changed_files, over_read_cap=over_read_cap,
         dispatch_prompt_verbatim=True, cli_version=cli_version, ambient_config_commit=ambient_config_commit,
+        total_cost_usd=total_cost_usd,
     )
 
 
@@ -175,6 +178,28 @@ class TestArmRecallAndSensitivityVerdict:
         assert verdict_equal == analysis.NONINFERIORITY_PASS
 
 
+    def test_baseline_sensitivity_is_sensitive_only_when_the_first_arm_recalls_more(self) -> None:
+        counts = self._counts(0.9, 0.3)
+        ids = list(counts)
+        verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
+            counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert verdict == analysis.SENSITIVITY_SENSITIVE
+        assert lower > analysis.DELTA
+        assert upper >= lower
+        swapped_verdict, _ = analysis.baseline_sensitivity_verdict(
+            counts, ids, ARM_X, ARM_BASELINE, resamples=500, seed=1,
+        )
+        assert swapped_verdict == analysis.SENSITIVITY_NOT_SENSITIVE
+
+    def test_baseline_sensitivity_is_not_sensitive_when_the_arms_recall_the_same(self) -> None:
+        counts = self._counts(0.7, 0.7)
+        verdict, _ = analysis.baseline_sensitivity_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert verdict == analysis.SENSITIVITY_NOT_SENSITIVE
+
+
 class TestPrecisionAndCertification:
     def _precision_counts(self, valid_baseline: int, total_baseline: int, valid_x: int, total_x: int, n: int = 20):
         return {
@@ -190,6 +215,13 @@ class TestPrecisionAndCertification:
         ids = list(counts)
         verdict, _ = analysis.precision_noninferiority_verdict(counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1)
         assert verdict == analysis.NONINFERIORITY_FAIL
+
+    def test_equal_pooled_precision_passes_noninferiority(self) -> None:
+        counts = self._precision_counts(9, 10, 9, 10)
+        verdict, _ = analysis.precision_noninferiority_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert verdict == analysis.NONINFERIORITY_PASS
 
     def test_later_arm_passing_only_one_gate_is_not_certified(self) -> None:
         assert analysis.certify_later_arm(analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_FAIL) == (
@@ -224,6 +256,80 @@ class TestHarnessClosure:
         assert not any("transcript_analysis" in path for path in closure)
         assert not any("mine_szz" in path or "mine_review_rounds" in path for path in closure)
 
+    def test_closure_includes_every_review_bench_module_the_run_judge_and_analyze_paths_import(self) -> None:
+        closure = analysis.compute_harness_closure()
+        for module in ("adjudicate", "analysis", "arms", "defects", "fixture_repo", "identifiers", "runner"):
+            assert f"evals/review_bench/{module}.py" in closure
+
+
+class TestHarnessClosureOverASyntheticTree:
+    """The import walk, run over a tree it can be pointed at, resolves each
+    import form and terminates on a cycle."""
+
+    @pytest.fixture
+    def synthetic_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        package_dir = tmp_path / "evals" / "review_bench"
+        package_dir.mkdir(parents=True)
+        (tmp_path / "claude" / ".claude" / "scripts").mkdir(parents=True)
+        files = {
+            "__init__.py": "",
+            "root_mod.py": (
+                "from review_bench import from_package_import\n"
+                "from review_bench.from_module_import import name\n"
+                "from . import relative_sibling\n"
+                "import top_level_helper\n"
+                "import os\n"
+            ),
+            "from_package_import.py": "from review_bench import root_mod\n",  # cycle back to the root
+            "from_module_import.py": "name = 1\n",
+            "relative_sibling.py": "value = 1\n",
+            "unreachable.py": "value = 2\n",
+        }
+        for filename, source in files.items():
+            (package_dir / filename).write_text(source)
+        (tmp_path / "evals" / "top_level_helper.py").write_text("helper = 1\n")
+        monkeypatch.setattr(analysis, "EVALS_DIR", tmp_path / "evals")
+        monkeypatch.setattr(analysis, "REVIEW_BENCH_DIR", package_dir)
+        monkeypatch.setattr(analysis, "CONFIG_SCRIPTS_DIR", tmp_path / "claude" / ".claude" / "scripts")
+        monkeypatch.setattr(analysis, "_CLOSURE_ROOTS", ("review_bench.root_mod",))
+        return tmp_path
+
+    def test_resolves_from_package_import_from_module_import_relative_and_top_level_imports(
+        self, synthetic_tree: Path,
+    ) -> None:
+        closure = analysis.compute_harness_closure(repo_root=synthetic_tree)
+        assert set(closure) == {
+            "evals/review_bench/__init__.py",
+            "evals/review_bench/root_mod.py",
+            "evals/review_bench/from_package_import.py",
+            "evals/review_bench/from_module_import.py",
+            "evals/review_bench/relative_sibling.py",
+            "evals/top_level_helper.py",
+        }
+
+    def test_editing_a_closure_member_changes_the_manifest_hash_and_fails_the_freeze_precondition(
+        self, synthetic_tree: Path,
+    ) -> None:
+        manifest_before = analysis.closure_manifest_hash(analysis.compute_harness_closure(repo_root=synthetic_tree))
+        (synthetic_tree / "evals" / "review_bench" / "from_module_import.py").write_text("name = 2\n")
+        manifest_after = analysis.closure_manifest_hash(analysis.compute_harness_closure(repo_root=synthetic_tree))
+
+        assert manifest_after != manifest_before
+        with pytest.raises(analysis.HarnessInvalidatedError, match="manifest"):
+            analysis.check_freeze_preconditions(
+                current_manifest_hash=manifest_after, last_smoke_manifest_hash=manifest_before, k_to_freeze=10,
+                smoke_full_k=10, provenance_failures=(), review_round_defects_without_excerpt=(),
+            )
+
+    def test_editing_a_module_outside_the_closure_leaves_the_manifest_hash_unchanged(
+        self, synthetic_tree: Path,
+    ) -> None:
+        manifest_before = analysis.closure_manifest_hash(analysis.compute_harness_closure(repo_root=synthetic_tree))
+        (synthetic_tree / "evals" / "review_bench" / "unreachable.py").write_text("value = 3\n")
+        manifest_after = analysis.closure_manifest_hash(analysis.compute_harness_closure(repo_root=synthetic_tree))
+
+        assert manifest_after == manifest_before
+
 
 class TestManifestAndFreezeChecks:
     def test_manifest_mismatch_exits_raises_naming_the_field(self) -> None:
@@ -241,47 +347,34 @@ class TestManifestAndFreezeChecks:
         with pytest.raises(analysis.HarnessInvalidatedError, match="manifest"):
             analysis.check_freeze_preconditions(
                 current_manifest_hash="abc", last_smoke_manifest_hash="different", k_to_freeze=10,
-                smoke_full_k=10, provenance_failures=(), local_excerpts_present=True,
+                smoke_full_k=10, provenance_failures=(), review_round_defects_without_excerpt=(),
             )
 
     def test_freeze_exits_when_k_differs_from_smoke_full_k(self) -> None:
         with pytest.raises(analysis.HarnessInvalidatedError, match="K"):
             analysis.check_freeze_preconditions(
                 current_manifest_hash="abc", last_smoke_manifest_hash="abc", k_to_freeze=15,
-                smoke_full_k=10, provenance_failures=(), local_excerpts_present=True,
+                smoke_full_k=10, provenance_failures=(), review_round_defects_without_excerpt=(),
             )
 
     def test_freeze_exits_when_a_record_fails_provenance(self) -> None:
         with pytest.raises(analysis.HarnessInvalidatedError, match="provenance"):
             analysis.check_freeze_preconditions(
                 current_manifest_hash="abc", last_smoke_manifest_hash="abc", k_to_freeze=10,
-                smoke_full_k=10, provenance_failures=[("d1", "shares word run 'x'")], local_excerpts_present=True,
+                smoke_full_k=10, provenance_failures=[("d1", "shares word run 'x'")],
+                review_round_defects_without_excerpt=(),
             )
 
-    def test_freeze_exits_when_local_excerpts_are_absent(self) -> None:
-        with pytest.raises(analysis.HarnessInvalidatedError, match="excerpts"):
+    def test_freeze_exits_naming_each_review_round_record_with_no_local_excerpt(self) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="excerpt") as excinfo:
             analysis.check_freeze_preconditions(
                 current_manifest_hash="abc", last_smoke_manifest_hash="abc", k_to_freeze=10,
-                smoke_full_k=10, provenance_failures=(), local_excerpts_present=False,
+                smoke_full_k=10, provenance_failures=(), review_round_defects_without_excerpt=("rr-1", "rr-2"),
             )
-
-    def test_editing_judge_model_id_after_a_passing_smoke_makes_freeze_exit_on_manifest(self) -> None:
-        # runner.py's own source hash changes whenever JUDGE_MODEL_ID's
-        # literal changes, since it is one of the closure's own files -- a
-        # smoke-recorded manifest from before that edit no longer matches.
-        closure_before = {"evals/review_bench/runner.py": "hash-with-old-judge-id"}
-        closure_after = {"evals/review_bench/runner.py": "hash-with-new-judge-id"}
-        manifest_before = analysis.closure_manifest_hash(closure_before)
-        manifest_after = analysis.closure_manifest_hash(closure_after)
-        assert manifest_before != manifest_after
-        with pytest.raises(analysis.HarnessInvalidatedError):
-            analysis.check_freeze_preconditions(
-                current_manifest_hash=manifest_after, last_smoke_manifest_hash=manifest_before, k_to_freeze=10,
-                smoke_full_k=10, provenance_failures=(), local_excerpts_present=True,
-            )
+        assert "rr-1, rr-2" in str(excinfo.value)
 
 
-class TestLoadBaselineConditions:
+class TestLoadFrozenConditions:
     def test_loads_environment_and_harness_closure_fields(self, tmp_path: Path) -> None:
         path = tmp_path / "conditions.json"
         path.write_text(json.dumps({
@@ -289,18 +382,17 @@ class TestLoadBaselineConditions:
             "harness_closure": {"a.py": "hash1"},
         }))
 
-        cli_version, ambient_config_commit, harness_closure = analysis.load_baseline_conditions(path)
+        conditions = analysis.load_frozen_conditions(path)
 
-        assert cli_version == "2.1.0"
-        assert ambient_config_commit == "cafebabe"
-        assert harness_closure == {"a.py": "hash1"}
+        assert conditions["environment"] == {"cli_version": "2.1.0", "ambient_config_commit": "cafebabe"}
+        assert conditions["harness_closure"] == {"a.py": "hash1"}
 
     def test_missing_environment_key_raises_naming_the_path(self, tmp_path: Path) -> None:
         path = tmp_path / "conditions.json"
         path.write_text(json.dumps({"harness_closure": {}}))
 
         with pytest.raises(analysis.HarnessInvalidatedError, match="unreadable or missing an expected field"):
-            analysis.load_baseline_conditions(path)
+            analysis.load_frozen_conditions(path)
 
     def test_non_dict_harness_closure_raises(self, tmp_path: Path) -> None:
         path = tmp_path / "conditions.json"
@@ -310,7 +402,182 @@ class TestLoadBaselineConditions:
         }))
 
         with pytest.raises(analysis.HarnessInvalidatedError, match="harness_closure must be an object"):
-            analysis.load_baseline_conditions(path)
+            analysis.load_frozen_conditions(path)
+
+
+class TestHashDirectory:
+    def test_missing_directory_raises_instead_of_hashing_nothing(self, tmp_path: Path) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="missing or holds no files"):
+            analysis.hash_directory(tmp_path / "absent")
+
+    def test_directory_with_no_files_raises_instead_of_hashing_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "empty" / "nested").mkdir(parents=True)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="missing or holds no files"):
+            analysis.hash_directory(tmp_path / "empty")
+
+
+def _frozen_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A defects file, both arm snapshot dirs, and private copies of the two
+    judge agent files, so a test can edit each without touching the repo."""
+    defects_path = tmp_path / "defects.json"
+    defects.save_confirmed_defects(defects_path, [
+        defects.ConfirmedDefect(
+            id=defect_id, source="szz", lens="staff-backend-engineer", base_commit="a" * 40, head_commit="b" * 40,
+            fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+        )
+        for defect_id in ("d1", "d2")
+    ])
+    arms_root = tmp_path / "arms"
+    for arm in (ARM_BASELINE, ARM_X):
+        (arms_root / arm).mkdir(parents=True)
+        (arms_root / arm / "bench-staff-backend-engineer.md").write_text(f"{arm} body\n")
+    for attribute, name in (
+        ("RECALL_JUDGE_AGENT_FILE", "bench-judge-recall.md"), ("PRECISION_JUDGE_AGENT_FILE", "bench-judge-precision.md"),
+    ):
+        judge_file = tmp_path / name
+        judge_file.write_text(f"{name} rubric\n")
+        monkeypatch.setattr(adjudicate, attribute, judge_file)
+    return defects_path, arms_root
+
+
+def _frozen(fields: dict) -> dict:
+    return {**fields, "k": 10, "environment": {"cli_version": "2.0.0", "ambient_config_commit": "deadbeef"}}
+
+
+class TestCheckAgainstFrozenConditions:
+    def test_unchanged_files_and_matching_k_raise_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+
+        analysis.check_against_frozen_conditions(
+            frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=10,
+        )  # must not raise
+
+    def test_frozen_fields_cover_every_hash_and_the_defect_ids(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+
+        fields = analysis.compute_frozen_fields(defects_path, arms_root)
+
+        assert fields["defect_ids"] == ["d1", "d2"]
+        assert set(fields["arm_dir_hashes"]) == {ARM_BASELINE, ARM_X}
+        assert set(fields["judge_agent_hashes"]) == {"bench-judge-recall", "bench-judge-precision"}
+        assert set(fields["prompt_template_hashes"]) == {"review_prompt", "dispatch_prompt", "judge_inner_prompt"}
+        assert fields["defects_json_hash"]
+
+    @pytest.mark.parametrize(
+        ("mutate", "expected_field"),
+        [
+            pytest.param(
+                lambda root: (root / "arms" / ARM_BASELINE / "bench-staff-backend-engineer.md").write_text("edited\n"),
+                f"arm_dir_hashes[{ARM_BASELINE}]", id="baseline-arm-body",
+            ),
+            pytest.param(
+                lambda root: (root / "arms" / ARM_X / "bench-new-lens.md").write_text("added\n"),
+                f"arm_dir_hashes[{ARM_X}]", id="file-added-to-an-arm-dir",
+            ),
+            pytest.param(
+                lambda root: (root / "bench-judge-precision.md").write_text("edited rubric\n"),
+                "judge_agent_hashes[bench-judge-precision]", id="judge-rubric",
+            ),
+            pytest.param(
+                lambda root: (root / "defects.json").write_text("[]\n"), "defects_json_hash", id="defects-json",
+            ),
+        ],
+    )
+    def test_a_file_edited_after_the_freeze_invalidates_naming_the_field(
+        self, tmp_path: Path, monkeypatch, mutate, expected_field: str,
+    ) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+
+        mutate(tmp_path)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms") as excinfo:
+            analysis.check_against_frozen_conditions(
+                frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=10,
+            )
+        assert expected_field in str(excinfo.value)
+
+    def test_an_edited_prompt_template_invalidates_naming_the_field(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+
+        monkeypatch.setattr(runner, "REVIEW_PROMPT_TEMPLATE", runner.REVIEW_PROMPT_TEMPLATE + " Be thorough.")
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match=r"prompt_template_hashes\[review_prompt\]"):
+            analysis.check_against_frozen_conditions(
+                frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=10,
+            )
+
+    def test_a_different_k_invalidates(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match=r"--k 5 differs from the frozen k 10") as excinfo:
+            analysis.check_against_frozen_conditions(
+                frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=5,
+            )
+
+        assert "-- pass --k 10" in str(excinfo.value)
+        assert "rerun all arms" not in str(excinfo.value)
+
+    def test_a_frozen_record_missing_a_field_invalidates_rather_than_passing(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+        del frozen["arm_dir_hashes"]
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="arm_dir_hashes"):
+            analysis.check_against_frozen_conditions(
+                frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=10,
+            )
+
+    def test_a_missing_defects_file_fails_the_recompute(self, tmp_path: Path, monkeypatch) -> None:
+        _defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="defects file .* is unreadable"):
+            analysis.compute_frozen_fields(tmp_path / "absent.json", arms_root)
+
+    def test_a_missing_arm_directory_fails_the_recompute(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        shutil.rmtree(arms_root / ARM_X)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="missing or holds no files"):
+            analysis.compute_frozen_fields(defects_path, arms_root)
+
+
+class TestCheckRecordDefectIdsMatch:
+    def test_matching_ids_raise_nothing(self) -> None:
+        records = [_run_record("d1", ARM_BASELINE, "r1"), _run_record("d2", ARM_BASELINE, "r2")]
+        analysis.check_record_defect_ids_match(records, ["d1", "d2"])  # must not raise
+
+    def test_a_record_for_an_unfrozen_defect_invalidates(self) -> None:
+        records = [_run_record("d1", ARM_BASELINE, "r1"), _run_record("d9", ARM_BASELINE, "r2")]
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match=r"unfrozen defects: \['d9'\]"):
+            analysis.check_record_defect_ids_match(records, ["d1"])
+
+    def test_a_frozen_defect_with_no_record_invalidates(self) -> None:
+        records = [_run_record("d1", ARM_BASELINE, "r1")]
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match=r"no records: \['d2'\]"):
+            analysis.check_record_defect_ids_match(records, ["d1", "d2"])
+
+
+class TestCheckEnvironmentReadingMatchesFrozen:
+    frozen = {"environment": {"cli_version": "2.0.0", "ambient_config_commit": "deadbeef"}}
+
+    def test_matching_reading_raises_nothing(self) -> None:
+        analysis.check_environment_reading_matches_frozen(
+            runner.EnvironmentRecord("2.0.0", "deadbeef"), self.frozen,
+        )  # must not raise
+
+    @pytest.mark.parametrize("reading", [
+        runner.EnvironmentRecord("2.1.0", "deadbeef"), runner.EnvironmentRecord("2.0.0", "cafebabe"),
+    ])
+    def test_a_different_cli_version_or_commit_invalidates(self, reading: runner.EnvironmentRecord) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms"):
+            analysis.check_environment_reading_matches_frozen(reading, self.frozen)
 
 
 class TestEnvironmentChecks:
@@ -437,6 +704,21 @@ class TestSecondaryReportColumns:
     def test_missing_run_counts_by_reason_empty_input_returns_empty_mapping(self) -> None:
         assert analysis.missing_run_counts_by_reason([]) == {}
 
+    def test_cost_totals_by_arm_sums_priced_runs_and_reports_how_many_were_priced(self) -> None:
+        records = [
+            _run_record("d1", ARM_BASELINE, "r1", total_cost_usd=0.5),
+            _run_record("d1", ARM_BASELINE, "r2", total_cost_usd=0.25),
+            _run_record("d1", ARM_BASELINE, "r3", total_cost_usd=None),
+            _run_record("d1", ARM_X, "r4", total_cost_usd=None),
+        ]
+        assert analysis.cost_totals_by_arm(records) == {
+            ARM_BASELINE: {"total_cost_usd": 0.75, "runs_priced": 2, "runs": 3},
+            ARM_X: {"total_cost_usd": 0.0, "runs_priced": 0, "runs": 1},
+        }
+
+    def test_cost_totals_by_arm_empty_input_returns_empty_mapping(self) -> None:
+        assert analysis.cost_totals_by_arm([]) == {}
+
     def test_recall_by_fix_date_half_splits_at_the_median_fix_date(self) -> None:
         counts = {
             "d1": analysis.DefectRecallCounts(
@@ -474,8 +756,7 @@ class TestSecondaryReportColumns:
         """d1's fix_date string sorts lexicographically before d2's, but a
         -08:00 offset on d1 and a +05:00 offset on d2 put d1's instant
         (2024-01-16T07:00:00Z) after d2's (2024-01-15T20:00:00Z) -- a raw
-        string sort (the pre-fix behavior) would put d1 in the earlier
-        half instead of d2, asserting the wrong values below."""
+        string sort would put d1 in the earlier half instead of d2."""
         counts = {
             "d1": analysis.DefectRecallCounts(
                 defect_id="d1", found_by_arm={ARM_BASELINE: 2}, completed_by_arm={ARM_BASELINE: 10},

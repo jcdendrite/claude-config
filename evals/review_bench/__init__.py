@@ -1,4 +1,4 @@
-"""A-bench (evals/review_bench): the known-defect set, its miners, and the
+"""Review bench (evals/review_bench): the known-defect set, its miners, and the
 engineer-confirmation gate that promotes a mined candidate into the
 committed evals/review_bench/defects.json.
 

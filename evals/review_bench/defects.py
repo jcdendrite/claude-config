@@ -1,4 +1,4 @@
-"""Defect-set schema for A-bench: `Candidate` and `ConfirmedDefect` records,
+"""Defect-set schema for the review bench: `Candidate` and `ConfirmedDefect` records,
 their validation, JSON load/save, and the description-provenance check
 `confirm` (evals/run_review_bench.py) runs before promoting a candidate into
 the committed evals/review_bench/defects.json. `Candidate` records themselves
@@ -6,11 +6,12 @@ come from mine_szz.py and mine_review_rounds.py.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import NamedTuple
 from review_bench.arms import LENS_READ_CLAUSES
 
 # The lenses whose agent body carries a read clause -- the only lenses
-# A-bench's arm 2 (function-context) can substitute a clause for.
+# the review bench's function-context arm can substitute a clause for.
 # staff-data-engineer and staff-product-engineer own other code-review
 # checklist items but have no read clause to replace, so a defect either of
 # them owns can never enter this benchmark. Derived from
@@ -33,11 +34,12 @@ KNOWN_SOURCES: frozenset[str] = frozenset({"szz", "review-round"})
 # resolving a review round's branch to a reachable ref.
 KNOWN_REF_STATUSES: frozenset[str] = frozenset({"local-branch", "fetched", "fetch-failed", "pr-unknown"})
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def _validate_sha(field_name: str, value: str) -> None:
-    if not _SHA_RE.match(value):
+    # fullmatch, not `$`: a trailing newline must not pass as a SHA.
+    if not _SHA_RE.fullmatch(value):
         raise ValueError(f"{field_name} must be a 40-hex commit SHA, got {value!r}")
 
 
@@ -79,10 +81,12 @@ class Candidate:
     ConfirmedDefect's `description` (see `check_description_provenance`).
 
     `lines_exist_at_introducing_head`, `reviewer_could_have_caught_it`, and
-    `file_is_markdown` are the miner's pre-filled guesses for three of the
-    plan's four inclusion fields; `lens` doubles as the pre-filled guess for
-    the fourth (the owning lens). The engineer confirms or overrides each
-    one before promotion.
+    `file_is_markdown` are the miner's advisory guesses for three of the four
+    inclusion fields, and `lens` is its guess for the fourth (the owning
+    lens). `cmd_confirm` shows all four at its `[y/N/q]` prompt, and the
+    engineer's `y` is the approval. A non-empty `description` only marks a
+    candidate as written up. `ConfirmedDefect` carries `lens` and none of
+    the three guesses.
     """
 
     id: str
@@ -162,7 +166,7 @@ class ConfirmedDefect:
         return cls(**dict(data))
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str) -> None:
     """Write `text` to `path` via a same-directory temp file plus
     `os.replace`, so a crash mid-write or an overlapping writer leaves the
     previous complete file in place rather than a truncated one.
@@ -196,7 +200,7 @@ def load_candidates(path: Path) -> list[Candidate]:
 
 
 def save_candidates(path: Path, candidates: list[Candidate]) -> None:
-    _atomic_write_text(path, json.dumps([c.to_dict() for c in candidates], indent=2, sort_keys=True) + "\n")
+    atomic_write_text(path, json.dumps([c.to_dict() for c in candidates], indent=2, sort_keys=True) + "\n")
 
 
 def load_confirmed_defects(path: Path) -> list[ConfirmedDefect]:
@@ -206,7 +210,7 @@ def load_confirmed_defects(path: Path) -> list[ConfirmedDefect]:
 
 
 def save_confirmed_defects(path: Path, defects: list[ConfirmedDefect]) -> None:
-    _atomic_write_text(path, json.dumps([d.to_dict() for d in defects], indent=2, sort_keys=True) + "\n")
+    atomic_write_text(path, json.dumps([d.to_dict() for d in defects], indent=2, sort_keys=True) + "\n")
 
 
 def guess_lens(path: str) -> str:
@@ -293,6 +297,7 @@ def check_description_provenance(
     if not description_tokens:
         return None
     public_tokens = _tokenize(public_git_text)
+    public_grams_by_window: dict[int, set] = {}
 
     for candidate_id in sorted(excerpts_by_candidate_id):
         excerpt_tokens = _tokenize(excerpts_by_candidate_id[candidate_id])
@@ -300,7 +305,9 @@ def check_description_provenance(
             continue
         window = min(_SIX_GRAM_WINDOW, len(description_tokens), len(excerpt_tokens))
         excerpt_grams = set(_n_grams(excerpt_tokens, window))
-        public_grams = set(_n_grams(public_tokens, window))
+        if window not in public_grams_by_window:
+            public_grams_by_window[window] = set(_n_grams(public_tokens, window))
+        public_grams = public_grams_by_window[window]
         for gram in _n_grams(description_tokens, window):
             if gram in public_grams:
                 continue
@@ -316,6 +323,47 @@ def check_description_provenance(
 # a circular import. No vendor documentation grounds the 10-second
 # magnitude -- it's an empirical guess matching mine_szz.py's own constant.
 _LOCAL_GIT_TIMEOUT_S = 10.0
+
+
+def defect_pin_ref(defect_id: str) -> str:
+    """The local ref that keeps one confirmed defect's fix commit, and so
+    its introducing commit and base, from being pruned. A defect id can hold
+    characters a ref name forbids (`:`, `~`), so the ref name is a digest."""
+    digest = hashlib.sha256(defect_id.encode()).hexdigest()[:16]
+    return f"refs/review-bench/defect/{digest}"
+
+
+def pin_defect_commits(repo_dir: Path, defect: ConfirmedDefect, *, run=subprocess.run) -> str:
+    """Point `defect_pin_ref(defect.id)` at the defect's fix commit and
+    return the ref name. Local only, never pushed. Re-running with the same
+    defect leaves the ref unchanged. `head_commit` and `base_commit` are
+    ancestors of `fix_commit`, so this one ref keeps all three reachable."""
+    ref = defect_pin_ref(defect.id)
+    run(
+        ["git", "update-ref", ref, defect.fix_commit], cwd=repo_dir, capture_output=True, text=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+    )
+    return ref
+
+
+def commit_subjects(repo_dir: Path, commits: Sequence[str], *, run=subprocess.run) -> list[tuple[str, str]]:
+    """`(sha, subject)` for each distinct commit in `commits`, in the order
+    given, from one `git log --no-walk=unsorted` call. Raises ValueError for a
+    commit that is not a 40-hex SHA, so none can read as a git option. The
+    output is NUL-delimited bytes, because text mode would turn a `\r` inside
+    a subject into a line break and split one entry in two."""
+    for commit in commits:
+        _validate_sha("commit", commit)
+    result = run(
+        ["git", "log", "-z", "--no-walk=unsorted", "--format=%H %s", *dict.fromkeys(commits)], cwd=repo_dir,
+        capture_output=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+    )
+    subjects = []
+    for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
+        if entry:
+            sha, _separator, subject = entry.partition(" ")
+            subjects.append((sha, subject))
+    return subjects
 
 
 def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *, run=subprocess.run) -> str:

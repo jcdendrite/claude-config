@@ -46,6 +46,7 @@ LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
+EVALS_README_MD = "evals/README.md"
 # Doubles as its own domain: unlike the source-tree/test-dir pairs above, any
 # path under it maps to itself rather than to a separate test directory.
 CLAUDE_TESTS_DIR = "claude/.claude/tests"
@@ -64,15 +65,24 @@ REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
 # standalone row -- over-selection here is the safe direction.
 MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
+# Applies to every test under evals/, which are exactly the review_bench tests
+# and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
+EVALS_CONFTEST = "evals/conftest.py"
 
-# evals/review_bench/mine_review_rounds.py's own Reuse list -- the
-# transcript_analysis modules it imports by name.
-_REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: frozenset[str] = frozenset({
+# Every claude/.claude/scripts module the review_bench sources import,
+# transitively -- the transcript_analysis modules and _config_dir.
+# TestSelectPytestTargets' ground-truth test derives this set by walking the
+# imports, so an added import that this set misses fails there.
+_REVIEW_BENCH_SCRIPTS_DEPENDENCIES: frozenset[str] = frozenset({
+    "claude/.claude/scripts/_config_dir.py",
+    "claude/.claude/scripts/transcript_analysis/__init__.py",
     "claude/.claude/scripts/transcript_analysis/corpus.py",
     "claude/.claude/scripts/transcript_analysis/pricing.py",
-    "claude/.claude/scripts/transcript_analysis/scope.py",
+    "claude/.claude/scripts/transcript_analysis/redaction.py",
+    "claude/.claude/scripts/transcript_analysis/render.py",
     "claude/.claude/scripts/transcript_analysis/review_rounds.py",
     "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
+    "claude/.claude/scripts/transcript_analysis/scope.py",
 })
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
@@ -403,12 +413,15 @@ def _is_test_source_change(path: str) -> bool:
 # Covers review_bench's source tree, fixture tree, CLI entry point, and its own
 # flat test files (matched by glob, since evals/ keeps test_*.py beside its
 # source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION
-# -- see its own comment above.
+# and its test file -- see the constant's own comment above.
 def _is_review_bench_change(path: str) -> bool:
     return (
         _is_under(path, REVIEW_BENCH_DIR)
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
-        or path in (REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION)
+        or path in (
+            REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            EVALS_CONFTEST,
+        )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )
 
@@ -527,12 +540,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # only a test file under one of the five selectable test directories can
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
-# _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES: evals/review_bench's
-# mine_review_rounds.py imports these transcript_analysis modules by
-# name rather than by directory containment. A change to one of them needs
-# review_bench's own tests re-run, in addition to the SCRIPTS_TESTS_DIR the
-# blanket SCRIPTS_DIR domain rule already selects. Same undeclared-dependency
-# shape as TRANSCRIPT_ANALYSIS_TEST_GLOB's own row below.
+# _REVIEW_BENCH_SCRIPTS_DEPENDENCIES: evals/review_bench imports these
+# claude/.claude/scripts modules by name rather than by directory containment.
+# A change to one of them needs review_bench's own tests re-run, in addition
+# to the SCRIPTS_TESTS_DIR the blanket SCRIPTS_DIR domain rule already selects.
+# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB's own row
+# below.
 # SKILL_EVALS_RUNNER (second row): evals/run_review_bench.py's own runner
 # reuses run_skill_evals.py's launch shape. A change here also needs
 # review_bench's own tests re-run too. This row stays standalone rather than
@@ -540,10 +553,22 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # target below, because that predicate also matches every
 # plugins/skill-management/scripts/*.py change, which has no review_bench
 # dependency.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (first two review_bench rows):
+# measure_subagent_model_resolution.py imports run_skill_evals.py, which
+# imports _config_dir.py, so a change to either also needs that test re-run.
+# The dependencies row over-selects it for the transcript_analysis modules,
+# which is the safe direction.
+# EVALS_README_MD: test_skills.py (SKILLS_TESTS_DIR) reads evals/README.md by
+# path in its function-local doc-path scan, which the constant scanner cannot
+# see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
-    (lambda p: p in _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES, (REVIEW_BENCH_TEST_GLOB,)),
-    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB,)),
+    (
+        lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
+        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST),
+    ),
+    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST)),
+    (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),

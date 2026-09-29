@@ -667,12 +667,19 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
-        """Also selects REVIEW_BENCH_TEST_GLOB: evals/run_review_bench.py's
-        own runner reuses run_skill_evals.py's launch shape, so a change
-        here needs review_bench's own tests re-run too."""
+        """Also selects REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
+        (see the SKILL_EVALS_RUNNER comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB}
+        assert set(result.target_paths) == {
+            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_evals_readme_change_selects_skills_tests_rather_than_falling_open(self):
+        """test_skills.py reads evals/README.md by path (its state-path doc scan)."""
+        result = _mod.select_pytest_targets([_mod.EVALS_README_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
 
     def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
@@ -689,10 +696,7 @@ class TestSelectPytestTargets:
         }
 
     def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
-        """evals/fixtures/review-bench/ is a sibling tree, not a
-        REVIEW_BENCH_DIR subdirectory (evals/fixtures/, not
-        evals/review_bench/), so it needs its own disjunct in the predicate
-        rather than falling open."""
+        """evals/fixtures/review-bench/ selects the review_bench tests rather than falling open."""
         result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_FIXTURES_DIR}/normal-success/session-1.jsonl"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -700,62 +704,109 @@ class TestSelectPytestTargets:
         }
 
     def test_review_bench_test_glob_member_change_selects_itself(self):
-        """A test_review_bench*.py file itself is outside REVIEW_BENCH_DIR
-        (evals/, not evals/review_bench/), so it needs its own glob-matched
-        branch in the predicate to select itself rather than falling open."""
+        """A test_review_bench*.py file selects itself rather than falling open."""
         result = _mod.select_pytest_targets(["evals/test_review_bench_mining.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
 
+    def test_measure_subagent_model_resolution_test_change_selects_its_own_test(self):
+        """The test file selects itself rather than falling through to the full suite."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_evals_conftest_change_selects_every_test_it_applies_to(self):
+        """evals/conftest.py applies to the review_bench tests and the measure_subagent test."""
+        result = _mod.select_pytest_targets([_mod.EVALS_CONFTEST])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
-        """Falls under the review_bench predicate, so this selects its own
-        test rather than the full suite."""
+        """Selects its own test rather than the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
 
-    def test_review_bench_transcript_analysis_dependency_change_also_selects_review_bench_tests(self):
-        """mine_review_rounds.py imports these transcript_analysis
-        modules by name; without this cross-domain exception, the blanket
-        SCRIPTS_DIR rule (plus the generic .py-under-claude/ rule, which
-        every SCRIPTS_DIR .py file also matches -- see
-        test_scripts_change_also_selects_ticket_reference_discipline_test)
-        would claim the path first and review_bench's own tests would
-        never re-run."""
-        for dependency in sorted(_mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES):
+    def test_review_bench_scripts_dependency_change_also_selects_review_bench_tests(self):
+        """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REVIEW_BENCH_TEST_GLOB
+        (see that constant's comment on CROSS_DOMAIN_EXCEPTIONS). Membership rather than
+        set equality, so the generic scripts-directory row can gain or lose its own targets
+        without invalidating this row's assertion."""
+        for dependency in sorted(_mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES):
             result = _mod.select_pytest_targets([dependency])
             assert result.is_full_suite is False, dependency
-            assert set(result.target_paths) == {
-                _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
-                _mod.CLAUDE_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
-            }, dependency
+            assert _mod.REVIEW_BENCH_TEST_GLOB in result.target_paths, dependency
 
-    def test_review_bench_transcript_analysis_dependencies_match_actual_imports(self):
-        """Ground-truths _REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES
-        against mine_review_rounds.py's own `from transcript_analysis
-        import ...` line, rather than against a second hand-written list --
-        a fixed expected list would silently tolerate the same
-        added-import-not-added-to-the-frozenset drift this row exists to
-        catch."""
-        mine_review_rounds_source = (
-            _REPO_ROOT / "evals" / "review_bench" / "mine_review_rounds.py"
-        ).read_text()
-        tree = ast.parse(mine_review_rounds_source)
-        imported_module_names = {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis"
-            for alias in node.names
+    def test_config_dir_module_change_also_selects_the_measure_subagent_test(self):
+        """measure_subagent_model_resolution.py reaches _config_dir.py through run_skill_evals.py."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/_config_dir.py"])
+        assert result.is_full_suite is False
+        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in result.target_paths
+
+    def test_review_bench_scripts_dependencies_equal_transitive_first_party_imports(self):
+        """Ground-truths _REVIEW_BENCH_SCRIPTS_DEPENDENCIES against the
+        transitive first-party import closure of every review_bench source,
+        rather than a second hand-written list -- a fixed expected list would
+        tolerate the same added-import-not-added-to-the-frozenset drift this
+        row exists to catch."""
+        evals_dir = _REPO_ROOT / "evals"
+        scripts_dir = _REPO_ROOT / _mod.SCRIPTS_DIR
+
+        def resolve_module_file(module_name: str) -> Path | None:
+            for base_dir in (evals_dir, scripts_dir):
+                module_path = base_dir.joinpath(*module_name.split("."))
+                if module_path.with_suffix(".py").is_file():
+                    return module_path.with_suffix(".py")
+                if (module_path / "__init__.py").is_file():
+                    return module_path / "__init__.py"
+            return None
+
+        def imported_module_names(source_file: Path) -> set[str]:
+            names: set[str] = set()
+            for node in ast.walk(ast.parse(source_file.read_text())):
+                if isinstance(node, ast.Import):
+                    names.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if node.level > 0:
+                        module = "review_bench" + (f".{module}" if module else "")
+                    if module:
+                        names.add(module)
+                        names.update(f"{module}.{alias.name}" for alias in node.names)
+            return names
+
+        pending = [
+            *(evals_dir / "review_bench").glob("*.py"),
+            evals_dir / "run_review_bench.py",
+            evals_dir / "measure_subagent_model_resolution.py",
+        ]
+        reached: set[Path] = set()
+        while pending:
+            source_file = pending.pop()
+            if source_file in reached:
+                continue
+            reached.add(source_file)
+            pending.extend(
+                module_file for name in imported_module_names(source_file)
+                if (module_file := resolve_module_file(name)) is not None
+            )
+
+        reached_scripts_files = {
+            source_file.relative_to(_REPO_ROOT).as_posix()
+            for source_file in reached if source_file.is_relative_to(scripts_dir)
         }
-        assert imported_module_names, "expected at least one transcript_analysis import"
-        assert {
-            f"claude/.claude/scripts/transcript_analysis/{name}.py"
-            for name in imported_module_names
-        } == _mod._REVIEW_BENCH_TRANSCRIPT_ANALYSIS_DEPENDENCIES
+        assert any("transcript_analysis" in name for name in reached_scripts_files), (
+            "expected the walk to reach the transcript_analysis package"
+        )
+        assert reached_scripts_files == _mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
@@ -917,10 +968,7 @@ class TestSelectPytestTargets:
         by import. Without this cross-domain exception, a change under
         claude/.claude/agents/ falls open to the full suite instead of
         selecting the two domains that actually depend on it. Also selects
-        REVIEW_BENCH_TEST_GLOB: arms.py's LENS_READ_CLAUSES hand-copies each
-        lens's exact read-clause wording out of its own production agent
-        file, so any agent file change -- not only a lens with a read
-        clause -- over-selects review_bench's tests too."""
+        REVIEW_BENCH_TEST_GLOB (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1601,8 +1649,8 @@ class TestPytestSubprocessEnv:
         assert result.load_average is None
 
 
-# Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
-# in CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
+# Every constant backing an exact-match predicate (`p == CONSTANT`, or
+# membership in a tuple of constants) in DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
 # real on-disk path leaves that predicate silently dead -- it matches
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
@@ -1618,6 +1666,11 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
+    _mod.REVIEW_BENCH_RUNNER,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    _mod.EVALS_README_MD,
+    _mod.EVALS_CONFTEST,
 )
 
 # The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather
@@ -1738,6 +1791,10 @@ class TestRuleTablePathFidelity:
         assert glob_targets, "expected at least one glob-pattern target"
         for target in glob_targets:
             assert list(_REPO_ROOT.glob(target)), f"{target} matched no files on disk"
+
+    def test_review_bench_directory_constants_exist_on_disk(self):
+        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR):
+            assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 
     def test_every_global_trigger_path_exists_on_disk(self):
         for path in _mod.GLOBAL_TRIGGER_PATHS:

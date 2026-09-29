@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from review_bench.defects import Candidate, assert_unique_ids, guess_lens
+from review_bench.identifiers import validate_base_ref
 
 # A candidate fix commit's subject must mention fix/bug/regression to be considered.
 _FIX_SUBJECT_RE = re.compile(r"fix|bug|regression", re.IGNORECASE)
@@ -97,19 +98,36 @@ class _FileDiff:
 
 
 def _parse_unified_diff(diff_text: str) -> list[_FileDiff]:
+    """Parse a unified diff into per-file hunks.
+
+    Hunk bodies are consumed by the counts in their `@@` header, so a body
+    line whose text begins `--` or `++` is not read as a file header, as long
+    as each diff line is one text line. A character that `str.splitlines()`
+    also splits on, such as `\\x0b` or `\\x85`, breaks that.
+    """
     files: list[_FileDiff] = []
     current: _FileDiff | None = None
     current_hunk: _Hunk | None = None
+    old_remaining = 0
+    new_remaining = 0
     for line in diff_text.splitlines():
+        if old_remaining > 0 or new_remaining > 0:
+            if line.startswith("-"):
+                current_hunk.removed_lines.append(line[1:])
+                old_remaining -= 1
+            elif line.startswith("+"):
+                new_remaining -= 1
+            elif line.startswith(" "):
+                old_remaining -= 1
+                new_remaining -= 1
+            # A "\ No newline at end of file" marker belongs to neither side.
+            continue
         old_header = _OLD_FILE_HEADER_RE.match(line)
         if old_header:
             raw = old_header.group(1)
             old_path = None if raw == "/dev/null" else raw.removeprefix("a/")
             current = _FileDiff(old_path=old_path)
             files.append(current)
-            current_hunk = None
-            continue
-        if line.startswith("+++ "):
             continue
         if current is None:
             continue
@@ -117,13 +135,10 @@ def _parse_unified_diff(diff_text: str) -> list[_FileDiff]:
         if hunk_header:
             old_start = int(hunk_header.group(1))
             old_count = int(hunk_header.group(2)) if hunk_header.group(2) is not None else 1
+            new_count = int(hunk_header.group(4)) if hunk_header.group(4) is not None else 1
             current_hunk = _Hunk(old_start=old_start, old_count=old_count)
             current.hunks.append(current_hunk)
-            continue
-        if current_hunk is None:
-            continue
-        if line.startswith("-") and not line.startswith("---"):
-            current_hunk.removed_lines.append(line[1:])
+            old_remaining, new_remaining = old_count, new_count
     return files
 
 
@@ -174,6 +189,10 @@ def _blame_file_diff(
                 repo_dir, parent, file_diff.old_path, hunk.old_start, hunk.old_start + hunk.old_count - 1,
                 stats=stats,
             )
+            if len(shas) != len(hunk.removed_lines):
+                # A failed blame (already counted) returns no SHAs; pairing
+                # a short list against the removed lines would misattribute.
+                continue
             for content, sha in zip(hunk.removed_lines, shas, strict=True):
                 if not _is_blank_or_comment(content):
                     confident.add(sha)
@@ -189,14 +208,9 @@ def _blame_file_diff(
 def blame_fix_commit(
     repo_dir: Path, fix_commit: str, path: str, *, stats: _MineStats | None = None,
 ) -> tuple[frozenset[str], bool]:
-    """Run this module's own blame algorithm for one (fix_commit, path)
-    pair, independent of the full-repo mining sweep.
-
-    This is the reuse point mine_review_rounds.py's own algorithm relies on
-    directly: it runs this module's own blame helper on the commit that
-    fixed the finding. `stats` is unset (no counting) for that reuse path,
-    since mine_review_rounds.py's own miner reports through its own
-    ref_status_counts/skipped_unresolved instead.
+    """Public entry point for one (fix_commit, path) pair, independent of the
+    full-repo mining sweep. `stats` is unset when called from
+    mine_review_rounds, which reports through its own counters.
 
     Returns (introducing_shas, is_low_confidence).
     """
@@ -298,6 +312,7 @@ def _rank(repo_dir: Path, candidates: list[Candidate], *, stats: _MineStats | No
 
 def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
     """Mine SZZ-style candidates from `repo_dir`'s history on `base_ref`."""
+    validate_base_ref(base_ref)
     stats = _MineStats()
     candidates: list[Candidate] = []
     for fix_commit, subject in _iter_fix_commits(repo_dir, base_ref, stats=stats):
