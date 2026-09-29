@@ -3780,3 +3780,264 @@ def test_main_threads_explicit_config_dir_flag_into_render_report(tmp_path, monk
     assert exit_code == 0
     assert captured_kwargs["config_dirs_explicit"] is True
 
+
+# ---------------------------------------------------------------------------
+# --json output
+# ---------------------------------------------------------------------------
+
+_ALL_CLASSIFICATIONS = (
+    _mod.CLASS_RESUMABLE, _mod.CLASS_CRASHED_NO_TRANSCRIPT, _mod.CLASS_LIVE_PROCESS,
+    _mod.CLASS_UNKNOWN, _mod.CLASS_POSSIBLE_CRASH, _mod.CLASS_CONFIRMED_CLEAN_EXIT,
+)
+
+
+def _json_row(session_id: str = "s1", classification: str = _mod.CLASS_RESUMABLE, **overrides) -> _mod.SessionRow:
+    fields = dict(
+        session_id=session_id, classification=classification, cwd="/tmp/proj", git_branch="main",
+        last_activity=1000.0, detail="detail", entry_count=1, cwd_missing=False,
+        config_dir=Path("/fake/config"), evidence_sources=(_mod.SOURCE_REGISTRY,),
+    )
+    fields.update(overrides)
+    return _mod.SessionRow(**fields)
+
+
+def _render_json_document(report: _mod.Report) -> dict:
+    return json.loads(_mod.render_json(report, crash_window_seconds=14400.0, now=2000.0))
+
+
+def test_render_json_top_level_document_shape():
+    report = _blank_report(rows=[_json_row()], version_drift=["9.9.9"], unparsed_registry=2, unparsed_lock=1)
+    document = _render_json_document(report)
+    assert document["schema_version"] == 1
+    assert document["generated_at"] == 2000.0
+    assert document["boot_time"] == 1000.0
+    assert document["crash_window_seconds"] == 14400.0
+    assert document["ps_usable"] is True
+    assert document["find_timed_out"] is False
+    assert document["unvalidated_registry_versions"] == ["9.9.9"]
+    assert document["unparsed_registry_entries"] == 2
+    assert document["unparsed_lock_files"] == 1
+    assert document["config_dirs"] == ["/fake/config"]
+    assert len(document["sessions"]) == 1
+
+
+def test_render_json_emits_one_session_per_classification():
+    rows = [_json_row(session_id=f"s-{c}", classification=c) for c in _ALL_CLASSIFICATIONS]
+    document = _render_json_document(_blank_report(rows=rows))
+    assert [s["classification"] for s in document["sessions"]] == list(_ALL_CLASSIFICATIONS)
+
+
+def test_render_json_session_carries_only_contract_fields():
+    document = _render_json_document(_blank_report(rows=[_json_row()]))
+    assert set(document["sessions"][0]) == {
+        "session_id", "classification", "evidence_sources", "cwd", "cwd_missing",
+        "config_dir", "git_branch", "last_activity", "detail",
+    }
+
+
+def test_render_json_ps_unusable_is_reported():
+    rows = [_json_row(session_id=f"s{i}", classification=_mod.CLASS_UNKNOWN) for i in range(2)]
+    document = _render_json_document(_blank_report(rows=rows, ps_usable=False))
+    assert document["ps_usable"] is False
+    assert {s["classification"] for s in document["sessions"]} == {_mod.CLASS_UNKNOWN}
+
+
+def test_render_json_null_and_missing_cwd():
+    rows = [
+        _json_row(session_id="no-cwd", cwd=None),
+        _json_row(session_id="gone-cwd", cwd="/nonexistent/dir", cwd_missing=True),
+    ]
+    sessions = {s["session_id"]: s for s in _render_json_document(_blank_report(rows=rows))["sessions"]}
+    assert sessions["no-cwd"]["cwd"] is None
+    assert sessions["gone-cwd"]["cwd"] == "/nonexistent/dir"
+    assert sessions["gone-cwd"]["cwd_missing"] is True
+
+
+def test_render_json_lock_only_session_has_null_config_dir():
+    row = _json_row(config_dir=None, evidence_sources=(_mod.SOURCE_LOCK,))
+    session = _render_json_document(_blank_report(rows=[row]))["sessions"][0]
+    assert session["config_dir"] is None
+    assert session["evidence_sources"] == ["lock"]
+
+
+def test_render_json_multi_root_emits_raw_config_dir_per_session():
+    """Unlike the text report, --json discloses raw paths even for the
+    declared-roots default (no --config-dir typed)."""
+    root_a, root_b = Path("/fake/account-a"), Path("/fake/account-b")
+    rows = [_json_row(session_id="a", config_dir=root_a), _json_row(session_id="b", config_dir=root_b)]
+    document = _render_json_document(_blank_report(rows=rows, config_dirs=[root_a, root_b]))
+    assert [s["config_dir"] for s in document["sessions"]] == ["/fake/account-a", "/fake/account-b"]
+    assert document["config_dirs"] == ["/fake/account-a", "/fake/account-b"]
+
+
+def test_build_report_fills_evidence_sources_from_each_source(tmp_path):
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead_pid = _dead_pid()
+    _write_registry_entry(sessions_dir, dead_pid, sessionId="reg-session")
+    _write_session_end_record(config_dir_path, dead_pid, session_id="reg-session")
+    _write_transcript(
+        config_dir_path / "projects" / "p" / "reg-session.jsonl",
+        [_meta_record("reg-session"), _cwd_record(str(tmp_path), session_id="reg-session")],
+    )
+    home_root = tmp_path / "home"
+    _write_lock(home_root / "proj" / ".claude" / "scheduled_tasks.lock", sessionId="lock-session", pid=_dead_pid())
+
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=home_root)
+    sources = {row.session_id: row.evidence_sources for row in report.rows}
+    assert sources["reg-session"] == ("registry", "session_end", "transcript")
+    assert sources["lock-session"] == ("lock",)
+    lock_row = next(r for r in report.rows if r.session_id == "lock-session")
+    assert lock_row.config_dir is None
+
+
+def test_render_json_top_level_key_set_is_pinned():
+    document = _render_json_document(_blank_report())
+    assert set(document) == {
+        "schema_version", "publish_safe", "generated_at", "boot_time", "crash_window_seconds",
+        "ps_usable", "find_timed_out", "unvalidated_registry_versions", "unparsed_registry_entries",
+        "unparsed_lock_files", "config_dirs", "sessions",
+    }
+    assert document["publish_safe"] is False
+
+
+def test_render_json_passes_row_and_report_values_through():
+    row = _json_row(
+        session_id="sess-x", git_branch="feature/y", last_activity=1500.5, detail="why", cwd="/tmp/x",
+    )
+    report = _blank_report(rows=[row], boot_time=None, find_timed_out=True)
+    document = _render_json_document(report)
+    session = document["sessions"][0]
+    assert (session["session_id"], session["git_branch"], session["last_activity"], session["detail"]) == (
+        "sess-x", "feature/y", 1500.5, "why",
+    )
+    assert document["boot_time"] is None
+    assert document["find_timed_out"] is True
+
+
+def test_render_json_null_branch_and_last_activity():
+    row = _json_row(git_branch=None, last_activity=None)
+    session = _render_json_document(_blank_report(rows=[row]))["sessions"][0]
+    assert session["git_branch"] is None
+    assert session["last_activity"] is None
+
+
+def test_render_json_canonicalizes_config_dir_symlink(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real_dir)
+    document = _render_json_document(_blank_report(rows=[_json_row(config_dir=link)], config_dirs=[link]))
+    assert document["sessions"][0]["config_dir"] == str(real_dir.resolve())
+    assert document["config_dirs"] == [str(real_dir.resolve())]
+
+
+def test_main_threads_crash_window_seconds_and_now_into_render_json(tmp_path, monkeypatch, capsys):
+    build_kwargs = _spy_on_build_report(monkeypatch)
+    captured_json_kwargs = {}
+
+    def fake_render_json(report, **kwargs):
+        captured_json_kwargs.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(_mod, "render_json", fake_render_json)
+    empty_config = tmp_path / "empty-config"
+    empty_config.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_config))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    assert _mod.main(["--json", "--crash-window-hours", "2"]) == 0
+    assert captured_json_kwargs["crash_window_seconds"] == 7200.0
+    assert captured_json_kwargs["now"] == build_kwargs["now"]
+    assert capsys.readouterr().out == "{}\n"
+
+
+def test_evidence_sources_lookup_and_session_end_via_lookup_entry():
+    config_dir_path = Path("/fake/config")
+    lookup = _lookup_entry(session_id="s", pid=300, mtime=1000.0, config_dir=config_dir_path)
+    record = _session_end_record(session_id="s", pid=300, mtime=1000.0, config_dir=config_dir_path)
+    sources = _mod._evidence_sources(
+        "s", {}, {}, {"s": [lookup]}, {}, {(config_dir_path.resolve(), 300): record},
+    )
+    assert sources == ("lookup", "session_end")
+
+
+@pytest.mark.parametrize(
+    "record_overrides",
+    [
+        {"reason": _mod._INCONCLUSIVE_REASON},
+        {"mtime": 500.0},
+        {"pid": 999},
+    ],
+    ids=["inconclusive-reason", "record-older-than-entry", "different-pid"],
+)
+def test_evidence_sources_omits_session_end_when_record_does_not_match(record_overrides):
+    config_dir_path = Path("/fake/config")
+    entry = _registry_entry(session_id="s", pid=100, mtime=1000.0, config_dir=config_dir_path)
+    record = _session_end_record(
+        **{"session_id": "s", "pid": 100, "config_dir": config_dir_path, **record_overrides},
+    )
+    sources = _mod._evidence_sources(
+        "s", {"s": [entry]}, {}, {}, {}, {(config_dir_path.resolve(), record.pid): record},
+    )
+    assert sources == ("registry",)
+
+
+def test_evidence_sources_transcript_only_session():
+    transcript = _transcript_info(session_id="s")
+    assert _mod._evidence_sources("s", {}, {}, {}, {"s": transcript}, {}) == ("transcript",)
+
+
+def test_render_json_hostile_strings_round_trip_as_inert_data():
+    hostile = "$(touch /tmp/pwned); `id` | \"quoted\""
+    row = _json_row(session_id=hostile, cwd=hostile, git_branch=hostile, detail=hostile)
+    session = _render_json_document(_blank_report(rows=[row]))["sessions"][0]
+    assert session["session_id"] == session["cwd"] == session["git_branch"] == session["detail"] == hostile
+
+
+def test_build_report_config_dir_prefers_transcript_over_registry(tmp_path):
+    registry_root = tmp_path / "registry-root"
+    transcript_root = tmp_path / "transcript-root"
+    dead_pid = _dead_pid()
+    _write_registry_entry(registry_root / "sessions", dead_pid, sessionId="split-session")
+    _write_transcript(
+        transcript_root / "projects" / "p" / "split-session.jsonl",
+        [_meta_record("split-session"), _cwd_record(str(tmp_path), session_id="split-session")],
+    )
+    report = _mod.build_report(config_dirs=[registry_root, transcript_root], find_root=tmp_path / "home")
+    row = next(r for r in report.rows if r.session_id == "split-session")
+    assert row.config_dir == transcript_root
+
+
+def test_main_json_rejects_redact(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    build_kwargs = _spy_on_build_report(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        _mod.main(["--json", "--redact"])
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+    assert captured.out == ""
+    assert build_kwargs == {}
+
+
+def test_main_json_stdout_is_pure_json_when_a_warning_is_emitted(tmp_path, monkeypatch, capsys):
+    """A declared-roots warning goes to stderr; stdout must still parse."""
+    default_dir = tmp_path / "default-config"
+    default_dir.mkdir()
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{tmp_path / 'not-a-real-root'}\n")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    monkeypatch.setattr(
+        _mod, "build_report", lambda **kwargs: _blank_report(config_dirs=kwargs["config_dirs"]),
+    )
+    assert _mod.main(["--json"]) == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["schema_version"] == 1
+    assert document["config_dirs"] == [str(default_dir.resolve())]
+    assert "declared root 1 unreadable" in captured.err
+    assert "declared root" not in captured.out
+

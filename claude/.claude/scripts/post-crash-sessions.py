@@ -76,7 +76,7 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 
@@ -153,6 +153,18 @@ CLASS_LIVE_PROCESS = "live-process"
 CLASS_UNKNOWN = "unknown"
 CLASS_POSSIBLE_CRASH = "possible-crash"
 CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"
+
+# Evidence-source names in --json output's `evidence_sources`. Part of the
+# JSON contract: renaming one bumps JSON_SCHEMA_VERSION.
+SOURCE_REGISTRY = "registry"
+SOURCE_LOCK = "lock"
+SOURCE_LOOKUP = "lookup"
+SOURCE_TRANSCRIPT = "transcript"
+SOURCE_SESSION_END = "session_end"
+
+# Bump on removing or renaming a --json field, changing a field's type, or
+# changing what a classification means. Adding a field does not bump it.
+JSON_SCHEMA_VERSION = 1
 
 # "other" also fires on non-deliberate exits (docs/hooks.md's
 # record-session-end.sh bullet), so it must not count as exculpatory evidence
@@ -251,6 +263,10 @@ class SessionRow:
     # The config dir this session's evidence was found under -- None when the
     # only evidence is a scheduled-task lock, which carries no account of its own.
     config_dir: Path | None = None
+    # Which evidence sources hold a record for this session, sorted by name.
+    # Filled by build_report, not _classify_session -- the classifier's verdict
+    # does not depend on it.
+    evidence_sources: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1387,6 +1403,33 @@ def _classify_session(
 # Report construction
 # ---------------------------------------------------------------------------
 
+def _evidence_sources(
+    session_id: str,
+    registry_by_session: dict[str, list[RegistryEntry]],
+    lock_by_session: dict[str, list[LockEntry]],
+    lookup_by_session: dict[str, list[LookupEntry]],
+    transcripts: dict[str, TranscriptInfo],
+    session_end_records: dict[tuple[Path, int], SessionEndRecord],
+) -> tuple[str, ...]:
+    """Names of the sources holding a record for session_id. A SessionEnd
+    record counts only when it matches one of the session's own registry or
+    lookup entries, the same way the classifier pairs them."""
+    registry_entries = registry_by_session.get(session_id, [])
+    lookup_entries = lookup_by_session.get(session_id, [])
+    has_session_end = any(
+        _graceful_end_record(entry, session_end_records) is not None
+        for entry in [*registry_entries, *lookup_entries]
+    )
+    present = (
+        (SOURCE_REGISTRY, bool(registry_entries)),
+        (SOURCE_LOCK, bool(lock_by_session.get(session_id))),
+        (SOURCE_LOOKUP, bool(lookup_entries)),
+        (SOURCE_TRANSCRIPT, session_id in transcripts),
+        (SOURCE_SESSION_END, has_session_end),
+    )
+    return tuple(sorted(name for name, is_present in present if is_present))
+
+
 def build_report(
     *,
     config_dirs: list[Path],
@@ -1454,7 +1497,7 @@ def build_report(
     )
     all_session_ids = known_session_ids | set(recent_only)
 
-    rows = [
+    classified_rows = [
         _classify_session(
             sid, registry_by_session.get(sid, []), lock_by_session.get(sid, []),
             transcripts.get(sid), boot_time=boot_time, ps_lstart=resolved_ps_lstart, ps_usable=ps_usable,
@@ -1464,6 +1507,13 @@ def build_report(
             session_end_records=session_end_records,
         )
         for sid in sorted(all_session_ids)
+    ]
+    rows = [
+        replace(row, evidence_sources=_evidence_sources(
+            row.session_id, registry_by_session, lock_by_session, lookup_by_session,
+            transcripts, session_end_records,
+        ))
+        for row in classified_rows
     ]
 
     # A dead-pid legacy file admitted as Source D evidence (in-window) must
@@ -1544,7 +1594,8 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
 
     # Beyond a single dir, raw paths print only when the operator typed
     # --config-dir themselves -- the declared-roots-file default must never
-    # disclose paths they didn't type this run.
+    # disclose paths they didn't type this run. This rule governs the text
+    # report only; render_json deliberately emits raw config_dir paths.
     show_raw_config_dirs = not redact and (config_dirs_explicit or len(report.config_dirs) == 1)
     scanned_dirs_note = _config_dirs_scanned_note(
         config_dirs_explicit=config_dirs_explicit, root_count=len(report.config_dirs),
@@ -1737,6 +1788,48 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
 # CLI
 # ---------------------------------------------------------------------------
 
+def render_json(report: Report, *, crash_window_seconds: float, now: float) -> str:
+    """Machine-readable report. Unlike render_report, this discloses raw
+    config_dir paths: its consumer needs them to route each session to its
+    account, so the output is not publish-safe (--json excludes --redact).
+
+    Every classification is emitted, live and clean-exit rows included;
+    filtering is the consumer's policy. When ps_usable is false every row is
+    `unknown`, so a consumer must refuse to act. Timestamps are epoch seconds.
+    Raw registry fields are never passed through: the contract is this
+    tool's own derived verdict.
+    """
+    sessions = [
+        {
+            "session_id": row.session_id,
+            "classification": row.classification,
+            "evidence_sources": list(row.evidence_sources),
+            "cwd": row.cwd,
+            "cwd_missing": row.cwd_missing,
+            "config_dir": str(row.config_dir.resolve()) if row.config_dir is not None else None,
+            "git_branch": row.git_branch,
+            "last_activity": row.last_activity,
+            "detail": row.detail,
+        }
+        for row in report.rows
+    ]
+    document = {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "publish_safe": False,
+        "generated_at": now,
+        "boot_time": report.boot_time,
+        "crash_window_seconds": crash_window_seconds,
+        "ps_usable": report.ps_usable,
+        "find_timed_out": report.find_timed_out,
+        "unvalidated_registry_versions": report.version_drift,
+        "unparsed_registry_entries": report.unparsed_registry,
+        "unparsed_lock_files": report.unparsed_lock,
+        "config_dirs": [str(d.resolve()) for d in report.config_dirs],
+        "sessions": sessions,
+    }
+    return json.dumps(document, indent=2)
+
+
 def _declared_config_dirs() -> list[Path]:
     """Declared roots from ~/.claude/transcript-config-dirs (or
     TRANSCRIPT_CONFIG_DIRS_FILE), validated against this script's own looser
@@ -1787,12 +1880,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "three days. --near-boot-hours is accepted as an alias."
         ),
     )
+    parser.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help=(
+            "Print a versioned JSON document instead of the text report, for another program to "
+            "consume. Includes every session with its classification, not just recoverable ones, "
+            "and raw config_dir paths, session ids, cwds, and git branches: the output is NOT "
+            "publish-safe, so it cannot be combined with --redact. Refuse to act on it when "
+            "ps_usable is false."
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.json_output and args.redact:
+        parser.error("--json and --redact are mutually exclusive: JSON output carries raw paths and session ids")
 
     try:
         default_config_dir = config_dir()
@@ -1851,6 +1956,9 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(
         config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds, now=now,
     )
+    if args.json_output:
+        print(render_json(report, crash_window_seconds=near_boot_window_seconds, now=now))
+        return 0
     print(render_report(
         report, redact=args.redact, config_dirs_explicit=bool(args.extra_config_dirs), now=now,
     ))

@@ -159,6 +159,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **`post-crash-sessions --json` prints a versioned, machine-readable session list.** For a program that consumes the tool's verdicts without parsing the text report. It emits every classification with raw `config_dir` paths, session ids, working directories, and git branches, so the output is not publish-safe (`"publish_safe": false` in-band) and `--json` with `--redact` exits 2. A consumer must refuse to act when `ps_usable` is false. Contract and stability rules: `docs/scripts.md`. Pinned by `test_post_crash_sessions.py`.
 - **New `# tier-threat-model: <tiers>` header convention for `hook-class: gate` hooks.** Every gate hook now carries a machine-readable tier line at line 3 stating its threat-model classification (agent intent, input trust, consequence reversibility) — see `docs/hooks.md` § "Threat-model tiers" for the axes, the tier definitions, and the full per-hook classification table. `claude-hook-review`'s authoring skill gains a matching checklist paragraph, bumped to 2.4.0 (minor — new checklist requirement). Four sibling plugins carry only the header insertion on their own hook and bump to a patch release: `skill-management`, `plugin-semver`, `npm-semver`, `lovable-cloud`.
   - Run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh it.
   - Run `claude plugin install plugin-semver@claude-config --scope project` in each consuming repo to refresh it.
