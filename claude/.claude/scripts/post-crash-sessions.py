@@ -42,11 +42,13 @@ entry on a clean exit:
   - Boot time narrows classification where it's informative: a dead A/B
     entry that predates the last boot is definitively unclean, since the
     reboot explains the death.
-  - A dead entry postdating boot, or a source-C/D session with no reboot in
+  - A dead entry postdating boot, or a source-D session with no reboot in
     between it and now, is not thereby ruled non-actionable — both surface
     as "possible crash" rather than "unknown", since an application-level
     crash that never rebooted Linux looks exactly like an
     otherwise-unexplained death on a machine that stayed up.
+  - A source-C session with no other record surfaces as "transcript only":
+    no process was checked, so it can be live or closed on purpose.
 
 Run this before starting new Claude Code sessions post-reboot regardless:
 process ids restart low after a reboot, so a freshly launched session can
@@ -152,6 +154,7 @@ CLASS_CRASHED_NO_TRANSCRIPT = "crashed-no-transcript"
 CLASS_LIVE_PROCESS = "live-process"
 CLASS_UNKNOWN = "unknown"
 CLASS_POSSIBLE_CRASH = "possible-crash"
+CLASS_TRANSCRIPT_ONLY = "transcript-only"
 CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"
 
 # Evidence-source names in --json output's `evidence_sources`. Part of the
@@ -162,8 +165,16 @@ SOURCE_LOOKUP = "lookup"
 SOURCE_TRANSCRIPT = "transcript"
 SOURCE_SESSION_END = "session_end"
 
+# Reasons in --json output's `refuse_reasons`. Part of the JSON contract.
+REFUSE_PS_UNUSABLE = "ps_unusable"
+REFUSE_FIND_TIMED_OUT = "find_timed_out"
+REFUSE_UNPARSED_REGISTRY_ENTRIES = "unparsed_registry_entries"
+REFUSE_UNPARSED_LOCK_FILES = "unparsed_lock_files"
+REFUSE_NO_REGISTRY_DIRECTORY = "no_registry_directory"
+
 # Bump on removing or renaming a --json field, changing a field's type, or
-# changing what a classification means. Adding a field does not bump it.
+# changing a classification's guarantee or consumer action. Adding a field or
+# changing the evidence rules behind a classification does not bump it.
 JSON_SCHEMA_VERSION = 1
 
 # "other" also fires on non-deliberate exits (docs/hooks.md's
@@ -286,6 +297,18 @@ class Report:
     any_session_end_dir_found: bool
 
 
+def _parse_ascii_digits(value) -> int | None:
+    """Parse an all-ASCII-digit string to an int, else None. str.isdigit() is
+    true for Unicode digits that int() rejects, and int() raises ValueError on
+    a digit string longer than sys.get_int_max_str_digits() (CPython 3.11+)."""
+    if not (isinstance(value, str) and value.isascii() and value.isdigit()):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Portability seams: boot time
 # ---------------------------------------------------------------------------
@@ -381,9 +404,12 @@ def _ps_lstart_batch(pids: list[int], *, run=subprocess.run) -> dict[int, str]:
         if not stripped:
             continue
         parts = stripped.split(maxsplit=1)
-        if len(parts) != 2 or not parts[0].isdigit():
+        if len(parts) != 2:
             continue
-        starts[int(parts[0])] = parts[1].strip()
+        pid = _parse_ascii_digits(parts[0])
+        if pid is None:
+            continue
+        starts[pid] = parts[1].strip()
     return starts
 
 
@@ -450,7 +476,7 @@ def _proc_start_is_numeric(proc_start: str | None) -> bool:
     string — dispatches on the stored value's own shape, not on
     platform.system(), so this stays correct if a future CLI version
     changes format again on either platform."""
-    return isinstance(proc_start, str) and proc_start.isdigit()
+    return _parse_ascii_digits(proc_start) is not None
 
 
 def _proc_start_comparable(mtime: float | None, boot_time: float | None) -> bool:
@@ -469,12 +495,13 @@ def _same_process_by_proc_starttime(
     tick count against the live pid's own current value — no tolerance,
     since both sides are the same integer clock with no unit conversion or
     independent rounding to reconcile."""
-    if not _proc_start_is_numeric(stored_proc_start):
+    stored_ticks = _parse_ascii_digits(stored_proc_start)
+    if stored_ticks is None:
         return None
     live_ticks = proc_starttime_ticks(pid)
     if live_ticks is None:
         return None
-    return int(stored_proc_start) == live_ticks
+    return stored_ticks == live_ticks
 
 
 def _entry_liveness(
@@ -531,9 +558,7 @@ def _coerce_pid(value) -> int | None:
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
+    return _parse_ascii_digits(value)
 
 
 def _sanitize_for_terminal(value) -> str | None:
@@ -609,6 +634,8 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
     """Read <config_dir>/sessions/<pid>.json across every supplied config dir.
 
     Returns (entries, legacy_bare_pid_paths, unparsed_count, any_sessions_dir_found).
+    unparsed_count covers unparsable registry files and sessions/ directories
+    that could not be listed.
     Legacy bare-pid files (no .json suffix, written by capture-session-id.sh)
     are collected separately — they are a different, still-active mechanism,
     not part of this registry.
@@ -625,17 +652,19 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
         try:
             candidates = sorted(sessions_dir.iterdir())
         except OSError:
+            # An unlistable directory hides every entry in it, so it counts as an unparsed entry.
+            unparsed += 1
             continue
         for path in candidates:
             if not path.is_file():
                 continue
             if path.suffix != ".json":
-                if path.name.isdigit():
+                if _parse_ascii_digits(path.name) is not None:
                     legacy_paths.append(path)
                 continue
             try:
                 data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            except (OSError, ValueError):
                 unparsed += 1
                 continue
             if not isinstance(data, dict):
@@ -648,7 +677,8 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
                 continue
             session_id = _sanitize_for_terminal(session_id)
             filename_stem = path.stem
-            pid_mismatch = filename_stem.isdigit() and int(filename_stem) != pid
+            stem_pid = _parse_ascii_digits(filename_stem)
+            pid_mismatch = stem_pid is not None and stem_pid != pid
             entries.append(RegistryEntry(
                 session_id=session_id, pid=pid,
                 proc_start=data.get("procStart"),
@@ -668,7 +698,7 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
 def _read_lock(path: Path) -> LockEntry | None:
     try:
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None
@@ -902,7 +932,7 @@ def _read_session_end_records(
                 continue
             try:
                 data = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            except (OSError, ValueError):
                 continue
             if not isinstance(data, dict):
                 continue
@@ -1392,7 +1422,7 @@ def _classify_session(
         # admission gate (_recent_transcript_only_ids).
         anchor_note = "its last activity could not be dated against either the last boot or now"
     return SessionRow(
-        session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
+        session_id, CLASS_TRANSCRIPT_ONLY, cwd, branch, last_activity,
         f"only a transcript exists, with no registry, lock, or lookup-file entry; {anchor_note}, but "
         "with no other corroboration this cannot confirm the session was still open at crash time.",
         entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
@@ -1413,7 +1443,9 @@ def _evidence_sources(
 ) -> tuple[str, ...]:
     """Names of the sources holding a record for session_id. A SessionEnd
     record counts only when it matches one of the session's own registry or
-    lookup entries, the same way the classifier pairs them."""
+    lookup entries, the same way the classifier pairs them. A transcript
+    counts only when it is a main transcript: a subagent-only one is not
+    resumable."""
     registry_entries = registry_by_session.get(session_id, [])
     lookup_entries = lookup_by_session.get(session_id, [])
     has_session_end = any(
@@ -1424,7 +1456,7 @@ def _evidence_sources(
         (SOURCE_REGISTRY, bool(registry_entries)),
         (SOURCE_LOCK, bool(lock_by_session.get(session_id))),
         (SOURCE_LOOKUP, bool(lookup_entries)),
-        (SOURCE_TRANSCRIPT, session_id in transcripts),
+        (SOURCE_TRANSCRIPT, session_id in transcripts and transcripts[session_id].has_main),
         (SOURCE_SESSION_END, has_session_end),
     )
     return tuple(sorted(name for name, is_present in present if is_present))
@@ -1671,7 +1703,7 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
         return account_labels.get(str(config_dir.resolve()))
 
     def render_resume_section(class_key: str, title: str) -> None:
-        """Shared layout for Resumable and Possible-crash: both are rows with a
+        """Shared layout for Resumable, Possible-crash, and Transcript-only: all are rows with a
         real resume command, so they share the resume-command line, cwd-missing
         warning, meta line, and detail line."""
         rows = sorted(
@@ -1712,6 +1744,10 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
 
     render_resume_section(CLASS_RESUMABLE, "Resumable")
     render_resume_section(CLASS_POSSIBLE_CRASH, "Possible crash — process gone, clean exit not ruled out")
+    render_resume_section(
+        CLASS_TRANSCRIPT_ONLY,
+        "Transcript only — no liveness check was performed; confirm the session is not still open before resuming",
+    )
 
     other_groups = (
         (CLASS_CRASHED_NO_TRANSCRIPT, "Crashed, no transcript"),
@@ -1788,16 +1824,27 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
 # CLI
 # ---------------------------------------------------------------------------
 
+def _refuse_reasons(report: Report) -> list[str]:
+    """Reasons this run's evidence may be incomplete, sorted. Empty when the
+    tool knows no reason for a consumer to refuse to act."""
+    reasons = []
+    if not report.ps_usable:
+        reasons.append(REFUSE_PS_UNUSABLE)
+    if report.find_timed_out:
+        reasons.append(REFUSE_FIND_TIMED_OUT)
+    if report.unparsed_registry > 0:
+        reasons.append(REFUSE_UNPARSED_REGISTRY_ENTRIES)
+    if report.unparsed_lock > 0:
+        reasons.append(REFUSE_UNPARSED_LOCK_FILES)
+    if not report.any_sessions_dir_found:
+        reasons.append(REFUSE_NO_REGISTRY_DIRECTORY)
+    return sorted(reasons)
+
+
 def render_json(report: Report, *, crash_window_seconds: float, now: float) -> str:
     """Machine-readable report. Unlike render_report, this discloses raw
-    config_dir paths: its consumer needs them to route each session to its
-    account, so the output is not publish-safe (--json excludes --redact).
-
-    Every classification is emitted, live and clean-exit rows included;
-    filtering is the consumer's policy. When ps_usable is false every row is
-    `unknown`, so a consumer must refuse to act. Timestamps are epoch seconds.
-    Raw registry fields are never passed through: the contract is this
-    tool's own derived verdict.
+    config_dir and cwd values, so the output is not publish-safe and cannot
+    be combined with --redact. Contract: docs/scripts.md, "--json contract".
     """
     sessions = [
         {
@@ -1821,13 +1868,14 @@ def render_json(report: Report, *, crash_window_seconds: float, now: float) -> s
         "crash_window_seconds": crash_window_seconds,
         "ps_usable": report.ps_usable,
         "find_timed_out": report.find_timed_out,
+        "refuse_reasons": _refuse_reasons(report),
         "unvalidated_registry_versions": report.version_drift,
         "unparsed_registry_entries": report.unparsed_registry,
         "unparsed_lock_files": report.unparsed_lock,
         "config_dirs": [str(d.resolve()) for d in report.config_dirs],
         "sessions": sessions,
     }
-    return json.dumps(document, indent=2)
+    return json.dumps(document, indent=2, allow_nan=False)
 
 
 def _declared_config_dirs() -> list[Path]:
@@ -1875,7 +1923,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             f"How far back this tool's crash evidence reaches: how long before the last boot a "
             f"boot-anchored transcript's last activity can sit, how recently a now-anchored "
             f"transcript or a never-swept sessions/<pid> lookup file can have last run, and still "
-            f"surface under 'Possible crash' (default {_CRASH_EVIDENCE_WINDOW_SECONDS / 3600:g}h). "
+            f"surface in the report (default {_CRASH_EVIDENCE_WINDOW_SECONDS / 3600:g}h). "
             "Widen this to recover sessions from an older crash, e.g. --crash-window-hours 72 for "
             "three days. --near-boot-hours is accepted as an alias."
         ),
@@ -1884,10 +1932,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", dest="json_output",
         help=(
             "Print a versioned JSON document instead of the text report, for another program to "
-            "consume. Includes every session with its classification, not just recoverable ones, "
-            "and raw config_dir paths, session ids, cwds, and git branches: the output is NOT "
-            "publish-safe, so it cannot be combined with --redact. Refuse to act on it when "
-            "ps_usable is false."
+            "consume. The output includes raw config_dir and cwd values, so it is NOT publish-safe "
+            "and cannot be combined with --redact. Contract: docs/scripts.md, '--json contract'."
         ),
     )
     return parser
@@ -1939,16 +1985,18 @@ def main(argv: list[str] | None = None) -> int:
 
     near_boot_window_seconds = _CRASH_EVIDENCE_WINDOW_SECONDS
     if args.crash_window_hours is not None:
+        near_boot_window_seconds = args.crash_window_hours * 3600
         # math.isfinite rejects nan/inf: a bare `<= 0` check lets `nan` through (NaN
         # comparisons are always False), silently disabling near-boot detection.
-        if not math.isfinite(args.crash_window_hours) or args.crash_window_hours <= 0:
+        # It runs on the seconds value because a huge finite hour count overflows to inf
+        # in the multiplication.
+        if not math.isfinite(near_boot_window_seconds) or near_boot_window_seconds <= 0:
             print(
-                f"post-crash-sessions: --crash-window-hours (--near-boot-hours) must be positive, "
-                f"got {args.crash_window_hours!r}",
+                f"post-crash-sessions: --crash-window-hours (--near-boot-hours) must be positive "
+                f"and finite, got {args.crash_window_hours!r}",
                 file=sys.stderr,
             )
             return 2
-        near_boot_window_seconds = args.crash_window_hours * 3600
 
     # Captured once so build_report's now-anchored admission window and
     # render_report's age annotation never disagree about "now".

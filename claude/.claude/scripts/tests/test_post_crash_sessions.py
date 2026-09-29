@@ -265,12 +265,32 @@ def test_coerce_pid_rejects_non_numeric_string():
     assert _mod._coerce_pid("abc") is None
 
 
+def test_coerce_pid_rejects_unicode_digit_string():
+    assert _mod._coerce_pid("²") is None
+    assert _mod._coerce_pid("١٢٣") is None
+
+
 def test_coerce_pid_rejects_bool():
     assert _mod._coerce_pid(True) is None
 
 
 def test_coerce_pid_rejects_none():
     assert _mod._coerce_pid(None) is None
+
+
+def test_coerce_pid_rejects_digit_string_beyond_int_conversion_limit():
+    """int() raises ValueError past sys.get_int_max_str_digits() on CPython 3.11+."""
+    assert _mod._coerce_pid("9" * 5000) is None
+
+
+def test_same_process_by_proc_starttime_returns_none_for_unicode_digit_stored_value():
+    fake_ticks = _fake_proc_starttime_ticks({100: 2})
+    assert _mod._same_process_by_proc_starttime("²", 100, proc_starttime_ticks=fake_ticks) is None
+
+
+def test_same_process_by_proc_starttime_returns_none_for_oversized_digit_stored_value():
+    fake_ticks = _fake_proc_starttime_ticks({100: 2})
+    assert _mod._same_process_by_proc_starttime("9" * 5000, 100, proc_starttime_ticks=fake_ticks) is None
 
 
 def test_safe_mtime_returns_value_for_existing_file(tmp_path):
@@ -688,6 +708,28 @@ def test_read_registry_happy_path(tmp_path):
     assert entries[0].pid == 100
 
 
+def test_read_registry_unicode_digit_filename_stem_does_not_raise(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    _write_json(sessions_dir / "².json", _registry_entry_json(sessionId="s1", pid=100))
+    entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
+    assert found is True
+    assert unparsed == 0
+    assert legacy == []
+    assert [e.session_id for e in entries] == ["s1"]
+    assert entries[0].pid_mismatch is False
+
+
+@pytest.mark.parametrize("pid_json", ['"' + "9" * 5000 + '"', "9" * 5000], ids=["string", "integer-literal"])
+def test_read_registry_oversized_pid_counts_as_unparsed_not_crash(tmp_path, pid_json):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "100.json").write_text('{"sessionId": "s1", "pid": ' + pid_json + "}")
+    entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
+    assert found is True
+    assert entries == []
+    assert unparsed == 1
+
+
 def test_read_registry_missing_sessions_dir_reports_not_found(tmp_path):
     entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
     assert found is False
@@ -701,6 +743,26 @@ def test_read_registry_non_json_registry_file_counts_unparsed(tmp_path):
     entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
     assert unparsed == 1
     assert entries == []
+
+
+def test_read_registry_unlistable_sessions_dir_counts_unparsed_and_is_still_found(tmp_path, monkeypatch):
+    """A sessions/ directory that exists but cannot be listed hides every entry
+    in it, so it must surface as an unparsed entry rather than as silence."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "100.json").write_text(json.dumps({"sessionId": "hidden", "pid": 100}))
+    real_iterdir = Path.iterdir
+
+    def iterdir_denied_for_sessions_dir(self):
+        if self == sessions_dir:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir_denied_for_sessions_dir)
+    entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
+    assert entries == []
+    assert unparsed == 1
+    assert found is True
 
 
 def test_read_registry_foreign_json_missing_core_fields_counts_unparsed(tmp_path):
@@ -829,6 +891,13 @@ def test_read_lock_top_level_json_array_returns_none_not_crash(tmp_path):
     lock_path = tmp_path / "scheduled_tasks.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps([1, 2, 3]))
+    assert _mod._read_lock(lock_path) is None
+
+
+@pytest.mark.parametrize("pid_json", ['"' + "9" * 5000 + '"', "9" * 5000], ids=["string", "integer-literal"])
+def test_read_lock_oversized_pid_returns_none_not_crash(tmp_path, pid_json):
+    lock_path = tmp_path / "scheduled_tasks.lock"
+    lock_path.write_text('{"sessionId": "s2", "pid": ' + pid_json + "}")
     assert _mod._read_lock(lock_path) is None
 
 
@@ -1331,7 +1400,7 @@ def test_build_report_stale_lookup_file_falls_through_to_transcript_only_evidenc
         config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
     )
     row = next(r for r in report.rows if r.session_id == session_id)
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     assert "no registry, lock, or lookup-file entry" in row.detail
 
 
@@ -1729,12 +1798,12 @@ def test_classify_boot_time_unknown_is_unknown():
     assert row.classification == _mod.CLASS_UNKNOWN
 
 
-def test_classify_near_boot_transcript_only_session_is_possible_crash():
+def test_classify_near_boot_transcript_only_session_is_transcript_only():
     transcript = _transcript_info(session_id="s1", last_activity=950.0, has_main=True)
     row = _mod._classify_session(
         "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
     )
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     assert "within 4h before the last boot" in row.detail
     assert "no other corroboration" in row.detail
 
@@ -1745,7 +1814,7 @@ def test_classify_near_boot_transcript_only_session_detail_reflects_custom_windo
         "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
         near_boot_window_seconds=72 * 3600,
     )
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     assert "within 72h before the last boot" in row.detail
 
 
@@ -1758,8 +1827,8 @@ def test_classify_near_boot_transcript_only_session_detail_formats_fractional_wi
     assert "within 1.5h before the last boot" in row.detail
 
 
-def test_classify_now_anchored_transcript_only_session_is_possible_crash():
-    """Mirrors test_classify_near_boot_transcript_only_session_is_possible_crash
+def test_classify_now_anchored_transcript_only_session_is_transcript_only():
+    """Mirrors test_classify_near_boot_transcript_only_session_is_transcript_only
     for the now-anchored disjunct: with no boot_time to anchor against, recent
     activity relative to now alone is the non-reboot-crash shape this anchor
     exists to catch."""
@@ -1768,7 +1837,7 @@ def test_classify_now_anchored_transcript_only_session_is_possible_crash():
         "s1", [], [], transcript, boot_time=None, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
         now=2000.0,
     )
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     assert "no reboot in between" in row.detail
 
 
@@ -1786,7 +1855,7 @@ def test_classify_transcript_only_fallback_ignores_session_end_records(tmp_path)
         "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
         session_end_records=records,
     )
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     assert "within 4h before the last boot" in row.detail
     assert "no other corroboration" in row.detail
 
@@ -1903,6 +1972,17 @@ def test_classify_cwd_missing_on_disk_is_flagged():
         "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
     )
     assert row.cwd_missing is True
+
+
+def test_classify_cwd_missing_is_false_for_an_existing_directory(tmp_path):
+    entry = _registry_entry(mtime=500.0, cwd=str(tmp_path))
+    transcript = _transcript_info(cwd=str(tmp_path), git_branch=None, last_activity=500.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+    assert row.cwd == str(tmp_path)
+    assert row.cwd_missing is False
 
 
 def test_classify_unaffected_by_hostile_timezone(monkeypatch):
@@ -3023,17 +3103,21 @@ def test_render_report_omits_account_tag_at_single_root():
 # render_report — "Possible crash" tier
 # ---------------------------------------------------------------------------
 
+def _possible_crash_row(**overrides) -> _mod.SessionRow:
+    """A row shape the classifier emits: a dead post-boot registry entry plus a main transcript."""
+    fields = dict(
+        session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
+        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
+        detail="registry entry written after boot; a transcript exists for this session.",
+        entry_count=1, cwd_missing=False,
+    )
+    fields.update(overrides)
+    return _mod.SessionRow(**fields)
+
+
 def test_render_report_possible_crash_section_lists_rows_sorted_by_recency():
-    older = _mod.SessionRow(
-        session_id="s-old", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/tmp/old-proj", git_branch="main", last_activity=100.0,
-        detail="only a transcript exists", entry_count=0, cwd_missing=False,
-    )
-    newer = _mod.SessionRow(
-        session_id="s-new", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/tmp/new-proj", git_branch="main", last_activity=200.0,
-        detail="only a transcript exists", entry_count=0, cwd_missing=False,
-    )
+    older = _possible_crash_row(session_id="s-old", cwd="/tmp/old-proj", git_branch="main", last_activity=100.0)
+    newer = _possible_crash_row(session_id="s-new", cwd="/tmp/new-proj", git_branch="main", last_activity=200.0)
     output = _mod.render_report(_blank_report(rows=[older, newer]), redact=False)
     assert "## Possible crash — process gone, clean exit not ruled out (2)" in output
     assert output.index("s-new") < output.index("s-old")
@@ -3043,11 +3127,7 @@ def test_render_report_possible_crash_row_not_duplicated_into_unknown_section():
     """A missed exclude-from-other_groups filter would render this row into
     both its own section and ## Unknown; catch that instead of the row
     merely existing somewhere in the output."""
-    row = _mod.SessionRow(
-        session_id="poss-crash-sess", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/tmp/only-transcript-proj", git_branch="main", last_activity=100.0,
-        detail="only a transcript exists", entry_count=0, cwd_missing=False,
-    )
+    row = _possible_crash_row(session_id="poss-crash-sess", cwd="/tmp/dead-registry-proj", git_branch="main")
     output = _mod.render_report(_blank_report(rows=[row]), redact=False)
     assert output.count("poss-crash-sess") == 1
     unknown_section = output.split("## Unknown")[1].split("## ")[0]
@@ -3055,12 +3135,7 @@ def test_render_report_possible_crash_row_not_duplicated_into_unknown_section():
 
 
 def test_render_report_possible_crash_redact_maps_cwd_and_session_to_ordinals_and_drops_branch():
-    row = _mod.SessionRow(
-        session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
-        detail="only a transcript exists", entry_count=0, cwd_missing=False,
-    )
-    output = _mod.render_report(_blank_report(rows=[row]), redact=True)
+    output = _mod.render_report(_blank_report(rows=[_possible_crash_row()]), redact=True)
     assert "sess-one" not in output
     assert "/repo/example-project" not in output
     assert "feature-x" not in output
@@ -3069,36 +3144,78 @@ def test_render_report_possible_crash_redact_maps_cwd_and_session_to_ordinals_an
 
 
 def test_render_report_possible_crash_unredacted_preserves_real_values():
-    row = _mod.SessionRow(
-        session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
-        detail="only a transcript exists", entry_count=0, cwd_missing=False,
-    )
-    output = _mod.render_report(_blank_report(rows=[row]), redact=False)
+    output = _mod.render_report(_blank_report(rows=[_possible_crash_row()]), redact=False)
     assert "sess-one" in output
     assert "/repo/example-project" in output
     assert "feature-x" in output
 
 
-def test_render_report_possible_crash_detail_with_custom_window_survives_redact():
+# ---------------------------------------------------------------------------
+# render_report — "Transcript only" tier
+# ---------------------------------------------------------------------------
+
+_TRANSCRIPT_ONLY_HEADING = (
+    "Transcript only — no liveness check was performed; confirm the session is not still open before resuming"
+)
+
+
+def _transcript_only_row(**overrides) -> _mod.SessionRow:
+    fields = dict(
+        session_id="sess-one", classification=_mod.CLASS_TRANSCRIPT_ONLY,
+        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
+        detail="only a transcript exists", entry_count=0, cwd_missing=False,
+    )
+    fields.update(overrides)
+    return _mod.SessionRow(**fields)
+
+
+def test_render_report_transcript_only_section_states_no_liveness_check_and_prints_resume_command():
+    output = _mod.render_report(_blank_report(rows=[_transcript_only_row()]), redact=False)
+    assert f"## {_TRANSCRIPT_ONLY_HEADING} (1)" in output
+    section = output.split("## Transcript only")[1].split("\n## ")[0]
+    assert "cd /repo/example-project && claude --resume sess-one" in section
+
+
+def test_render_report_transcript_only_detail_with_custom_window_survives_redact():
     """The detail line's near-boot-window fragment is a value the user
     supplied on their own command line, not cwd/session/branch data — it
     renders unchanged under --redact rather than being stripped or mapped."""
-    row = _mod.SessionRow(
-        session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
-        cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
+    row = _transcript_only_row(
         detail=(
             "only a transcript exists, with no registry, lock, or lookup-file entry; its last "
             "activity sits within 72h before the last boot, but with no other corroboration this "
             "cannot confirm the session was still open at crash time."
         ),
-        entry_count=0, cwd_missing=False,
     )
     output = _mod.render_report(_blank_report(rows=[row]), redact=True)
     assert "within 72h before the last boot" in output
 
 
-def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_path):
+def test_render_report_transcript_only_section_follows_possible_crash_section():
+    output = _mod.render_report(_blank_report(rows=[_transcript_only_row()]), redact=False)
+    assert output.index("## Possible crash") < output.index("## Transcript only")
+    assert output.index("## Transcript only") < output.index("## Crashed, no transcript")
+
+
+def test_render_report_transcript_only_row_not_duplicated_into_possible_crash_or_unknown_section():
+    output = _mod.render_report(_blank_report(rows=[_transcript_only_row()]), redact=False)
+    assert output.count("sess-one") == 1
+    possible_crash_section = output.split("## Possible crash")[1].split("\n## ")[0]
+    unknown_section = output.split("## Unknown")[1].split("\n## ")[0]
+    assert "sess-one" not in possible_crash_section
+    assert "sess-one" not in unknown_section
+
+
+def test_render_report_transcript_only_redact_maps_cwd_and_session_to_ordinals_and_drops_branch():
+    output = _mod.render_report(_blank_report(rows=[_transcript_only_row()]), redact=True)
+    assert "sess-one" not in output
+    assert "/repo/example-project" not in output
+    assert "feature-x" not in output
+    section = output.split("## Transcript only")[1].split("\n## ")[0]
+    assert "cd project-1 && claude --resume session-1" in section
+
+
+def test_build_report_transcript_only_near_boot_surfaces_as_transcript_only(tmp_path):
     """End-to-end regression for the original bug shape: a real transcript
     file with no registry entry and no lock file, last activity inside the
     widened window before boot. Unit coverage of _recent_transcript_only_ids
@@ -3120,9 +3237,10 @@ def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_p
         config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: boot_time,
     )
     row = next(r for r in report.rows if r.session_id == session_id)
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
     output = _mod.render_report(report, redact=False)
-    assert "Possible crash — process gone, clean exit not ruled out (1)" in output
+    assert f"## {_TRANSCRIPT_ONLY_HEADING} (1)" in output
+    assert "## Possible crash — process gone, clean exit not ruled out (0)" in output
 
 
 def test_build_report_near_boot_window_seconds_widens_what_surfaces(tmp_path):
@@ -3150,7 +3268,7 @@ def test_build_report_near_boot_window_seconds_widens_what_surfaces(tmp_path):
         near_boot_window_seconds=4 * 86400,
     )
     row = next(r for r in widened_report.rows if r.session_id == session_id)
-    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert row.classification == _mod.CLASS_TRANSCRIPT_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -3439,14 +3557,16 @@ def test_main_rejects_nonexistent_config_dir(tmp_path, monkeypatch, capsys):
     assert exit_code == 2
 
 
-def test_main_rejects_zero_near_boot_hours(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("output_mode_args", [[], ["--json"]], ids=["text", "json"])
+def test_main_rejects_zero_near_boot_hours(tmp_path, monkeypatch, capsys, output_mode_args):
     monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-config"))
     (tmp_path / "empty-config").mkdir()
-    exit_code = _mod.main(["--near-boot-hours", "0"])
+    exit_code = _mod.main([*output_mode_args, "--near-boot-hours", "0"])
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "--near-boot-hours" in captured.err
+    assert captured.out == ""
 
 
 def test_main_rejects_negative_near_boot_hours(tmp_path, monkeypatch, capsys):
@@ -3785,10 +3905,19 @@ def test_main_threads_explicit_config_dir_flag_into_render_report(tmp_path, monk
 # --json output
 # ---------------------------------------------------------------------------
 
+# The literal values a --json consumer filters on. Adding one needs a
+# docs/scripts.md update, and renaming one or changing its meaning also bumps
+# schema_version, so the values are spelled out here rather than read back from
+# the module's CLASS_* constants.
 _ALL_CLASSIFICATIONS = (
-    _mod.CLASS_RESUMABLE, _mod.CLASS_CRASHED_NO_TRANSCRIPT, _mod.CLASS_LIVE_PROCESS,
-    _mod.CLASS_UNKNOWN, _mod.CLASS_POSSIBLE_CRASH, _mod.CLASS_CONFIRMED_CLEAN_EXIT,
+    "resumable", "possible-crash", "transcript-only", "crashed-no-transcript", "live-process",
+    "confirmed-clean-exit", "unknown",
 )
+
+
+def test_classification_values_match_the_documented_literals_exactly():
+    module_values = {value for name, value in vars(_mod).items() if name.startswith("CLASS_")}
+    assert module_values == set(_ALL_CLASSIFICATIONS)
 
 
 def _json_row(session_id: str = "s1", classification: str = _mod.CLASS_RESUMABLE, **overrides) -> _mod.SessionRow:
@@ -3812,6 +3941,7 @@ def test_render_json_top_level_document_shape():
     assert document["generated_at"] == 2000.0
     assert document["boot_time"] == 1000.0
     assert document["crash_window_seconds"] == 14400.0
+    assert document["refuse_reasons"] == ["unparsed_lock_files", "unparsed_registry_entries"]
     assert document["ps_usable"] is True
     assert document["find_timed_out"] is False
     assert document["unvalidated_registry_versions"] == ["9.9.9"]
@@ -3835,22 +3965,81 @@ def test_render_json_session_carries_only_contract_fields():
     }
 
 
-def test_render_json_ps_unusable_is_reported():
-    rows = [_json_row(session_id=f"s{i}", classification=_mod.CLASS_UNKNOWN) for i in range(2)]
-    document = _render_json_document(_blank_report(rows=rows, ps_usable=False))
+def test_build_report_with_unusable_ps_emits_only_unknown_rows_and_refuses(tmp_path):
+    config_dir_path = tmp_path / "config"
+    _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId="ps-down-session")
+    _write_transcript(
+        config_dir_path / "projects" / "p" / "ps-down-session.jsonl",
+        [_meta_record("ps-down-session"), _cwd_record(str(tmp_path), session_id="ps-down-session")],
+    )
+    transcript_only_path = config_dir_path / "projects" / "p" / "ps-down-transcript-only.jsonl"
+    _write_transcript(
+        transcript_only_path,
+        [_meta_record("ps-down-transcript-only"), _cwd_record(str(tmp_path), session_id="ps-down-transcript-only")],
+    )
+    now = time.time()
+    os.utime(transcript_only_path, (now - 60, now - 60))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", ps_lstart=lambda pid: None,
+        now=now, boot_time_fn=lambda: 1000.0,
+    )
+    document = _render_json_document(report)
     assert document["ps_usable"] is False
-    assert {s["classification"] for s in document["sessions"]} == {_mod.CLASS_UNKNOWN}
+    assert "ps_unusable" in document["refuse_reasons"]
+    assert [s["session_id"] for s in document["sessions"]] == ["ps-down-session", "ps-down-transcript-only"]
+    assert {s["classification"] for s in document["sessions"]} == {"unknown"}
 
 
-def test_render_json_null_and_missing_cwd():
-    rows = [
-        _json_row(session_id="no-cwd", cwd=None),
-        _json_row(session_id="gone-cwd", cwd="/nonexistent/dir", cwd_missing=True),
-    ]
-    sessions = {s["session_id"]: s for s in _render_json_document(_blank_report(rows=rows))["sessions"]}
-    assert sessions["no-cwd"]["cwd"] is None
-    assert sessions["gone-cwd"]["cwd"] == "/nonexistent/dir"
-    assert sessions["gone-cwd"]["cwd_missing"] is True
+def test_render_json_null_cwd_is_emitted_as_null():
+    session = _render_json_document(_blank_report(rows=[_json_row(cwd=None)]))["sessions"][0]
+    assert session["cwd"] is None
+
+
+def test_cwd_missing_is_false_without_a_cwd():
+    assert _mod._cwd_missing(None) is False
+
+
+def test_classify_live_process_row_reports_cwd_present_even_when_cwd_is_gone():
+    nonexistent_cwd = "/this/path/does/not/exist/on/this/machine"
+    entry = _registry_entry(pid=100, proc_start="Mon Jan  1 00:00:00 2024", cwd=nonexistent_cwd)
+    row = _mod._classify_session(
+        "s1", [entry], [], None, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+    )
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
+    assert row.cwd == nonexistent_cwd
+    assert row.cwd_missing is False
+
+
+def test_build_report_json_cwd_missing_is_true_after_the_directory_is_removed(tmp_path):
+    config_dir_path = tmp_path / "config"
+    vanished_cwd = tmp_path / "vanished-project"
+    vanished_cwd.mkdir()
+    _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId="vanished-session")
+    _write_transcript(
+        config_dir_path / "projects" / "p" / "vanished-session.jsonl",
+        [_meta_record("vanished-session"), _cwd_record(str(vanished_cwd), session_id="vanished-session")],
+    )
+    vanished_cwd.rmdir()
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    session = _render_json_document(report)["sessions"][0]
+    assert session["cwd"] == str(vanished_cwd)
+    assert session["cwd_missing"] is True
+
+
+def test_build_report_json_cwd_missing_is_false_for_an_existing_directory(tmp_path):
+    config_dir_path = tmp_path / "config"
+    existing_cwd = tmp_path / "existing-project"
+    existing_cwd.mkdir()
+    _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId="existing-session")
+    _write_transcript(
+        config_dir_path / "projects" / "p" / "existing-session.jsonl",
+        [_meta_record("existing-session"), _cwd_record(str(existing_cwd), session_id="existing-session")],
+    )
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    session = _render_json_document(report)["sessions"][0]
+    assert session["cwd"] == str(existing_cwd)
+    assert session["cwd_missing"] is False
 
 
 def test_render_json_lock_only_session_has_null_config_dir():
@@ -3891,12 +4080,29 @@ def test_build_report_fills_evidence_sources_from_each_source(tmp_path):
     assert lock_row.config_dir is None
 
 
+def test_render_json_transcript_only_session_is_classified_transcript_only_not_possible_crash(tmp_path):
+    config_dir_path = tmp_path / "config"
+    (config_dir_path / "sessions").mkdir(parents=True)
+    session_id = "orphan-transcript"
+    transcript_path = config_dir_path / "projects" / "p" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [_meta_record(session_id), _cwd_record(str(tmp_path), session_id=session_id)])
+    now = time.time()
+    os.utime(transcript_path, (now - 60, now - 60))
+
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    session = next(s for s in _render_json_document(report)["sessions"] if s["session_id"] == session_id)
+    assert session["classification"] == "transcript-only"
+    assert session["evidence_sources"] == ["transcript"]
+
+
 def test_render_json_top_level_key_set_is_pinned():
     document = _render_json_document(_blank_report())
     assert set(document) == {
         "schema_version", "publish_safe", "generated_at", "boot_time", "crash_window_seconds",
-        "ps_usable", "find_timed_out", "unvalidated_registry_versions", "unparsed_registry_entries",
-        "unparsed_lock_files", "config_dirs", "sessions",
+        "refuse_reasons", "ps_usable", "find_timed_out", "unvalidated_registry_versions",
+        "unparsed_registry_entries", "unparsed_lock_files", "config_dirs", "sessions",
     }
     assert document["publish_safe"] is False
 
@@ -3988,7 +4194,108 @@ def test_evidence_sources_transcript_only_session():
     assert _mod._evidence_sources("s", {}, {}, {}, {"s": transcript}, {}) == ("transcript",)
 
 
-def test_render_json_hostile_strings_round_trip_as_inert_data():
+def test_evidence_sources_omits_transcript_when_only_subagent_files_exist():
+    subagent_only = _transcript_info(session_id="s", has_main=False, subagent_count=1)
+    entry = _registry_entry(session_id="s")
+    assert _mod._evidence_sources("s", {"s": [entry]}, {}, {}, {"s": subagent_only}, {}) == ("registry",)
+    assert _mod._evidence_sources("s", {}, {}, {}, {"s": subagent_only}, {}) == ()
+
+
+@pytest.mark.parametrize(
+    ("report_overrides", "expected_reasons"),
+    [
+        ({"ps_usable": False}, ["ps_unusable"]),
+        ({"find_timed_out": True}, ["find_timed_out"]),
+        ({"unparsed_registry": 1}, ["unparsed_registry_entries"]),
+        ({"unparsed_lock": 1}, ["unparsed_lock_files"]),
+        ({"any_sessions_dir_found": False}, ["no_registry_directory"]),
+        ({"version_drift": ["9.9.9"]}, []),
+        ({}, []),
+    ],
+    ids=[
+        "ps-unusable", "find-timed-out", "unparsed-registry-entries", "unparsed-lock-files",
+        "no-registry-directory", "unvalidated-version-is-informational-only", "clean-report",
+    ],
+)
+def test_render_json_refuse_reasons_name_each_evidence_gap(report_overrides, expected_reasons):
+    document = _render_json_document(_blank_report(**report_overrides))
+    assert document["refuse_reasons"] == expected_reasons
+
+
+def test_render_json_refuse_reasons_lists_every_gap_in_sorted_order():
+    report = _blank_report(
+        ps_usable=False, find_timed_out=True, unparsed_registry=3, unparsed_lock=2, any_sessions_dir_found=False,
+    )
+    assert _render_json_document(report)["refuse_reasons"] == [
+        "find_timed_out", "no_registry_directory", "ps_unusable", "unparsed_lock_files",
+        "unparsed_registry_entries",
+    ]
+
+
+def test_render_json_rejects_a_non_finite_crash_window():
+    with pytest.raises(ValueError):
+        _mod.render_json(_blank_report(), crash_window_seconds=float("inf"), now=2000.0)
+
+
+def test_main_json_rejects_a_crash_window_that_overflows_to_infinity(tmp_path, monkeypatch, capsys):
+    """1e308 hours is finite, but its seconds value overflows to inf."""
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-config"))
+    (tmp_path / "empty-config").mkdir()
+    exit_code = _mod.main(["--json", "--crash-window-hours", "1e308"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--crash-window-hours" in captured.err
+    assert captured.out == ""
+
+
+def test_build_report_rows_are_sorted_by_session_id_regardless_of_creation_order(tmp_path):
+    config_dir_path = tmp_path / "config"
+    # Eight ids make an unsorted set-iteration order matching the sorted one improbable (1 in 8!).
+    creation_order = ("sess-e", "sess-a", "sess-h", "sess-c", "sess-g", "sess-b", "sess-f", "sess-d")
+    for session_id in creation_order:
+        _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId=session_id)
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    expected_order = sorted(creation_order)
+    assert [row.session_id for row in report.rows] == expected_order
+    document = _render_json_document(report)
+    assert [s["session_id"] for s in document["sessions"]] == expected_order
+
+
+def test_possible_crash_and_lock_resumable_detail_omit_registry_and_lock_pid_and_proc_start(tmp_path):
+    registry_pid, lock_pid = 7318241, 7318242
+    registry_proc_start, lock_proc_start = "Tue Feb  3 04:05:06 1987", "Wed Mar  4 05:06:07 1988"
+    config_dir_path = tmp_path / "config"
+    home_root = tmp_path / "home"
+    _write_registry_entry(
+        config_dir_path / "sessions", registry_pid, sessionId="registry-session", procStart=registry_proc_start,
+    )
+    _write_lock(
+        home_root / "proj" / ".claude" / "scheduled_tasks.lock",
+        sessionId="lock-session", pid=lock_pid, procStart=lock_proc_start,
+    )
+    for session_id in ("registry-session", "lock-session"):
+        _write_transcript(
+            config_dir_path / "projects" / "p" / f"{session_id}.jsonl",
+            [_meta_record(session_id), _cwd_record(str(tmp_path), session_id=session_id)],
+        )
+    # No pid is alive in the stub, but ps must answer for our own pid to count as usable.
+    # A boot time far before the registry file's mtime keeps the entry post-boot.
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=home_root,
+        ps_lstart=_fake_ps_lstart({os.getpid(): "Mon Jan  1 00:00:00 2024"}),
+        boot_time_fn=lambda: 1000.0,
+    )
+    sessions = {s["session_id"]: s for s in _render_json_document(report)["sessions"]}
+    assert {sid: s["classification"] for sid, s in sessions.items()} == {
+        "registry-session": "possible-crash", "lock-session": "resumable",
+    }
+    for session in sessions.values():
+        for distinctive_value in (str(registry_pid), str(lock_pid), registry_proc_start, lock_proc_start):
+            assert distinctive_value not in session["detail"]
+
+
+def test_render_json_passes_shell_metacharacters_through_unmodified():
     hostile = "$(touch /tmp/pwned); `id` | \"quoted\""
     row = _json_row(session_id=hostile, cwd=hostile, git_branch=hostile, detail=hostile)
     session = _render_json_document(_blank_report(rows=[row]))["sessions"][0]
@@ -4007,6 +4314,68 @@ def test_build_report_config_dir_prefers_transcript_over_registry(tmp_path):
     report = _mod.build_report(config_dirs=[registry_root, transcript_root], find_root=tmp_path / "home")
     row = next(r for r in report.rows if r.session_id == "split-session")
     assert row.config_dir == transcript_root
+
+
+def test_build_report_subagent_only_transcript_sets_config_dir_and_last_activity_over_registry_in_another_root(tmp_path):
+    """A subagent-only transcript is not listed in evidence_sources, but its root
+    and newest mtime still decide config_dir and last_activity on a dead pre-boot
+    registry row, because the classifier keys on the transcript's presence."""
+    registry_root = tmp_path / "registry-root"
+    subagent_root = tmp_path / "subagent-root"
+    _write_registry_entry(registry_root / "sessions", _dead_pid(), sessionId="split-session")
+    subagent_transcript = subagent_root / "projects" / "p" / "split-session" / "subagents" / "agent-1.jsonl"
+    _write_transcript(
+        subagent_transcript, [_meta_record("split-session"), _cwd_record(str(tmp_path), session_id="split-session")],
+    )
+    subagent_mtime = 1_700_000_000.0
+    os.utime(subagent_transcript, (subagent_mtime, subagent_mtime))
+    report = _mod.build_report(
+        config_dirs=[registry_root, subagent_root], find_root=tmp_path / "home",
+        boot_time_fn=lambda: time.time() + 3600,
+    )
+    row = next(r for r in report.rows if r.session_id == "split-session")
+    assert row.classification == _mod.CLASS_CRASHED_NO_TRANSCRIPT
+    assert row.evidence_sources == ("registry",)
+    assert row.config_dir == subagent_root
+    assert row.last_activity == subagent_mtime
+
+
+def test_build_report_config_dir_for_two_main_transcripts_is_the_later_scanned_root(tmp_path):
+    earlier_root = tmp_path / "root-z-scanned-first"
+    later_root = tmp_path / "root-a-scanned-last"
+    for root in (earlier_root, later_root):
+        _write_transcript(
+            root / "projects" / "p" / "shared-session.jsonl",
+            [_meta_record("shared-session"), _cwd_record(str(tmp_path), session_id="shared-session")],
+        )
+    report = _mod.build_report(
+        config_dirs=[earlier_root, later_root], find_root=tmp_path / "home", now=time.time(),
+    )
+    row = next(r for r in report.rows if r.session_id == "shared-session")
+    assert row.config_dir == later_root
+
+
+def test_build_report_config_dir_prefers_registry_over_lookup(tmp_path):
+    registry_root = tmp_path / "registry-root"
+    lookup_root = tmp_path / "lookup-root"
+    _write_registry_entry(registry_root / "sessions", _dead_pid(), sessionId="split-session")
+    _write_lookup_file(lookup_root / "sessions", _dead_pid(), session_id="split-session")
+    report = _mod.build_report(
+        config_dirs=[lookup_root, registry_root], find_root=tmp_path / "home", now=time.time(),
+    )
+    row = next(r for r in report.rows if r.session_id == "split-session")
+    assert row.evidence_sources == ("lookup", "registry")
+    assert row.config_dir == registry_root
+
+
+def test_build_report_config_dir_is_the_first_registry_entry_in_scan_order(tmp_path):
+    first_root = tmp_path / "root-z-scanned-first"
+    second_root = tmp_path / "root-a-scanned-last"
+    for root in (first_root, second_root):
+        _write_registry_entry(root / "sessions", _dead_pid(), sessionId="shared-session")
+    report = _mod.build_report(config_dirs=[first_root, second_root], find_root=tmp_path / "home")
+    row = next(r for r in report.rows if r.session_id == "shared-session")
+    assert row.config_dir == first_root
 
 
 def test_main_json_rejects_redact(tmp_path, monkeypatch, capsys):

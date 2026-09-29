@@ -41,28 +41,71 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   post-crash-sessions --config-dir ~/.claude-work   # scan active profile + only this dir — overrides the declared-roots default
   post-crash-sessions --redact                      # ordinal-mapped output safe to paste publicly
   post-crash-sessions --crash-window-hours 72       # recover sessions from a crash up to 3 days ago (--near-boot-hours also accepted)
-  post-crash-sessions --json | jq '.sessions[] | select(.classification == "possible-crash") | .session_id'
   ```
 
-  **`--json` contract (`schema_version` 1).** Stdout is one JSON document and nothing else; warnings go to stderr. Every classification is emitted, `live-process` and `confirmed-clean-exit` included — filtering is the consumer's policy. The output carries raw `config_dir` paths, session ids, working directories, and git branch names for every row, and it does so even when the declared-roots file, not `--config-dir`, chose the roots (the text report never does). It is **not publish-safe**: the document says so in-band as `"publish_safe": false`, and `--json` with `--redact` exits 2.
+  Gated `--json` consumption. The filter below refuses a `schema_version` other than 1, and refuses when `refuse_reasons` is missing, not an array, or non-empty. `pipefail` turns a tool failure into a non-zero exit, and the filter's `error` turns a refusal into one. It emits `config_dir` and `cwd` with each row and drops a row whose `config_dir` or `cwd` is null. It selects `resumable` and `possible-crash` rows only. A `transcript-only` row is left out because no liveness check was performed on it. Adding `or .classification == "transcript-only"` to the classification `select` opts in, and the operator must then confirm each such session is not still open before anything resumes it (see the contract below):
 
-  Top level: `schema_version`, `publish_safe`, `generated_at` and `boot_time` (epoch seconds; `boot_time` null when undeterminable), `crash_window_seconds`, `ps_usable`, `find_timed_out`, `unvalidated_registry_versions`, `unparsed_registry_entries`, `unparsed_lock_files`, `config_dirs`, `sessions`. `config_dirs` is scan coverage: the resolved absolute path of every root scanned, whether or not any session mapped to it. `unvalidated_registry_versions` holds registry version strings verbatim.
+  ```bash
+  set -o pipefail
+  post-crash-sessions --json | jq -r '
+    if .schema_version != 1 then error("unsupported schema_version: " + (.schema_version | tostring))
+    elif (.refuse_reasons | type) != "array" then error("refusing: refuse_reasons is missing or not an array")
+    elif (.refuse_reasons | length) > 0 then error("refusing: " + (.refuse_reasons | join(",")))
+    else .sessions[]
+      | select(.classification == "resumable" or .classification == "possible-crash")
+      | select(.config_dir != null and .cwd != null)
+      | [.classification, .config_dir, .cwd, (.evidence_sources | join("+")), .session_id] | @tsv
+    end'
+  ```
+
+  **`--json` contract (`schema_version` 1).** Stdout is one JSON document and nothing else; warnings go to stderr. Every classification is emitted, `live-process` and `confirmed-clean-exit` included, and filtering is the consumer's policy. The output carries raw `config_dir` paths, session ids, working directories, and git branch names for every row. It does so even when the declared-roots file, not `--config-dir`, chose the roots (the text report never does). It is **not publish-safe**: the document says so in-band as `"publish_safe": false`, and `--json` with `--redact` exits 2.
+
+  Top level: `schema_version`, `publish_safe`, `generated_at` and `boot_time` (epoch seconds; `boot_time` null when undeterminable), `crash_window_seconds`, `refuse_reasons`, `ps_usable`, `find_timed_out`, `unvalidated_registry_versions`, `unparsed_registry_entries`, `unparsed_lock_files`, `config_dirs`, `sessions`.
+  - `config_dirs` is scan coverage: the resolved absolute path of every root scanned, whether or not any session mapped to it.
+  - `unvalidated_registry_versions` holds registry version strings as read, with control characters removed. It is informational: a version the tool has not validated changes no parsing, so it is not a refuse reason. It can still signal registry format drift, so a consumer that wants a stricter gate may refuse on a non-empty list.
+  - `ps_usable`, `find_timed_out`, `unparsed_registry_entries`, and `unparsed_lock_files` are the raw values behind `refuse_reasons`.
 
   Each `sessions[]` object, in session-id order:
-  - `session_id`, `classification`: one of `resumable`, `possible-crash`, `crashed-no-transcript`, `live-process`, `confirmed-clean-exit`, `unknown`. The text report prints a resume command only for `resumable` and `possible-crash`. A consumer treats any value it does not recognize as not actionable.
-  - `evidence_sources`: sorted subset of `registry`, `lock`, `lookup`, `transcript`, `session_end`. It is informational, not a verdict: a source is listed when it holds a record for the session, and a registry-backed row can still be `unknown`, `live-process`, or `possible-crash`. Act on `classification`. After a crash, `registry` entries are often already gone, so `registry` is sufficient but not necessary evidence of an interactive session. `session_end` is listed only when a SessionEnd record matches one of the session's registry or lookup entries on config dir and pid, is not older than that entry, and does not carry the inconclusive reason `other`.
+  - `session_id`, `classification`: one of the seven values below. The text report prints a resume command only for `resumable`, `possible-crash`, and `transcript-only`. A consumer treats any value it does not recognize as not actionable. Each value is defined by its guarantee and the consumer action it implies. The evidence rules live in `_classify_session` and the module docstring, and can change without a version bump.
+    - `resumable` and `possible-crash`: no tracked pid was found live, at least one was found dead, and a main transcript exists. Other tracked pids may be indeterminate. `resumable` means the tool has positive crash evidence (a dead entry predating the last boot, or a dead scheduled-task lock). `possible-crash` means a clean exit is not ruled out. Both are resume candidates.
+    - `transcript-only`: the session has no tracked pid, so no liveness check ran. The operator must confirm it is not still open before resuming it, and a consumer never auto-launches it.
+    - `live-process`: a tracked pid was found live. Never resume it.
+    - `crashed-no-transcript`: crash evidence exists but there is no main transcript to resume. Not actionable.
+    - `confirmed-clean-exit`: the session ended deliberately. Not actionable.
+    - `unknown`: the evidence is missing, unparsable, or contradictory. Not actionable.
+  - `evidence_sources`: sorted subset of `registry`, `lock`, `lookup`, `transcript`, `session_end`.
+    - It is informational, not a verdict. A registry-backed row can still be `unknown`, `live-process`, or `possible-crash`.
+    - The absence of `registry`, `lock`, `lookup`, or `session_end` proves nothing.
   - `cwd` (nullable) and `cwd_missing`. `cwd_missing` is evaluated when the report is generated, is false when `cwd` is null, and is always false for `live-process` rows.
-  - `config_dir`: resolved absolute path of the account the session belongs to, or null when the only evidence is a scheduled-task lock. When several records disagree, the transcript's config dir wins, then the first registry entry's, then the first lookup file's, in scan order.
-  - `git_branch` and `last_activity` (epoch seconds, the newest timestamp among the session's evidence), both nullable.
+  - `config_dir`: resolved root the tool attributes the session to.
+    - A null `config_dir` means the only evidence is a scheduled-task lock. Such a row is never actionable, and a consumer must never fall back to its ambient account.
+  - `git_branch`: the branch recorded on the first record with a cwd in the session's main transcript, so it is the session-start branch. It is null when there is no main transcript, and when that record carries no branch.
+  - `last_activity`: epoch seconds, a best-effort display hint, nullable. Its source is unspecified.
   - `detail`: human prose, not part of the contract.
 
-  `session_id`, `cwd`, `git_branch`, and `detail` are untrusted data. Only control characters are stripped, so a directory or branch name can carry shell metacharacters. Never interpolate them into a shell string or a prompt, validate `session_id` against a strict grammar before use, and never parse `detail`.
+  `session_id`, `cwd`, `git_branch`, `detail`, and the `unvalidated_registry_versions` strings are untrusted data. Never put them into a prompt or a shell string, and treat `git_branch` as display-only.
+  - Only C0 control characters and DEL are stripped. C1 controls and bidi overrides survive, and shell metacharacters survive.
+  - `session_id` can originate from a `scheduled_tasks.lock` file found under a cloned repository, so validate its grammar before use.
+  - `cwd` must be an absolute, existing directory that does not begin with `-` before a consumer uses it.
+  - Launch only through an argv-array exec, never a shell string.
+  - tmux shell-command arguments and format strings (`#(...)`) are sinks for these values.
+  - Never parse `detail`.
 
-  Refuse to act on the document when any of these hold, because evidence may be missing and a live session can then read as `possible-crash`, and resuming it would fork a running session: `ps_usable` is false (no pid liveness could be confirmed, so every row is `unknown`), `find_timed_out` is true, `unparsed_registry_entries` or `unparsed_lock_files` is nonzero, or `unvalidated_registry_versions` is nonempty. `sessions` is not a full inventory: `crash_window_seconds` bounds which lookup-file and transcript-only sessions appear.
+  Refuse to act on the document whenever `refuse_reasons` is non-empty, including a reason the consumer does not recognize, so a reason added later fails safe. Each reason means evidence may be missing, so a live session can read as `possible-crash` and resuming it would fork a running session.
+  - An empty `refuse_reasons` means the tool knows of no evidence gap. It does not mean the evidence is complete: the lock sweep (rooted at the home directory) is bounded in depth and stays on one filesystem, the sweep ignores the exit status of `find` so a directory it cannot read is skipped silently, and an unreadable transcript file is skipped without a reason.
 
-  Re-run the tool immediately before acting and do not cache the document: a fresh session can overwrite a crashed session's registry entry at the same pid, and `generated_at` is the only staleness signal. On any exit-2 failure stdout is empty, and `| jq` succeeds on empty input, so use `set -o pipefail` or check the tool's exit status before reading "no sessions".
+  Each reason below states whether it clears and how. The text report (rerun without `--json`) prints a WARNING or NOTE line for each reason, but the `unparsed_*` line gives counts only and never names a file.
+  - `ps_unusable`: `ps -o lstart=` returned no usable output, so no pid liveness could be confirmed and every row is `unknown`. No flag clears it. Causes are a `ps` that lacks that output specifier, a `ps` timeout or launch failure, and a malformed pid (negative or out of range) in a registry, lock, or bare-pid file, which makes the one batched `ps` call fail. A rerun clears the first two only if the condition was transient. The operator inspects the pid files for the third.
+  - `find_timed_out`: the `scheduled_tasks.lock` sweep of the home directory did not finish, either because it exceeded its fixed time limit or because `find` could not be started. Lock evidence outside the working directories recorded in transcripts may be missing. No flag changes the limit. It clears when a rerun finishes the sweep in time. It does not clear while `find` cannot be started on this machine.
+  - `unparsed_registry_entries`: a `*.json` file directly under a scanned `sessions/` directory is not a JSON object with a non-empty string `sessionId` and an integer (or ASCII-digit string) `pid`, or a `sessions/` directory could not be listed. That file or directory is excluded from every row. It clears once every `sessions/` directory under `config_dirs` can be listed and all of its `*.json` files parse. The tool names neither, so the operator must inspect them.
+  - `unparsed_lock_files`: a `scheduled_tasks.lock` file is not a JSON object with a non-empty string `sessionId` and an integer (or ASCII-digit string) `pid`. The tool reads two locations: files found by the sweep of the home directory, such as one inside a cloned repository, and `.claude/scheduled_tasks.lock` in every working directory recorded in a scanned transcript, which can lie outside the home directory. Repairing or removing the file clears it, but inspect it first: check which project owns it and whether a Claude Code session is running there. Many first-party locks failing at once suggests the lock format changed and the tool needs an update, not a deletion. Remove only a file confirmed to be junk or stale. The tool does not name the file, so the operator must search both locations.
+  - `no_registry_directory`: no scanned config dir has a `sessions/` directory, so registry evidence is unavailable. It clears when a run scans a config dir that has one, for example by passing `--config-dir`.
 
-  Stability: adding a field or a `classification` or `evidence_sources` value does not bump `schema_version`, and a consumer ignores fields it does not know. Removing or renaming a field or value, changing a type, or changing what a classification means does bump it. A consumer rejects an unknown version. Raw registry fields (`status`, `procStart`, per-row `version`) and pids are deliberately not passed through: the contract is the tool's own verdict.
+  `sessions` is not a full inventory: `crash_window_seconds` bounds which lookup-file and transcript-only sessions appear.
+
+  Re-run the tool immediately before acting and do not cache the document. A fresh session can overwrite a crashed session's registry entry at the same pid, and `generated_at` is the only staleness signal. On any failure exit (a usage error exits 2, an uncaught error exits 1) stdout is empty, and `| jq` succeeds on empty input, so use `set -o pipefail` or check the tool's exit status before reading "no sessions".
+
+  Stability: adding a field, a `refuse_reasons` value, or a `classification` or `evidence_sources` value does not bump `schema_version`, and a consumer ignores fields it does not know. Removing or renaming a field or value, changing a type, or changing a classification's guarantee or consumer action does bump it. Changing the evidence rules behind a classification does not. A consumer rejects an unknown version. Raw registry fields (`status`, `procStart`, per-row `version`) and pids are deliberately not passed through: the contract is the tool's own verdict.
 
 - **`mark-terminal.py`** — resolves a PID's controlling terminal and titles it, so a blocked or stuck session (a stuck lock, a hung command) can be found among many open terminal windows by PID alone. Resolves the TTY via `ps -o tty= -p <pid>` and writes an OSC 0 title-set escape sequence directly to the resolved `/dev/ttysNNN` device. The title is auto-derived from that PID's entry in the session registry (`<config-dir>/sessions/<pid>.json`) when one exists and isn't stale (a `procStart` mismatch means the pid was recycled since the entry was written); an explicit `--title` always wins. `--list` enumerates every currently-live registry entry with its PID/TTY/cwd, for the "many windows open, which one is it" case. `--config-dir DIR` (repeatable) follows the same precedence as `post-crash-sessions.py` above. macOS/BSD only — exits loudly on Linux/WSL2, where the no-tty sentinel and `/dev/ttysNNN` naming this relies on are shaped differently. Complements `post-crash-sessions.py` above: that discovers *which* sessions are recoverable, this answers "which open window is this live PID."
 
