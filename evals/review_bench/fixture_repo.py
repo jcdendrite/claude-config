@@ -167,7 +167,10 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
 
 
 def _commit_snapshot(dest_dir: Path, message: str) -> None:
-    _run_git(["add", "-A"], cwd=dest_dir)
+    # --force so a snapshot's tree equals its source commit's tree whatever
+    # `.gitignore` or global excludes say: git archive emits only tracked
+    # paths, and `add` never descends into `.git`.
+    _run_git(["add", "-A", "--force"], cwd=dest_dir)
     subprocess.run(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
@@ -191,6 +194,11 @@ def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: 
     _commit_snapshot(dest_dir, _FIXTURE_BASE_COMMIT_MESSAGE)
 
     _clear_dir_contents(dest_dir)
+    # An empty index forces `git add -A` to hash every head file from content:
+    # `git archive` stamps both extractions with the commit time, so a
+    # same-size file edited within one commit second would otherwise match its
+    # stale index stat entry and keep the base blob.
+    _run_git(["read-tree", "--empty"], cwd=dest_dir)
     _extract_commit_tree(source_repo, defect.head_commit, dest_dir)
     _refuse_executable_project_config(dest_dir)
     _commit_snapshot(dest_dir, _FIXTURE_HEAD_COMMIT_MESSAGE)

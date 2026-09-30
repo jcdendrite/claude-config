@@ -1,8 +1,11 @@
-"""Tests for evals/run_review_bench.py's own CLI-level logic:
-`analysis.hash_directory`, `cmd_freeze`'s written manifest fields, and
-`_build_spot_check_samples`'s reviewer/judge join. Offline throughout --
-`cmd_freeze`'s own git calls run against a throwaway tmp-path repo, never
-this repo's own history. No test launches `claude`.
+"""Tests for evals/run_review_bench.py's own CLI-level logic across `freeze`,
+`run`, `smoke`, `judge`, `analyze`, `spot-check`, `mine-szz`, `mine-rounds`,
+and `snapshot-arms`: argument handling, frozen-condition checks, report
+contents, and exit codes, plus `analysis.hash_directory`, `cmd_freeze`'s
+written manifest fields, and `_build_spot_check_samples`'s reviewer/judge
+join. Offline throughout -- `cmd_freeze`'s own git calls run against a
+throwaway tmp-path repo, never this repo's own history. No test launches
+`claude`.
 """
 from __future__ import annotations
 
@@ -826,8 +829,11 @@ class TestRunAndSmokeCampaignSelection:
 
 @pytest.mark.usefixtures("stubbed_environment")
 class TestRunAndSmokeFlagsReachRunCampaign:
-    """Each campaign flag parsed by `build_parser()` reaches `run_campaign`
-    as the argument the harness acts on."""
+    """The campaign flags these tests name (`--inject-fault`, `--seed`, `--k`,
+    `--workers`, `--campaign-id`, `--defect-id`) reach `run_campaign` as the
+    argument the harness acts on, beside the environment reference built for
+    the subcommand. Live-checkout roots reach `build_defect_fixture_spec`
+    through `build_spec`."""
 
     def _capture_run_campaign(
         self, monkeypatch, tmp_path: Path, defect_ids=("d1", "d2"), frozen_k: int = runner.DEFAULT_K,
@@ -1593,9 +1599,43 @@ def _analyze_argv(files: dict[str, Path], reviewer_path: Path, judge_path: Path,
     ]
 
 
+class TestAnalyzeRefusesRecordsFromTwoEnvironments:
+    """`analyze` backstops the per-block environment checks: records from
+    blocks run under different ambient config commits are not one comparable
+    campaign."""
+
+    def test_records_from_two_blocks_under_different_ambient_config_commits_exit_2_naming_both(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        import dataclasses
+
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("d1"), _confirmed_single_defect("d2")])
+        reviewer_path, judge_path = _judged_records(tmp_path, defect_ids=("d1", "d2"))
+        reviewer_records = [
+            dataclasses.replace(record, ambient_config_commit="cafebabe") if record.defect_id == "d2" else record
+            for record in runner.read_run_records(reviewer_path)
+        ]
+        reviewer_path.unlink()
+        runner.append_run_records(reviewer_path, reviewer_records)
+
+        exit_code = run_review_bench.main([
+            "analyze", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_path),
+            "--judge-records-path", str(judge_path), "--k", "1", "--out", str(tmp_path / "report.json"),
+        ])
+
+        assert exit_code == 2
+        error_text = capsys.readouterr().err
+        assert "more than one environment" in error_text
+        assert "'2.0.0'@'deadbeef': ['d1']" in error_text
+        assert "'2.0.0'@'cafebabe': ['d2']" in error_text
+        assert not (tmp_path / "report.json").exists()
+
+
 class TestAnalyzeRecomputesFrozenConditions:
-    """A later arm's `analyze` must recompute every file-derived field
-    `freeze` recorded, so an edit after the freeze exits 2 naming it."""
+    """A later arm's `analyze` must recompute the arm, judge-agent, and
+    defects file hashes `freeze` recorded, so an edit after the freeze exits 2
+    naming the field."""
 
     def test_unchanged_files_and_matching_k_and_defects_analyze_normally(self, tmp_path: Path, monkeypatch) -> None:
         files = _frozen_files(tmp_path, monkeypatch)
@@ -2576,7 +2616,7 @@ class TestCmdSpotCheckImport:
         assert f"spot-check import: {adjudicate.SPOT_CHECK_KIND_RECALL} kappa = 1.000 -- validated" in stderr
 
 
-class TestMainCatchesHarnessInvalidatedErrorForEveryCommand:
+class TestMainCatchesHarnessInvalidatedErrorForJudgeAndSpotCheckExport:
     """`cmd_judge` and `_build_spot_check_samples` (unlike `cmd_analyze`) have
     no local `HarnessInvalidatedError` catch of their own -- this exercises
     `main`'s own top-level handler, the only thing standing between a

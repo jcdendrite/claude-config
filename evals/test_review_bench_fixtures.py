@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 from review_bench import adjudicate, arms, fixture_repo
 from review_bench.defects import ConfirmedDefect
-from test_review_bench_mining import _commit, _git, _init_repo, _write
+from test_review_bench_mining import _commit, _commit_at, _git, _init_repo, _write
+
+# One unfixed build can miss the edit only some of the time, so a regression
+# needs repeated builds to fail reliably.
+_SAME_SECOND_BUILD_ATTEMPTS = 15
 
 
 def _confirmed_defect(*, base_commit: str, head_commit: str, lens: str = "staff-backend-engineer") -> ConfirmedDefect:
@@ -76,6 +80,77 @@ class TestBuildTwoCommitRepo:
         )
 
         assert len(_git(dest_dir, "log", "--format=%H").strip().splitlines()) == 2
+
+    def test_a_same_size_edit_between_commits_sharing_one_timestamp_is_never_dropped(self, tmp_path: Path) -> None:
+        """Both source commits share one committer second and the edit keeps the
+        file's byte length, so `git archive` stamps both extractions with the
+        same mtime and size. A stale index stat match on the second `git add -A`
+        would then record the base blob as the head tree, and the fixture's diff
+        and changed set would silently omit the file. The build repeats because
+        the test cannot control whether a given build gets that stale match."""
+        source_repo = _init_repo(tmp_path / "source")
+        pinned_commit_date = "2020-01-01T00:00:00+00:00"
+        _write(source_repo, "changed_file.py", "x = 1\n")
+        base_commit = _commit_at(source_repo, "base", pinned_commit_date)
+        _write(source_repo, "changed_file.py", "x = 2\n")
+        head_commit = _commit_at(source_repo, "fix: bug", pinned_commit_date)
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        source_changed_paths = fixture_repo.changed_paths_between(source_repo, base_commit, head_commit)
+        source_diff = _git(source_repo, "diff", base_commit, head_commit)
+        assert source_changed_paths == ["changed_file.py"]
+
+        for attempt in range(_SAME_SECOND_BUILD_ATTEMPTS):
+            dest_dir = tmp_path / f"fixture-{attempt}"
+            dest_dir.mkdir()
+            built = fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+            assert [stat.path for stat in built.changed_files] == source_changed_paths, f"attempt {attempt}"
+            assert (dest_dir / ".bench" / "change.diff").read_text() == source_diff, f"attempt {attempt}"
+
+    def test_a_file_tracked_at_both_commits_survives_a_head_gitignore_that_newly_matches_it(
+        self, tmp_path: Path,
+    ) -> None:
+        """Each fixture snapshot must hold exactly its source commit's tree.
+        With an empty index before the head snapshot, a plain `git add -A`
+        treats a still-tracked file as untracked and skips it when the head's
+        `.gitignore` matches it, so the fixture's diff would show a deletion
+        the source never made."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "ignored_later.log", "kept\n")
+        _write(source_repo, "changed_file.py", "x = 1\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, ".gitignore", "*.log\n")
+        _write(source_repo, "changed_file.py", "x = 2\n")
+        head_commit = _commit(source_repo, "fix: bug")
+        assert "ignored_later.log" in _git(source_repo, "ls-tree", "-r", "--name-only", head_commit)
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        built = fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
+        assert sorted(stat.path for stat in built.changed_files) == [".gitignore", "changed_file.py"]
+        assert (dest_dir / ".bench" / "change.diff").read_text() == _git(source_repo, "diff", base_commit, head_commit)
+
+    def test_a_file_force_tracked_past_the_base_gitignore_survives_both_snapshots(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, ".gitignore", "*.log\n")
+        _write(source_repo, "changed_file.py", "x = 1\n")
+        _write(source_repo, "forced.log", "kept\n")
+        _git(source_repo, "add", "-f", "forced.log")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "changed_file.py", "x = 2\n")
+        head_commit = _commit(source_repo, "fix: bug")
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo.build_two_commit_repo(source_repo, defect, dest_dir)
+
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
 
 
 class TestWriteBenchArtifacts:

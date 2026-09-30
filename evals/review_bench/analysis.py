@@ -7,7 +7,8 @@ checks' observable behavior.
 Every check in this module raises HarnessInvalidatedError rather than
 exiting the process directly, so each one is independently testable;
 evals/run_review_bench.py's `analyze` and `freeze` subcommands catch it,
-print its message, and call `sys.exit(2)`.
+print its message, and return exit code 2. Every other subcommand lets it
+reach `main()`'s top-level handler, which does the same.
 """
 from __future__ import annotations
 

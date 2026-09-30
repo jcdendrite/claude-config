@@ -497,7 +497,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
 
     # The closure manifest hash `freeze --last-smoke-manifest-hash` checks is taken before this process's first dispatch,
     # so an edit to the harness during the process makes `freeze` refuse it.
-    # A campaign resumed after a closure edit takes its hash after the edit, so it does not certify freeze.
+    # A campaign resumed after a closure edit takes its hash after the edit, which `freeze` still accepts.
     manifest_hash = analysis.closure_manifest_hash(analysis.compute_harness_closure())
     result = _run_or_smoke(args, fault=args.inject_fault, verify_frozen=False)
     if result == 0:

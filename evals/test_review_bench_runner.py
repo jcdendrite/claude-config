@@ -20,6 +20,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+import measure_subagent_model_resolution as msmr
 import pytest
 import run_review_bench
 import run_skill_evals
@@ -818,10 +819,11 @@ class TestSessionFlushWaitThroughExecuteRun:
         assert record.missing_reason == runner.MISSING_REASON_TIMEOUT
 
 
-class TestWaitForSessionFlushCompletenessBarrier:
-    """The transcript and sidecar are returned only once no file's size
-    changed across two consecutive polls, so a partly written transcript
-    is never classified."""
+class TestWaitForSessionFlushSettlesOnlyUpToTheTimeout:
+    """The transcript and sidecar are returned once no file's size changed
+    across two consecutive polls, or at SESSION_FLUSH_TIMEOUT_S, whichever comes
+    first. The barrier holds only up to that timeout; a transcript still
+    growing then is returned as it stands."""
 
     SESSION_ID = "session-a"
 
@@ -1268,6 +1270,111 @@ class TestEmptyFindings:
         assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
 
 
+API_ERROR_TEXT = "API Error: the request failed before any review was written"
+
+
+def _append_subagent_records(scenario: Path, *records: dict) -> None:
+    subagent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
+    with open(subagent_jsonl, "a") as fh:
+        for record in records:
+            fh.write(json.dumps(record) + "\n")
+
+
+def _assistant_text_record(text: str, *, model: str = MODEL_ID, **record_fields) -> dict:
+    return {"type": "assistant", "message": {"model": model, "content": [{"type": "text", "text": text}]}, **record_fields}
+
+
+class TestApiErrorFinalRecord:
+    """A subagent whose last assistant record is one Claude Code synthesized
+    for an API failure never counts as a completed review."""
+
+    @pytest.mark.parametrize(
+        "error_record",
+        [
+            _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID, isApiErrorMessage=True),
+            _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID),
+            _assistant_text_record(API_ERROR_TEXT, isApiErrorMessage=True),
+        ],
+        ids=["synthetic-and-flagged", "synthetic-model-only", "flagged-only"],
+    )
+    def test_a_final_api_error_record_after_real_turns_is_not_ok(self, tmp_path: Path, error_record: dict) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _append_subagent_records(scenario, error_record)
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD
+        assert result.findings_text is None
+        assert result.prompt_verbatim is True
+        assert API_ERROR_TEXT not in (result.failure_reason or "") + (result.failure_detail or "")
+
+    def test_a_synthetic_record_mid_run_does_not_fail_a_real_final_text(self, tmp_path: Path) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _append_subagent_records(
+            scenario,
+            _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID, isApiErrorMessage=True),
+            _assistant_text_record("Finding: file:1 is fine after the retried turn."),
+        )
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is True
+        assert result.findings_text == "Finding: file:1 is fine after the retried turn."
+
+    def test_a_synthetic_record_mid_run_followed_by_a_textless_real_record_yields_no_error_findings(
+        self, tmp_path: Path,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _rewrite_records(
+            scenario / "session-1" / "subagents" / "agent-1.jsonl",
+            lambda block: None if block.get("type") == "text" else block,
+        )
+        _append_subagent_records(
+            scenario,
+            _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID, isApiErrorMessage=True),
+            {"type": "assistant", "message": {"model": MODEL_ID, "content": [{"type": "thinking", "thinking": "hmm"}]}},
+        )
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_EMPTY_FINDINGS
+        assert result.findings_text is None
+        assert API_ERROR_TEXT not in (result.failure_reason or "") + (result.failure_detail or "")
+
+    def test_a_run_ending_on_an_api_error_is_retried_once_then_recorded_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        _patch_inner_prompt_to_match_build_review_prompt(scenario)
+        _append_subagent_records(
+            scenario, _assistant_text_record(API_ERROR_TEXT, model=msmr.SYNTHETIC_MODEL_ID, isApiErrorMessage=True),
+        )
+        launch_count = 0
+
+        def fake_launch(cmd, cwd, timeout_s):
+            nonlocal launch_count
+            launch_count += 1
+            return SUCCESS_STREAM_LINES, False
+
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl")
+        ctx = runner.RunContext(
+            campaign_id="c1", defect_id="d1", agent_name=AGENT_NAME, model_id=MODEL_ID,
+            agent_declared_tools=DECLARED_TOOLS, fixture_dir=scenario, live_checkout_roots=(),
+            changed_relpaths=(), over_read_cap=False, budget_cap_usd=1.0, timeout_s=1,
+            environment=runner.EnvironmentRecord("v1", "sha1"),
+        )
+
+        attempt = runner.run_one_with_retry(ctx, arm="current-rule", run_index=0, launch=fake_launch)
+
+        assert launch_count == 2
+        assert attempt.record.status == runner.STATUS_MISSING
+        assert attempt.record.missing_reason == runner.VALIDITY_FAIL_API_ERROR_FINAL_RECORD
+        assert attempt.record.findings_text is None
+        assert attempt.record.attempts == 2
+
+
 def _result_event_line(**fields) -> bytes:
     return json.dumps({"type": "result", "is_error": False, **fields}).encode()
 
@@ -1660,6 +1767,7 @@ class TestEnvironmentMismatchHaltsBlock:
 
         assert len(launches) == 1  # the block ran once and nothing reran
         assert changed_field in str(excinfo.value)
+        assert "records the block wrote" not in str(excinfo.value)  # a reviewer block writes none before its end reading
 
     def test_with_no_frozen_environment_a_later_block_is_held_to_the_first_blocks_reading(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1684,6 +1792,45 @@ class TestEnvironmentMismatchHaltsBlock:
                 spec, arms=("current-rule",), k=1, seed=1, campaign_id="c1", launch=launch, workers=1,
                 environment_reference=shared_reference,
             )
+
+    @pytest.mark.parametrize(
+        ("environment_reference", "reference_origin"),
+        [
+            (runner.EnvironmentReference(FROZEN_ENVIRONMENT), "the frozen environment"),
+            (None, "the campaign's first reading"),
+        ],
+        ids=["frozen-reference", "no-frozen-reference"],
+    )
+    def test_a_campaign_halts_before_dispatching_a_block_whose_start_reading_differs_from_the_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        environment_reference: runner.EnvironmentReference | None, reference_origin: str,
+    ) -> None:
+        """Drives the real run_defect_block through run_campaign, so a campaign that stopped
+        forwarding its reference (each block then adopting its own first reading) fails here."""
+        spec = self._spec_and_stubs(tmp_path, monkeypatch)
+        self._stub_readings(
+            monkeypatch,
+            runner.EnvironmentRecord("v1", "sha1"), runner.EnvironmentRecord("v1", "sha1"),  # block 1 start, end
+            runner.EnvironmentRecord("v1", "sha2"),  # block 2 start
+        )
+        run_store = runner.RunStore(tmp_path / "run-store")
+        launches: list[int] = []
+
+        def counting_launch(cmd, cwd, timeout_s):
+            launches.append(1)
+            return SUCCESS_STREAM_LINES, False
+
+        with pytest.raises(runner.EnvironmentMismatchError, match="d2's block start") as excinfo:
+            runner.run_campaign(
+                ["d1", "d2"], build_spec=lambda defect_id: dataclasses.replace(spec, defect_id=defect_id),
+                arms=("current-rule",), k=1, seed=1, campaign_id="c1", run_store=run_store,
+                records_path=tmp_path / "records.jsonl", projects_root=tmp_path / "projects",
+                launch=counting_launch, workers=1, environment_reference=environment_reference,
+            )
+
+        assert reference_origin in str(excinfo.value)
+        assert len(launches) == 1  # block 1's one run; block 2 never dispatched
+        assert run_store.completed_block_ids() == {"d1"}
 
     def test_a_halted_campaign_block_writes_no_records_and_is_not_marked_complete(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

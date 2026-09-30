@@ -95,6 +95,38 @@ class TestBlindOrdering:
         assert ".bench/" not in recall_a.text
 
 
+class TestMissingRunsAreExcludedFromJudgeInput:
+    """A missing run has nothing for a judge to label. The judge run validates
+    its answer against the ids this input lists (`JudgeInput.order`), so a
+    listed missing run would pass there; `analyze` later revalidates against
+    only the completed runs' ids and would drop the whole answer."""
+
+    @pytest.fixture
+    def records_with_one_missing_run(self) -> list[runner.RunRecord]:
+        return [
+            _run_record("d1", "current-rule", "run-ok", "Real finding."),
+            _run_record("d1", "current-rule", "run-gone", "Partial text of a missing run.", status=runner.STATUS_MISSING),
+        ]
+
+    @pytest.mark.parametrize("judge_kind", ["recall", "precision"])
+    def test_the_missing_run_is_absent_from_the_order_and_the_text(
+        self, tmp_path: Path, records_with_one_missing_run: list[runner.RunRecord], judge_kind: str,
+    ) -> None:
+        if judge_kind == "precision":
+            judge_input = adjudicate.build_precision_judge_input(records_with_one_missing_run, seed=1)
+        else:
+            source_repo = tmp_path / "source"
+            defect = _build_two_commit_source_repo(source_repo)
+            judge_input = adjudicate.build_recall_judge_input(
+                defect, records_with_one_missing_run, source_repo=source_repo, seed=1,
+            )
+
+        assert judge_input.order == ("run-ok",)
+        assert "run-gone" not in judge_input.text
+        assert "Partial text of a missing run." not in judge_input.text
+        assert adjudicate._RUN_HEADER_RE.findall(judge_input.text) == ["run-ok"]
+
+
 class TestFindingsTextIsFramedAsData:
     HOSTILE_FINDINGS = (
         "Real finding about a leak.\n"
@@ -1250,6 +1282,7 @@ class TestRunDefectJudgesEnvironmentChecks:
     under a changed environment."""
 
     ENVIRONMENT = {"cli_version": "v1", "ambient_config_commit": "sha1"}
+    RECORDS_KEPT_CLAUSE = "records the block wrote before this reading are kept"
 
     def _stub_judge_dispatch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *readings: tuple[str, str]) -> list[str]:
         """Feeds `readings` as successive environment readings and stubs both
@@ -1320,7 +1353,7 @@ class TestRunDefectJudgesEnvironmentChecks:
         dispatched = self._stub_judge_dispatch(tmp_path, monkeypatch, ("v1", "sha1"), ("v2", "sha1"))
         judge_records_path = tmp_path / "judge.jsonl"
 
-        with pytest.raises(runner.EnvironmentMismatchError, match="recall judge run end"):
+        with pytest.raises(runner.EnvironmentMismatchError, match="recall judge run end") as halt:
             adjudicate.run_defect_judges(
                 defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
                 judge_records_path=judge_records_path,
@@ -1329,6 +1362,7 @@ class TestRunDefectJudgesEnvironmentChecks:
 
         assert dispatched == [adjudicate.JUDGE_ARM_RECALL]
         assert not judge_records_path.exists()
+        assert self.RECORDS_KEPT_CLAUSE not in str(halt.value)
 
     def test_an_end_reading_that_differs_returns_no_precision_record_and_keeps_only_the_bracketed_recall_record(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1339,7 +1373,7 @@ class TestRunDefectJudgesEnvironmentChecks:
 
         with pytest.raises(
             runner.EnvironmentMismatchError,
-            match=r"judge block end.*records the block wrote before this reading are kept",
+            match=rf"judge block end.*{self.RECORDS_KEPT_CLAUSE}",
         ):
             adjudicate.run_defect_judges(
                 defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
@@ -1349,15 +1383,19 @@ class TestRunDefectJudgesEnvironmentChecks:
 
         assert [record.arm for record in runner.read_run_records(judge_records_path)] == [adjudicate.JUDGE_ARM_RECALL]
 
-    def test_with_no_frozen_environment_the_first_reading_is_the_reference(
+    def test_an_end_reading_that_differs_with_no_judge_records_path_does_not_claim_records_are_kept(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         defect = _build_two_commit_source_repo(tmp_path / "source")
-        self._stub_judge_dispatch(tmp_path, monkeypatch, ("v1", "sha1"), ("v1", "sha1"), ("v1", "sha1"))
+        self._stub_judge_dispatch(tmp_path, monkeypatch, ("v1", "sha1"), ("v1", "sha1"), ("v1", "sha2"))
 
-        adjudicate.run_defect_judges(
-            defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
-        )
+        with pytest.raises(runner.EnvironmentMismatchError, match="judge block end") as halt:
+            adjudicate.run_defect_judges(
+                defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
+                environment_reference=runner.EnvironmentReference(self.ENVIRONMENT),
+            )
+
+        assert self.RECORDS_KEPT_CLAUSE not in str(halt.value)
 
     def test_a_fix_only_file_reaches_the_judge_leak_check_and_the_introducing_set_stays_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

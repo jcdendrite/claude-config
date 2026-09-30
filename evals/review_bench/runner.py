@@ -12,8 +12,9 @@ them unchanged.
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
 own docstring for the reuse record this file adds). Reuses
-run_skill_evals.DEFAULT_WORKERS and DISPATCH_TOOL_NAMES. Session stores are
-found by session ID, never through run_skill_evals.compute_session_store_dir().
+run_skill_evals.DEFAULT_WORKERS, DISPATCH_TOOL_NAMES, and SAMPLE_TIMEOUT_S.
+Session stores are found by session ID, never through
+run_skill_evals.compute_session_store_dir().
 
 LOCAL USE ONLY -- never run in CI. `smoke` and `run` launch real `claude -p`
 sessions against real Claude subscription auth.
@@ -183,10 +184,9 @@ class HarnessInvalidatedError(Exception):
 STATUS_OK = "ok"
 STATUS_MISSING = "missing"
 
-# budget and timeout are the two missing_reason values downstream code
-# branches on. invalid-answer is used only by judge runs.
-# Every other missing_reason is the VALIDITY_FAIL_* name of the check the
-# second attempt failed, so the set is open.
+# missing_reason is an open string that downstream code only counts per arm.
+# budget, timeout, and invalid-answer (judge runs only) are named here; every
+# other value is the VALIDITY_FAIL_* name of the check the second attempt failed.
 MISSING_REASON_BUDGET = "budget"
 MISSING_REASON_TIMEOUT = "timeout"
 MISSING_REASON_INVALID_ANSWER = "invalid-answer"  # judge runs only
@@ -207,6 +207,7 @@ VALIDITY_FAIL_SESSION_STORE_NOT_FOUND = "session-store-not-found"
 VALIDITY_FAIL_SIDECAR_MISSING = "sidecar-missing"
 VALIDITY_FAIL_EMPTY_FINDINGS = "empty-findings"
 VALIDITY_FAIL_TRANSCRIPT_UNREADABLE = "transcript-unreadable"
+VALIDITY_FAIL_API_ERROR_FINAL_RECORD = "api-error-final-record"
 
 
 @dataclass
@@ -663,10 +664,15 @@ def extract_tool_results(subagent_jsonl: Path) -> dict[str, str]:
     return results
 
 
-def extract_final_text(subagent_jsonl: Path) -> str:
+def extract_final_text(subagent_jsonl: Path) -> str | None:
     """The subagent's own last assistant text block -- its findings
-    (RunRecord.findings_text)."""
+    (RunRecord.findings_text). None when its final assistant record is one
+    Claude Code synthesized (an API error or placeholder turn), whose text
+    is an error message rather than a review. A synthetic record's text is
+    never returned wherever it sits, so a run whose only text is synthetic
+    yields an empty string."""
     last_text = ""
+    final_record_is_synthetic = False
     with open(subagent_jsonl) as fh:
         for raw in fh:
             try:
@@ -675,12 +681,18 @@ def extract_final_text(subagent_jsonl: Path) -> str:
                 continue
             if rec.get("type") != "assistant":
                 continue
-            for block in (rec.get("message") or {}).get("content") or []:
+            message = rec.get("message") or {}
+            final_record_is_synthetic = bool(
+                rec.get("isApiErrorMessage") or message.get("model") == msmr.SYNTHETIC_MODEL_ID
+            )
+            if final_record_is_synthetic:
+                continue
+            for block in message.get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text")
                     if isinstance(text, str):
                         last_text = text
-    return last_text
+    return None if final_record_is_synthetic else last_text
 
 
 @dataclass(frozen=True)
@@ -949,6 +961,11 @@ def evaluate_run_validity(
     stats = compute_read_stats(
         read_like_calls, tool_results, fixture_dir=fixture_dir, changed_relpaths=frozenset(changed_relpaths)
     )
+    if findings_text is None:
+        return _fail(
+            VALIDITY_FAIL_API_ERROR_FINAL_RECORD, observed_model=expected_model_id,
+            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+        )
     if not findings_text.strip():
         return _fail(
             VALIDITY_FAIL_EMPTY_FINDINGS, observed_model=expected_model_id,
@@ -1068,10 +1085,11 @@ class EnvironmentReference:
                 ambient_config_commit=frozen_environment["ambient_config_commit"],
             )
 
-    def require_match(self, reading: EnvironmentRecord, *, where: str) -> None:
+    def require_match(self, reading: EnvironmentRecord, *, where: str, records_kept: bool = False) -> None:
         """Raises EnvironmentMismatchError when `reading` differs from the
         reference. `where` names the block and the reading, such as "d1's
-        block start"."""
+        block start". `records_kept` makes the message say the block's earlier
+        records stay written; pass it only where some exist."""
         if self._reference is None:
             self._reference = reading
             return
@@ -1084,11 +1102,12 @@ class EnvironmentReference:
         recovery = "restore the environment and resume with the same --campaign-id"
         if self._is_frozen:
             recovery += ", or, if it cannot be restored, re-freeze and rerun all arms in one campaign"
+        records_clause = ", and records the block wrote before this reading are kept" if records_kept else ""
         raise EnvironmentMismatchError(
             f"halted: environment at {where} differs from {origin} "
             f"(cli_version {reference.cli_version!r}->{reading.cli_version!r}, "
             f"ambient_config_commit {reference.ambient_config_commit!r}->{reading.ambient_config_commit!r}). "
-            f"Nothing was rerun, and records the block wrote before this reading are kept; {recovery}"
+            f"Nothing was rerun{records_clause}; {recovery}"
         )
 
 

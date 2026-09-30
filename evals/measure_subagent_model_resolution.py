@@ -59,6 +59,10 @@ AGENTS_DIR = REPO_ROOT / "claude" / ".claude" / "agents"
 # transcript-analysis.py's SUBAGENT_SUBDIR ("subagents").
 SUBAGENT_SUBDIR = "subagents"
 
+# message.model on a transcript record Claude Code synthesizes itself (an API
+# error or placeholder turn) rather than receives from a model.
+SYNTHETIC_MODEL_ID = "<synthetic>"
+
 # --- M8: per-run spend cap -------------------------------------------------
 # Derived 2026-08-13 via `.venv/bin/python3
 # claude/.claude/scripts/transcript-analysis.py subagent-mix --this-repo`
@@ -393,8 +397,7 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
 
     Mirrors _dispatch_usage_summary's observed-model walk
     (claude/.claude/scripts/transcript-analysis.py) — every assistant
-    record's message.model, excluding the literal "<synthetic>" placeholder
-    — and collects tool_use block names in the same pass for M3's
+    record's message.model, excluding SYNTHETIC_MODEL_ID — and collects tool_use block names in the same pass for M3's
     discriminator. Returns two empty frozensets on any read error, matching
     that function's "dangling" convention: absence of data, not a crash.
     """
@@ -411,7 +414,7 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
                     continue
                 msg = rec.get("message") or {}
                 model = msg.get("model")
-                if model and model != "<synthetic>":
+                if model and model != SYNTHETIC_MODEL_ID:
                     model_ids.add(model)
                 for block in msg.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "tool_use":

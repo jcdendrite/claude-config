@@ -35,7 +35,7 @@ def isolate_review_bench_from_the_host(tmp_path_factory: pytest.TempPathFactory,
     only when that module is already imported. A test that needs the real
     roots re-installs the function itself."""
     run_review_bench = sys.modules.get("run_review_bench")
-    if run_review_bench is None:  # the test module under way never imported it
+    if run_review_bench is None:  # no test module has imported it in this process, so nothing needs redirecting
         return
     real_local_dir = run_review_bench.DEFAULT_LOCAL_DIR
     absent_local_dir = tmp_path_factory.mktemp("review-bench-host") / "local"

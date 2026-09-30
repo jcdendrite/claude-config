@@ -548,15 +548,15 @@ differing — this section is their canonical home:
 
 - **Within one campaign, across its blocks.** Each block records the CLI
   version and the ambient config's own commit at its start and at its end.
-  Every block's start and end readings must equal one reference environment: the environment
-  frozen in `conditions.json` for `run` and `judge`, and the campaign's first
-  reading for `smoke` and for `judge` before any freeze. Any mismatch halts
-  the campaign with exit 2. Nothing reruns, and the halted block writes no
-  records, except the `judge` case below. A `judge` block is one defect's two judge runs, read at its start,
-  after its recall run, and at its end. The recall record is written after
-  the second reading, so a halt at the end keeps that record, which two
-  matching readings bracket, and writes no precision record. Recovery takes
-  one of two paths:
+  Every block's start and end readings must equal one reference environment:
+  the environment frozen in `conditions.json` for `run` and `judge`, and the
+  campaign's first reading for `smoke` and for `judge` before any freeze. Any
+  mismatch halts the campaign with exit 2. Nothing reruns, and the halted
+  block writes no records, except the `judge` case below. A `judge` block is
+  one defect's two judge runs, read at its start, after its recall run, and
+  at its end. The recall record is written after the second reading, so a
+  halt at the end keeps that record, which two matching readings bracket, and
+  writes no precision record. Recovery takes one of two paths:
   restore the environment and resume with the same `--campaign-id`, which
   reruns the partial block whole after the resume sweep; or, if the
   environment cannot be restored, as after a CLI update, re-freeze and rerun
@@ -704,7 +704,9 @@ campaign with exit 2 and is left un-marked, so resuming under the same
 it forces every run to fail. `smoke` takes its harness closure manifest hash
 once per process, before its first dispatch. A smoke campaign resumed after any
 edit to the harness closure therefore prints a hash for code the earlier blocks
-did not run, and does not certify `freeze`: rerun it under a fresh campaign ID.
+did not run. `freeze` compares only that hash with the current manifest, so it
+accepts the hash and does not detect the gap: rerun the smoke under a fresh
+campaign ID.
 `smoke` requires `--defect-id`, and `judge`
 skips a defect that has no completed reviewer run.
 

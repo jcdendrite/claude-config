@@ -646,7 +646,10 @@ def run_defect_judges(
     if precision_dir.exists():
         shutil.rmtree(precision_dir, ignore_errors=True)
 
-    environment_reference.require_match(runner.read_environment_record(), where=f"{defect.id}'s judge block end")
+    environment_reference.require_match(
+        runner.read_environment_record(), where=f"{defect.id}'s judge block end",
+        records_kept=judge_records_path is not None,
+    )
     return recall_record, precision_record
 
 

@@ -574,7 +574,9 @@ class TestCheckAgainstFrozenConditions:
             frozen, analysis.compute_frozen_fields(defects_path, arms_root), k=10,
         )  # must not raise
 
-    def test_frozen_fields_cover_every_hash_and_the_defect_ids(self, tmp_path: Path, monkeypatch) -> None:
+    def test_frozen_fields_name_the_defect_ids_and_each_arm_judge_prompt_and_defects_hash(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
         defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
 
         fields = analysis.compute_frozen_fields(defects_path, arms_root)
@@ -703,6 +705,19 @@ class TestCheckEnvironmentReadingMatchesFrozen:
 class TestEnvironmentChecks:
     def test_later_arm_campaign_with_different_environment_invalidates_even_with_matching_hashes(self) -> None:
         records = [_run_record("d1", ARM_BASELINE, "r1", cli_version="2.1.0", ambient_config_commit="cafebabe")]
+        with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms"):
+            analysis.check_environment_matches_baseline(
+                records, baseline_cli_version="2.0.0", baseline_ambient_config_commit="deadbeef",
+            )
+
+    @pytest.mark.parametrize(
+        ("cli_version", "ambient_config_commit"), [("2.1.0", "deadbeef"), ("2.0.0", "cafebabe")],
+        ids=["cli_version-alone", "ambient_config_commit-alone"],
+    )
+    def test_a_later_arm_record_differing_in_one_field_alone_invalidates(
+        self, cli_version: str, ambient_config_commit: str,
+    ) -> None:
+        records = [_run_record("d1", ARM_BASELINE, "r1", cli_version=cli_version, ambient_config_commit=ambient_config_commit)]
         with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms"):
             analysis.check_environment_matches_baseline(
                 records, baseline_cli_version="2.0.0", baseline_ambient_config_commit="deadbeef",

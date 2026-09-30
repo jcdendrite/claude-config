@@ -59,9 +59,6 @@ class ArmSnapshotError(ValueError):
     read clause that doesn't match exactly once."""
 
 
-_FRONTMATTER_FIELD_RE = re.compile(r"(?m)^(\w+):\s*(.*)$")
-
-
 def _split_frontmatter(text: str) -> tuple[str, str]:
     """Return (frontmatter_block, body); frontmatter_block excludes the
     delimiting '---' lines. Raises ValueError when text has no closed
