@@ -6,7 +6,7 @@ Goal: stop `comment-discipline-reviewer` from flagging plan-file prose under rul
 
 Ask: "yes already-committed plans should be excluded from comment discipline reviewer but unstaged plans are still under discipline because they need to be readable by a human" — clarified by the engineer: "as uncommitted, which would cover both unstaged and staged plans"; "let's go with the narrower reading"; "I like that fourth option as well"; "I agree with the architect's recommendations".
 
-Why now: in the merged scope-anchor PR, the third cumulative `/code-review` pass returned four findings, all in the plan file, all under survives-the-PR, "used to be X", "this session" and run-on rules. A `plan-architect` consult judged §Durable text does not cover plan files, and each proposed fix would have broken `plan-it`'s ledger grammar and re-armed the `plan-review` gate.
+Why now: in the merged scope-anchor PR, the third cumulative `/code-review` pass returned four findings, all in the plan file, all under survives-the-PR, "used to be X", "this session" and run-on rules. A `plan-architect` consult judged §Durable text does not cover plan files. Each proposed fix would have broken `plan-it`'s ledger grammar and re-armed the `plan-review` gate.
 
 Intended outcome: one scope rule in the reviewer's own Scope section, and one test that guards the angle names it cites. No skill is touched.
 
@@ -80,7 +80,7 @@ Known costs:
 23. `plan-review` has no check that the source of a `[verified: <source>]` row is citable. `[verified: Grep for "citable" across claude-skills/skills/plan-review/ found no match; plan-it/SKILL.md:95 states the requirement]`
 24. The CHANGELOG bullet stays in this PR. `[engineer-verified: "Keep the CHANGELOG bullet"]` The quote is the option label the engineer selected, and covers only that choice.
 25. The engineer preferred the fourth option, which was the session's proposal to keep plans in scope for readability rules and exempt them from the rules that assume a reader without the planning document. `[engineer-verified: "I like that fourth option as well"]` The quote covers only the preference. The option's wording is the session's, and row 6 narrows it.
-26. The engineer wants a name-resolution test added, in `test_design_decision_files.py`. `[engineer-verified: "let’s add the test"]` The quote covers the decision to add it, and it supersedes only the "tests are not edited" item among row 6's relayed recommendations, not row 5's acceptance of the rest. The test's design, its file and its cases are the session's and `staff-sdet`'s proposal. The `test_design_decision_files.py` idiom it follows is `[unverified]` beyond the session's read of lines 536-680.
+26. The engineer wants a name-resolution test added, in `test_design_decision_files.py`. `[engineer-verified: "let’s add the test"]` The quote covers the decision to add it. That decision supersedes only the "tests are not edited" item among row 6's relayed recommendations, not row 5's acceptance of the rest. The test's design, its file and its cases are the session's and `staff-sdet`'s proposal. The `test_design_decision_files.py` idiom it follows is `[unverified]` beyond the session's read of lines 536-680.
 
 **Mechanisms:**
 - M1. A Scope paragraph in `comment-discipline-reviewer.md`. The agent is the only reader of its own angle list, so its Scope section is the narrowest surface that changes what it flags. The change is a prose edit to a lazy-loaded agent body. Every alternative home is wider or blocked. `anchors: root, row1, row6, row16, row17`

@@ -46,6 +46,11 @@ list gains, loses, renames, or reorders an angle. It lives here because
 this module already carries the REPO_ROOT/CLAUDE_DIR resolution and
 pure-function violations idiom the check needs.
 
+Assertion 8 checks that each name in `_SCOPE_CITED_ANGLE_NAMES` appears in
+comment-discipline-reviewer.md's Scope section and resolves to a
+core-review-angle header. It lives here because it reuses assertion 7's
+angle-header parser.
+
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It
   lives in hooks/tests/ to match the co-location of test_doc_counts.py,
@@ -1449,6 +1454,32 @@ class TestFaultInjection:
             "## Scope\n\n"
             "Plan files are in scope for Multi-fact\ncomment structure only;\n"
             "PR-defined\nterminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        assert (
+            _scope_cited_angle_violations(
+                agent_text,
+                cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+            )
+            == []
+        )
+
+    def test_scope_cited_angles_ignores_decoy_heading_and_spans_subheadings(self) -> None:
+        """A '### Scope' heading before the real '## Scope' is not parsed as
+        the section start.
+        A '### ' subheading inside '## Scope' does not end the section, so
+        names cited after it still count."""
+        agent_text = (
+            "## Overview\n\n"
+            "### Scope\n\n"
+            "A decoy subheading that cites no angle names.\n\n"
+            "## Scope\n\n"
+            "### Plan files\n\n"
+            "Plan files are in scope for Multi-fact comment structure only;\n"
+            "PR-defined terminology still applies elsewhere.\n\n"
             "## Core review angles\n\n"
             "**Multi-fact comment structure** — several facts.\n\n"
             "**PR-defined terminology** — a label defined in the PR.\n\n"
