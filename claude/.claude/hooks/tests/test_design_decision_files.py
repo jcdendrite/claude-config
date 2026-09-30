@@ -557,6 +557,14 @@ def _core_review_angle_headers(agent_text: str) -> list[str]:
     return _CORE_REVIEW_ANGLE_HEADER_RE.findall(match.group(1))
 
 
+_NO_ANGLE_HEADERS_VIOLATION = (
+    "comment-discipline-reviewer.md: 'Core review angles' section "
+    "not found, or it holds no '**Name** — ' angle headers -- update "
+    "_CORE_REVIEW_ANGLES_SECTION_RE/_CORE_REVIEW_ANGLE_HEADER_RE to "
+    "match the current heading and header shape."
+)
+
+
 def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
     bullets = _item_12a_bullets(skill_text)
     headers = _core_review_angle_headers(agent_text)
@@ -567,12 +575,7 @@ def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
             "match its current phrasing."
         ]
     if not headers:
-        return [
-            "comment-discipline-reviewer.md: 'Core review angles' section "
-            "not found, or it holds no '**Name** — ' angle headers -- update "
-            "_CORE_REVIEW_ANGLES_SECTION_RE/_CORE_REVIEW_ANGLE_HEADER_RE to "
-            "match the current heading and header shape."
-        ]
+        return [_NO_ANGLE_HEADERS_VIOLATION]
     violations: list[str] = []
     # Checked independently because duplicate headers plus matching duplicate bullets satisfy sequence equality.
     duplicated_headers = sorted({header for header in headers if headers.count(header) > 1})
@@ -630,12 +633,7 @@ def _scope_cited_angle_violations(
         ]
     headers = _core_review_angle_headers(agent_text)
     if not headers:
-        return [
-            "comment-discipline-reviewer.md: 'Core review angles' section "
-            "not found, or it holds no '**Name** — ' angle headers -- update "
-            "_CORE_REVIEW_ANGLES_SECTION_RE/_CORE_REVIEW_ANGLE_HEADER_RE to "
-            "match the current heading and header shape."
-        ]
+        return [_NO_ANGLE_HEADERS_VIOLATION]
     scope_text = " ".join(scope_match.group(1).split())
     violations: list[str] = []
     for angle_name in cited_angle_names:
@@ -657,11 +655,16 @@ def _scope_cited_angle_violations(
 
 
 def test_scope_cited_angle_names_resolve_to_angle_headers() -> None:
-    """Guards every angle name the Scope section cites.
+    """Guards each angle name in _SCOPE_CITED_ANGLE_NAMES.
     An angle rename would otherwise leave the Scope section citing a name
     that no longer exists.
     The item 12a lockstep test cannot see that, because it parses only
-    'Core review angles'."""
+    'Core review angles'.
+    A name counts as cited when it appears anywhere in the Scope text, in any
+    clause."""
+    assert _SCOPE_CITED_ANGLE_NAMES, (
+        "no Scope-cited angle names configured -- _SCOPE_CITED_ANGLE_NAMES may be misconfigured"
+    )
     agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
     violations = _scope_cited_angle_violations(agent_path.read_text(encoding="utf-8"))
     assert not violations, "\n".join(violations)
@@ -733,8 +736,10 @@ class TestFaultInjection:
     fault its paired assertion exists to catch, and asserts the checking
     function itself flags it -- proving the check's own logic, not just
     today's clean corpus, would catch a regression. The item-12a-index
-    cross-file-index-consistency checks below deviate from that shape: they
-    parse two unrelated doc files' text directly, so their fixtures are
+    cross-file-index-consistency checks and the scope-cited-angle checks
+    below deviate from that shape: the item-12a-index checks parse two
+    unrelated doc files' text directly, and the scope-cited-angle checks
+    parse one agent file's text directly, so both groups' fixtures are
     plain strings with no tmp_path directory built."""
 
     def test_filename_grammar_rejects_leading_digit(self, tmp_path: Path) -> None:
