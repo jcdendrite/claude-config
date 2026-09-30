@@ -63,7 +63,7 @@ Both miners set the first two fields to a constant `True` and compute nothing, s
 
 **Fixture.** For each confirmed defect, and separately for each arm, `fixture_repo.py` builds a fresh repository with two commits:
 - the `git archive` tree of `base_commit`;
-- then the tree of `head_commit`, using the introducing commit's subject and a fixed author and date.
+- then the tree of `head_commit`, using a constant commit message and a fixed author and date. The introducing commit's subject never enters the fixture's git history.
 
 It also writes a `.bench/` directory, listed in `.git/info/exclude`:
 - `change.diff`: `git diff HEAD~1 HEAD`;
@@ -84,7 +84,7 @@ This fixture design costs three things, all accepted:
 
   `effort`, the description, and the body stay unchanged.
 
-  Removing `Bash` and `Write` at snapshot time takes containment out of the hands of ambient CLI behavior. A `tools:` allowlist withholds a tool from the subagent outright (row 32). The default headless mode only denies a call at runtime, and the stowed user settings pre-approve 27 Bash commands it would let through (row 33). Neither tool bears on what the arms compare. Every lens uses Write only for a `findings_path` file, which the review prompt never supplies (row 11). Both arms lose Bash equally, so the arm-vs-arm difference is unchanged. Without Bash, a reviewer cannot read a file whole through `cat` or `git show`. Arm 2's rule therefore cannot be bypassed that way, and the adherence diagnostic sees every whole-file read.
+  Removing `Bash` and `Write` at snapshot time takes containment out of the hands of ambient CLI behavior. A `tools:` allowlist withholds a tool from the subagent outright (row 32). The default headless mode only denies a call at runtime, and the stowed user settings pre-approve 27 Bash commands it would let through (row 33). Neither tool bears on what the arms compare. Every lens uses Write only for a `findings_path` file, which the review prompt never supplies (row 11). Both arms lose Bash equally, so the arm-vs-arm difference is unchanged. Without Bash, a reviewer cannot read a file whole through `cat` or `git show`. Arm 2's rule therefore cannot be bypassed that way, and the adherence diagnostic sees every whole-file `Read` whose `offset` is unset. A whole-file read that passes `offset=1` escapes it, and the column never gates.
 - **Arm 2, `function-context`.** Arm 1 with each lens's read clause replaced by the sentence below. Any other duty in the same sentence, such as sdet's "AND the code they test", stays after it. The replacement text:
 
   "Read the change through its function-context diff (`.bench/change-function-context.diff`), not by reading changed files whole; for any other context you need, locate it with Grep and read only that range. This read rule overrides any general instruction to read a whole file when reviewing it."
@@ -297,7 +297,7 @@ The manifest hash the smoke campaign attests covers the closure only. It does no
 
 The pre-dispatch check is `run`'s and `judge`'s. `run` verifies the manifest, the frozen digests, K, and the environment against `conditions.json` before its first dispatch, and exits 2 when the file does not exist. `judge` runs the same verification when the file exists, without the K comparison, because it takes no K. It skips it, with a note, when the file is absent, because the smoke campaign's judges run before the freeze.
 
-The recorded seeds are provenance, and neither `run` nor `judge` compares them. Each command's own `--seed` chooses its shuffle or ordering. The judge-input ordering seed (`judge --seed`, not recorded) pins no order across campaigns, because `order_by_opaque_id` shuffles with that seed and the run's random opaque IDs. Blinding rests on the order having no arm input (Blinding).
+`run` holds its `--seed` to the frozen `campaign_seed` and refuses a mismatch. `judge` compares no seed. Each command's own `--seed` chooses its shuffle or ordering. The judge-input ordering seed (`judge --seed`, not recorded) pins no order across campaigns, because `order_by_opaque_id` shuffles with that seed and the run's random opaque IDs. Blinding rests on the order having no arm input (Blinding).
 
 **Later arm.** A later arm runs under the frozen conditions.
 - What is frozen, and compared: the closure, which holds the model IDs, the caps, and the analysis constants; the arm directories; the judge agent files; `defects.json`; the prompt templates; K; and the environment.
@@ -873,4 +873,15 @@ The tests must show these behaviors, all offline. No test launches `claude`.
 - Whether a denied read attempt fails a run, since the leak checks classify every attempted path.
 - An environment allowlist for `claude -p` children, cross-clone ref publication, and a dedicated bench config directory.
 - Cleanup on every block exit. One sweep of the block's write-ahead entries, in a `finally` on every block exit in both `run_campaign` and the judge loop, before `mark_block_complete`, with duplicate targets removed. It would delete `cleanup_defect_block`, `BlockResult.representative_session_id_by_arm`, and `adjudicate`'s inline `rmtree` calls. It would also absorb two smaller items: duplicate write-ahead targets in `sweep_abandoned`, which print a spurious "could not remove" line on every resume that launched a run, dulling the one real-leak signal, and `cleanup_defect_block` locating an arm's store through one representative session ID.
+- Smaller review findings, deferred with the harness's existing behavior stated in the README where it matters:
+  - `evals/` `conftest.py` and `__init__.py` additions do not select `CLAUDE_TESTS_DIR`.
+  - The preflight and the fixture build disagree for a symlinked `.claude` parent. The build fails closed, and the README says so.
+  - Judge delete failures are not reported in code.
+  - Unmatched `evals/*.py` paths and the `git-unavailable` fallback in `select-tests.py` still skip the `evals/` tests, and its stderr line does not name the appended `evals/` targets.
+  - Python 3.12 is documented but not enforced in code.
+  - No cumulative-spend tripwire exists.
+  - The judge quoted-opening regex is greedy, so a line with a second double-quoted span is rejected (fail-closed).
+  - A Glob pattern with `..` after a wildcard is classified by its literal prefix only. Exploitability is unconfirmed.
+  - The two judge-fixture "holds no bench-lens file" tests were deleted because they could not fail, and no unpatched install test replaces them.
+  - The `spot-check import` kappa floor has no deny-branch test, and its enforcement belongs to #1115.
 - `mine_szz._parse_unified_diff` desyncs on `splitlines()`, which also splits on `\x0b`, `\x0c`, `\x1c`-`\x1e`, `\x85`, and the Unicode line and paragraph separators, so a fragment starting with `-`, `+`, or a space breaks the hunk line counts. The counts over-shoot. `_blame_file_diff`'s `len(shas) != len(removed_lines)` check then drops the hunk silently, and a leftover removed line starting `-- ` can become a bogus `old_path` entry. The fix belongs at the decode step: run the two `git diff -U0` calls in `mine_szz.py` in bytes mode, decode with `errors="replace"` as `defects.py` does, and split on `"\n"` only. That also fixes a `UnicodeDecodeError` aborting mining on those two calls and the lone-`\r` translation of `text=True`. `blame --porcelain` (`_run_git`'s strict `text=True` decode; `_GIT_CALL_ERRORS` omits `ValueError`) would still abort, so put the decode in `_run_git` to cover it. The same text-mode decode makes `runner._worktree_top_levels` rewrite a carriage return in a worktree path, so another worktree drops out of the live-checkout roots. Reading that call in bytes mode and splitting on NUL fixes it.
