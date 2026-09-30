@@ -1205,9 +1205,21 @@ Each dispatch classifies by walking three tests against its attributed round, in
 
 1. No attributed round exists -> **UNRESOLVED**.
 2. The round has >=1 matching ledger row with `disposition: ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another matching row also exists -- the finding was raised against that diff, and a same-round fix does not undo that.
-3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
+3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`SETTLED`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
 
 A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. This covers a round whose every append attempt errored before landing. It is counted separately under "rounds with a marker write but no ledger row (every append for the round failed)". A session excluded by the round-number-sequence check below is not classified, so its rounds never count here.
+
+**Truth table for a round's matching rows.** A carry row (`decided_by: carry`) counts by its own disposition.
+
+| Matching rows | Classification | Counted under "rounds classified PASS with at least one SETTLED row" |
+|---|---|---|
+| `SETTLED` alone, `SETTLED` beside `DEFER` or `CLEAN`, or only `SETTLED` carries | PASS | yes |
+| `DEFER` alone, only `DEFER` carries, or `CLEAN` alone | PASS | no |
+| Any `ADDRESS` row, an `ADDRESS --ref` that reopens a decision included | FAILURE | no |
+
+A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see `docs/hooks.md`'s ledger runbook) also classifies as `FAILURE`. That rare over-count is accepted.
+
+The "rounds classified PASS with at least one SETTLED row" counter reflects the change from the earlier practice, in which a consult's keep was logged as `ADDRESS` and made its round a `FAILURE`. It counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". It starts counting on each machine when that machine pulls ledger schema v4, because `SETTLED` rows cannot exist earlier. A window that spans that pull mixes the two practices, so read `FAILURE` counts across it with that in mind. A mismatched session (see "Round-number-sequence check") is not classified, so its rounds never count here.
 
 A dispatch whose paired `tool_result` record is absent has no completion index, so it's classified **UNDECIDABLE** before the three-test walk runs. It counts only under Data quality, never in "Dispatches in scope".
 
@@ -1277,6 +1289,7 @@ Data quality
   sessions with a code-review round but no ledger file, cold enough to be swept     0
   dispatches with no paired tool_result (undecidable)                               0
   authoring_agent inconsistent with the transcript join                             1
+  rounds classified PASS with at least one SETTLED row                              2
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.

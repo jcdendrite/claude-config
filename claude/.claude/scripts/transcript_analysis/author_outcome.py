@@ -45,6 +45,7 @@ _CODE_REVIEW_SKILL = "code-review"
 # review-ledger.sh already wrote, so these are read-side comparison
 # targets, not a second validator.
 _DISPOSITION_ADDRESS = "ADDRESS"
+_DISPOSITION_SETTLED = "SETTLED"
 _AUTHORING_AGENT_CODE_WRITER = "code-writer"
 _AUTHORING_AGENT_INLINE = "inline"
 _AUTHORING_AGENT_MIXED = "mixed"
@@ -70,10 +71,11 @@ _DQ_LEDGER_POSSIBLY_SWEPT = "sessions with a code-review round but no ledger fil
 _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
 _DQ_MALFORMED_DISPATCH_ID = "dispatches with a missing or empty tool_use_id"
+_DQ_SETTLED_PASS_ROUNDS = "rounds classified PASS with at least one SETTLED row"
 _DATA_QUALITY_KEYS = (
     _DQ_CO_AUTHORED_ROUNDS, _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW, _DQ_ROUND_NUMBER_MISMATCH,
     _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
-    _DQ_MALFORMED_DISPATCH_ID,
+    _DQ_MALFORMED_DISPATCH_ID, _DQ_SETTLED_PASS_ROUNDS,
 )
 
 # review-narrative-ledger's own directory name, one level under a Claude
@@ -450,10 +452,15 @@ def _classify_round(
     including a session whose rows are all legacy (no `round` key) -- falls
     through to the marker-write fallback below. That is the same path a
     round for which every append failed also takes.
+
+    A PASS round holding a SETTLED row also counts under
+    _DQ_SETTLED_PASS_ROUNDS. Carry rows count by their own disposition.
     """
     if any(row.get("disposition") == _DISPOSITION_ADDRESS for row in round_rows):
         return _OUTCOME_FAILURE, round_rows
     if round_rows:
+        if any(row.get("disposition") == _DISPOSITION_SETTLED for row in round_rows):
+            data_quality[_DQ_SETTLED_PASS_ROUNDS] += 1
         return _OUTCOME_PASS, round_rows
     if has_marker_write:
         # No ledger row at all for this round -- every append attempt

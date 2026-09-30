@@ -796,6 +796,99 @@ class TestClassifyRound:
         assert data_quality[ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
 
 
+def _carry_row(disposition: str) -> dict:
+    """A carry row, which counts by its own disposition."""
+    return {**_ledger_row(round=1, disposition=disposition), "decided_by": "carry", "ref": "0123456789ab"}
+
+
+class TestSettledPassCounter:
+    """Each line of the truth table for a round's rows: its classification
+    and the `rounds classified PASS with at least one SETTLED row` count."""
+
+    @pytest.mark.parametrize(
+        ("rows", "expected_classification", "expected_count"),
+        [
+            pytest.param([_ledger_row(round=1, disposition="SETTLED")], ao._OUTCOME_PASS, 1, id="settled alone"),
+            pytest.param(
+                [_ledger_row(round=1, disposition="SETTLED"), _ledger_row(round=1, disposition="DEFER")],
+                ao._OUTCOME_PASS, 1, id="settled beside defer",
+            ),
+            pytest.param([_carry_row("SETTLED"), _carry_row("SETTLED")], ao._OUTCOME_PASS, 1, id="settled carries only"),
+            pytest.param([_ledger_row(round=1, disposition="DEFER")], ao._OUTCOME_PASS, 0, id="defer alone"),
+            pytest.param([_carry_row("DEFER")], ao._OUTCOME_PASS, 0, id="defer carries only"),
+            pytest.param([_ledger_row(round=1, disposition="CLEAN")], ao._OUTCOME_PASS, 0, id="clean alone"),
+            pytest.param(
+                [_ledger_row(round=1, disposition="ADDRESS"), _ledger_row(round=1, disposition="SETTLED")],
+                ao._OUTCOME_FAILURE, 0, id="address beside settled",
+            ),
+            pytest.param(
+                [{**_ledger_row(round=1, disposition="ADDRESS"), "ref": "0123456789ab"}],
+                ao._OUTCOME_FAILURE, 0, id="address that reopens a decision",
+            ),
+        ],
+    )
+    def test_truth_table_line(self, rows, expected_classification, expected_count):
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+
+        classification, matching = ao._classify_round(rows, has_marker_write=False, data_quality=data_quality)
+
+        assert classification == expected_classification
+        assert matching == rows
+        assert data_quality[ao._DQ_SETTLED_PASS_ROUNDS] == expected_count
+
+
+class TestSettledPassCounterAcrossRounds:
+    """compute_author_outcomes keeps one counter over the whole run, and a
+    round-number-mismatched session's rounds are not classified."""
+
+    def test_two_pass_rounds_holding_settled_rows_in_one_session_count_two(self, fake_projects):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="SETTLED"),
+            _ledger_row(round=2, disposition="SETTLED"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        assert result["data_quality"][ao._DQ_SETTLED_PASS_ROUNDS] == 2
+
+    def test_a_settled_pass_round_in_each_of_two_sessions_counts_two(self, fake_projects):
+        for session_id in ("sess-1", "sess-2"):
+            _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="SETTLED")])
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _asst(
+                    "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
+                    content=[_skill_block("s1", "code-review")],
+                ),
+            ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_SETTLED_PASS_ROUNDS] == 2
+
+    def test_a_round_number_mismatched_session_counts_none_of_its_settled_rows(self, fake_projects):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="SETTLED"),
+            _ledger_row(round=3, disposition="SETTLED"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s3", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_SETTLED_PASS_ROUNDS] == 0
+
+
 class TestAgentDispatchToolUseIds:
     def test_sidechain_dispatch_is_excluded_but_main_thread_dispatch_is_found(self):
         """isSidechain assistant records are a subagent's own transcript
@@ -2303,6 +2396,24 @@ class TestCmdAuthorOutcomeReport:
         assert "Dispatches in scope" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
         assert "Data quality" in out
+
+    @pytest.mark.parametrize(("disposition", "expected_count"), [("SETTLED", 1), ("ADDRESS", 0)])
+    def test_report_prints_the_settled_pass_counter_line(self, fake_projects, capsys, disposition, expected_count):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition=disposition)])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+
+        _mod.cmd_author_outcome(self._args())
+
+        out = capsys.readouterr().out
+        counter_label = "rounds classified PASS with at least one SETTLED row"
+        (counter_line,) = (line for line in out.splitlines() if counter_label in line)
+        assert counter_line.split()[-1] == str(expected_count)
 
     def test_non_default_agent_reaches_compute_and_the_printed_header(self, fake_projects, capsys):
         """args.agent must actually reach compute_author_outcomes (not just

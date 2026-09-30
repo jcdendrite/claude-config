@@ -790,6 +790,9 @@ _lib_active_plan_hash() {
 # use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
 # `write cumulative-review` arm, which hashes a recorded subject through this
 # same function rather than a second, possibly-drifting copy of the recipe.
+# review-ledger.sh's site hash (_review_ledger_site_hash in
+# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
 # subject is marker.sh's precondition, not this helper's.

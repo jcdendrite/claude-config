@@ -30,6 +30,7 @@ Every row carries its `session_id`, so readers can still attribute a row to the 
 `show` reads the resolved file plus this session's own session file, listed once when they are the same file.
 It prints a stderr header naming the scope, the files, the row count, the oldest and newest `event_time`, and the max round.
 Round numbers are branch-wide and stay caller-supplied: a session's first round continues from one past the header's max round.
+`render` and a `--ref` check read only the resolved file, while `show` merges this session's file too, because a session-file row is not one of the branch's decisions and must not reach a PR body.
 
 ## Accepted residuals
 
