@@ -727,15 +727,24 @@ def build_precision_spot_check_candidates(
     return candidates
 
 
+def _in_opaque_id_order(sample: Sequence[SpotCheckCandidate], *, seed: int) -> list[SpotCheckCandidate]:
+    position_by_item_id = {item_id: position for position, item_id in enumerate(
+        order_by_opaque_id((c.item_id for c in sample), seed=seed)
+    )}
+    return sorted(sample, key=lambda c: position_by_item_id[c.item_id])
+
+
 def select_spot_check_sample(
     candidates: Sequence[SpotCheckCandidate], *, sample_size: int, seed: int,
 ) -> list[SpotCheckCandidate]:
     """A seeded sample stratified by judge_label -- all of them if the pool
     is smaller than sample_size. Each label stratum gets a share of
     sample_size proportional to its own size in the pool, with
-    largest-remainder rounding so the total sample size is exact."""
+    largest-remainder rounding so the total sample size is exact. The
+    sample is returned in `order_by_opaque_id` order, so its position carries
+    no judge_label signal."""
     if len(candidates) <= sample_size:
-        return list(candidates)
+        return _in_opaque_id_order(candidates, seed=seed)
 
     by_label: dict[str, list[SpotCheckCandidate]] = defaultdict(list)
     for candidate in candidates:
@@ -754,7 +763,7 @@ def select_spot_check_sample(
         ordered = sorted(group, key=lambda c: c.item_id)
         rng.shuffle(ordered)
         sample.extend(ordered[: allocation[label]])
-    return sample
+    return _in_opaque_id_order(sample, seed=seed)
 
 
 def export_spot_check(sample: Sequence[SpotCheckCandidate], path: Path) -> None:

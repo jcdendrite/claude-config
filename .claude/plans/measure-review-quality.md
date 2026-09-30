@@ -143,7 +143,7 @@ Every block's start and end readings of the CLI version and the ambient config c
 - for `run` and `judge`, the environment frozen in `conditions.json`;
 - for `smoke`, and for `judge` before any freeze, the campaign's first reading.
 
-Any mismatch halts the campaign with exit 2. Nothing reruns, and a halted block writes no records. Recovery takes one of two paths:
+Any mismatch halts the campaign with exit 2. Nothing reruns, and a halted block writes no records, except that a `judge` halt at a block's end keeps that block's recall record. Recovery takes one of two paths:
 - Restore the environment and resume with the same `--campaign-id`. The resume sweep (Cleanup) reruns the partial block whole.
 - If the environment cannot be restored, as after a CLI update, re-freeze and rerun all arms in one campaign (Freeze and invalidation).
 
@@ -209,7 +209,7 @@ The parser tolerates formatting variation, following `run_skill_evals.parse_disp
 
 `adjudicate.py` then looks for each quoted opening in the run's normalized output, in order, each one after the previous one. If an opening cannot be found in that order, the judge's answer is invalid. A made-up or double-counted finding therefore cannot enter the pooled-precision denominator. The judge splits rather than a code parser because the lenses' inline formats name fields per finding but have no machine delimiter, and the field lists differ by lens (row 11).
 
-**Blinding.** Neither judge and not the human ever sees an arm name. Both judges and the spot-check sheet see runs only by opaque ID, in an order computed from the opaque IDs and a seed (`judge --seed`) alone. The ordering function takes no arm input, so a run's position carries no arm signal. The ID-to-arm mapping lives only in the local run store.
+**Blinding.** Neither judge and not the human ever sees an arm name. Both judges and the spot-check sheet see runs only by opaque ID, in an order computed from the opaque IDs and a seed (`judge --seed` for the judges, `spot-check --seed` for the sheet) alone. The ordering function takes no arm input, so a run's position carries no arm signal. The ID-to-arm mapping lives only in the local run store.
 
 **Human spot-check.** This is a manual step. A seeded sample of 100 recall labels and 100 precision labels (all of them if fewer), stratified by the judge's label, is exported without arm or judge label. Each precision item shows its finding inside the whole normalized run output, with the judge's split marked. The human labels each item. For precision items, they also mark whether the marked span is exactly one finding. Cohen's κ is computed per label type.
 - κ ≥ 0.61, "substantial" in Landis & Koch (row 23): the labels are validated.
@@ -277,7 +277,7 @@ The `freeze` subcommand writes `evals/review_bench/conditions.json`. It records:
 
 Content hashes stand in for the "harness commit" in the consult's list, because squash merge rewrites branch SHAs (row 20).
 
-**Harness closure.** `freeze` computes the set of hashed files rather than reading a hand-kept list. The set is every first-party source file reached by walking imports from `review_bench.runner`, `review_bench.adjudicate`, and `review_bench.analysis`, limited to files inside the repository. The closure therefore covers the three files the runner reaches outside `evals/review_bench/`: `evals/measure_subagent_model_resolution.py`, `evals/run_skill_evals.py`, and `claude/.claude/scripts/_config_dir.py` (row 36). `run_review_bench.py`, the CLI that imports those three modules, is not a root, so it is outside the closure by decision. Its arm tuple, `judge`'s skip rules, and `analyze`'s report assembly are therefore not hashed. #1115's plan owns arm selection. The CLI imports `mine_review_rounds`, the only miner that uses `transcript_analysis`, only inside `cmd_mine_rounds`, so it stays out of the closure, for three reasons:
+**Harness closure.** `freeze` computes the set of hashed files rather than reading a hand-kept list. The set is every first-party source file reached by walking imports from `review_bench.runner`, `review_bench.adjudicate`, and `review_bench.analysis`, limited to files inside the repository. The closure therefore covers the three files the runner reaches outside `evals/review_bench/`: `evals/measure_subagent_model_resolution.py`, `evals/run_skill_evals.py`, and `claude/.claude/scripts/_config_dir.py` (row 36). `run_review_bench.py`, the CLI that imports those three modules, is not a root, so it is outside the closure by decision. Its arm tuple, `judge`'s skip rules, and `analyze`'s report assembly are therefore not hashed. #1115's plan owns arm selection. No closure root imports `mine_review_rounds`, the only miner that uses `transcript_analysis`, so the miners stay out of the closure, for three reasons:
 - those modules shape candidates, not runs;
 - `defects.json`'s hash freezes their output;
 - including them would invalidate the baseline for changes that cannot touch a run.
@@ -553,7 +553,7 @@ The canonical text of the invalidation rule lives in `evals/README.md`'s review-
       - Ctrl-C writes nothing.
     - Without a terminal, `confirm` runs every check, prints the rejections, writes nothing, pins nothing, and prints the count of candidates awaiting the engineer at a terminal. It exits 2 when any candidate awaits and exits 0 only when none does.
     - `confirm` pins refs after the prompt loop, for accepted candidates only, then appends them to `defects.json`. It adds no field, hash, or subcommand, and `ConfirmedDefect` is unchanged.
-    - `transcript_analysis` is imported only inside the mining subcommands, so it stays out of the freeze closure.
+    - `transcript_analysis` is imported only by the miners, and no closure root imports the miners, so it stays out of the freeze closure.
   - `evals/test_review_bench_mining.py`: tmp-path git repos, a local bare repo standing in for `origin`, and synthetic transcript JSONL.
 - Modify:
   - `.gitignore`: add `evals/review_bench/.local/`.
@@ -725,7 +725,7 @@ The tests must show these behaviors, all offline. No test launches `claude`.
   - Retry, then missing, with the `missing_reason` of each failure mode.
   - Seeded block order is deterministic.
   - Read, `PARTIAL view`, and paged-read counting from the synthetic transcripts.
-  - A block whose start or end environment reading differs from the reference environment halts the campaign with exit 2. Nothing reruns, and the halted block writes no records. A start-reading mismatch halts before the block's first dispatch. The reference is the frozen environment for `run` and `judge`, and the campaign's first reading for `smoke` and for `judge` before any freeze.
+  - A block whose start or end environment reading differs from the reference environment halts the campaign with exit 2. Nothing reruns, and the halted block writes no records, except that a `judge` halt at a block's end keeps that block's recall record. A start-reading mismatch halts before the block's first dispatch. The reference is the frozen environment for `run` and `judge`, and the campaign's first reading for `smoke` and for `judge` before any freeze.
   - A block's cleanup runs only after every run and retry in it has finished.
   - `run` resumes under the same `--campaign-id` by skipping complete blocks and rerunning a partial block whole. Before the rerun, it deletes every directory and session store the abandoned attempt recorded for that block, and leaves an unrecorded `review-bench-` directory untouched. A run under a fresh ID starts with an empty completed set.
   - `smoke`, `run`, and `judge` refuse to start while another process holds the campaign's run-store lock, and a lock whose holder was killed is available again. The refusal happens before any sweep. Two campaigns under different IDs hold independent locks.

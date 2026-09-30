@@ -1370,9 +1370,7 @@ def _patch_inner_prompt_to_match_build_review_prompt(scenario_dir: Path) -> None
 
 class TestRetryThenMissing:
     """Drives only the model-mismatch failure mode through run_one_with_retry,
-    since it never branches on missing_reason (only record.status). Every
-    other VALIDITY_FAIL_*/MISSING_REASON_* constant is already exercised
-    directly through evaluate_run_validity elsewhere in this file."""
+    since it never branches on missing_reason (only record.status)."""
 
     def test_failing_run_is_retried_once_then_recorded_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

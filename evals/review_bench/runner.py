@@ -11,10 +11,7 @@ written generically over "the run's own directories" so the judge runs reuse
 them unchanged.
 
 Reuses from evals/measure_subagent_model_resolution.py (see that module's
-own docstring for the reuse record this file adds):
-_run_claude_to_completion, _resolved_temp_project_dir,
-subagent_dir_for_session, parse_subagent_dispatches,
-PER_RUN_BUDGET_CAP_USD, and BUDGET_CAP_MULTIPLIER. Reuses
+own docstring for the reuse record this file adds). Reuses
 run_skill_evals.DEFAULT_WORKERS and DISPATCH_TOOL_NAMES. Session stores are
 found by session ID, never through run_skill_evals.compute_session_store_dir().
 
@@ -1091,7 +1088,7 @@ class EnvironmentReference:
             f"halted: environment at {where} differs from {origin} "
             f"(cli_version {reference.cli_version!r}->{reading.cli_version!r}, "
             f"ambient_config_commit {reference.ambient_config_commit!r}->{reading.ambient_config_commit!r}). "
-            f"Nothing was rerun and the block wrote no records; {recovery}"
+            f"Nothing was rerun, and records the block wrote before this reading are kept; {recovery}"
         )
 
 

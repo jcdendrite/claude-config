@@ -515,9 +515,11 @@ variable supplies an answer in place of a terminal.
 `freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
 model IDs, K, delta, alpha, N_min, the planning variance, the bootstrap's
 resample count and seed, the campaign seed, the kappa floor, the retry and
-missing-run rule, the later-arm certification rule, the confirmed defect
-IDs, and sha256 hashes of the harness's own import closure, both arm
-directories, the judge agent files, `defects.json`, and the prompt templates.
+missing-run rule, the later-arm certification rule, the environment (CLI
+version and ambient config commit at freeze), main's commit SHA (for
+reference only), the confirmed defect IDs, and sha256 hashes of the
+harness's own import closure, both arm directories, the judge agent files,
+`defects.json`, and the prompt templates.
 The import closure is walked from `runner`, `adjudicate` and `analysis`, so
 edits to `run_review_bench.py` and the `mine_*.py` miners after freeze go
 undetected.
@@ -550,7 +552,7 @@ differing — this section is their canonical home:
   frozen in `conditions.json` for `run` and `judge`, and the campaign's first
   reading for `smoke` and for `judge` before any freeze. Any mismatch halts
   the campaign with exit 2. Nothing reruns, and the halted block writes no
-  records. A `judge` block is one defect's two judge runs, read at its start,
+  records, except the `judge` case below. A `judge` block is one defect's two judge runs, read at its start,
   after its recall run, and at its end. The recall record is written after
   the second reading, so a halt at the end keeps that record, which two
   matching readings bracket, and writes no precision record. Recovery takes
@@ -616,8 +618,8 @@ after the sub-K/2 drop against N_min, with the dropped counts. Every `--out`
 report carries `confirmed_defects`, the size of the confirmed set. The recall
 drop count is taken against that set, so a defect with no valid recall label
 counts as dropped. `analyze` exits 2, printing a message and writing no
-report, when no defect is kept for recall. Two caveats
-govern how to read it:
+report, when no defect is kept for recall. Arm 1 is `current-rule`, arm 2 is
+`function-context`, and X is any later arm. Two caveats govern how to read it:
 
 - **Pairing protects the difference, not the absolute figures.** The
   reviewer model may have already seen this public repo's later fixes.
@@ -744,8 +746,8 @@ repeated records, keeping the later one. See `runner.read_run_records`.
 ### Out-of-session reads
 
 A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
-and its own session store is recorded in that run's `out_of_session_paths`
-and does not fail the run on its own. Only a read of a live checkout's own
+and its own session transcript and `<session-id>/` directory is recorded in
+that run's `out_of_session_paths` and does not fail the run on its own. Only a read of a live checkout's own
 copy of a file the introducing commit or the fix commit changed, or of the
 ambient config's `projects/` root (a run's own transcript and its own
 `<session-id>/` directory excepted), fails the run. The live checkouts are the

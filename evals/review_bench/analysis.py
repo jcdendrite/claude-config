@@ -498,8 +498,8 @@ def closure_manifest_hash(closure: Mapping[str, str]) -> str:
 
 
 def load_frozen_conditions(path: Path) -> dict:
-    """The parsed conditions.json (or baseline.json), with the `environment`
-    and `harness_closure` fields every comparison reads checked for shape. Raises
+    """The parsed conditions.json, with the `environment` and
+    `harness_closure` fields every comparison reads checked for shape. Raises
     HarnessInvalidatedError -- naming the file and the unreadable/missing/
     malformed field -- rather than letting a raw OSError/ValueError/KeyError/
     TypeError escape to a subcommand."""

@@ -225,10 +225,10 @@ class _CommitResolution:
     branch_commits: list[dict] = field(default_factory=list)
 
 
-# Every call in this section is local git (show-ref/merge-base/log/rev-parse),
-# no network I/O. Reuses mine_szz's own local-git timeout rather than
-# re-deriving it, so this repo has one local-git-call timeout value; see
-# that constant's own citation for the rationale.
+# The calls that use this timeout are local git (show-ref/merge-base/log/
+# rev-parse) with no network I/O. It reuses mine_szz's own local-git timeout
+# rather than re-deriving it, so this repo has one local-git-call timeout
+# value; see that constant's own citation for the rationale.
 _LOCAL_GIT_TIMEOUT_S = mine_szz._LOCAL_GIT_TIMEOUT_S
 _LOCAL_GIT_ERRORS = mine_szz._GIT_CALL_ERRORS
 
@@ -465,8 +465,8 @@ def resolve_defect_commits(
     after the later round's own timestamp -- the author's first response to
     that round. `head_commit` is derived by blaming the fix commit backward;
     `base_commit` is that introducing commit's own parent. A candidate this
-    can't fully resolve is left for the engineer to complete by hand and is
-    not emitted by `mine()`.
+    cannot fully resolve is skipped by `mine()` and counted in its
+    `skipped_unresolved` figure.
 
     `branch` comes from `open_branch_git`, which `mine()` opens once per
     branch; results are memoized on it per (path, after_ts).

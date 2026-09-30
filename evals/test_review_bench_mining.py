@@ -367,16 +367,23 @@ class TestMineSzz:
         assert candidate.evidence["low_confidence"] is False
 
     def test_blank_comment_and_markdown_lines_are_ignored(self, tmp_path):
+        """Only the code-line removal in util.py is mined; the blank and comment
+        lines removed from app.py and the line removed from README.md are not."""
         repo = _init_repo(tmp_path / "repo")
+        _write(repo, "notes.txt", "unrelated\n")
+        _commit(repo, "seed")  # root commit: holds none of the lines under test
         _write(repo, "app.py", "x = 1\n\n# a comment\n")
         _write(repo, "README.md", "# Title\nOld line\n")
-        _commit(repo, "seed")
+        _write(repo, "util.py", "keep = 1\nbad_call()\n")
+        introducing_sha = _commit(repo, "add files")
         _write(repo, "app.py", "x = 1\n")  # removes the blank line and the comment line
         _write(repo, "README.md", "# Title\n")  # removes a markdown line
+        _write(repo, "util.py", "keep = 1\n")  # removes a code line
         fix_sha = _commit(repo, "fix cleanup")
         _set_origin_main(repo, fix_sha)
 
-        assert mine_szz.mine(repo, base_ref="origin/main") == []
+        candidates = mine_szz.mine(repo, base_ref="origin/main")
+        assert [(c.evidence["path"], c.head_commit) for c in candidates] == [("util.py", introducing_sha)]
 
     def test_addition_only_hunk_is_flagged_low_confidence(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -406,12 +413,17 @@ class TestMineSzz:
         assert mine_szz.mine(repo, base_ref="origin/main") == []
 
     def test_non_fix_subject_is_not_mined(self, tmp_path):
+        """The removed line has a real introducer (see
+        test_removed_line_blames_to_its_introducer), so only the commit
+        subject keeps this change from being mined."""
         repo = _init_repo(tmp_path / "repo")
-        _write(repo, "app.py", "x = 1\n")
+        _write(repo, "notes.txt", "unrelated\n")
         _commit(repo, "seed")
+        _write(repo, "app.py", "x = 1\n")
+        _commit(repo, "add x")
         _write(repo, "app.py", "x = 2\n")
-        fix_sha = _commit(repo, "add a new feature")  # matches none of fix|bug|regression
-        _set_origin_main(repo, fix_sha)
+        feature_sha = _commit(repo, "add a new feature")  # matches none of fix|bug|regression
+        _set_origin_main(repo, feature_sha)
 
         assert mine_szz.mine(repo, base_ref="origin/main") == []
 

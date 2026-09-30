@@ -149,9 +149,6 @@ def cmd_mine_szz(args: argparse.Namespace) -> int:
 
 
 def cmd_mine_rounds(args: argparse.Namespace) -> int:
-    # Lazy import: transcript_analysis is a large module tree with no
-    # bearing on the frozen harness constants, so it must stay out of their
-    # content-hash import closure.
     from review_bench import defects, mine_review_rounds
 
     candidates = mine_review_rounds.mine(REPO_ROOT)

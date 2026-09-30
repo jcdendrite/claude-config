@@ -347,9 +347,8 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
                 if candidate is not None:
                     candidates.append(candidate)
 
-    # Fails loudly on any id collision (same fix commit, two same-basename files in
-    # different directories) rather than let confirm's dedup silently make one
-    # unconfirmable.
+    # Fails loudly on any id collision rather than let confirm's dedup silently
+    # make one unconfirmable.
     assert_unique_ids(candidates, miner="mine-szz")
 
     ranked = _rank(repo_dir, candidates, stats=stats)

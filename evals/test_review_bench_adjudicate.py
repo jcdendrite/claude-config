@@ -497,6 +497,36 @@ class TestSpotCheckSampling:
         counts_by_label = Counter(c.judge_label for c in sample)
         assert counts_by_label == {"FOUND": 3, "NOT_FOUND": 1}
 
+    def test_sample_order_is_the_opaque_id_order_not_grouped_by_judge_label(self) -> None:
+        # Grouping by label would leak the blind judge label through sheet position.
+        seed = 0
+        candidates = [
+            adjudicate.SpotCheckCandidate(
+                item_id=f"d1:r{i}", kind="recall", judge_label="FOUND" if i % 2 == 0 else "NOT_FOUND",
+                display_text="x", arm="current-rule",
+            )
+            for i in range(40)
+        ]
+        sample = adjudicate.select_spot_check_sample(candidates, sample_size=20, seed=seed)
+
+        sample_item_ids = [c.item_id for c in sample]
+        assert sample_item_ids == list(adjudicate.order_by_opaque_id(sample_item_ids, seed=seed))
+
+    def test_sample_order_is_the_opaque_id_order_when_pool_fits_in_the_sample(self) -> None:
+        seed = 0
+        candidates = [
+            adjudicate.SpotCheckCandidate(
+                item_id=f"d1:r{i}", kind="recall", judge_label="FOUND" if i < 10 else "NOT_FOUND",
+                display_text="x", arm="current-rule",
+            )
+            for i in range(20)
+        ]
+        sample = adjudicate.select_spot_check_sample(candidates, sample_size=100, seed=seed)
+
+        sample_item_ids = [c.item_id for c in sample]
+        assert sorted(sample_item_ids) == sorted(c.item_id for c in candidates)
+        assert sample_item_ids == list(adjudicate.order_by_opaque_id(sample_item_ids, seed=seed))
+
     def test_export_never_writes_judge_label_or_arm(self, tmp_path) -> None:
         candidates = [
             adjudicate.SpotCheckCandidate(
@@ -1275,7 +1305,7 @@ class TestRunDefectJudgesEnvironmentChecks:
         defect = _build_two_commit_source_repo(tmp_path / "source")
         dispatched = self._stub_judge_dispatch(tmp_path, monkeypatch, ("v1", "sha2"))
 
-        with pytest.raises(runner.EnvironmentMismatchError, match="judge block start"):
+        with pytest.raises(runner.EnvironmentMismatchError, match=r"judge block start.*Nothing was rerun"):
             adjudicate.run_defect_judges(
                 defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
                 environment_reference=runner.EnvironmentReference(self.ENVIRONMENT),
@@ -1307,7 +1337,10 @@ class TestRunDefectJudgesEnvironmentChecks:
         self._stub_judge_dispatch(tmp_path, monkeypatch, ("v1", "sha1"), ("v1", "sha1"), ("v1", "sha2"))
         judge_records_path = tmp_path / "judge.jsonl"
 
-        with pytest.raises(runner.EnvironmentMismatchError, match="judge block end"):
+        with pytest.raises(
+            runner.EnvironmentMismatchError,
+            match=r"judge block end.*records the block wrote before this reading are kept",
+        ):
             adjudicate.run_defect_judges(
                 defect, [], source_repo=tmp_path / "source", campaign_id="c1", seed=0, live_checkout_roots=(),
                 judge_records_path=judge_records_path,

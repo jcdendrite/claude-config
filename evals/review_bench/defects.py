@@ -168,7 +168,7 @@ class ConfirmedDefect:
 
 def atomic_write_text(path: Path, text: str) -> None:
     """Write `text` to `path` via a same-directory temp file plus
-    `os.replace`, so a crash mid-write or an overlapping writer leaves the
+    `os.replace`, so a process crash mid-write or an overlapping writer leaves the
     previous complete file in place rather than a truncated one.
     `os.replace` is atomic on POSIX, which covers `install.sh`'s two
     supported platforms (Linux/macOS)."""
