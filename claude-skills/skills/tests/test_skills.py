@@ -5714,6 +5714,34 @@ class TestCodeReviewRippleCarryForwardPin:
         )
 
 
+_CODE_REVIEW_STEP_0_1_HEADING = "## Step 0.1 — Short-circuit already-reviewed diff"
+
+
+class TestCodeReviewFirstRoundLedgerShow:
+    """Pin Step 0.1's first-round `show` call, so a session
+    that starts on a branch with earlier rounds continues the branch's round
+    sequence instead of restarting at round 1. The call sends rows to
+    /dev/null because only the stderr header's max round is needed. Only the
+    load-bearing tokens are pinned, so the surrounding wording can change.
+    """
+
+    def test_first_round_reads_show_header_and_continues_from_max_round(self) -> None:
+        step_text = _heading_section_text(
+            _skill_file("code-review"), _CODE_REVIEW_STEP_0_1_HEADING
+        )
+        for required in (
+            "first round",
+            "`~/.claude/scripts/review-ledger.sh show > /dev/null`",
+            "stderr header",
+            "max round",
+            "prints no header",
+            "instead of restarting at round 1",
+        ):
+            assert required in step_text, (
+                f"code-review/SKILL.md: Step 0.1 no longer contains {required!r}."
+            )
+
+
 _READY_FOR_REVIEW_STEP7_HEADING = "## 7. Record gate completion"
 
 # Step 7's "Do NOT write the completion marker if" bullets, from

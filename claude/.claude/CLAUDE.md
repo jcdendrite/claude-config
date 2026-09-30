@@ -132,7 +132,7 @@ Code comments and durable in-repo documentation (REFERENCES.md, doc files, READM
 ## Safety
 
 - If a skill's active-bypass gate refuses to release after the skill has finished, run `~/.claude/scripts/marker.sh clear-stale` to evict orphaned active markers from dead sessions.
-- After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `~/.claude/scripts/review-ledger.sh show` to inspect the current session's ledger directly.
+- After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `~/.claude/scripts/review-ledger.sh show` to inspect this branch's ledger directly.
 
 ## Working Style
 
