@@ -845,6 +845,7 @@ def test_read_registry_legacy_bare_pid_files_collected_separately(tmp_path):
     entries, legacy, unparsed, found = _mod._read_registry([tmp_path])
     assert entries == []
     assert legacy == [sessions_dir / "4242"]
+    assert unparsed == 0
 
 
 def test_read_registry_extra_field_ignored_by_construction(tmp_path):
@@ -1081,6 +1082,44 @@ def test_read_transcript_head_non_dict_json_line_does_not_crash(tmp_path):
     assert cwd == "/tmp/proj"
 
 
+def test_read_transcript_head_takes_the_first_cwd_bearing_record(tmp_path):
+    path = tmp_path / "s1.jsonl"
+    _write_transcript(path, [
+        _cwd_record("/tmp/first", branch="first-branch", ts="2024-01-01T00:00:00Z", session_id="s1"),
+        _cwd_record("/tmp/second", branch="second-branch", ts="2024-02-02T00:00:00Z", session_id="s1"),
+    ])
+    has_record, cwd, branch, ts = _mod._read_transcript_head(path, _mod._MAX_TRANSCRIPT_RECORDS)
+    assert has_record is True
+    assert cwd == "/tmp/first"
+    assert branch == "first-branch"
+    assert ts == "2024-01-01T00:00:00Z"
+
+
+def test_read_transcript_head_non_utf8_bytes_skip_the_transcript_not_crash(tmp_path):
+    """readline() raises UnicodeDecodeError (a ValueError) outside the per-line JSON catch."""
+    path = tmp_path / "s1.jsonl"
+    path.write_bytes(b'{"type": "meta", "note": "\xff\xfe"}\n')
+    assert _mod._read_transcript_head(path, _mod._MAX_TRANSCRIPT_RECORDS) == (False, None, None, None)
+
+
+def test_build_report_non_utf8_transcript_is_skipped_and_other_rows_remain(tmp_path):
+    config_dir_path = tmp_path / "config"
+    (config_dir_path / "sessions").mkdir(parents=True)
+    projects_dir = config_dir_path / "projects" / "p"
+    projects_dir.mkdir(parents=True)
+    (projects_dir / "bad-bytes.jsonl").write_bytes(b'{"type": "meta", "note": "\xff\xfe"}\n')
+    good_path = _write_transcript(
+        projects_dir / "good-transcript.jsonl",
+        [_meta_record("good-transcript"), _cwd_record(str(tmp_path), session_id="good-transcript")],
+    )
+    now = time.time()
+    os.utime(good_path, (now - 60, now - 60))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    assert [row.session_id for row in report.rows] == ["good-transcript"]
+
+
 def test_scan_transcripts_main_file_present_sets_has_main_true(tmp_path):
     config_dir_path = tmp_path / "config"
     proj = config_dir_path / "projects" / "any-project-dir-name"
@@ -1189,6 +1228,15 @@ def test_recent_transcript_only_ids_excludes_when_neither_anchor_matches():
     now = 2_000_000.0
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=0.0, has_main=True)}
     assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=boot_time, now=now) == []
+
+
+def test_recent_transcript_only_ids_excludes_subagent_only_transcript_inside_window():
+    """A transcript with no main file (subagent-only) never surfaces as transcript-only,
+    while its has_main twin in the same window does."""
+    subagent_only = {"s1": _transcript_info(session_id="s1", last_activity=950.0, has_main=False)}
+    with_main = {"s1": _transcript_info(session_id="s1", last_activity=950.0, has_main=True)}
+    assert _mod._recent_transcript_only_ids(subagent_only, set(), boot_time=1000.0) == []
+    assert _mod._recent_transcript_only_ids(with_main, set(), boot_time=1000.0) == ["s1"]
 
 
 def test_recent_transcript_only_ids_surfaces_once_when_both_anchors_match():
@@ -4058,12 +4106,16 @@ def test_build_report_healthy_scan_emits_no_refuse_reasons(tmp_path):
     config_dir_path = tmp_path / "config"
     home_root = tmp_path / "home"
     home_root.mkdir()
-    _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId="healthy-session")
+    sessions_dir = config_dir_path / "sessions"
+    _write_registry_entry(sessions_dir, _dead_pid(), sessionId="healthy-session")
+    (sessions_dir / str(_dead_pid())).write_text("legacy-session-id\n")
+    (sessions_dir / ".DS_Store").write_bytes(b"\x00\x00\x00\x01")
     report = _mod.build_report(
         config_dirs=[config_dir_path], find_root=home_root,
         ps_lstart=_fake_ps_lstart({os.getpid(): "Mon Jan  1 00:00:00 2024"}),
     )
     document = _render_json_document(report)
+    assert document["unparsed_registry_entries"] == 0
     assert document["refuse_reasons"] == []
     assert [session["session_id"] for session in document["sessions"]] == ["healthy-session"]
 
@@ -4179,6 +4231,9 @@ def test_build_report_fills_evidence_sources_from_each_source(tmp_path):
     assert sources["lock-session"] == ("lock",)
     lock_row = next(r for r in report.rows if r.session_id == "lock-session")
     assert lock_row.config_dir is None
+    assert lock_row.classification not in {
+        _mod.CLASS_RESUMABLE, _mod.CLASS_POSSIBLE_CRASH, _mod.CLASS_TRANSCRIPT_ONLY,
+    }
 
 
 def test_render_json_transcript_only_session_is_classified_transcript_only_not_possible_crash(tmp_path):

@@ -790,7 +790,7 @@ def _read_transcript_head(jsonl: Path, max_records: int) -> tuple[bool, str | No
                     git_branch = _sanitize_for_terminal(rec.get("gitBranch"))
                     timestamp = rec.get("timestamp")
                     break
-    except OSError:
+    except (OSError, ValueError):
         return any_parsed, cwd, git_branch, timestamp
     return any_parsed, cwd, git_branch, timestamp
 
