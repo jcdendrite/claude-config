@@ -235,24 +235,34 @@ class TestStowAdoptIgnorePattern:
         )
 
     def test_ds_store_conflict_across_packages_is_ignored(self, tmp_path: Path) -> None:
-        """A `.DS_Store` present in one package's tree must not collide with
-        a `.DS_Store` in another package's tree when both target the same
-        $HOME/.claude (see install.sh's `ds_store_ignore_arg` comment for why
-        Stow needs help here). Also confirms the --ignore construction
-        doesn't accidentally suppress either package's own ordinary
-        entries."""
+        """The target already holds a real `.DS_Store` file, as Finder creates.
+        The 'claude-skills' package's `.DS_Store` is the one that would collide
+        with it. Without the ignore, stow would try to link that file over the
+        target's and report a conflict (see install.sh's `ds_store_ignore_arg`
+        comment). The 'claude' package's top-level `.DS_Store` is untracked, so
+        install.sh's untracked-entry `--ignore` already covers it and it cannot
+        collide. The stow run must succeed. The target file must remain a
+        regular, non-symlink file with its original content. Each package's
+        own ordinary entries must still be symlinked, which rules out an
+        --ignore construction broad enough to suppress them."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
         (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
-        (home / ".claude").mkdir(parents=True)
+        target_ds_store = home / ".claude" / ".DS_Store"
+        target_ds_store.parent.mkdir(parents=True)
+        target_ds_store.write_text("target finder metadata")
 
         result = _run_stow_adopt_block(pkg_root, home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not (home / ".claude" / ".DS_Store").is_symlink(), (
-            "a .DS_Store present in a package's tree must never be symlinked "
-            f"into the target; stow output: {result.stderr!r}"
+        assert target_ds_store.is_file() and not target_ds_store.is_symlink(), (
+            "a real .DS_Store already in the target must not be replaced by "
+            f"a symlink; stow output: {result.stderr!r}"
+        )
+        assert target_ds_store.read_text() == "target finder metadata", (
+            "the target's real .DS_Store must keep its original content; "
+            f"stow output: {result.stderr!r}"
         )
         skills_link = home / ".claude" / "skills"
         assert skills_link.is_symlink(), (
@@ -304,8 +314,9 @@ class TestStowAdoptIgnorePattern:
     ) -> None:
         """A pre-existing `.DS_Store` symlink under the stow target, owned by
         an already-stowed package, must be left alone by a later package's
-        stow run. It must not be treated as a conflict. It must not be
-        relinked."""
+        stow run. The fixture seeds it as a relative symlink, matching what
+        stow itself creates. It must not be treated as a conflict. It must
+        not be relinked."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
         claude_ds_store = pkg_root / "claude" / ".claude" / ".DS_Store"
@@ -313,10 +324,12 @@ class TestStowAdoptIgnorePattern:
         (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
         # Simulates the state left behind by a prior run of the 'claude' row
         # alone, before 'claude-skills' is also stowed in the same run below.
-        # Its .DS_Store is already linked into the target.
+        # Its .DS_Store is already linked into the target. The link is
+        # relative, as stow lays it down; an absolute link makes stow report
+        # an absolute/relative mismatch and a different conflict class.
         target_ds_store = home / ".claude" / ".DS_Store"
         target_ds_store.parent.mkdir(parents=True)
-        target_ds_store.symlink_to(claude_ds_store)
+        target_ds_store.symlink_to(os.path.relpath(claude_ds_store, target_ds_store.parent))
 
         result = _run_stow_adopt_block(pkg_root, home)
 
@@ -377,7 +390,7 @@ class TestStowAdoptIgnorePattern:
         substring '.DS_Store' without being an exact '.DS_Store' path segment.
         An unanchored pattern would still match it via the substring, since
         the pattern is only anchored at the end. This pins that the `(^|/)`
-        anchor added to `ds_store_ignore_arg` restricts the match to an exact
+        anchor in `ds_store_ignore_arg` restricts the match to an exact
         `.DS_Store` segment, so this sibling must still be symlinked
         normally."""
         home = tmp_path / "home"
