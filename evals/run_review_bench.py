@@ -496,15 +496,17 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None, verify_frozen:
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
+    from review_bench import analysis
+
+    # The closure manifest hash `freeze --last-smoke-manifest-hash` checks is taken before this process's first dispatch,
+    # so an edit to the harness during the process makes `freeze` refuse it.
+    # A campaign resumed after a closure edit takes its hash after the edit, so it does not certify freeze.
+    manifest_hash = analysis.closure_manifest_hash(analysis.compute_harness_closure())
     result = _run_or_smoke(args, fault=args.inject_fault, verify_frozen=False)
     if result == 0:
-        # Prints the closure manifest hash `freeze --last-smoke-manifest-hash` checks.
-        # It prints here because args.k is resolved to its default inside _run_or_smoke.
+        # The hash prints here because args.k is resolved to its default inside _run_or_smoke.
         # The engineer passes it by hand.
         # No state file is used, because judging a smoke campaign as passing is the engineer's own manual gate.
-        from review_bench import analysis
-
-        manifest_hash = analysis.closure_manifest_hash(analysis.compute_harness_closure())
         print(
             f"smoke: harness closure manifest hash = {manifest_hash} (K={args.k}) -- "
             "after judging this passes, pass both to `freeze --last-smoke-manifest-hash "

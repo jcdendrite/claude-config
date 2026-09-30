@@ -461,13 +461,11 @@ def _imported_module_names(source_path: Path) -> set[str]:
 
 
 def compute_harness_closure(*, repo_root: Path = REPO_ROOT) -> dict[str, str]:
-    """Every first-party source file reachable once run_review_bench.py's
-    run/judge/analyze paths are imported, limited to files inside the repo.
-    Computed by statically walking the import graph from
-    review_bench.runner/.adjudicate/.analysis -- the modules those
-    subcommands import -- rather than a hand-kept list.
-    mine_szz.py's/mine_review_rounds.py's own transcript_analysis import is
-    never reached, since nothing in this closure imports either of them."""
+    """Every first-party source file reachable from review_bench.runner,
+    .adjudicate and .analysis, limited to files inside the repo. Computed by
+    statically walking their import graph rather than from a hand-kept list.
+    The closure excludes run_review_bench.py and the mine_*.py miners, so an
+    edit to either goes undetected."""
     visited: set[str] = set()
     queue: list[str] = list(_CLOSURE_ROOTS)
     closure: dict[str, str] = {}

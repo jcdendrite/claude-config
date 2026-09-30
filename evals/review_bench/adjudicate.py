@@ -261,10 +261,20 @@ def install_precision_judge_fixture(
 
 # Tolerant of markdown emphasis/code-span decoration around a label or ID,
 # following run_skill_evals.parse_disposition_answer's own strip-then-match
-# pattern rather than requiring byte-exact judge output.
+# pattern rather than requiring byte-exact judge output. A quoted opening is
+# compared against the findings text with `*` and backtick removed from both
+# sides.
 _MARKDOWN_DECORATION_RE = re.compile(r"[*`]")
 _LABEL_SEPARATOR = r"[:\-–—]+"  # ':', '-', '--', en dash, em dash
 _QUOTE_RE = re.compile(r"[\"“”](.+)[\"“”]")
+
+
+def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
+    """`text` without `*` and backtick characters, plus for each character of
+    the stripped text the index of that character in `text`."""
+    raw_index_by_stripped_index = [i for i, ch in enumerate(text) if not _MARKDOWN_DECORATION_RE.match(ch)]
+    return "".join(text[i] for i in raw_index_by_stripped_index), raw_index_by_stripped_index
+
 
 _RECALL_LABEL_LINE_RE = re.compile(
     rf"(?im)^\s*(?P<id>\S+?)\s*{_LABEL_SEPARATOR}\s*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"
@@ -283,8 +293,8 @@ def parse_recall_answer(
 ) -> dict[str, RecallLabel] | None:
     """None on any invalid condition: a missing ID, a duplicated ID, an ID
     not in expected_ids, a label other than FOUND or NOT_FOUND, or a FOUND
-    whose quoted opening does not occur verbatim in that ID's own normalized
-    findings."""
+    whose quoted opening does not occur in that ID's own normalized findings,
+    comparing with `*` and backtick characters ignored on both sides."""
     text = _MARKDOWN_DECORATION_RE.sub("", raw_text)
     matches: dict[str, list[RecallLabel]] = defaultdict(list)
     for m in _RECALL_LABEL_LINE_RE.finditer(text):
@@ -308,7 +318,7 @@ def parse_recall_answer(
             return None  # missing, or labeled more than once
         label = entries[0]
         if label.label == "FOUND":
-            findings = normalized_findings_by_id.get(expected_id, "")
+            findings, _ = _strip_markdown_decoration(normalized_findings_by_id.get(expected_id, ""))
             if not label.quoted_opening or label.quoted_opening not in findings:
                 return None
         result[expected_id] = label
@@ -364,7 +374,8 @@ def check_precision_split(findings: Sequence[PrecisionFinding], normalized_run_t
     """True when every finding's quoted opening occurs in normalized_run_text
     in order, each one strictly after the previous -- a repeat of an opening
     the text contains only once fails here, since the second search starts
-    past the first match's own end."""
+    past the first match's own end. The parsed openings carry no `*` or
+    backtick characters, so the caller passes text with those stripped too."""
     cursor = 0
     for finding in findings:
         index = normalized_run_text.find(finding.quoted_opening, cursor)
@@ -388,7 +399,8 @@ def parse_precision_answer(
         findings = parse_precision_findings(section_text)
         if findings is None:
             return None
-        if not check_precision_split(findings, normalized_findings_by_id.get(run_id, "")):
+        stripped_findings, _ = _strip_markdown_decoration(normalized_findings_by_id.get(run_id, ""))
+        if not check_precision_split(findings, stripped_findings):
             return None
         result[run_id] = findings
     return result
@@ -685,15 +697,26 @@ def build_precision_spot_check_candidates(
     normalized_findings_by_id: Mapping[str, str],
 ) -> list[SpotCheckCandidate]:
     """One candidate per finding, its display_text the whole run output with
-    that finding's own span marked."""
+    that finding's own span marked. The span covers the raw text from the
+    first to the last quoted character, so `*` and backtick inside the opening
+    are included and those bordering it are not. Raises ValueError if an
+    opening does not occur after the previous finding's opening in its run's
+    text (it is absent, or appears only before that point)."""
     candidates: list[SpotCheckCandidate] = []
     for run_id, findings in findings_by_run_id.items():
         run_text = normalized_findings_by_id.get(run_id, "")
+        stripped_text, raw_index_by_stripped_index = _strip_markdown_decoration(run_text)
         cursor = 0
         for finding_index, finding in enumerate(findings):
-            start = run_text.find(finding.quoted_opening, cursor)
-            end = start + len(finding.quoted_opening)
-            cursor = end
+            stripped_start = stripped_text.find(finding.quoted_opening, cursor)
+            if stripped_start == -1:
+                raise ValueError(
+                    f"opening {finding.quoted_opening!r} not found in the text of run {run_id!r} after position {cursor}"
+                )
+            stripped_end = stripped_start + len(finding.quoted_opening)
+            cursor = stripped_end
+            start = raw_index_by_stripped_index[stripped_start]
+            end = raw_index_by_stripped_index[stripped_end - 1] + 1
             marked_text = f"{run_text[:start]}{_SPAN_OPEN}{run_text[start:end]}{_SPAN_CLOSE}{run_text[end:]}"
             candidates.append(
                 SpotCheckCandidate(

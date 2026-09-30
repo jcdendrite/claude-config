@@ -1400,10 +1400,10 @@ class TestSelectPytestTargets:
     def test_transcript_analysis_package_module_change_selects_review_ledger_script_test(self):
         """TRANSCRIPT_ANALYSIS_PACKAGE_DIR's row covers the whole
         transcript_analysis/ package, not just author_outcome.py, so it
-        stays correct when author_outcome's own imports change. scope.py has
-        no fidelity list guarding TRANSCRIPT_ANALYSIS_PACKAGE_DIR, so this
-        test asserts the file exists on disk before relying on it as a real
-        changed path."""
+        stays correct when author_outcome's own imports change. cost.py is
+        not among the paths in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, which keeps
+        the exact-set assertion valid. The test asserts the file exists on
+        disk before relying on it as a real changed path."""
         changed_path = "claude/.claude/scripts/transcript_analysis/cost.py"
         assert (_REPO_ROOT / changed_path).is_file()
         result = _mod.select_pytest_targets([changed_path])

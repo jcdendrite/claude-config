@@ -1405,7 +1405,21 @@ class TestRetryThenMissing:
     ) -> None:
         scenario = _load_scenario(tmp_path, "model-mismatch")
         _patch_inner_prompt_to_match_build_review_prompt(scenario)
-        stream = [_result_event_line(total_cost_usd=0.25, usage={"input_tokens": 10, "output_tokens": 5})]
+        stream_by_attempt = [
+            [
+                _result_event_line(
+                    subtype=runner.RESULT_SUBTYPE_SUCCESS, total_cost_usd=0.25,
+                    usage={"input_tokens": 10, "output_tokens": 5},
+                ),
+            ],
+            [
+                _result_event_line(
+                    subtype=runner.RESULT_SUBTYPE_SUCCESS, total_cost_usd=0.40,
+                    usage={"input_tokens": 30, "output_tokens": 7},
+                ),
+            ],
+        ]
+        launch_calls = iter(stream_by_attempt)
         monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl")
         ctx = runner.RunContext(
             campaign_id="c1", defect_id="d1", agent_name=AGENT_NAME, model_id=MODEL_ID,
@@ -1415,13 +1429,14 @@ class TestRetryThenMissing:
         )
 
         attempt = runner.run_one_with_retry(
-            ctx, arm="current-rule", run_index=0, launch=lambda cmd, cwd, timeout_s: (stream, False),
+            ctx, arm="current-rule", run_index=0, launch=lambda cmd, cwd, timeout_s: (next(launch_calls), False),
         )
 
         assert attempt.record.attempts == 2
-        assert attempt.record.total_cost_usd == pytest.approx(0.5)
-        assert attempt.record.input_tokens == 20
-        assert attempt.record.output_tokens == 10
+        assert attempt.record.missing_reason == runner.VALIDITY_FAIL_MODEL_MISMATCH
+        assert attempt.record.total_cost_usd == pytest.approx(0.25 + 0.40)
+        assert attempt.record.input_tokens == 10 + 30
+        assert attempt.record.output_tokens == 5 + 7
         assert attempt.record.cache_read_input_tokens is None
 
     def test_a_missing_run_records_why_it_is_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

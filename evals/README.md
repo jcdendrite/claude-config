@@ -518,6 +518,9 @@ resample count and seed, the campaign seed, the kappa floor, the retry and
 missing-run rule, the later-arm certification rule, the confirmed defect
 IDs, and sha256 hashes of the harness's own import closure, both arm
 directories, the judge agent files, `defects.json`, and the prompt templates.
+The import closure is walked from `runner`, `adjudicate` and `analysis`, so
+edits to `run_review_bench.py` and the `mine_*.py` miners after freeze go
+undetected.
 
 `freeze` fails, exiting 2, on a missing or empty arm directory. It refuses to
 overwrite an existing `conditions.json`; delete the file deliberately to freeze
@@ -571,7 +574,13 @@ differing — this section is their canonical home:
 Operating rule: the ambient config checkout stays at the frozen commit from
 `freeze` through the last `judge` run, with no uncommitted edits. Merging the
 PR that adds `conditions.json` does not require pulling that checkout. Add no
-`git worktree add`, in either repository, while a campaign runs.
+`git worktree add`, in either repository, while a campaign runs. Likewise
+`arms/`, `judges/` and `defects.json` stay unchanged from `freeze` through the
+last `judge` run and any `analyze` that follows. Each block and each judge run
+re-reads `arms/` and `judges/` after the one-time check, and `analyze`
+re-reads `defects.json`. `snapshot-arms`, `confirm` (which writes
+`defects.json`), and a `git pull` or `git checkout` in the harness worktree
+are the ways they change.
 
 `freeze` itself refuses, exiting 2 and naming the failing precondition,
 unless the current harness closure manifest matches the last smoke campaign
@@ -690,7 +699,11 @@ before dispatch. After each block, `smoke` and `run` print its ok and
 missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
-it forces every run to fail. `smoke` requires `--defect-id`, and `judge`
+it forces every run to fail. `smoke` takes its harness closure manifest hash
+once per process, before its first dispatch. A smoke campaign resumed after any
+edit to the harness closure therefore prints a hash for code the earlier blocks
+did not run, and does not certify `freeze`: rerun it under a fresh campaign ID.
+`smoke` requires `--defect-id`, and `judge`
 skips a defect that has no completed reviewer run.
 
 Each campaign gets its own run store, nested under its `--campaign-id`, so

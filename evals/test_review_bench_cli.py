@@ -617,6 +617,28 @@ class TestRunAndSmokeOutOfSessionReporting:
         assert f"smoke: out-of-session read counts per arm = {expected_counts}" in stderr
 
 
+class TestSmokeManifestHashIsTakenBeforeDispatch:
+    def test_smoke_prints_the_closure_hash_from_before_the_campaign(
+        self, monkeypatch, capsys,
+    ) -> None:
+        hash_before_campaign = analysis.closure_manifest_hash(analysis.compute_harness_closure())
+        closure_after_edit = analysis.compute_harness_closure() | {"edited-during-campaign.py": "0" * 64}
+        assert analysis.closure_manifest_hash(closure_after_edit) != hash_before_campaign
+
+        def edit_the_harness_then_succeed(*args, **kwargs) -> int:
+            monkeypatch.setattr(analysis, "compute_harness_closure", lambda: closure_after_edit)
+            return 0
+
+        monkeypatch.setattr(run_review_bench, "_run_or_smoke", edit_the_harness_then_succeed)
+        smoke_args = argparse.Namespace(subcommand="smoke", inject_fault=None, k=1)
+
+        exit_code = run_review_bench.cmd_smoke(smoke_args)
+
+        assert exit_code == 0
+        stderr = capsys.readouterr().err
+        assert f"smoke: harness closure manifest hash = {hash_before_campaign} (K=1)" in stderr
+
+
 class TestModelEmittedPathsAreEscapedForTheTerminal:
     @pytest.mark.parametrize(
         ("raw_text", "escaped_text"),
@@ -1660,8 +1682,12 @@ class TestAnalyzeRecomputesFrozenConditions:
 
 
 class TestAnalyzeLaterArmVerdicts:
-    """`analyze --baseline-conditions-path` certifies or rejects a later arm,
-    so each verdict line and each refusal is pinned on constructed records."""
+    """`analyze --baseline-conditions-path` certifies or rejects a later arm.
+    The recall verdict and the refusals are pinned here on constructed records,
+    as are the precision PASS lines, kept-set gating and the missing-precision
+    refusal. A precision FAIL verdict and which arm `cmd_analyze` passes as
+    baseline versus later arm to the precision comparison are not pinned here;
+    the unit tests pin the verdict function alone."""
 
     def _judged_records_with_function_context_found(
         self, tmp_path: Path, *, function_context_found: bool,

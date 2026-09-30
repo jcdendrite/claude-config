@@ -207,6 +207,21 @@ class TestRecallAnswerParser:
         answer = 'r1: FOUND -- "this quote is not in the findings"'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
+    def test_accepts_a_verbatim_quote_of_findings_that_carry_markdown_markup(self) -> None:
+        """Guards a judge's verbatim quote of a markdown-bearing finding being rejected
+        because only the judge side was stripped; pins parse_recall_answer's findings-side strip."""
+        findings = {"r1": "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."}
+        quote = "1. **Contract compatibility** -- `src/a.py:12` -- leaks"
+        answer = f'r1: FOUND -- "{quote}"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].label == "FOUND"
+
+    def test_rejects_a_quote_absent_from_findings_that_carry_markdown_markup(self) -> None:
+        """Guards the findings-side strip in parse_recall_answer against over-accepting a quote whose text differs."""
+        findings = {"r1": "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."}
+        answer = 'r1: FOUND -- "1. Contract compatibility -- src/a.py:99 -- leaks"'
+        assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
 
 class TestPrecisionSplitCheck:
     def test_accepts_openings_found_in_order_multi_finding(self) -> None:
@@ -298,6 +313,102 @@ class TestPrecisionAnswerParser:
         findings_by_id = {"r1": "One problem here."}
         answer = '### Run r1\n1. VALID -- "not in the text"\n'
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_accepts_a_verbatim_quote_of_findings_that_carry_markdown_markup(self) -> None:
+        """Guards a judge's verbatim quote of a markdown-bearing finding being rejected
+        because only the judge side was stripped; pins parse_precision_answer's strip before check_precision_split."""
+        findings_by_id = {"r1": "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."}
+        quote = "1. **Contract compatibility** -- `src/a.py:12` -- leaks"
+        answer = f'### Run r1\n1. VALID -- "{quote}"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert [f.label for f in result["r1"]] == ["VALID"]
+
+    def test_rejects_a_quote_absent_from_findings_that_carry_markdown_markup(self) -> None:
+        """Guards the strip in parse_precision_answer against over-accepting a quote whose text differs."""
+        findings_by_id = {"r1": "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."}
+        answer = '### Run r1\n1. VALID -- "1. Contract compatibility -- src/a.py:99 -- leaks"\n'
+        assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+
+class TestPrecisionSpotCheckCandidates:
+    def test_marked_span_wraps_the_raw_decorated_opening(self) -> None:
+        run_text = "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."
+        parsed = {
+            "r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="Contract compatibility -- src/a.py:12")],
+        }
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert candidate.display_text == (
+            "1. **" + adjudicate._SPAN_OPEN + "Contract compatibility** -- `src/a.py:12"
+            + adjudicate._SPAN_CLOSE + "` -- leaks a connection."
+        )
+
+    def test_each_of_two_adjacent_decorated_openings_marks_its_own_raw_span(self) -> None:
+        run_text = "**Alpha** **Beta**"
+        parsed = {
+            "r1": [
+                adjudicate.PrecisionFinding(label="VALID", quoted_opening="Alpha"),
+                adjudicate.PrecisionFinding(label="INVALID", quoted_opening="Beta"),
+            ],
+        }
+
+        first, second = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert first.display_text == "**" + adjudicate._SPAN_OPEN + "Alpha" + adjudicate._SPAN_CLOSE + "** **Beta**"
+        assert second.display_text == "**Alpha** **" + adjudicate._SPAN_OPEN + "Beta" + adjudicate._SPAN_CLOSE + "**"
+
+    def test_a_repeated_opening_differing_only_by_decoration_marks_the_second_occurrence(self) -> None:
+        run_text = "Dup first, then D*u*p second."
+        parsed = {
+            "r1": [
+                adjudicate.PrecisionFinding(label="VALID", quoted_opening="Dup"),
+                adjudicate.PrecisionFinding(label="VALID", quoted_opening="Dup"),
+            ],
+        }
+
+        first, second = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert first.display_text == adjudicate._SPAN_OPEN + "Dup" + adjudicate._SPAN_CLOSE + " first, then D*u*p second."
+        assert second.display_text == (
+            "Dup first, then " + adjudicate._SPAN_OPEN + "D*u*p" + adjudicate._SPAN_CLOSE + " second."
+        )
+
+    def test_an_opening_ending_at_the_end_of_the_text_is_marked_through_the_last_character(self) -> None:
+        run_text = "See **the leak"
+        parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="the leak")]}
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert candidate.display_text == "See **" + adjudicate._SPAN_OPEN + "the leak" + adjudicate._SPAN_CLOSE
+
+    def test_decoration_at_index_zero_stays_outside_the_marked_span(self) -> None:
+        run_text = "**Bold** start of the finding."
+        parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="Bold start")]}
+
+        [candidate] = adjudicate.build_precision_spot_check_candidates(
+            "d1", parsed, {"r1": "current-rule"}, {"r1": run_text},
+        )
+
+        assert candidate.display_text == (
+            "**" + adjudicate._SPAN_OPEN + "Bold** start" + adjudicate._SPAN_CLOSE + " of the finding."
+        )
+
+    def test_raises_naming_the_run_and_opening_when_the_opening_is_absent_from_the_run_text(self) -> None:
+        parsed = {"r1": [adjudicate.PrecisionFinding(label="VALID", quoted_opening="not in the text")]}
+
+        with pytest.raises(ValueError, match=r"'not in the text'.*'r1'"):
+            adjudicate.build_precision_spot_check_candidates(
+                "d1", parsed, {"r1": "current-rule"}, {"r1": "One problem here."},
+            )
 
 
 class TestSpotCheckKappaAndSplitAgreement:
