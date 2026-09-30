@@ -226,9 +226,8 @@ class _CommitResolution:
 
 
 # The calls that use this timeout are local git (show-ref/merge-base/log/
-# rev-parse) with no network I/O. It reuses mine_szz's own local-git timeout
-# rather than re-deriving it, so this repo has one local-git-call timeout
-# value; see that constant's own citation for the rationale.
+# rev-parse) with no network I/O. It reuses mine_szz's local-git timeout
+# instead of declaring another; see that constant's own citation for the rationale.
 _LOCAL_GIT_TIMEOUT_S = mine_szz._LOCAL_GIT_TIMEOUT_S
 _LOCAL_GIT_ERRORS = mine_szz._GIT_CALL_ERRORS
 

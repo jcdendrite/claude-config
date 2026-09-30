@@ -28,7 +28,7 @@ _OLD_FILE_HEADER_RE = re.compile(r"^--- (.+)$")
 # cannot attribute a pure omission.
 _ADDITION_ONLY_CONTEXT_LINES = 3
 
-# read-scope's own chars-per-token estimate, reused here for ranking by
+# Duplicated from read-scope's chars-per-token estimate, for ranking by
 # files over one Read call.
 _CHARS_PER_TOKEN = 4
 _READ_CAP_TOKENS = 25_000
@@ -178,9 +178,8 @@ def _blame_file_diff(
 
     Returns (confident, low_confidence): confident holds introducing SHAs
     from a modified/removed-line hunk; low_confidence holds introducing
-    SHAs from an addition-only hunk's adjacent context -- disjoint sets,
-    since a real removal always outranks an addition-only guess for the
-    same file.
+    SHAs from an addition-only hunk's adjacent context. The sets can
+    overlap, and callers prefer `confident`.
     """
     parent = f"{fix_commit}^"
     confident: set[str] = set()

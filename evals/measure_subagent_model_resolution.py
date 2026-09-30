@@ -23,11 +23,9 @@ claude/.claude/scripts/transcript-analysis.py — this harness only
 ever has one dispatch per run to join, so the multi-root/pricing generality
 those functions carry for the full corpus tool doesn't apply here.
 
-Consumed by evals/review_bench/runner.py and evals/review_bench/adjudicate.py,
-which import _run_claude_to_completion, _resolved_temp_project_dir,
-subagent_dir_for_session, parse_subagent_dispatches, abort_launches,
-SIDECAR_POLL_INTERVAL_S, SIDECAR_POLL_TIMEOUT_S, PER_RUN_BUDGET_CAP_USD, and
-BUDGET_CAP_MULTIPLIER.
+evals/review_bench/runner.py and evals/review_bench/adjudicate.py read this
+module's names, underscore-private ones included, as msmr.<name> (adjudicate.py
+through runner), so grep for `msmr.` before renaming one.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """Unit tests for evals/measure_subagent_model_resolution.py.
 
-All deterministic — no `claude -p` call. Fixture-based, using synthetic
+Fixture-based, using synthetic
 `subagents/*.meta.json` + paired `*.jsonl` pairs written under `tmp_path`,
 mirroring the real on-disk shape confirmed in
-claude/.claude/scripts/tests/test_transcript_analysis.py's
+claude/.claude/scripts/tests/conftest.py's
 `_write_subagent_dispatch` helper. Lives beside the harness rather than in
 claude/.claude/tests/ — that directory is stowed to every consumer of this
 repo, and this harness imports a module (measure_subagent_model_resolution)

@@ -1210,8 +1210,8 @@ class TestCmdAnalyzeMalformedBaselineConditions:
 
 
 class TestCmdAnalyzeReportCompleteness:
-    def test_written_report_carries_every_never_gating_secondary_column(self, tmp_path: Path) -> None:
-        """Asserts the wiring: every secondary column is present in the --out
+    def test_written_report_carries_the_never_gating_secondary_columns(self, tmp_path: Path) -> None:
+        """Asserts the wiring: each secondary column listed below is present in the --out
         report, since a per-function unit test cannot catch cmd_analyze never
         calling one of them. Only d2 is over_read_cap, so the over-cap
         stratum's recall diff is +1.0 and a broken over_read_cap extraction
@@ -1258,8 +1258,7 @@ class TestCmdAnalyzeReportCompleteness:
 
         assert exit_code == 0
         report = json.loads(out_path.read_text())
-        # Every never-gating secondary column analysis.py exposes, except
-        # split agreement (produced by `spot-check import`, not `analyze`).
+        # The never-gating secondary columns the report carries.
         for column in (
             "read_tokens_per_arm", "partial_and_paged_counts_per_arm", "whole_file_read_adherence_per_arm",
             "missing_runs_by_reason_per_arm", "out_of_session_read_counts_per_arm",
@@ -1290,7 +1289,7 @@ class TestCmdAnalyzeBaselineReport:
     Precision, VALID / findings: d1 arm 1 = 2/3, arm 2 = 0/1. d2 arm 1 = 1/2, arm 2 = 1/3.
       arm 1 pooled = 3/5 = 0.6. arm 2 pooled = 1/4 = 0.25. Difference = -0.35.
     With two defects, a paired bootstrap resample is (d1, d1), (d1, d2), or (d2, d2), with
-    probabilities 1/4, 1/2, 1/4, so each 95% interval runs from its (d2, d2) value to its (d1, d1) value.
+    probabilities 1/4, 1/2, 1/4, so each interval's two ends are its (d1, d1) and (d2, d2) resample values.
     """
 
     _REVIEWER_TEXT = {
@@ -2699,6 +2698,67 @@ class TestMainCatchesHarnessInvalidatedErrorForJudgeAndSpotCheckExport:
         stderr = capsys.readouterr().err
         assert "malformed line 1" in stderr
         assert str(judge_records_path) in stderr
+
+
+class TestJudgeRunStoreLock:
+    def _judge_argv(self, tmp_path: Path, *, campaign_id: str, run_store_dir: Path | None, reviewer_status: str) -> list[str]:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        reviewer_records_path = tmp_path / "reviewer.jsonl"
+        runner.append_run_records(
+            reviewer_records_path, (_run_record("d1", "current-rule", "run-1", "No findings.", status=reviewer_status),),
+        )
+        judge_records_dir = tmp_path / "judge-runs"
+        judge_records_dir.mkdir()
+        argv = [
+            "judge", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_records_path),
+            "--conditions-path", str(tmp_path / "no-conditions.json"),
+            "--judge-records-dir", str(judge_records_dir), "--campaign-id", campaign_id,
+        ]
+        if run_store_dir is not None:
+            argv += ["--judge-run-store-dir", str(run_store_dir)]
+        return argv
+
+    def test_judge_refuses_a_held_store_before_any_sweep_or_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+    ) -> None:
+        from review_bench import adjudicate
+
+        judge_run_store_dir = tmp_path / "judge-run-store"
+        runner.RunStore(judge_run_store_dir).acquire_lock()  # held by this process for the test's duration
+        sweeps: list[Path] = []
+        dispatches: list[str] = []
+        monkeypatch.setattr(runner.RunStore, "sweep_abandoned", lambda self, projects_root: sweeps.append(projects_root))
+        monkeypatch.setattr(adjudicate, "run_defect_judges", lambda *args, **kwargs: dispatches.append("dispatched"))
+
+        exit_code = run_review_bench.main(self._judge_argv(
+            tmp_path, campaign_id="judge-test", run_store_dir=judge_run_store_dir, reviewer_status="ok",
+        ))
+
+        assert exit_code == 1
+        stderr = capsys.readouterr().err
+        assert "held by pid" in stderr
+        assert sweeps == []
+        assert dispatches == []
+
+    def test_judge_under_another_campaign_id_is_not_blocked_by_a_held_default_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+    ) -> None:
+        default_store_root = tmp_path / "default-judge-run-store"
+        monkeypatch.setattr(run_review_bench, "DEFAULT_JUDGE_RUN_STORE_DIR", default_store_root)
+        runner.RunStore(default_store_root / "a").acquire_lock()  # held by this process for the test's duration
+        sweeps: list[Path] = []
+        monkeypatch.setattr(
+            runner.RunStore, "sweep_abandoned", lambda self, projects_root: sweeps.append(projects_root) or [],
+        )
+
+        exit_code = run_review_bench.main(self._judge_argv(
+            tmp_path, campaign_id="b", run_store_dir=None, reviewer_status="missing",
+        ))
+
+        assert exit_code == 0
+        assert len(sweeps) == 1
+        assert "held by pid" not in capsys.readouterr().err
 
 
 _COMMITTED_DEFAULT_PATH_NAMES = frozenset({"DEFAULT_DEFECTS_PATH", "DEFAULT_ARMS_ROOT", "DEFAULT_CONDITIONS_PATH"})

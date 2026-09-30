@@ -733,7 +733,7 @@ class TestResolveDefectCommits:
         )
         assert resolution.ref_status == "local-branch"
         assert resolution.fix_commit is None
-        assert resolution.branch_commits  # still records every touching commit
+        assert resolution.branch_commits  # still records the touching commits
 
     def test_multiple_introducers_is_unresolved(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -752,13 +752,11 @@ class TestResolveDefectCommits:
             repo, path="app.py", after_ts=_ts("2026-01-04T00:00:00Z"), branch=_open_feat_branch(repo),
         )
         assert resolution.ref_status == "local-branch"
-        # An unresolved branch's _CommitResolution carries only ref_status
-        # and branch_commits -- fix_commit itself is None too, not just
-        # head_commit/base_commit, since every early return before the
-        # fully-resolved happy path omits all three commit fields.
+        # An unresolved branch's _CommitResolution carries ref_status and
+        # branch_commits; fix_commit is None too, not just head_commit.
         assert resolution.fix_commit is None  # len(introducers) != 1
         assert resolution.head_commit is None
-        assert fix_sha in [c["sha"] for c in resolution.branch_commits]  # still records every touching commit
+        assert fix_sha in [c["sha"] for c in resolution.branch_commits]  # the fix commit is among the recorded commits
 
     def test_clean_resolution_returns_expected_commit_values(self, tmp_path):
         repo, main_sha, introducing_sha, fix_sha = self._repo_with_branch_and_bug_fix(tmp_path)

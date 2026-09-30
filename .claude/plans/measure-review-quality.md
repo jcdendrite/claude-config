@@ -76,7 +76,7 @@ This fixture design costs three things, all accepted:
 - The fixture's own historical project `.claude/` config loads as it did at the time.
 - The model may already have seen this public repo's later fixes (row 28). Pairing within each defect puts that bias on both arms equally.
 
-**Arm.** An arm is a directory holding one `bench-<lens>.md` agent file per lens that has a read clause (row 11). The harness installs it into the fixture's `.claude/agents/`, where it is excluded from git.
+**Arm.** An arm is a directory holding one `bench-<lens>.md` agent file per lens that has a read clause (row 11). The harness installs it into the fixture's `.claude/agents/`, where it is untracked (in neither commit).
 - **Arm 1, `current-rule`.** The production agent bodies at the freeze commit, copied verbatim with three frontmatter changes:
   - `name: bench-<lens>`;
   - `model: inherit`, so that `--model <frozen reviewer ID>` governs (row 29). If the CLI spike (Verification gate 3) shows that `inherit` does not resolve but a full model ID does, the arm pins the frozen ID itself;
@@ -158,7 +158,7 @@ Operating rule: the ambient config checkout stays at the frozen commit from `fre
 - The timeout's reference, `SAMPLE_TIMEOUT_S`, sizes a single-turn skill-eval sample, not a reviewer run at `xhigh` effort. Bench reviewers have no Bash, so no denial can stall a run, because the tool is absent rather than refused. A no-Bash run may still take longer, for example through arm 2's Greps and paged Reads.
   - The smoke campaign (gate 6) compares every reviewer run's wall-clock with `SAMPLE_TIMEOUT_S`. If any run exceeds it, the timeout becomes 10 × the longest smoke run before the freeze.
   - Every timeout or budget stop is recorded as `missing_reason: timeout` or `budget` and reported per arm. A mis-sized cap therefore shows up as a count of missing runs, not as a shift in recall.
-- Each judge gets its own budget cap and timeout: 10 × that judge's cost and duration on the smoke campaign's full-K fixture (gate 6). Their constants' comments name the smoke run. A judge's input holds all 2K of a defect's runs, so only a run at the K to be frozen sizes a baseline judge run.
+- Each judge gets its own budget cap and timeout: 10 × that judge's cost and duration on the smoke campaign's full-K fixture (gate 6). A judge's input holds all 2K of a defect's runs, so only a run at the K to be frozen sizes a baseline judge run.
   - Until that measurement exists, the judge constants hold bootstrap values equal to the reviewer cap and timeout, the only per-run bounds this repo has measured, and their comments say so. These bound the smoke campaign's own judge runs, the first one included.
   - A smoke judge run that ends at a bootstrap bound yields no measurement, so the smoke campaign does not pass. The engineer raises the bootstrap values and reruns it.
   - Writing the derived values into the harness changes the manifest, so the smoke campaign reruns under them before `freeze` (Freeze preconditions).
@@ -544,7 +544,7 @@ The canonical text of the invalidation rule lives in `evals/README.md`'s review-
     - `mine-rounds` takes no scope flag and exits 2 if its sessions ever come from more than one config-dir root (row 37).
     - `confirm` is itself the engineer's approval act (row 49). It reads every `.local/` candidate that has a description and is not already in `defects.json`, and runs `check_description_provenance` and the schema checks on each. An empty description is skipped as an incomplete candidate. That is a completeness check, not approval.
     - A rejection prints, to the terminal only, the entry's candidate ID, the matched six-word run, and the ID of the candidate whose excerpt holds that run, and no other excerpt text. `confirm` writes nothing for a rejected entry and has no override.
-    - On a terminal, `confirm` then shows each passing candidate and prompts `[y/N/q]`. It detects a terminal with `sys.stdin.isatty()`, read through the patchable seam `_stdin_is_terminal()`. That seam is test-only: no environment variable or CLI flag reaches it. The prompt shows the candidate's ID, source, lens, short SHAs, `fix_date`, its path, the miner's three inclusion guesses, its description, and the subjects of its commits.
+    - On a terminal, `confirm` then shows each passing candidate and prompts `[y/N/q]`. It detects a terminal with `sys.stdin.isatty()`, read through the patchable seam `_stdin_is_terminal()`. That seam is test-only: no environment variable or CLI flag reaches it. The prompt shows the candidate's ID, source, lens, short SHAs, `fix_date`, its path, the miner's inclusion guesses, its description, and the subjects of its commits.
       - Every displayed field (ID, path, subjects, description) passes through the existing `_escape_control_characters`, as do the fields of a rejection line.
       - The number of subjects shown and the length of each are bounded by named constants.
       - `lines_exist_at_introducing_head` and `reviewer_could_have_caught_it` are labeled "unchecked default".
@@ -598,15 +598,15 @@ The canonical text of the invalidation rule lives in `evals/README.md`'s review-
   - Synthetic subagent transcripts under `evals/fixtures/review-bench/`.
 - Modify:
   - `evals/run_review_bench.py`: add `snapshot-arms`, `smoke`, and `run`. Its `main()` routes SIGHUP and SIGTERM to `KeyboardInterrupt` (Cleanup).
-  - `evals/measure_subagent_model_resolution.py`, three changes:
-    - A paragraph in the module docstring, beside its existing "Reuses from" paragraph, that names the consumer and every name the bench imports: "Consumed by evals/review_bench/runner.py and evals/review_bench/adjudicate.py, which import _run_claude_to_completion, _resolved_temp_project_dir, subagent_dir_for_session, parse_subagent_dispatches, abort_launches, SIDECAR_POLL_INTERVAL_S, SIDECAR_POLL_TIMEOUT_S, PER_RUN_BUDGET_CAP_USD, and BUDGET_CAP_MULTIPLIER."
+  - `evals/measure_subagent_model_resolution.py`, these changes:
+    - A paragraph in the module docstring, beside its existing "Reuses from" paragraph, that names the bench modules reading this module's names and says to grep for `msmr.` before renaming one. It lists no imported names, so it cannot go stale.
     - A launch lifecycle in `_run_claude_to_completion`. The child leads its own session (`start_new_session`). The launcher kills the child's process group on a timeout and on any exception, including `KeyboardInterrupt`. The new `abort_launches()` sets a process-wide flag that makes every in-flight launch kill its child and raise `LaunchAbortedError`, and makes every later launch raise before spawning. The flag is never cleared. This also changes the launcher of the file's own measurement CLI, and its tests pin the contract.
     - Its `main()` routes SIGHUP and SIGTERM to `KeyboardInterrupt` with `signal.signal(..., signal.default_int_handler)`, so its own measurement CLI's children die on a hangup too.
     - The docstring documents the consumer rather than promoting the names to public ones. Promotion would rename every call site in that file and its tests for no behavior change.
     - The docstring already carries this file's reuse record (row 36).
     - The select-tests rule (1a) and the freeze closure already cover edits to this file mechanically.
 - Reuse:
-  - from `measure_subagent_model_resolution`: the nine names above;
+  - from `measure_subagent_model_resolution`: the names the bench modules read as `msmr.<name>`;
   - from `run_skill_evals`: `DEFAULT_WORKERS`, `SAMPLE_TIMEOUT_S`, and `DISPATCH_TOOL_NAMES`. The runner finds session stores by session ID, not through `compute_session_store_dir()` (row 47);
   - `config_dir` from `_config_dir` directly, not through `run_skill_evals`'s re-export (row 36).
   - Define a local characters-per-token constant equal to read-scope's (row 18), under the small-duplicated-value exception. `read_scope.py` merged in #1128 as A1, and the constant is at `transcript_analysis/read_scope.py:21`.
@@ -710,7 +710,6 @@ The tests must show these behaviors, all offline. No test launches `claude`.
   - `.bench/commit-subject.txt` holds the head commit's subject verbatim, and no dispatcher prompt contains it.
   - The `-W` diff is present.
   - The over-read-cap flag follows the characters ÷ 4 threshold.
-  - The precision-judge fixture and the recall-judge directory hold no `bench-<lens>` file.
 - **Arms:**
   - Clause substitution happens exactly once per lens and fails on a missing clause.
   - Arm files differ from production only in `name`, `model`, `tools`, and the substituted clause.
@@ -887,6 +886,7 @@ The tests must show these behaviors, all offline. No test launches `claude`.
   - The `spot-check import` kappa floor has no deny-branch test, and its enforcement belongs to #1115.
   - `judge` should print `analysis.missing_run_counts_by_reason(judge_records)` and stop counting an all-missing defect as judged. This is required before the smoke gate (gate 6). `run_review_bench.py` is outside the frozen closure, so adding it later invalidates nothing.
   - The asymmetric-precision and `--arm-x` CLI tests are deferred to #1115.
+  - The function-context cases among the contract tests that read the real production agent files go red when a production read clause is reworded, and the tempting fix is an edit to `arms.py` (`LENS_READ_CLAUSES`) or another file in the freeze closure, either of which voids the frozen baseline. `select-tests.py` selects these tests on any production agent-file edit, so an unrelated PR can hit them first. #1115 must retire or scope those tests rather than edit `LENS_READ_CLAUSES`, because that edit would void the frozen baseline.
   - A two-arm integration test over the real spec builder and block runner, deferred to #1115 (the next change to arm routing). It would pin each arm's snapshot and fixture routing, the agent name per lens, the declared-tools and live-root hand-offs, and `--arms-root` reaching the fixture builder. Until then, arm snapshot routing, per-arm fixture routing, and `--arms-root` reaching the fixture builder are pinned at no level, and the other hand-offs at one level. The baseline's arm routing rests on reading the code until #1115.
   - A test that `analyze` excludes missing reviewer records when it derives expected IDs. The judge-input builders exclude them and have a test.
   - The fixture builder does not compare its changed-file set with the source repo's `git diff`, and does not fail loudly on a mismatch. The index-emptying fix removes the known cause.

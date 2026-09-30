@@ -668,9 +668,8 @@ def extract_final_text(subagent_jsonl: Path) -> str | None:
     """The subagent's own last assistant text block -- its findings
     (RunRecord.findings_text). None when its final assistant record is one
     Claude Code synthesized (an API error or placeholder turn), whose text
-    is an error message rather than a review. A synthetic record's text is
-    never returned wherever it sits, so a run whose only text is synthetic
-    yields an empty string."""
+    is an error message rather than a review. Otherwise the last text block
+    of a non-synthetic record, or "" when none has one."""
     last_text = ""
     final_record_is_synthetic = False
     with open(subagent_jsonl) as fh:

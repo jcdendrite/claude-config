@@ -703,7 +703,7 @@ class TestCheckEnvironmentReadingMatchesFrozen:
 
 
 class TestEnvironmentChecks:
-    def test_later_arm_campaign_with_different_environment_invalidates_even_with_matching_hashes(self) -> None:
+    def test_later_arm_campaign_with_different_environment_invalidates(self) -> None:
         records = [_run_record("d1", ARM_BASELINE, "r1", cli_version="2.1.0", ambient_config_commit="cafebabe")]
         with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms"):
             analysis.check_environment_matches_baseline(

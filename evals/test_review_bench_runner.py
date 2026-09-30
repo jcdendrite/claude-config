@@ -456,9 +456,9 @@ class TestLeakAndOutOfSessionChecks:
         assert result.ok is False
         assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
 
-    def test_fix_commit_files_widen_the_leak_check_and_leave_the_adherence_stats_alone(self, tmp_path: Path) -> None:
-        """A fix-only file is a leak, but it never counts as a whole-file read of a
-        changed file: the adherence diagnostic keeps the introducing commit's set."""
+    def test_fix_commit_files_never_count_as_whole_file_reads_of_changed_files(self, tmp_path: Path) -> None:
+        """The adherence diagnostic keeps the introducing commit's set of changed files,
+        so a fix-only file is not counted as a whole-file read of a changed file."""
         scenario = _load_scenario(tmp_path, "normal-success")
         result = _evaluate(scenario, changed_relpaths=(), fix_commit_relpaths=("changed_file.py",))
         assert result.ok is True
@@ -581,11 +581,10 @@ class TestRelativePathResolution:
         assert result.ok is True
 
     def test_relative_grep_that_resolves_into_a_live_checkout_root_fails(self, tmp_path: Path) -> None:
-        """Same relative "." Grep path as the allow case above, but with
-        live_checkout_roots naming the fixture directory itself: a campaign
-        invoked from a directory that is also a live-checkout root turns
-        every relative Grep into a false leak unless resolution anchors to
-        fixture_dir rather than the process's own cwd."""
+        """Same relative "." path as the allow case above, but with
+        live_checkout_roots naming the fixture directory itself. A relative
+        Grep path resolves against fixture_dir, so here it is a leak;
+        resolving against the process's own cwd would miss it."""
         scenario = _load_scenario(tmp_path, "normal-success")
         session_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
         _replace_tool_use(session_jsonl, "toolu_read_1", name="Grep", input_={"path": "."})
@@ -1476,9 +1475,6 @@ def _patch_inner_prompt_to_match_build_review_prompt(scenario_dir: Path) -> None
 
 
 class TestRetryThenMissing:
-    """Drives only the model-mismatch failure mode through run_one_with_retry,
-    since it never branches on missing_reason (only record.status)."""
-
     def test_failing_run_is_retried_once_then_recorded_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -3407,10 +3403,8 @@ class TestApplyFaultInjection:
         with pytest.raises(ValueError):
             runner.apply_fault_injection("base prompt", fault="not-a-real-fault")
 
-    # Verifies prompt mutation only. Downstream evaluate_run_validity
-    # classification (VALIDITY_FAIL_WRONG_AGENT / VALIDITY_FAIL_EXTRA_DISPATCHER_TOOL_CALL)
-    # is out of scope. That check needs a live claude session, which this
-    # LOCAL-ONLY, never-CI harness doesn't run offline.
+    # Verifies prompt mutation only. How evaluate_run_validity classifies these
+    # faults' effects is covered offline by TestDispatcherToolCallChecks.
     def test_known_faults_mutate_the_prompt(self) -> None:
         for fault in runner.KNOWN_SMOKE_FAULTS:
             mutated = runner.apply_fault_injection("base prompt", fault=fault)
