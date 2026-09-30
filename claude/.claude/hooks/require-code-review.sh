@@ -165,13 +165,33 @@ if ! CONFIG_DIR=$(_lib_config_dir); then
   exit 0
 fi
 
+# _session_has_review_ledger SESSION_ID
+# Returns 0 when the review ledger holds rows from SESSION_ID. Makes no git
+# call, because this sits on a gate path and the ledger's branch-or-session
+# scope would need HEAD resolved. Present means either:
+# - the session's own session-scoped file exists; or
+# - some ledger file under this repo-hash holds a row naming the session.
+# The row match is the compact `"session_id":"<id>"` form review-ledger.sh
+# writes. jq escapes a quote inside a finding as `\"`, so a finding cannot
+# reproduce it.
+_session_has_review_ledger() {
+  local session_id="$1"
+  local session_file
+  [ -n "$session_id" ] || return 1
+  session_file=$(_lib_review_ledger_session_path "$CONFIG_DIR" "$REPO_ROOT" "$session_id") || return 1
+  [ -f "$session_file" ] && return 0
+  # An unmatched glob stays literal, so grep exits 2: that is the intended
+  # "absent". A _lib_capped kill also reads as absent because the field is
+  # telemetry only.
+  _lib_capped grep -qF -e "\"session_id\":\"$session_id\"" \
+    "$CONFIG_DIR/review-narrative-ledger/$REPO_HASH."*.jsonl 2>/dev/null
+}
+
 # Compliance backstop: non-blocking log line recording ledger presence +
 # marker outcome at both exit paths; never affects this gate's decision. See
 # docs/hooks.md's require-code-review.sh entry for the accepted-risk rationale.
-LEDGER_SESSION_ID="$SESSION_ID"
 LEDGER_STATE="absent"
-if [ -n "$LEDGER_SESSION_ID" ] && _lib_valid_session_id_component "$LEDGER_SESSION_ID" \
-  && [ -f "$CONFIG_DIR/review-narrative-ledger/$REPO_HASH.$LEDGER_SESSION_ID.jsonl" ]; then
+if _session_has_review_ledger "$SESSION_ID"; then
   LEDGER_STATE="present"
 fi
 COMPLIANCE_LOG="$CONFIG_DIR/.review-ledger-compliance.log"
