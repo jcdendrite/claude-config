@@ -420,18 +420,13 @@ class TestCrossDomainReadCompleteness:
 
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
-        """TICKET_REFERENCE_DISCIPLINE_TEST_PATH and CLAUDE_TESTS_DIR are
-        also selected: this is a .py file under claude/, which that test
-        statically scans. TestConftestModuleNamesAreUnique in
-        test_pytest_collection_config.py (CLAUDE_TESTS_DIR) resolves every
-        tracked conftest.py repo-wide, with no root scoping, so this
-        predicate's breadth is what lets a future conftest.py anywhere
-        under its three roots be caught."""
+        """TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also selected: this is a
+        .py file under claude/, which that test statically scans."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
     def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
@@ -449,14 +444,11 @@ class TestSelectPytestTargets:
     def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
         """test_ticket_reference_discipline.py statically scans every
         tracked .py file under claude/, including this one, for
-        ticket-prefixed identifiers and plan-phase-qualified labels.
-        CLAUDE_TESTS_DIR is also selected: TestConftestModuleNamesAreUnique
-        in test_pytest_collection_config.py resolves every tracked
-        conftest.py repo-wide, with no root scoping."""
+        ticket-prefixed identifiers and plan-phase-qualified labels."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/mark-terminal.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
     def test_scripts_dir_shell_script_change_also_selects_hooks_and_skills_tests(self):
@@ -648,12 +640,16 @@ class TestSelectPytestTargets:
         """test_ticket_reference_discipline.py statically scans every
         tracked .py file under plugins/ too, so this .py change now selects
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH alongside SKILLS_TESTS_DIR.
-        TestConftestModuleNamesAreUnique's repo-wide conftest.py scan
-        (CLAUDE_TESTS_DIR) needs the same .py change to be selected too."""
+        This path is also SKILL_STRUCTURE_VALIDATOR_MODULE, so it selects
+        HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR's two test files --
+        test_agent_roster.py and test_global_claude_md_groups.py import it
+        by name, and neither sits under SKILLS_TESTS_DIR, so declaring the
+        row is the only way either gets selected."""
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
-            _mod.SKILLS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+            _mod.SKILLS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
         }
 
     def test_skill_management_scripts_shell_script_change_falls_open(self):
@@ -913,7 +909,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.LOVABLE_CLOUD_TESTS_DIR,
-            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
     def test_helpers_py_global_trigger_forces_full_suite(self):
@@ -1148,17 +1144,16 @@ class TestSelectPytestTargets:
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts
         domains' own blanket `_is_under()` rules, so a file anywhere under
         the skills test tree -- not just a literal `SKILL.md` -- selects
-        `SKILLS_TESTS_DIR`. TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
-        CLAUDE_TESTS_DIR are also selected: this is a .py file under
-        claude-skills/, which both tests' scans cover. SELECT_TESTS_TEST_PATH
-        is selected too: test_skills.py is itself in _test_corpus(), so a
-        change to it can introduce a module-level constant the completeness
-        scan must see."""
+        `SKILLS_TESTS_DIR`. TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also
+        selected: this is a .py file under claude-skills/, which that test's
+        scan covers. SELECT_TESTS_TEST_PATH is selected too: test_skills.py
+        is itself in _test_corpus(), so a change to it can introduce a
+        module-level constant the completeness scan must see."""
         result = _mod.select_pytest_targets(["claude-skills/skills/tests/test_skills.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
-            _mod.SELECT_TESTS_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+            _mod.SELECT_TESTS_TEST_PATH,
         }
 
     def test_non_lovable_cloud_plugin_agents_change_selects_hooks_and_skills_tests(self):
@@ -1205,13 +1200,10 @@ class TestSelectPytestTargets:
         """_is_py_source_under_claude_or_plugins is plugin-generic, not tied
         to a named plugin's own cross-domain exception -- a .py file under a
         plugin with no dedicated rule of its own (unlike skill-management or
-        lovable-cloud) still selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH
-        and CLAUDE_TESTS_DIR."""
+        lovable-cloud) still selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH."""
         result = _mod.select_pytest_targets(["plugins/npm-semver/scripts/check.py"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {
-            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
-        }
+        assert set(result.target_paths) == {_mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH}
 
     def test_second_plugin_conftest_py_also_selects_claude_tests_dir(self):
         """TestConftestModuleNamesAreUnique (claude/.claude/tests/test_pytest_collection_config.py,
@@ -1226,6 +1218,66 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
         }
+
+    def test_scripts_dir_top_level_py_file_does_not_select_claude_tests_dir(self):
+        """transcript-analysis.py sits directly under SCRIPTS_DIR, not
+        SCRIPTS_TESTS_DIR, and is neither a conftest.py nor an __init__.py,
+        so _is_test_tree_packaging_change doesn't match it. Regression guard
+        for GH-1150: TestConftestModuleNamesAreUnique and
+        TestNoBareSameDirectorySiblingImports can't be affected by a .py
+        change this far outside their own scanned roots."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/transcript-analysis.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH}
+
+    def test_hooks_tests_dir_py_file_selects_claude_tests_dir(self):
+        """A .py file anywhere under HOOKS_TESTS_DIR matches
+        _is_test_tree_packaging_change's HOOKS_TESTS_DIR leg, regardless of
+        filename -- TestNoBareSameDirectorySiblingImports scans every .py
+        file in this tree, not just conftest.py or __init__.py."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/test_example.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR, _mod.SELECT_TESTS_TEST_PATH,
+        }
+
+    def test_scripts_tests_dir_py_file_selects_claude_tests_dir(self):
+        """Same SCRIPTS_TESTS_DIR leg as the HOOKS_TESTS_DIR case above."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/tests/test_example.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.CLAUDE_TESTS_DIR, _mod.SELECT_TESTS_TEST_PATH,
+        }
+
+    def test_packaging_predicate_matches_a_suffix_named_conftest_file(self):
+        """A conftest.py-suffixed name that isn't the exact literal
+        "conftest.py" still matches path.endswith("conftest.py"), mirroring
+        git's own "*conftest.py" pathspec semantics, where "*" also matches
+        "/"."""
+        assert _mod._is_test_tree_packaging_change("claude/.claude/scripts/sub_conftest.py")
+
+    def test_packaging_predicate_rejects_non_py_file_under_hooks_tests_dir(self):
+        """Scoped to .py only via _is_py_source_under_claude_or_plugins --
+        a non-.py file under HOOKS_TESTS_DIR doesn't match even though the
+        directory leg alone would."""
+        assert not _mod._is_test_tree_packaging_change("claude/.claude/hooks/tests/fixture.txt")
+
+    def test_packaging_predicate_matches_nested_hooks_tests_dir_path(self):
+        """Pins the recursive _is_under directory legs against a path nested
+        one level below HOOKS_TESTS_DIR -- no on-disk fixture has this shape
+        today, since no tracked .py file sits in a subdirectory below
+        claude/.claude/{hooks,scripts}/tests/."""
+        assert _mod._is_test_tree_packaging_change("claude/.claude/hooks/tests/sub/helper.py")
+
+    def test_repo_root_conftest_py_falls_open_to_full_suite(self):
+        """A repo-root conftest.py matches neither _is_py_source_under_claude_or_plugins's
+        three roots nor any domain rule, so it still takes the
+        unmatched-path fallback."""
+        result = _mod.select_pytest_targets(["conftest.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
 
     def test_claude_tests_dir_py_change_is_domain_selected(self):
         """Every .py file under claude/.claude/tests/ matches CLAUDE_TESTS_DIR's
@@ -1244,9 +1296,9 @@ class TestSelectPytestTargets:
         """test_statusline_command.py matches three predicates at once:
         CLAUDE_TESTS_DIR's own domain rule, _is_py_source_under_claude_or_plugins
         (a .py file under claude/), and _is_test_source_change (a test_*.py
-        file directly inside a tests/ directory) -- the first two both
-        contribute CLAUDE_TESTS_DIR, so the target set still has three
-        members."""
+        file directly inside a tests/ directory). CLAUDE_TESTS_DIR's own
+        domain rule is the only one of the three that contributes
+        CLAUDE_TESTS_DIR here."""
         result = _mod.select_pytest_targets(["claude/.claude/tests/test_statusline_command.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1287,6 +1339,100 @@ class TestSelectPytestTargets:
         """Direct assertion on the predicate: a .py file outside claude/,
         claude-skills/, and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
         assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
+
+    def test_config_module_change_selects_its_hooks_tests_importers(self):
+        """HOOKS_TESTS_IMPORTING_CONFIG's four test files import CONFIG_MODULE
+        by name, invisible to path-constant scanning, so its declared
+        CROSS_DOMAIN_EXCEPTIONS row is the only thing that selects them for
+        this change."""
+        result = _mod.select_pytest_targets([_mod.CONFIG_MODULE])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+        }
+
+    def test_config_dir_module_change_selects_all_three_declared_importer_sets(self):
+        """CONFIG_DIR_MODULE's own row selects three declared importer sets:
+        - HOOKS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
+        - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
+        - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
+        A fourth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
+        REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
+        """
+        result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
+            *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+            *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_transcript_analysis_package_module_change_selects_review_ledger_script_test(self):
+        """TRANSCRIPT_ANALYSIS_PACKAGE_DIR's row covers the whole
+        transcript_analysis/ package, not just author_outcome.py, so it
+        stays correct when author_outcome's own imports change. scope.py has
+        no fidelity list guarding TRANSCRIPT_ANALYSIS_PACKAGE_DIR, so this
+        test asserts the file exists on disk before relying on it as a real
+        changed path."""
+        changed_path = "claude/.claude/scripts/transcript_analysis/cost.py"
+        assert (_REPO_ROOT / changed_path).is_file()
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
+        }
+
+    def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
+        """test_config_lib.py is a HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
+        member, so this change
+        also selects SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two test
+        files by module path -- invisible to path-constant scanning. Both
+        sit under SCRIPTS_TESTS_DIR, which nothing else here selects, so
+        they survive as their own file targets alongside the other rules
+        this HOOKS_TESTS_DIR path already matches."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/test_config_lib.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.CLAUDE_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH, _mod.SELECT_TESTS_TEST_PATH,
+            *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
+        }
+
+    @pytest.mark.parametrize(
+        "changed_path",
+        [
+            "claude/.claude/hooks/__init__.py",
+            "claude/.claude/hooks/tests/__init__.py",
+            "claude/.claude/hooks/tests/conftest.py",
+        ],
+    )
+    def test_remaining_hooks_tests_modules_select_scripts_tests_importers(self, changed_path):
+        """The three HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS members
+        other than test_config_lib.py, which has its own dedicated test,
+        test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers.
+        Without this coverage, a member dropped from the row or retyped to a
+        different existing file would change what these paths select with no
+        dedicated test noticing. All three parametrized paths resolve to the same target set,
+        contributed by five rows:
+        - DOMAIN_RULES' HOOKS_DIR entry adds HOOKS_TESTS_DIR
+        - CROSS_DOMAIN_EXCEPTIONS' _is_hooks_or_skills_change row adds the transcript-analysis pair
+        - CROSS_DOMAIN_EXCEPTIONS' _is_py_source_under_claude_or_plugins row adds TICKET_REFERENCE_DISCIPLINE_TEST_PATH
+        - CROSS_DOMAIN_EXCEPTIONS' _is_test_tree_packaging_change row adds only CLAUDE_TESTS_DIR
+          (hooks/__init__.py matches that predicate through its __init__.py leg alone)
+        - CROSS_DOMAIN_EXCEPTIONS' HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS row adds
+          SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files
+        """
+        result = _mod.select_pytest_targets([changed_path])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.CLAUDE_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
+        }
 
 
 class TestResolveTargetPaths:
@@ -1650,11 +1796,16 @@ class TestPytestSubprocessEnv:
 
 
 # Every constant backing an exact-match predicate (`p == CONSTANT`, or
-# membership in a tuple of constants) in DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
+# membership in a tuple of constants) in DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS.
+# A rename that drifts one of these from its
 # real on-disk path leaves that predicate silently dead -- it matches
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.SKILL_AUXILIARY_FILES_MODULE,
+    _mod.CONFIG_MODULE,
+    _mod.CONFIG_DIR_MODULE,
+    _mod.SKILL_STRUCTURE_VALIDATOR_MODULE,
+    *sorted(_mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS),
     _mod.README_MD,
     _mod.INSTALL_SH,
     _mod.CLAUDE_SETTINGS_JSON,
@@ -1682,6 +1833,11 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
+    *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+    *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
+    *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
+    *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
@@ -1780,8 +1936,8 @@ class TestRuleTablePathFidelity:
             assert (_REPO_ROOT / target).is_dir(), f"{target} does not exist as a directory"
 
     def test_every_file_target_exists_on_disk(self):
-        """The CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than
-        a domain directory -- excluded from the directory check above,
+        """The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file
+        rather than a domain directory -- excluded from the directory check above,
         checked as files here instead."""
         for target in _FILE_TARGETS:
             assert (_REPO_ROOT / target).is_file(), f"{target} does not exist as a file"
@@ -2131,8 +2287,7 @@ class TestMainComposition:
 
         assert exit_code == 0
         assert recorded["pytest_argv"] == [
-            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.SCRIPTS_TESTS_DIR,
-            _mod.CLAUDE_TESTS_DIR, "-k", "foo",
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.SCRIPTS_TESTS_DIR, "-k", "foo",
         ]
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
@@ -2221,8 +2376,7 @@ class TestMainComposition:
 
         assert exit_code == 0
         assert recorded["pytest_argv"] == [
-            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.SCRIPTS_TESTS_DIR,
-            _mod.CLAUDE_TESTS_DIR, "-k", "bar",
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.SCRIPTS_TESTS_DIR, "-k", "bar",
         ]
 
     def test_unmatched_path_prints_offending_paths_to_stderr(self, monkeypatch, capsys):
@@ -2262,12 +2416,18 @@ class TestMainComposition:
                 # it lives inside HOOKS_TESTS_DIR and is dropped by the
                 # containment filter -- see the assertion below. CLAUDE_TESTS_DIR
                 # is a sibling directory, not contained by anything else
-                # selected here, so it survives that filter.
+                # selected here, so it survives that filter, contributed by
+                # _is_test_tree_packaging_change's __init__.py leg. This path is also a
+                # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member, so
+                # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files also
+                # survive: they sit under SCRIPTS_TESTS_DIR, which nothing
+                # else here selects.
                 sorted([
                     _mod.HOOKS_TESTS_DIR,
                     *_mod._expand_target(_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, repo_root=_REPO_ROOT),
                     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
                     _mod.CLAUDE_TESTS_DIR,
+                    *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
                 ]),
                 id="file-inside-directory",
             ),

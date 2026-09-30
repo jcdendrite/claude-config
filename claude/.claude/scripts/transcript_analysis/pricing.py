@@ -53,6 +53,7 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-opus-5-5": 4.00,
     "claude-opus-5": 5.00,
     "claude-opus-4-8": 5.00,
+    "claude-sonnet-5-5": 2.00,
     "claude-sonnet-5": 2.00,
     "claude-sonnet-4-6": 3.00,
     "claude-haiku-4-5-20251001": 1.00,

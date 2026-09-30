@@ -2340,6 +2340,35 @@ class TestOpus55Pricing:
         assert rates["cache_read"] == pytest.approx(0.50)
 
 
+class TestSonnet55Pricing:
+    """Sonnet 5.5 rate arithmetic against the vendor-published figures
+    (platform.claude.com/docs/en/about-claude/pricing).
+
+    These validate rate arithmetic only, never the model-ID string. An
+    exact-match dict test supplies the same key it looks up, so no test here
+    can catch a wrong guess at what Claude Code writes to message.model."""
+
+    def test_sonnet_5_5_rates_match_vendor_table_with_standard_cache_read(self):
+        """Cache-read is the standard 0.1x multiplier, so no
+        _CACHE_READ_MULTIPLIER_OVERRIDES entry applies."""
+        rates = _mod._model_rates("claude-sonnet-5-5")
+        assert rates is not None
+        assert rates["input"] == pytest.approx(2.00)
+        assert rates["output"] == pytest.approx(10.00)
+        assert rates["cache_write_5m"] == pytest.approx(2.50)
+        assert rates["cache_write_1h"] == pytest.approx(4.00)
+        assert rates["cache_read"] == pytest.approx(0.20)
+
+    def test_sonnet_5_5_turn_is_priced_not_excluded_as_unpriced(self):
+        """A Sonnet 5.5 turn must price rather than fall into the
+        unpriced-token exclusion."""
+        dollars, _context_at_turn, unpriced_tokens = _mod._price_turn(
+            "claude-sonnet-5-5", {"input_tokens": 1_000_000},
+        )
+        assert dollars is not None
+        assert unpriced_tokens == 0
+
+
 class TestCostSummary:
     """--summary: a structurally scoped, aggregate-only rendering branch."""
 

@@ -9,7 +9,10 @@
 #             on demand when its objects aren't local yet.
 #   Tier B — the branch tip is reachable from origin/<default> but no
 #             merged PR was found for this name (branch renamed before
-#             merge, worktree-prefixed name, etc.).
+#             merge, worktree-prefixed name, etc.), or a same-named merged
+#             PR's headRefOid is a strict ancestor of the tip
+#             (pr-head-descendant) — real commits sit unmerged on top of
+#             what GitHub actually merged.
 #   Tier C — not reachable, no merged PR; never touched.
 #
 # Before either tier is considered, classify_branch() checks for an open PR
@@ -17,10 +20,12 @@
 # current tip actually belongs to that merge — a name can be reused (old PR
 # merged, new PR opened on the same head branch), and neither reachability
 # nor a same-named merged PR by itself proves the current tip was part of
-# it. A branch with an open PR, or a merged-by-name match whose tip isn't
-# part of that merge, is skipped rather than deleted; a `gh` lookup failure
-# also skips (fails closed) rather than treating an error as "no PR found".
-# Skip lines are reported once per distinct reason, with a count and the
+# it. A branch with an open PR is skipped rather than deleted. A
+# merged-by-name match whose tip isn't part of that merge is either a Tier B
+# pr-head-descendant prompt (tip strictly descends from the merge) or,
+# absent that, a skip (reused name). A `gh` lookup failure also skips
+# (fails closed) rather than treating an error as "no PR found". Skip
+# lines are reported once per distinct reason, with a count and the
 # branch names, rather than one line per branch.
 #
 # Tier A branches are deleted without prompting; --dry-run's preview names
@@ -328,30 +333,50 @@ CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 # message so all three agree and none re-issues its own `gh` call.
 # ---------------------------------------------------------------------------
 
-# merged_row_containing_tip TIP ROWS
+# merged_row_by_tip_ancestry BASIS TIP ROWS
 # ROWS is classify_branch's validated stale-row table: space-separated
 # <pr>,<oid>,<merged-date> triples in gh's own row order, one per merged
-# PR sharing this branch name. Scans every row, first hit wins, for one
-# whose oid TIP is an ancestor of — proving every commit on the local
-# branch is contained in a commit GitHub says it merged. Tests only
-# objects already present locally; classify_branch's own fetch loop is
-# what makes a missing object visible to a second call of this scan.
+# PR sharing this branch name. BASIS decides which side of the ancestry
+# test TIP occupies:
+#   pr-head-ancestor:   TIP is an ancestor of the row's oid (the local
+#                        branch is behind what GitHub merged).
+#   pr-head-descendant:  the row's oid is an ancestor of TIP (the local
+#                        branch has extra commits on top of what GitHub
+#                        merged).
+# An unrecognized BASIS returns 1 without scanning. Scans every row, first
+# hit wins. Tests only objects already present locally; classify_branch's
+# own fetch loop is what makes a missing object visible to a second call
+# of this scan.
 # Prints the winning row's <pr>,<oid>,<merged-date> triple and returns 0
-# on a hit; prints nothing and returns 1 when no row's oid is both
-# present and an ancestor of TIP.
+# on a hit; prints nothing and returns 1 when no row's oid satisfies the
+# chosen ancestry test against TIP.
 # Precondition: TIP must not already equal a row's oid, since
-# `git merge-base --is-ancestor A B` is also true for A == B, and both
-# current callers only reach this scan after classify_branch's own
-# tip-match check (the `matched:` arm) has already ruled that case out.
-merged_row_containing_tip() {
-  local tip="$1" rows="$2" row pr oid rest merged_date
+# `git merge-base --is-ancestor A B` is also true for A == B, and every
+# caller only reaches this scan after classify_branch's own tip-match
+# check (the `matched:` arm) has already ruled that case out.
+merged_row_by_tip_ancestry() {
+  local basis="$1" tip="$2" rows="$3" row pr oid rest merged_date
+  local presumed_ancestor presumed_descendant
+  local tip_is_presumed_ancestor
+  case "$basis" in
+    pr-head-ancestor)   tip_is_presumed_ancestor=1 ;;
+    pr-head-descendant) tip_is_presumed_ancestor=0 ;;
+    *) return 1 ;;
+  esac
   for row in $rows; do
     pr="${row%%,*}"
     rest="${row#*,}"
     oid="${rest%%,*}"
     merged_date="${rest#*,}"
     [ -n "$oid" ] || continue
-    if git merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then
+    if [ "$tip_is_presumed_ancestor" -eq 1 ]; then
+      presumed_ancestor="$tip"
+      presumed_descendant="$oid"
+    else
+      presumed_ancestor="$oid"
+      presumed_descendant="$tip"
+    fi
+    if git merge-base --is-ancestor "$presumed_ancestor" "$presumed_descendant" 2>/dev/null; then
       printf '%s,%s,%s\n' "$pr" "$oid" "$merged_date"
       return 0
     fi
@@ -369,17 +394,27 @@ merged_row_containing_tip() {
 # trigger network I/O: a tip that matches no headRefOid and isn't
 # reachable from origin/<default> can trigger one `git fetch` per merged
 # row whose object isn't local yet, to test ancestry against that PR's
-# actual merged head (merged_row_containing_tip above).
+# actual merged head (merged_row_by_tip_ancestry above).
 #
 # Verdicts:
 #   tier-a:<pr>:<merged-date>:<basis>  confirmed merged; basis is
 #                              tip-match (branch tip equals the merged
 #                              PR's headRefOid) or pr-head-ancestor (tip
 #                              is a strict ancestor of it)
-#   tier-b:[<stale-pr>]       reachable from origin/<default>; no PR
+#   tier-b:reachable:[<stale-pr>]
+#                              reachable from origin/<default>; no PR
 #                              matched this name — <stale-pr> is set when a
 #                              same-named merged PR exists but this tip isn't
 #                              part of that merge, empty otherwise
+#   tier-b:pr-head-descendant:<pr>:<merged-date>:<ahead-count>
+#                              a same-named merged PR's headRefOid is a
+#                              strict ancestor of the tip: real commits
+#                              sit unmerged on top of what was merged.
+#                              <ahead-count> is the number of the tip's
+#                              commits reachable from neither that head
+#                              nor origin/<default> — the commits a `y`
+#                              would discard. It is `?` if the count
+#                              could not be computed.
 #   skip-open-pr:<pr>         an open PR exists for this head branch name —
 #                              never delete
 #   skip-stale-name:<pr>      a merged PR shares this name, but the current
@@ -390,10 +425,12 @@ merged_row_containing_tip() {
 # The open-PR check and the Tier-A tip-verification check both live here:
 # an open PR always wins over a same-named merged PR, and a
 # merged-by-name match only qualifies for Tier A if the current tip
-# matches or is an ancestor of that merge — otherwise it is a reused
-# branch name.
+# matches or is an ancestor of that merge. Failing that, a descendant tip
+# qualifies for the Tier-B pr-head-descendant prompt instead; otherwise
+# it is a reused branch name.
 classify_branch() {
-  local branch="$1" pr_json tip classification stale_pr stale_rows rest pr_number merged_date ancestor_row row oid
+  local branch="$1" pr_json tip classification stale_pr stale_rows rest
+  local pr_number merged_date ancestor_row descendant_row ahead_count row oid
 
   # Fail closed on a `gh` error: capture output before parsing (rather than
   # piping straight into python3, which would lose gh's exit code) so a
@@ -506,12 +543,12 @@ else:
     # Reachability wins over a same-named-but-different-tip merged PR: carry
     # stale_pr (if set) so callers can report that a merged PR by this name
     # exists, just not the one that produced this tip.
-    printf 'tier-b:%s\n' "${stale_pr:-}"
+    printf 'tier-b:reachable:%s\n' "${stale_pr:-}"
     return 0
   fi
 
   if [ -n "$tip" ] && [ -n "${stale_rows:-}" ]; then
-    if ancestor_row=$(merged_row_containing_tip "$tip" "$stale_rows"); then
+    if ancestor_row=$(merged_row_by_tip_ancestry pr-head-ancestor "$tip" "$stale_rows"); then
       pr_number="${ancestor_row%%,*}"
       rest="${ancestor_row#*,}"
       merged_date="${rest#*,}"
@@ -537,11 +574,25 @@ else:
       _lib_capped_for 15 git fetch --quiet origin "refs/pull/${pr_number}/head" 2>/dev/null || true
     done
 
-    if ancestor_row=$(merged_row_containing_tip "$tip" "$stale_rows"); then
+    if ancestor_row=$(merged_row_by_tip_ancestry pr-head-ancestor "$tip" "$stale_rows"); then
       pr_number="${ancestor_row%%,*}"
       rest="${ancestor_row#*,}"
       merged_date="${rest#*,}"
       printf 'tier-a:%s:%s:pr-head-ancestor\n' "$pr_number" "$merged_date"
+      return 0
+    fi
+
+    # Only reached after both forward-scan passes fail, so a row the
+    # forward scan could confirm always wins over one only this scan
+    # would match. No fetch is needed here: an ancestor head is already
+    # in the tip's own local history.
+    if descendant_row=$(merged_row_by_tip_ancestry pr-head-descendant "$tip" "$stale_rows"); then
+      pr_number="${descendant_row%%,*}"
+      rest="${descendant_row#*,}"
+      oid="${rest%%,*}"
+      merged_date="${rest#*,}"
+      ahead_count=$(git rev-list --count "$tip" "^${oid}" "^refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null) || ahead_count='?'
+      printf 'tier-b:pr-head-descendant:%s:%s:%s\n' "$pr_number" "$merged_date" "$ahead_count"
       return 0
     fi
   fi
@@ -665,12 +716,23 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
       TIER_VALUES+=("A")
       ;;
     tier-b:*)
-      _stale_pr="${VERDICT#tier-b:}"
+      _rest="${VERDICT#tier-b:}"
+      _basis="${_rest%%:*}"
+      _rest="${_rest#*:}"
       MERGED_BRANCHES+=("$BRANCH")
-      if [ -n "$_stale_pr" ]; then
-        MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; a merged PR #${_stale_pr} shares this name but this tip isn't part of that merge")
+      if [ "$_basis" = "pr-head-descendant" ]; then
+        _pr_number="${_rest%%:*}"
+        _rest="${_rest#*:}"
+        _merged_date="${_rest%%:*}"
+        _ahead_count="${_rest#*:}"
+        MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}; local tip is ${_ahead_count} commit(s) ahead of that PR's merged head and origin/${DEFAULT_BRANCH}")
       else
-        MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
+        _stale_pr="$_rest"
+        if [ -n "$_stale_pr" ]; then
+          MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; a merged PR #${_stale_pr} shares this name but this tip isn't part of that merge")
+        else
+          MERGED_PR_INFO_VALUES+=("reachable from origin/${DEFAULT_BRANCH}; no merged PR for this name")
+        fi
       fi
       TIER_VALUES+=("B")
       ;;
