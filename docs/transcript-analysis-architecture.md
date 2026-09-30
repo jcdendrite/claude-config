@@ -14,9 +14,9 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
-`read_scope.py`, `pr_cost.py`, and `pr_cost_export.py` are the only modules the shim imports back
-into (not just from). Cost-ledger still calls `review_trace.py`'s `compute_deny_summary_data` from
-the shim. The CLI's own `build_parser()` still wires up `review_trace.py`'s
+`read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
+`cost_ledger.py`, and `workstream_cost.py` are the only modules the shim imports back into (not
+just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
 `hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
@@ -30,6 +30,11 @@ package's first two imports from one command-group module into another.
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
+`build_parser()` likewise wires up `cache_rebuild.py`'s `cmd_cache_rebuild` and its two
+`--since`/`--threshold` default constants (`_CACHE_REBUILD_DEFAULT_SINCE`,
+`_CACHE_REBUILD_DEFAULT_THRESHOLD`) from the shim.
+`build_parser()` likewise wires up `audit_routing.py`'s `cmd_audit_routing`,
+`cmd_audit_routing_shape`, and `cmd_audit_routing_samples` from the shim.
 
 ## The package
 
@@ -76,6 +81,18 @@ exception: it's read from a local agent-definition file's own `model:` frontmatt
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
 differs from a remote model/subagent/MCP-tool-result's.
 
+Also owns the `--this-repo` subagent_type disclosure allowlist:
+
+- `_BUILT_IN_AGENT_TYPES` — the Claude Code built-in `subagent_type` values present in every
+  install.
+- `_REPO_AGENT_DEFINITIONS_DIR` — this repo's own tracked `agents/` directory.
+- `_repo_tracked_agent_type_names` — the stems of every `agents/*.md` file that directory
+  git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`.
+
+The shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
+which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
+row.
+
 ### `pricing.py`
 
 Rate tables, per-turn dollar pricing (`_price_turn`), token counts, context-window sizing, and
@@ -96,8 +113,10 @@ corpus-wide dollar-cost reporting by token class/model ID/thread/account/project
 `_cost_trend_report`). The first command-group module in the package, not a leaf: it imports
 `corpus`, `scope`, `redaction`, `pricing`, and `render` all by module (attribute access), matching
 the cross-module discipline every other package module already follows. `compute_cost_trend_data`
-is the one public (non-underscore-prefixed) name here, reached from the still-unmigrated
-cost-ledger code in the shim — see the one-directional exception noted above.
+is the one public (non-underscore-prefixed) name here, read by `cost_ledger.py`'s own
+`_cost_ledger_report` as `cost.compute_cost_trend_data` — a normal cross-module package read, not
+the shim back-import exception, which is fully closed (see
+`test_transcript_analysis_cost_import_direction.py`).
 
 ### `reviewer_yield.py`
 
@@ -106,8 +125,8 @@ joining each main-thread reviewer-agent dispatch to its own subagent transcript,
 verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit overlap
 (`compute_reviewer_yield_data`). Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `compute_reviewer_yield_data` is the one
-public name here, reached from the still-unmigrated cost-ledger code in the shim;
-`_is_reviewer_subagent_type` is read by `review_trace.py`, via
+public name here, read by `cost_ledger.py`'s own `_cost_ledger_report` as
+`reviewer_yield.compute_reviewer_yield_data`. `_is_reviewer_subagent_type` is read by `review_trace.py`, via
 `reviewer_yield._is_reviewer_subagent_type` (attribute access) — no longer reached bare from the
 shim, since review-trace's own detection moved into the package.
 
@@ -131,10 +150,7 @@ above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both 
 the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
 membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
 skill name before `_round_skill_name` normalizes it.
-`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than
-moving into the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type
-disclosure allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the
-package may not import back from the shim. `detect_round_windows` is public (no leading
+`detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
 
@@ -190,9 +206,10 @@ section above for why these are the package's first cross-command-group imports.
 `_review_trace_session_events` re-expresses its own `_normalize_skill_name` (the emitted display
 label's lighter directory-only strip) locally rather than back-importing the shim's copy — the same
 re-expression pattern `review_rounds.py` uses for `_is_fresh_user_prompt` and `_SLASH_COMMAND_RE`.
-`cmd_review_trace`, `REVIEW_TRACE_SKILLS`, and
-`compute_deny_summary_data` are the three public names here, reached from the still-unmigrated
-`build_parser()`/cost-ledger code in the shim — see the exception noted above.
+`cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
+still-monolithic `build_parser()` — see the exception noted above. `compute_deny_summary_data` is
+read by `cost_ledger.py`'s own `_cost_ledger_report` as `review_trace.compute_deny_summary_data`, a
+normal cross-module package read.
 
 ### `read_scope.py`
 
@@ -211,10 +228,11 @@ destination check (`_ledger_path_is_git_tracked`), the machine-label format, the
 markers both parsers refuse, and the local-lock timing both `--record` paths use. A leaf: no
 dependency on any other package module. Binds `config_dir` by name from `_config_dir`, mirroring
 `scope.py`'s own binding (see the attribute-access discipline noted under `scope.py` above) — every
-still-shim-resident consumer (cost-ledger) and every package consumer (`pr_cost_ledger.py`,
-`pr_cost.py`, `pr_cost_export.py`) reads through this one binding. The seven names cost-ledger
-reaches bare from the shim: `_MACHINE_LABEL_RE`, `_COST_LEDGER_CONFLICT_MARKERS`, both lock
-constants, `_ledger_path_is_git_tracked`, `_resolve_machine_identity`, and
+package consumer (`cost_ledger.py`, `pr_cost_ledger.py`, `pr_cost.py`, `pr_cost_export.py`) reads
+through this one binding. `cost_ledger.py` reads the other six names by attribute access too
+(`ledger_common.<name>`), matching every other package module's cross-module discipline:
+`_MACHINE_LABEL_RE`, `_COST_LEDGER_CONFLICT_MARKERS`, both lock constants,
+`_ledger_path_is_git_tracked`, `_resolve_machine_identity`, and
 `_warn_machine_identity_absent_from_ledger`.
 
 ### `gh_cli.py`
@@ -224,11 +242,13 @@ host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth pref
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module — `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
 (`_PR_COST_STATUS_DEGRADED_RATE_LIMIT`/`_PR_COST_STATUS_DEGRADED_NETWORK`), keeping the ledger's own
-status enum a single source of truth rather than a duplicated pair of strings. The nine names
-pr-link and workstream-cost reach bare from the shim: `_classify_gh_error`,
-`_GH_ERROR_KIND_NETWORK`, `_git_remote_origin_host_and_owner_repo`, `_gh_host_qualified_repo`,
-`_GH_CALL_TIMEOUT_S`, `_gh_auth_preflight_ok`, `_resolve_pinned_gh_repo`,
-`_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`.
+status enum a single source of truth rather than a duplicated pair of strings. The five names
+pr-link reaches bare from the shim: `_classify_gh_error`, `_GH_ERROR_KIND_NETWORK`,
+`_git_remote_origin_host_and_owner_repo`, `_gh_host_qualified_repo`, and `_GH_CALL_TIMEOUT_S`.
+`workstream_cost.py` reads `_git_remote_origin_host_and_owner_repo`, `_gh_auth_preflight_ok`,
+`_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
+by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
+discipline.
 
 ### `pr_cost_ledger.py`
 
@@ -256,6 +276,53 @@ collapsing every declared account's pr-cost ledger to current rows, redacting th
 one TSV. Makes no gh call and scans no transcript corpus. Imports `ledger_common`, `pr_cost_ledger`,
 `redaction`, and `scope` all by module. `cmd_pr_cost_export` is the one name reached bare from the
 shim.
+
+### `cache_rebuild_rules.py`
+
+A leaf: the cache-rebuild family's pure rules — per-call cause classification against the vendor's
+5m/1h cache tiers, subagent idle-gap cause attribution, per-call priced excess and cacheTtl switch
+deltas, and the `--ttl-verdict` per-root reducers, plus every label constant they emit. Imports
+`corpus` and `pricing` by module (attribute access), matching `cost.py`'s convention. No name here
+is reached bare from the shim.
+
+### `cache_rebuild.py`
+
+The cache-rebuild command family: `cmd_cache_rebuild` and its report. Imports `corpus`, `pricing`,
+`redaction`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s
+convention. Unlike every other command-group module, it also imports `cache_rebuild_rules.py`'s 31
+constants and pure functions by name, since none is reassigned at runtime. A test that
+monkeypatches one of those 31 names must patch both `cache_rebuild_rules`'s own binding and this
+module's separate imported binding to take effect. `cmd_cache_rebuild`,
+`_CACHE_REBUILD_DEFAULT_SINCE`, and `_CACHE_REBUILD_DEFAULT_THRESHOLD` are the three names reached
+bare from the shim.
+
+### `audit_routing.py`
+
+The audit-routing command family: the three `cmd_*` functions (`cmd_audit_routing`,
+`cmd_audit_routing_shape`, `cmd_audit_routing_samples`) and every helper only they use. Imports
+`corpus`, `pricing`, `redaction`, `render`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. The three `cmd_*` functions are the only names reached bare from the shim.
+
+### `cost_ledger.py`
+
+The cost-ledger command family: `cmd_cost_ledger` and its real implementation,
+`_cost_ledger_report` — read (default) or append (`--record`) one row of the local per-week
+cost/efficiency ledger. The sentinel opt-in check and the git-tracked-destination refusal both run
+inline in `_cost_ledger_report`, before the write, per the governing decomposition plan's rule that
+a ledger's guard checks stay in the same function as its write; the git-tracked check itself calls
+the already-shared `ledger_common._ledger_path_is_git_tracked`. Imports `cost`, `ledger_common`,
+`pricing`, `render`, `review_trace`, `reviewer_yield`, and `scope` all by module (attribute access),
+matching `cost.py`'s convention. Binds `config_dir` by name from `_config_dir`, the same pattern
+`pr_cost_ledger.py` uses. `cmd_cost_ledger` is the one name reached bare from the shim.
+
+### `workstream_cost.py`
+
+The workstream-cost command: `cmd_workstream_cost` and `_print_workstream_session_stats` —
+per-branch session count and continuation "startup burn" dollars, via `cost._compute_workstream_dollars`
+(the cost command group's own bare-caller-retained helper), plus an optional `--check-pr-status` gh
+classification pass reusing pr-cost's own repo-pinning machinery. Imports `cost`, `gh_cli`, `render`,
+and `scope` all by module (attribute access), matching `cost.py`'s convention. `cmd_workstream_cost`
+is the one name reached bare from the shim.
 
 ## Sibling scripts
 
@@ -294,11 +361,53 @@ module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_
 on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
-`_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`); see its own
-docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir` and the
-shim's still-independent `config_dir` (for cost-ledger, spend-over-threshold, and rearm-backtest,
-not yet moved into the package), plus `ledger_common.config_dir` and `pr_cost_ledger.config_dir`
-(each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
+`_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
+`_exit_plan_mode`, `_priced_opus`, `_read_use`, `_thinking_block`); see its own
+docstrings for why `fake_projects` patches five `config_dir` bindings: `scope.config_dir` and the
+shim's still-independent `config_dir` (for spend-over-threshold and rearm-backtest, not yet moved
+into the package), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
+`pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
 live in `tests/test_author_outcome.py`: most exercise the package module directly
 (`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
 shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.
+
+The cache-rebuild family splits along thematic seams rather than one file per module:
+
+- `tests/test_transcript_cache_rebuild.py` — core report mechanics
+- `test_transcript_cache_rebuild_attribution.py` (`_attribution.py`) — subagent idle-gap cause attribution
+- `test_transcript_cache_rebuild_switch_delta.py` (`_switch_delta.py`) — 5m-to-1h switch-delta pricing and per-dispatch dispersion
+- `test_transcript_cache_rebuild_ttl_rules.py` (`_ttl_rules.py`) — `--ttl-verdict` wiring and each verdict rule's own tests
+- `test_transcript_cache_rebuild_ttl_accumulation.py` (`_ttl_accumulation.py`) — per-root accumulation and dominance reduction
+- `test_transcript_cache_rebuild_ttl_footing.py` (`_ttl_footing.py`) — pure-1h idle-band reads, rate-multiplier footing, and the default-path regression
+
+All six share
+`tests/_cache_rebuild_helpers.py` (a plain module, not a test file itself — see
+`.claude/rules/test-tree-packaging.md` for why its own consumers import it as
+`from ._cache_rebuild_helpers import ...`), plus the family-only helpers each file keeps local to
+itself. `TestCacheRebuildCrossInstrumentReconciliation` stays in
+`tests/test_transcript_analysis.py` rather than moving with the rest of the family: it spans both
+cache-rebuild and cache-efficiency, and `.claude/plans/transcript-analysis-decomposition.md`'s rule
+for a cross-group test (stated there for `_UNCONDITIONAL_HEADER_CASES`) keeps such a test in the
+legacy file until every group it references has moved.
+
+The audit-routing family splits along its three subcommands rather than one file per module:
+`tests/test_transcript_audit_routing.py` (`cmd_audit_routing`),
+`test_transcript_audit_routing_shape.py` (`cmd_audit_routing_shape`), and
+`test_transcript_audit_routing_samples.py` (`cmd_audit_routing_samples`). All three share
+`tests/_audit_routing_helpers.py`, a plain module, not a test file itself. Its own consumers
+import it as `from ._audit_routing_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. Each file keeps its own family-only helpers
+local to itself. `TestMultiRootFormatOutliers` stays in `tests/test_transcript_analysis.py`
+rather than moving with the rest of the family: it spans cost, audit-routing-samples, and
+judgment-pair.
+
+The cost-ledger command family splits at the `--record` refusal-gate seam rather than one file per
+module: `tests/test_transcript_cost_ledger.py` covers path resolution, read mode, serialization,
+parser hostility, the reviewer-gap floor, record parity, write fidelity, auto-create, idempotence,
+degenerate corpora, concurrency, and CLI wiring; `tests/test_transcript_cost_ledger_record_gates.py`
+covers every path where `--record` must refuse and write nothing, plus each gate's boundary success
+cases (`TestCostLedgerPublishSafety`, `TestCostLedgerSentinelGate`). `workstream_cost.py`'s own
+tests live in `tests/test_transcript_workstream_cost.py`, alongside `cost.py`'s
+`_compute_workstream_dollars` coverage. `tests/test_transcript_cost_ledger_module_prefixes.py` pins
+both new modules' by-module import discipline, and their test files' `_mod.<module>.<name>` reads,
+to real bindings — a permanent check rather than a one-time migration-time script.

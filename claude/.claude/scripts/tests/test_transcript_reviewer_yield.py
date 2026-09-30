@@ -403,7 +403,7 @@ class TestReviewerYield:
 
         roots = _mod._resolve_scan_roots(_reviewer_yield_args())
         rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
-        rest_data = _mod._compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        rest_data = _mod.reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
         rest_count = rest_data["agg"]["staff-sdet"]["dispatches"]
 
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -459,7 +459,7 @@ class TestReviewerYield:
 
         roots = _mod._resolve_scan_roots(_reviewer_yield_args())
         rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
-        rest_data = _mod._compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        rest_data = _mod.reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
         rest_count = rest_data["agg"].get("staff-sdet", {}).get("dispatches", 0)
         assert rest_count == 0  # the dated dispatch is before the boundary; the untimestamped one is dropped here too
 

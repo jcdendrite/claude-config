@@ -20,7 +20,7 @@ denominator) were left out.
 | `machine` | generated identity (see "Data" below) | Distinguishes rows from different machines when an operator compares ledger files by hand across them |
 | `rates` | `_PRICING_FETCH_DATE` | Rows computed under different price tables are not comparable |
 | `usd` | `cost-trend` | Volume, not efficiency — present for context, not for scoring |
-| `context_pct` | `_compute_cost_trend_data` (`context_class_dollars`) | Context-class (cache read + both cache-write tiers) dollar share of the week's spend — the ~88%-of-the-bill thesis |
+| `context_pct` | `cost.compute_cost_trend_data` (`context_class_dollars`) | Context-class (cache read + both cache-write tiers) dollar share of the week's spend — the ~88%-of-the-bill thesis |
 | `opus_pct` | `cost-trend` | Model-routing discipline |
 | `ge200k_pct` | `cost-trend` (`context_over`) | Dollar share of turns whose context crossed the >=200k bucket — cost-trend's own existing "Context%" column, a distinct metric from `context_pct` |
 | `denials` | `review-trace --deny-summary` | Gate friction, raw count |
