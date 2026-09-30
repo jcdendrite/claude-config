@@ -5617,8 +5617,10 @@ def _init_repo_with_novel_reach_probe_skill(repo_path):
 
 class TestSkillReviewGateEvaluationScopeResiduals:
     """The gate evaluates the index of the repository at the payload `cwd`, as
-    it stands before the Bash call runs. Two commit shapes reach the trigger
-    yet name content the gate cannot see. Each is a documented residual
+    it stands before the Bash call runs. Commit shapes whose target tree is
+    not the payload `cwd`, same-call staging, and a commit that stages
+    working-tree content itself (`-a`) reach the trigger yet name content the
+    gate cannot see. Each is a documented residual
     (docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md
     § "Known gap: the plugin matcher"), pinned so a later fix flips it
     deliberately."""
@@ -5648,13 +5650,49 @@ class TestSkillReviewGateEvaluationScopeResiduals:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "cd {other_repo} && git commit -m x",
+            "pushd {other_repo} && git commit -m x",
+            "(cd {other_repo} && git commit -m x)",
+        ],
+        ids=["cd-and", "pushd-and", "cd-in-subshell"],
+    )
+    def test_directory_change_before_commit_in_another_repo_evaluates_the_cwd_repo_and_allows(
+        self, isolated_home, git_repo, tmp_path, command_template
+    ):
+        """A `cd`, `pushd`, or subshell that moves into another repository
+        before the commit leaves the payload `cwd` unchanged, so the gate
+        reads the `cwd` repository's index, like the `git -C` shape."""
+        other_repo = tmp_path / "other-repo"
+        _init_repo_with_novel_reach_probe_skill(other_repo)
+        command = command_template.format(other_repo=other_repo)
+
+        # Precondition: the same command denies when the target repo is the cwd,
+        # so the allow below comes from evaluating the cwd repo, not a trigger miss.
+        precondition_reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="cd-precondition-session"),
+            cwd=other_repo,
+        )
+        assert precondition_reason is not None and _MARKER_GATE_TOKEN in precondition_reason
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(command, session_id="cd-other-repo-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_same_call_staging_before_commit_is_invisible_to_the_gate_and_allows(
         self, isolated_home, git_repo
     ):
         """`git add <SKILL.md> & git commit`: nothing gated is staged when the
-        gate reads the index, so it disarms. The stowed
-        deny-invisible-commit-content.sh is the backstop for this shape, and a
-        plugin-only install lacks it."""
+        gate reads the index, so it disarms. A plugin-only install has no
+        backstop for this shape."""
         skill_path = git_repo / _REACH_PROBE_SKILL_REL
         skill_path.parent.mkdir(parents=True)
         skill_path.write_text(_WELL_FORMED_SKILL_MD)
@@ -5666,6 +5704,43 @@ class TestSkillReviewGateEvaluationScopeResiduals:
                     f"git add {_REACH_PROBE_SKILL_REL} & git commit -m x",
                     session_id="same-call-staging-session",
                 ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_commit_dash_a_stages_tracked_changes_after_the_gate_reads_the_index_and_allows(
+        self, isolated_home, git_repo
+    ):
+        """`git commit -am x` stages a tracked file's working-tree edit itself,
+        so the index the gate reads holds nothing gated and it disarms. The
+        stowed deny-invisible-commit-content.sh denies `-a` except behind a
+        read-only first command (GH-1063), and a plugin-only install lacks
+        it."""
+        _stage_gated_file(
+            git_repo,
+            _REACH_PROBE_SKILL_REL,
+            "---\nname: reach-probe\ndescription: ok\n---\n# first version\n",
+        )
+        subprocess.run(["git", "commit", "-q", "-m", "add skill"], cwd=git_repo, check=True)
+        (git_repo / _REACH_PROBE_SKILL_REL).write_text(_WELL_FORMED_SKILL_MD)
+
+        # Precondition: the same edit staged, then the identical `git commit -am x`,
+        # denies at the marker check, so the allow below comes from the gate
+        # reading an index without the edit, not from a trigger miss on `-am`.
+        subprocess.run(["git", "add", _REACH_PROBE_SKILL_REL], cwd=git_repo, check=True)
+        precondition_reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -am x", session_id="dash-a-precondition-session"),
+            cwd=git_repo,
+        )
+        assert precondition_reason is not None and _MARKER_GATE_TOKEN in precondition_reason
+        subprocess.run(["git", "reset", "-q"], cwd=git_repo, check=True)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -am x", session_id="dash-a-unstaged-session"),
                 cwd=git_repo,
             )
             == "allow"
@@ -5770,10 +5845,12 @@ class TestPluginCommitShapePredicateGlobalFlags:
 
 
 class TestSkillReviewGateContinueFormsReachBase:
-    """The `--continue` forms reach the novel-content base the gate resolves,
-    not a HEAD-relative shortcut: a disarm trace on stderr appears only on the
-    disarm exit with a non-empty base, so it proves the allow came through the
-    gate rather than past the trigger."""
+    """The `--continue` forms reach the gate's trigger. Two cases also prove the
+    novel-content base is resolved. The merge disarm case does, because a disarm
+    trace on stderr appears only on the disarm exit with a non-empty base. The
+    revert case does, through its subtraction-base precondition. The armed-merge
+    and cherry-pick cases prove trigger reach only, since a HEAD-relative diff
+    denies them too."""
 
     def test_merge_continue_disarms_on_upstream_reviewed_skill_edit(
         self, isolated_home, tmp_path

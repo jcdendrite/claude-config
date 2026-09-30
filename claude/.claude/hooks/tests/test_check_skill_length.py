@@ -31,7 +31,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
     superset entry this hook's own bootstrap does not call,
-    `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+    `sed`/`tr` for _lib_command_concludes_commit's commit-shape match
     (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and diff --cached
     --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors

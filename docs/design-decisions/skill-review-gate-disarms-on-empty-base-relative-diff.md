@@ -146,8 +146,6 @@ Without `timeout` or `gtimeout` on PATH, every `_lib_capped` site runs uncapped.
 
 The 64-file bound is conservative. A cap hit at a `git show` denies and exits, so a run that reaches the later sites completes every `git show` without a hit, at up to 5s each. That gives ~146s + 5s x N, which stays below 600s up to N = 90 (596s) and reaches 601s at N = 91.
 
-The trigger's `sed` and `tr` forks (quote-strip and fragment split) are not under `_lib_capped_for`. A wedged `sed` or `tr` holds every Bash call until the 600-second default timeout releases it.
-
 Accepted residual: the trigger's four forks (`sed` and `tr` in the quote-strip, two `sed` in the split) are uncapped, as the single `grep` fork of a regex trigger would be. A release at 600 seconds does not block the call, so a wedged fork fails open for that call. A cap would add about four execs to the allow path, would do nothing where neither `timeout` nor `gtimeout` is on PATH, and would conflict with the 600-second sizing above if it came from a tighter `hooks.json` `timeout`. These forks read a pipe, not the filesystem, so a stalled filesystem, the case the git caps above target, cannot wedge them.
 
 `scripts/marker.sh`'s `status` arm resolves the skill-review base separately from the shared `GATE_DIFF_BASE`, so mid-merge, cherry-pick, or rebase it repeats the 7-process resolution and its `merge-tree --write-tree` object write on every call. That cost is bounded by the same caps and is accepted.
@@ -158,24 +156,22 @@ The trigger is `_lib_command_concludes_marker_gated_commit`. The hook is dispatc
 
 Measured per-fire wall-clock cost of `require-skill-review.sh` on that fast path, run directly against the hook (`bash <hook>`) with a synthetic `tool_input` payload on stdin from a plain non-repository working directory. Each input has 1 unmeasured warm-up run and 5 timed runs, on a development machine with 8 cores, GNU bash 5.2 and GNU sed 4.9, at a load average of about 3 (other sessions were running, so ranges include contention). Every payload is synthetic. A prose heredoc is `cat <<'EOF'`, N filler lines, then `EOF`, and every filler line is 67 bytes, so 5 KB is 76 lines, 50 KB is 764, and 500 KB is 7,640. The prose filler line is `The reviewers read the plans, noted two open issues, and moved on.` The git-dense filler is `Run git status, git add, git commit, then git push the branch now.` The two-`&` filler is `Plans & notes: the reviewer read it & moved on with the new items.` The one-`&` rows open the heredoc as `cat 2>&1 <<'EOF'`, so their only `&` is on line 1.
 
-The baseline column is a single-`grep`-fork regex trigger (`git[[:space:]]+commit` over the raw command text), run the same way, for comparison with the fragment-aware trigger. It assumes the baseline hook is spawned on every Bash call. A regex-trigger hook behind an `"if": "Bash(git commit *)"` filter is not spawned on non-commit Bash calls, so the fragment-aware trigger's cost on those calls is its whole figure, not the difference from the baseline.
+| Command | Size | Fragment-aware median (range) |
+|---|---|---|
+| `ls -la` | 6 B | 17ms (17–18ms) |
+| compound, 3 git fragments | 43 B | 23ms (22–24ms) |
+| prose heredoc | 5 KB | 31ms (30–38ms) |
+| prose heredoc | 50 KB | 154ms (146–186ms) |
+| prose heredoc | 500 KB | 1034ms (989–1082ms) |
+| chained `git log -1 &&` x360 | 5 KB | 629ms (625–655ms) |
+| prose heredoc, one `&` (`2>&1` on line 1) | 5 KB | 31ms (30–32ms) |
+| prose heredoc, one `&` (`2>&1` on line 1) | 50 KB | 158ms (153–166ms) |
+| prose heredoc, two `&` per line | 50 KB | 239ms (227–260ms) |
+| git-dense prose heredoc | 5 KB | 158ms (154–166ms) |
+| git-dense prose heredoc | 50 KB | 1506ms (1459–1639ms) |
+| one fragment, `git log -1 &` x360 | 4.7 KB | 688ms (647–713ms) |
 
-| Command | Size | Regex-trigger baseline median (range) | Fragment-aware median (range) |
-|---|---|---|---|
-| `ls -la` | 6 B | 12ms (11–12ms) | 17ms (17–18ms) |
-| compound, 3 git fragments | 43 B | 11ms (11–12ms) | 23ms (22–24ms) |
-| prose heredoc | 5 KB | 12ms (12–13ms) | 31ms (30–38ms) |
-| prose heredoc | 50 KB | 18ms (17–20ms) | 154ms (146–186ms) |
-| prose heredoc | 500 KB | 125ms (110–138ms) | 1034ms (989–1082ms) |
-| chained `git log -1 &&` x360 | 5 KB | 12ms (12–13ms) | 629ms (625–655ms) |
-| prose heredoc, one `&` (`2>&1` on line 1) | 5 KB | 12ms (12–13ms) | 31ms (30–32ms) |
-| prose heredoc, one `&` (`2>&1` on line 1) | 50 KB | 18ms (18–20ms) | 158ms (153–166ms) |
-| prose heredoc, two `&` per line | 50 KB | 18ms (18–19ms) | 239ms (227–260ms) |
-| git-dense prose heredoc | 5 KB | 13ms (12–13ms) | 158ms (154–166ms) |
-| git-dense prose heredoc | 50 KB | 20ms (19–23ms) | 1506ms (1459–1639ms) |
-| one fragment, `git log -1 &` x360 | 4.7 KB | 14ms (14–16ms) | 688ms (647–713ms) |
-
-Typical interactive commands cost 17–23ms, and a 5 KB prose heredoc costs 31ms. All three are under this repo's stated hook performance budget (<100ms per fire), at 5–19ms above the baseline column. The budget is exceeded by about 50 `git`-naming fragments or about 30 KB of prose, so every 50 KB heredoc exceeds it, and git-dense prose exceeds it at 5 KB (158ms). A sweep on the same setup gives the crossing: chained `git log -1 &&` at 50 fragments costs 98ms (97–99ms), at 55 costs 107ms (104–123ms), and at 60 costs 114ms (113–121ms). A prose heredoc at 30 KB costs 102ms (95–105ms) and at 40 KB costs 134ms (127–144ms). Interpolating the table's own rows gives the same crossings. Between the `ls -la` row (17ms, no fragments) and the chained row (629ms, 361 fragments), 100ms falls at about 49 fragments. Between the 5 KB row (31ms) and the 50 KB row (154ms), 100ms falls at about 31 KB. The 50 KB prose row measured between 131ms and 163ms across separate runs on this machine, so treat both crossings as approximate. Both are measured budget overruns, not clean passes.
+Typical interactive commands cost 17–23ms, and a 5 KB prose heredoc costs 31ms. All three are under this repo's stated hook performance budget (<100ms per fire). The budget is exceeded by about 50 `git`-naming fragments or about 30 KB of prose, so every 50 KB heredoc exceeds it, and git-dense prose exceeds it at 5 KB (158ms). A sweep on the same setup gives the crossing: chained `git log -1 &&` at 50 fragments costs 98ms (97–99ms), at 55 costs 107ms (104–123ms), and at 60 costs 114ms (113–121ms). A prose heredoc at 30 KB costs 102ms (95–105ms) and at 40 KB costs 134ms (127–144ms). Interpolating the table's own rows gives the same crossings. Between the `ls -la` row (17ms, no fragments) and the chained row (629ms, 361 fragments), 100ms falls at about 49 fragments. Between the 5 KB row (31ms) and the 50 KB row (154ms), 100ms falls at about 31 KB. The 50 KB prose row measured between 131ms and 163ms across separate runs on this machine, so treat both crossings as approximate. Both are measured budget overruns, not clean passes.
 
 The profile splits each hook total into its parts. Fixed is the same payload sent with a non-`Bash` `tool_name`, so the hook exits after input parsing and before the trigger. Quote-strip and fragment split are each timed in a shell that sources the plugin lib. Fragment loop is the whole predicate, timed the same way, minus its own quote-strip and split. Each figure is the median of 5 runs after 1 warm-up, taken in the same run as the hook totals above. Sum adds the unrounded figures.
 
@@ -213,10 +209,15 @@ Follow-up owner: GH-1180. GH-1063 tracks the fragment splitter this predicate sh
 
 The trigger is the fragment-aware predicate `_lib_command_concludes_marker_gated_commit`, duplicated into the plugin lib from the stowed one. `git -C <dir> commit`, `git -c <config> commit`, `env git commit`, absolute-path, and quoted-`git` commits reach the gate, as do commits after a bare `&` (`git add . & git commit`, `sleep 1 & (git commit)`), which `_lib_split_fragments` leaves unsplit.
 
-Reaching the trigger is not the gate evaluating the commit. Two shapes reach it and still name content the gate cannot see:
+Reaching the trigger is not the gate evaluating the commit. The gate evaluates the index of the repository at the payload `cwd`, as it stands before the Bash call runs. Any commit that takes content the gate does not read from that index is a residual. Each of the three classes below is named by example, not as a closed list:
 
-- **A commit in another repository.** The gate reads the index of the repository at the payload `cwd`, as it stands before the Bash call runs. `git -C <other-repo> commit`, and a `--git-dir` or `--work-tree` target, reach the trigger but are evaluated against the `cwd` repository, so unreviewed gated content staged in the target repository passes. `TestSkillReviewGateEvaluationScopeResiduals` pins this residual.
-- **Same-call staging.** `git add . & git commit` and `git add . && git commit` reach the trigger, but nothing gated is staged yet when the gate reads the index, so it disarms. On a machine with the stowed hooks, `deny-invisible-commit-content.sh` is a partial backstop: it covers `git add . & git commit` only when the first git subcommand of the `&`-glued fragment mutates the index. `git status & git add . & git commit` and `git status & git commit -a` still pass (GH-1063). A plugin-only install has no backstop. The same test class pins the disarm for the `&` form.
+- **A commit in another repository or tree.** The trigger fires, but the gate evaluates the `cwd` repository, so unreviewed gated content staged in the target passes. Examples are `git -C <other-repo> commit`, a `--git-dir` or `--work-tree` target, a `cd <tree> &&` before the commit, and a `GIT_*` environment-variable prefix.
+- **Working-tree content the commit stages itself.** The commit takes tracked working-tree content that is not in the index when the hook reads it, so the gate sees no gated change and disarms. Examples are `git commit -am x` and a `-- <pathspec>`.
+- **Same-call staging.** Nothing gated is staged yet when the gate reads the index, so it disarms. An example is `git add . & git commit`.
+
+No stowed gate evaluates a redirected repository, tree, or index (`-C`, `--git-dir`, `--work-tree`, `cd`/`pushd`/subshell, `GIT_*` prefixes). The stowed `deny-invisible-commit-content.sh` backstops only two shapes: a `-a` or pathspec commit, except behind a read-only first command (GH-1063), and same-call staging when the first git subcommand mutates the index. A plugin-only install has neither backstop.
+
+`TestSkillReviewGateEvaluationScopeResiduals` pins the `-C`, `cd`/`pushd`/subshell, `-am`, and `&`-glued same-call shapes, and is the authoritative enumeration.
 
 The trigger also over-matches. It is a quote-blind word walk, so a command that only names a commit command as an argument (`echo git commit`, `grep "git commit" docs/x.md`, `git log --grep "fix & git commit hook"`) reaches the gate and denies while gated content is staged with no marker. Fail-toward-deny is the accepted posture, pinned by `test_accepted_over_deny_command_naming_a_commit_reaches_gate`.
 
@@ -226,10 +227,10 @@ The trigger also over-matches. It is a quote-blind word walk, so a command that 
 - A git alias (`git ci`).
 - A script file (`bash ./do-commit.sh`).
 - A `\`-newline continuation between `git` and `commit`.
-- A `-c` value containing a space (`git -c "user.name=A B" commit`), which the word walk splits.
+- A value of a global flag that precedes the subcommand (the value-taking list in `_lib_git_argv_from_subcmd`) that contains whitespace, which requires quotes, or a fragment operator (`$(`, backtick, `;`, `&&`, `||`, `|`), quoted or not. The argv walk breaks on such a value, so the subcommand is not found. Examples are `git -C "dir with space" commit` and `git -C $(pwd) commit`.
 - Text built by command substitution or decoded from an encoding and piped to a shell.
 
-`test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized` pins the first five.
+`test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized` pins the first five bullets, and its parametrization is the authoritative list of shapes for the fifth.
 
 ## Known gap: the ungated clean merge
 

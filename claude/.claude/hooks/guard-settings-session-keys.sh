@@ -93,8 +93,8 @@ fi
 # branch or missing file diffs against an empty baseline instead.
 # Fail-CLOSED exception to this file's fail-open posture: an unresolvable
 # default branch denies rather than allowing.
-# Latency tradeoff: see docs/design-decisions.md's entry for
-# _lib_default_branch_or_guess (#54).
+# Latency tradeoff of the default-branch resolution: see
+# `docs/design-decisions/guard-settings-session-keysshs-default-branch.md`.
 if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
 STAGED_CONTENT=$(_lib_capped git -C "$CWD" show :"$SETTINGS_REPO_PATH" 2>/dev/null)
 if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then

@@ -23,6 +23,7 @@ import textwrap
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_brought_in_file_hidden_from_gate_base,
     assert_cap_engaged,
     bash_input,
     build_conflicted_merge_with_clean_addition,
@@ -1689,22 +1690,24 @@ class TestDenyPiiInCommits:
         build_conflicted_rebase(git_repo, file_name="f")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git rebase --continue"), cwd=git_repo) == "allow"
 
-    def test_credential_only_in_already_merged_content_still_denies(self, isolated_home, git_repo):
+    def test_credential_only_in_already_merged_content_still_denies(self, isolated_home, tmp_path):
         """Scanner non-narrowing, the deny half. A credential-value token
-        present only in MERGE_HEAD's already-merged content (a file
-        untouched on the checked-out side, contributed entirely by the
-        merged-in parent), not in the novel conflict resolution, must still
-        deny. This scanner never takes a novel-content base the way the
-        review-marker gates do -- this fixture pins that it keeps scanning
-        the full HEAD-relative diff on a `--continue` commit rather than
-        narrowing to match the marker-preimage gates' behavior."""
-        build_conflicted_merge_with_clean_addition(
-            git_repo, conflict_file="f", clean_file="brought-in.txt",
+        present only in a file MERGE_HEAD brought in unchanged, not in the
+        novel conflict resolution, must still deny. MERGE_HEAD is reachable
+        from origin's default branch, so the novel-content base the
+        review-marker gates diff against omits that file; the precondition
+        asserts this. A scanner that took the base would miss the token."""
+        repo = build_conflicted_merge_with_clean_addition(
+            tmp_path, conflict_file="f", clean_file="brought-in.txt",
             clean_content=f"token {GHP_TOKEN}\n",
         )
-        (git_repo / "f").write_text("resolved\n")
-        subprocess.run(["git", "add", "f"], cwd=git_repo, check=True)
-        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git merge --continue"), cwd=git_repo) == "deny"
+        (repo / "f").write_text("resolved\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        assert_brought_in_file_hidden_from_gate_base(repo, "brought-in.txt")
+
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git merge --continue"), cwd=repo)
+        # The reason names the matched label, so a fail-closed deny cannot satisfy the case.
+        assert reason is not None and "Credential value" in reason, reason
 
     def test_malformed_json_denied(self):
         result = subprocess.run(

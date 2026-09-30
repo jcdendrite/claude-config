@@ -237,8 +237,8 @@ class TestRequirePluginVersionBump:
 
     def test_dash_c_global_flag_form_allows_despite_unbumped_plugin(self, isolated_home, git_repo):
         """This hook keeps its own bespoke regex (`git[[:space:]]+commit`),
-        unlike the shared _lib_command_invokes_git_subcmd matcher every
-        other commit gate uses, and that regex stays blind to a `-c`
+        unlike the shared fragment-aware matcher the other commit gates
+        use, and that regex stays blind to a `-c`
         global flag ahead of the subcommand. An unbumped plugin change
         that would deny under a bare `git commit` (see
         test_plugin_file_changed_no_bump_denies) allows here instead --

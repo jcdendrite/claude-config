@@ -48,12 +48,14 @@
 #   with no gate firing; see "Known gap: the ungated clean merge" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Known gap: the gate evaluates only the payload-cwd index at PreToolUse, so
-#   a commit targeting another tree (`-C`, `--git-dir`, `--work-tree`) or
-#   staging in the same call is not seen. The stowed
-#   deny-invisible-commit-content.sh is a partial backstop that plugin-only
-#   installs lack; see "Known gap: the plugin matcher" in
+#   a commit that takes content from another tree, from same-call staging, or
+#   from the working tree (`-a`, a pathspec) is not seen.
+# - The stowed deny-invisible-commit-content.sh backstops only `-a`/pathspec
+#   commits and same-call staging, which plugin-only installs lack. No stowed
+#   gate evaluates a redirected repo, tree, or index.
+#   See "Known gap: the plugin matcher" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md
-#   and TestSkillReviewGateEvaluationScopeResiduals.
+#   and TestSkillReviewGateEvaluationScopeResiduals for the enumeration.
 # - The structural validator's path list excludes deletions by the diff's own status
 #   (`--diff-filter=d`), and a staged deletion reaches the marker check, which covers
 #   it through the base-relative hash.

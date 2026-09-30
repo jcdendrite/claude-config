@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_brought_in_file_hidden_from_gate_base,
     assert_cap_engaged,
     bash_input,
     build_conflicted_merge_with_clean_addition,
@@ -796,25 +797,31 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
-    def test_tracker_id_only_in_already_merged_content_still_denies(self, claude_config_repo):
+    def test_tracker_id_only_in_already_merged_content_still_denies(self, tmp_path):
         """Scanner non-narrowing, the deny half. A tracker-ID token present
-        only in MERGE_HEAD's already-merged content (a file untouched on
-        the checked-out side, contributed entirely by the merged-in
-        parent), not in the novel conflict resolution, must still deny.
-        This scanner never takes a novel-content base the way the
-        review-marker gates do -- this fixture pins that it keeps scanning
-        the full HEAD-relative diff on a `--continue` commit rather than
-        narrowing to match the marker-preimage gates' behavior."""
-        build_conflicted_merge_with_clean_addition(
-            claude_config_repo, conflict_file="f", clean_file="brought-in.txt",
+        only in a file MERGE_HEAD brought in unchanged, not in the novel
+        conflict resolution, must still deny. MERGE_HEAD is reachable from
+        origin's default branch, so the novel-content base the review-marker
+        gates diff against omits that file; the precondition asserts this. A
+        scanner that took the base would miss the token."""
+        repo = build_conflicted_merge_with_clean_addition(
+            tmp_path, conflict_file="f", clean_file="brought-in.txt",
             clean_content="// WIDGET-123 fixed\n",
         )
-        (claude_config_repo / "f").write_text("resolved\n")
-        subprocess.run(["git", "add", "f"], cwd=claude_config_repo, check=True)
-        assert (
-            run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git merge --continue"), cwd=claude_config_repo)
-            == "deny"
+        (repo / "f").write_text("resolved\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        assert_brought_in_file_hidden_from_gate_base(repo, "brought-in.txt")
+        # Set after the fetch and merge, so the claude-config scope check sees a
+        # matching origin URL without changing the remote-tracking refs.
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "git@github.com:jcdendrite/claude-config.git"],
+            cwd=repo,
+            check=True,
         )
+
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input("git merge --continue"), cwd=repo)
+        # The reason names the matched token, so a fail-closed deny cannot satisfy the case.
+        assert reason is not None and "WIDGET-123" in reason, reason
 
     # -- Pseudo-file paths fail closed -------------------------------------
     # `--body-file=/dev/stdin` / `--body-file=-` would cause the hook's

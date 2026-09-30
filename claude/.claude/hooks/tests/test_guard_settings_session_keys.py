@@ -906,7 +906,7 @@ class TestGuardSettingsSessionKeys:
         """Stub PATH with only the binaries this hook's code path invokes
         (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
         superset entry this hook's own bootstrap does not call,
-        `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+        `sed`/`tr` for _lib_command_concludes_commit's commit-shape match
         (GH-783), `grep` for the staged-file match, `git` for the
         _lib_capped-wrapped diff/show calls), omitting both timeout(1) and
         gtimeout(1). Mirrors test_require_worktree_for_git_writes.py's

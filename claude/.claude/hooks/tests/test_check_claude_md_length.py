@@ -99,7 +99,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
     superset entry this hook's own bootstrap does not call,
-    `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+    `sed`/`tr` for _lib_command_concludes_commit's commit-shape match
     (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and cat-file -s
     calls), omitting both timeout(1) and gtimeout(1). Mirrors
@@ -739,17 +739,9 @@ class TestCheckClaudeMdLength:
         )
 
     def test_chained_git_add_commit_denies(self, isolated_home, tmp_path):
-        """Chained `git add ... && git commit` is caught by the internal
-        _lib_command_invokes_git_subcmd check.
-
-        The `if: "Bash(git commit *)"` predicate in settings.json matches
-        chained and prefixed commands (a `true && git commit ...` with a
-        real unreviewed staged diff got a genuine deny from
-        require-code-review.sh). This test invokes the hook binary directly
-        regardless, since the internal check is the authoritative gate
-        either way — consistent with the hook header's note that the `if`
-        field is a hint only.
-        """
+        """Chained `git add ... && git commit` is caught by the hook's own
+        _lib_command_concludes_commit check, which walks each fragment of the
+        chain."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)

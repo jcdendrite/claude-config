@@ -1016,40 +1016,63 @@ def build_conflicted_merge(
 
 
 def build_conflicted_merge_with_clean_addition(
-    repo: Path,
+    tmp_path: Path,
     *,
     conflict_file: str = "f",
     clean_file: str = "clean.txt",
     clean_content: str = "clean\n",
-) -> str:
-    """Like build_conflicted_merge, but "theirs" also adds `clean_file` with
-    no counterpart edit on the checked-out side, so it merges in unchanged
-    and its content is contributed entirely by MERGE_HEAD, not by any novel
-    resolution. Used to pin that the content scanners keep scanning the
-    full HEAD-relative diff on a `--continue` commit rather than narrowing
-    to the resolution -- narrowing would let content shaped like this file
-    (already-merged, not novel) pass unscanned. Returns the merged-in
-    branch's tip oid, same contract as build_conflicted_merge."""
-    base_branch = _current_branch(repo)
-    target = _seed_tracked_file(repo, conflict_file)
-    _run_git(repo, "checkout", "-qb", "theirs")
-    target.write_text("theirs-edit\n")
-    (repo / clean_file).write_text(clean_content)
-    _run_git(repo, "add", conflict_file, clean_file)
-    _run_git(repo, "commit", "-qm", f"theirs edits {conflict_file} and adds {clean_file}")
-    theirs_oid = _run_git(repo, "rev-parse", "HEAD").strip()
-    _run_git(repo, "checkout", "-q", base_branch)
-    target.write_text("ours-edit\n")
-    _run_git(repo, "add", conflict_file)
-    _run_git(repo, "commit", "-qm", f"ours edits {conflict_file}")
+) -> Path:
+    """Build a conflicted merge of origin's default branch into a clone, where
+    upstream edits `conflict_file` and separately adds `clean_file`. The local
+    side never touches `clean_file`, so it merges in unchanged and its content
+    is contributed entirely by MERGE_HEAD, not by any novel resolution.
+    MERGE_HEAD is reachable from refs/remotes/origin/<default>, so
+    _lib_gate_diff_base resolves a non-empty base whose diff omits
+    `clean_file` while the HEAD-relative diff contains it. The conflict is
+    left unresolved. Returns the clone's path.
+
+    Callers resolve `conflict_file`, stage it, and call
+    assert_brought_in_file_hidden_from_gate_base before relying on that
+    base/HEAD split."""
+    bare, clone = bare_remote_with_default_branch(tmp_path, file_name=conflict_file)
+    push_conflicting_edit_to_origin(tmp_path, bare, conflict_file, "origin-edit\n")
+    push_conflicting_edit_to_origin(tmp_path, bare, clean_file, clean_content)
+    (clone / conflict_file).write_text("ours-edit\n")
+    _run_git(clone, "add", conflict_file)
+    _run_git(clone, "commit", "-qm", f"ours edits {conflict_file}")
+    _run_git(clone, "fetch", "-q", "origin")
     result = subprocess.run(
-        ["git", "merge", "-q", "theirs"], cwd=repo, capture_output=True, text=True
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
     )
     assert result.returncode != 0, (
         f"expected merge conflict, got: {result.stdout}{result.stderr}"
     )
-    assert (repo / ".git" / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
-    return theirs_oid
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    return clone
+
+
+def assert_brought_in_file_hidden_from_gate_base(repo: Path, file_name: str) -> None:
+    """Precondition for a test that a commit scanner does not narrow to the
+    novel-content base: `_lib_gate_diff_base` resolves a non-empty base, the
+    base-relative staged diff omits `file_name`, and the HEAD-relative staged
+    diff contains it. A scanner diffing against that base would therefore
+    miss anything present only in `file_name`."""
+    base_result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_gate_diff_base "$1"', "bash", str(repo)],
+        capture_output=True, text=True, check=False,
+    )
+    base = base_result.stdout.strip()
+    assert base_result.returncode == 0 and base, (
+        f"precondition failed: _lib_gate_diff_base returned no base: {base_result.stderr}"
+    )
+    base_relative = _run_git(repo, "diff", "--cached", "--name-only", base).split()
+    head_relative = _run_git(repo, "diff", "--cached", "--name-only").split()
+    assert file_name not in base_relative, (
+        f"precondition failed: {file_name} is in the base-relative diff: {base_relative}"
+    )
+    assert file_name in head_relative, (
+        f"precondition failed: {file_name} is missing from the HEAD-relative diff: {head_relative}"
+    )
 
 
 def build_conflicted_cherry_pick(

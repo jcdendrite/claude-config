@@ -130,10 +130,12 @@
 #    bare pathspec argument (verified against git 2.55.0's option parser
 #    for all four gated verbs), so widening that check to `--continue`
 #    would only ever report "no target" and buys no additional coverage.
-#  - GH-1063: `_lib_split_fragments` doesn't split a bare `&` (background)
-#    or a backslash-newline line continuation, so `git add secret &
-#    git commit -m x` never reaches either arm as two separate fragments —
-#    a pre-existing gap this gate's `--continue` support does not close.
+#  - GH-1063: `_lib_split_fragments` doesn't split a bare `&` (background),
+#    so the walk judges a `&`-glued fragment by its first git subcommand only. A mutating first
+#    command is denied (`git add secret & git commit -m x`). A read-only
+#    first command hides a later mutation or `-a` and is allowed
+#    (`git status & git commit -a -m x`, `git status & git add . & git
+#    commit -m x`). This gate's `--continue` support does not close it.
 #
 # Subprocess footprint:
 #  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the
@@ -145,9 +147,8 @@
 #  - COMMAND_UNQUOTED and the fast-reject's own internal quote-strip
 #    independently strip the same raw $COMMAND, an accepted redundant-fork
 #    cost: _lib_command_concludes_commit takes only COMMAND, with no
-#    pre-stripped-input parameter (the call-site contract documented above
-#    _lib_command_invokes_git_subcmd in _lib.sh), so the two strips cannot
-#    be threaded together here.
+#    pre-stripped-input parameter, so the two strips cannot be threaded
+#    together here.
 #  - Every fork here is a pure string-processing one (grep/sed/tr/awk/
 #    xargs), with no filesystem or network access.
 #  - Every fork's exit status is checked and fails closed on a non-zero

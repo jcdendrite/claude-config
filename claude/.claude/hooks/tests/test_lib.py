@@ -6470,6 +6470,11 @@ class TestCommandConcludesCommit:
             "bash ./do-commit.sh",
             "git \\\ncommit -m x",
             'git -c "user.name=A B" commit -m x',
+            'git -C "dir with space" commit -m x',
+            'git -C "$(pwd)" commit -m x',
+            'git -C "$(git rev-parse --show-toplevel)" commit -m x',
+            'git -C $(pwd) commit -m x',
+            'git --git-dir="a b" commit -m x',
         ],
         ids=[
             "variable-word",
@@ -6477,15 +6482,20 @@ class TestCommandConcludesCommit:
             "script-file",
             "backslash-newline-continuation",
             "quoted-space-in-global-flag-value",
+            "quoted-space-in-dash-C-value",
+            "command-substitution-in-dash-C-value",
+            "rev-parse-toplevel-substitution-in-dash-C-value",
+            "unquoted-command-substitution-in-dash-C-value",
+            "quoted-space-in-attached-git-dir-value",
         ],
     )
     def test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized(
         self, command: str
     ) -> None:
         """A commit whose words never appear together in the command text
-        (a variable, an alias, a script file, a line continuation, a space
-        inside a quoted global-flag value that quote-stripping turns into a
-        word boundary) is a documented residual of matching command text;
+        (a variable, an alias, a script file, a line continuation, a
+        whitespace or fragment-operator value of a global flag that precedes
+        the subcommand) is a documented residual of matching command text;
         pinned so a later fix flips it deliberately."""
         assert _command_concludes_commit(command) == 1
 
@@ -6887,9 +6897,11 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
 ) -> None:
     """What `git diff --cached` does against an index still carrying
     unmerged (stage 1/2/3) entries, pinned as a git-primitive fact
-    independent of any hook. A later change wiring deny-pii-in-commits.sh
-    onto `git rebase --continue` recognition needs an end-to-end hook-level
-    version of this same assertion, once that routing exists."""
+    independent of any hook. deny-pii-in-commits.sh and
+    deny-private-project-refs.sh both route `git rebase --continue`, and
+    their hook-level counterparts are
+    test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough in
+    test_deny_pii_in_commits.py and test_deny_private_project_refs.py."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
     build_conflicted_rebase(repo)  # pre-`git add` checkpoint: unresolved
