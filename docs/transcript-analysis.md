@@ -11,7 +11,12 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcript** — one session log file under `<config-dir>/projects/<project-dir>/*.jsonl`. A session's subagent records are merged into their parent's file by `read_session_file`, never counted as their own transcript.
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
-- **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — aborts the whole invocation with an uncaught error, with the path stripped from the message, on the `--this-repo` and multi-root scan paths of every subcommand except `review-round-cost --pooled`, which records it as a scan gap instead. The single-root glob path (any `--projects` value, including the default, on a one-root scan; `Path.glob` swallows the error) and `cost`'s per-root scan diagnostic skip it silently. A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
+- **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled` records it as a scan gap instead.
+  - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
+  - `cost`'s per-root scan diagnostic also skips it silently.
+  - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
 - **turn** — one assistant reply record.
 - **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
 - **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.

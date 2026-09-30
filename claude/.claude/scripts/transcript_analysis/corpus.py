@@ -39,8 +39,10 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
     file) is excluded here rather than reaching a caller that would use it
     as a dict key and crash with an uncaught TypeError.
 
-    A subagents/ directory that cannot be checked or listed yields an empty
-    index, so every dispatch in that session reads as a dangling dispatch.
+    A subagents/ directory that cannot be listed or checked yields an empty
+    index and adds nothing to meta_read_errors, the same result as a session
+    with no subagents.
+    Each caller interprets an index miss itself.
     """
     subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
     index: dict[str, tuple[Path, str | None]] = {}

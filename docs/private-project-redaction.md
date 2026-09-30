@@ -213,7 +213,7 @@ figure as its own ask. That one citation must still enumerate every
 figure category the report contains. It must also name any category
 the report printed but withheld rather than approved (e.g. a
 per-account breakdown). Enumerating keeps the check each figure still
-needs against the four bars below from silently dropping out just
+needs against the bars below from silently dropping out just
 because the ask was made once — see
 [`docs/case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md)'s
 own citation for the pattern.

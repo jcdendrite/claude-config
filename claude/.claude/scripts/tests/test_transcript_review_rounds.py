@@ -1587,10 +1587,10 @@ def _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch) -> list[
     Root A splits its four branches between code-review and plan-review
     (two apiece); root B's four are all ready-for-review. Four branches
     per account, not one, so the pool clears the four-branch bootstrap
-    floor with room to spare. Every branch reports 100% of its own dollars
-    inside a round window, so this fixture does not clear the
-    dominance-precision floor (`_pooled_dominance_breach`); every test
-    reading it stubs that floor.
+    floor with room to spare. The round-count-keyed `skill_rounds:*` shares
+    trip the dominance-precision floor (`_pooled_dominance_breach`), so every
+    test reading this fixture stubs that floor. The dollar-keyed shares have
+    zero denominators, which the floor skips.
     """
     roots = _two_declared_roots(tmp_path, monkeypatch)
     proj_a = roots[0] / "-home-user-repo-a"
@@ -2157,6 +2157,14 @@ class TestCmdReviewRoundCostPooled:
         assert "out of the artifact and its citation" in relay_clause
         docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
         assert proposer_sentences in docs_text
+
+    def test_pooled_docs_sample_output_carries_the_publication_pointer_and_caption(self):
+        """docs/transcript-analysis.md's sample --pooled output must contain
+        both constants verbatim, so a reworded constant cannot drift from
+        the documented output."""
+        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        assert review_rounds._POOLED_PUBLICATION_POINTER in docs_text
+        assert review_rounds._POOLED_CAPTION in docs_text
 
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -2856,6 +2864,52 @@ class TestCmdReviewRoundCostPooled:
         assert forward_out == reversed_out
         assert _count_numeric_share_lines(forward_out) == len(review_rounds._POOLED_STAT_KEYS)
 
+    def test_bootstrap_ci_bounds_are_invariant_to_root_scan_order(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Scan order puts the active profile's root first, so the same two
+        physical roots carry swapped root indexes under a different active
+        profile. The bootstrap's branch order must follow the resolved-path
+        root ordinal, not that index, or the printed CI bounds would change
+        with which profile ran the report.
+
+        Runs with --show-withheld so the block prints numeric CI lines
+        instead of the withheld wording, which would be identical whatever
+        the branch order.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        skills = ["code-review", "plan-review", "ready-for-review"]
+        branch_count = 12
+        rounds = []
+        branch_totals = {}
+        for i in range(branch_count):
+            branch_key = (i % 2, f"feat-{i:02d}")
+            round_dollars = 0.10 + 0.07 * i
+            rounds.append({
+                "branch_key": branch_key, "skill": skills[i % 3],
+                "main_dollars": round_dollars, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0,
+            })
+            branch_totals[branch_key] = round_dollars + 0.05 * (i + 1)
+
+        def _swap_root_idx(branch_key: tuple[int, str]) -> tuple[int, str]:
+            root_idx, branch = branch_key
+            return (1 - root_idx, branch)
+
+        swapped_rounds = [{**entry, "branch_key": _swap_root_idx(entry["branch_key"])} for entry in rounds]
+        swapped_branch_totals = {_swap_root_idx(key): dollars for key, dollars in branch_totals.items()}
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        forward_out = capsys.readouterr().out
+
+        review_rounds._render_pooled_block(
+            args, list(reversed(roots)), "*", swapped_rounds, swapped_branch_totals, scan_gaps=Counter(),
+        )
+        swapped_out = capsys.readouterr().out
+
+        assert forward_out == swapped_out
+        assert _count_numeric_share_lines(forward_out) == len(review_rounds._POOLED_STAT_KEYS)
+
     def test_point_estimate_is_share_of_sums_not_mean_of_per_branch_shares(
         self, tmp_path, monkeypatch, capsys,
     ):
@@ -2914,10 +2968,8 @@ class TestCmdReviewRoundCostPooled:
         mean_of_shares = round((50.0 + 60.0) / 2, 1)  # 55.0 -- the regression this fixture rules out
         assert share_of_sums != mean_of_shares
 
-        # Both branches share the same code-review skill (matching
-        # _asymmetric_two_branch_pooled_totals below) to clear the
-        # dominance-precision floor
-        # (_pooled_dominance_breach/_single_account_within_stated_precision).
+        # Both branches share the same code-review skill, matching
+        # _asymmetric_two_branch_pooled_totals above.
         #
         # This JSONL fixture's dollar amounts are numerically identical to
         # _asymmetric_two_branch_pooled_totals's, plus the two zero-dollar
@@ -2925,7 +2977,7 @@ class TestCmdReviewRoundCostPooled:
         # equivalent fixture therefore reproduces exactly what the CLI run
         # above computed -- including branch order, since
         # _bootstrap_share_intervals's resample draws are order-sensitive:
-        # _render_pooled_block sorts by (str(root_idx), branch_name), which
+        # _render_pooled_block sorts by (root ordinal, branch_name), which
         # places each filler immediately after its own account's real branch
         # ("feat-a" before "feat-a-filler", "feat-b" before "feat-b-filler").
         filler_branch = review_rounds._PooledBranchTotals(
@@ -3309,9 +3361,9 @@ class TestCmdReviewRoundCostPooled:
     def test_dominance_precision_floor_withholds_on_a_round_dollars_imbalance_alone(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """Every dominance test above builds its 99/1 or 60/40 imbalance
-        only in branch_dollars (the spend_inside/outside/reviewer_only
-        denominator). This fixture holds branch_dollars perfectly balanced
+        """Earlier dominance tests imbalance round_dollars and branch_dollars
+        together. This fixture holds branch_dollars (the
+        spend_inside/outside/reviewer_only denominator) perfectly balanced
         (50/50 between the two accounts) while splitting round_dollars --
         the skill_spend:* denominator -- 99/1, proving
         _pooled_dominance_breach also catches an imbalance that shows up

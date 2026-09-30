@@ -345,6 +345,8 @@ def _iter_project_dir_sessions(
     """
     for project_dir in project_dirs:
         for jsonl in _list_dir_recording_gaps(project_dir, scan_gaps, _SCAN_GAP_PROJECT_DIR):
+            # Transcripts are not deduplicated by resolved path, so a *.jsonl
+            # symlink to another in-root transcript is read twice.
             if not fnmatch.fnmatchcase(jsonl.name, "*.jsonl"):
                 continue
             groups = _read_session_file_partitioned(jsonl, include_subagents)
@@ -869,16 +871,18 @@ def _projects_glob(args: argparse.Namespace) -> str:
 
 
 def _single_level_projects_glob(value: str) -> str:
-    """Validator for --projects, called at runtime from each multi-root
-    branch that matches the value against one directory name with fnmatch
-    (_resolve_project_scope's own, and transcript-analysis.py's
-    cmd_skill_invocation, which inlines the equivalent branch) -- not wired
-    as an argparse type=, since whether the one-level restriction applies
-    depends on how many roots the invocation resolves, not on the flag's
-    syntax alone. A value containing '/' or '**', or equal to '.' or '..',
-    would silently match nothing there or match something else, so it is
-    rejected. An empty value passes, since no consumer of --projects hands
-    it to a matcher.
+    """Runtime validator for --projects in each multi-root branch that
+    matches the value against one directory name with fnmatch.
+
+    Its callers are _resolve_project_scope and transcript-analysis.py's
+    cmd_skill_invocation, which inlines the equivalent branch.
+    It is not an argparse type=, because whether the one-level restriction
+    applies depends on how many roots the invocation resolves, not on the
+    flag's syntax alone.
+    It rejects '/', '**', '.', and '..', since each would silently match
+    nothing or match something else against a single directory name.
+    An empty value passes, since no consumer of --projects hands it to a
+    matcher.
     """
     if "/" in value or "**" in value or value in (".", ".."):
         raise argparse.ArgumentTypeError(

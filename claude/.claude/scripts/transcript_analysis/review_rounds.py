@@ -896,12 +896,13 @@ def _render_pooled_block(
     account_denominator_totals: dict[int | None, dict[str, float]] = defaultdict(
         lambda: dict.fromkeys(denominator_fields, 0.0)
     )
-    # Sorted so bootstrap resampling draws from a content-derived order,
-    # never raw rounds-list (file-scan) order. Mirrors the non-pooled
-    # renderer's own sorted(by_branch, key=_branch_label) in
-    # cmd_review_round_cost. The seeded RNG picks branches by position, so
-    # the same branches in a different order would yield different CIs.
-    for branch_key in sorted(by_branch, key=lambda k: (str(k[0]), k[1])):
+    # The seeded RNG picks branches by position, so the order must not depend
+    # on rounds-list order or on scan-order root indexes.
+    # The order is fixed by the resolved-path root ordinal and the branch name.
+    # The ordinal is a sort key only and is never printed.
+    root_ordinals = scope._redaction_ordinals(roots)
+    ordinal_by_root_idx = {root_idx: root_ordinals[root.resolve()] for root_idx, root in enumerate(roots)}
+    for branch_key in sorted(by_branch, key=lambda k: (ordinal_by_root_idx[k[0]], k[1])):
         branch_rounds = by_branch[branch_key]
         skill_round_counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
         skill_round_dollars: dict[str, float] = dict.fromkeys(REVIEW_SKILLS, 0.0)
