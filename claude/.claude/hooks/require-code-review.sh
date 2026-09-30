@@ -4,13 +4,13 @@
 # Gate: require /code-review before git commit, verified via marker file.
 #
 # WARNING: Do NOT remove the internal git commit check below.
-# settings.json carries no "if" pre-filter for this hook: it is dispatched on
-# every Bash tool call, and the internal commit-shape check below is the sole
-# dispatch gate.
+# Dispatched on every Bash tool call; the internal commit-shape check below is
+# the sole dispatch gate.
 # This hook trusts the two locally-forgeable anchors _lib_gate_diff_base
 # resolves to exclude a merge/rebase/cherry-pick/revert parent's content from
-# the review hash. See docs/design-decisions.md for why both anchors are
-# admitted despite neither being unforgeable, and their residuals.
+# the review hash. For why both anchors are admitted despite neither being
+# unforgeable, and their residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
 #
 # How it works:
 # - The /code-review skill writes
@@ -33,10 +33,9 @@
 #   re-staging after review correctly forces a re-review.
 #
 # Known gaps this gate does not close:
-#  - The rebase carve-out's split-across-two-Bash-calls exposure: staging
-#    unrelated content as its own Bash call, then running `git rebase
-#    --continue` as a separate call, folds that content into the rebased
-#    commit with no gate in this family ever requiring a review.
+#  - The rebase carve-out's split-across-two-Bash-calls exposure; see
+#    `docs/design-decisions/rebase-continue-marker-gate-carveout.md`
+#    § "What the carve-out leaves exposed".
 
 set -uo pipefail
 
@@ -72,12 +71,10 @@ fi
 # Only gate commands that conclude a review-marker-gated commit — exit 0 (no
 # opinion) for everything else.
 # - Uses the narrow predicate _lib_command_concludes_marker_gated_commit,
-#   not the broad sibling _lib_command_concludes_commit.
-# - `git rebase --continue` is excluded (the rebase carve-out: REBASE_HEAD
-#   reaches no trusted anchor in the ordinary case, so gating it here would
-#   mean a full review at every conflicted step of a rebase).
+#   which excludes `git rebase --continue`; see:
+#   `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
 # - `git merge/cherry-pick/revert --continue` and any `git commit` form
-#   still reach the gate.
+#   reach the gate.
 # - Fails closed on an undetermined match (sed/tr missing, killed, or
 #   erroring inside the helper) rather than silently letting an unscanned
 #   commit through the review gate.
@@ -126,7 +123,7 @@ GATE_DIFF_BASE_STATUS=$?
 # different base.
 # deny-invisible-commit-content.sh depends on this branch meaning "this
 # commit authors an empty commit" -- do not remove either half
-# independently. That dependency now covers every shape
+# independently. That dependency covers every shape
 # _lib_command_concludes_marker_gated_commit matches (git commit and the
 # three non-rebase --continue forms), not literal git commit alone.
 if [ -z "$GATE_DIFF_BASE" ]; then

@@ -22,9 +22,9 @@
 # word-walking subcommand extractor (which sees through global
 # `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and also
 # recognizes `git <merge|rebase|cherry-pick|revert> --continue` via
-# _lib_command_concludes_commit — every `--continue` form conveys new
-# content the same way a literal `git commit` does. Exits immediately —
-# before any git or scan work — whenever the command concludes neither.
+# _lib_command_concludes_commit — each of those four conveys new content the
+# same way a literal `git commit` does. Exits immediately — before any git
+# or scan work — whenever the command concludes neither.
 #
 # Robust against `git commit --no-verify`: a Claude Code PreToolUse hook
 # intercepts the Bash tool call itself. --no-verify disables only git's
@@ -308,9 +308,9 @@ done <<< "$GIT_FRAGMENTS"
 # <merge|rebase|cherry-pick|revert> --continue` concludes a commit too, with
 # no separate `git commit` call for the loop to see, and so does a `git
 # commit` behind a bare `&` (GH-1063), which the splitter leaves glued to
-# the preceding text. Both are checked here, once, via the broad predicate
-# (this scanner's recourse is mechanical, so it stays armed on `git rebase
-# --continue` same as every other `--continue` form).
+# the preceding text. Both are checked here, once, via the broad predicate,
+# which stays armed on `git rebase --continue`; see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
 # No worktree-target rescan for the `--continue` forms: none of those four
 # verbs accepts `-a`/`--`/a bare pathspec.
 # The fallback also sets no rescan for a `git commit` behind a bare `&`, so

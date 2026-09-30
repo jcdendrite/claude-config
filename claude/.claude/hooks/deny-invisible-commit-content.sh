@@ -139,19 +139,15 @@
 #  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the
 #    fast-reject check's own internal quote-strip and fragment-split
 #    (_lib_command_concludes_commit), fork unconditionally on every Bash
-#    call. Once the fast-reject matches, the quote-stripped fragment split
-#    arm 1 needs (STRIPPED_FRAGMENTS) also forks immediately, ahead of the
-#    wrapper pre-check below, so that check's own deny message can name
-#    the concluding command a lookahead over those fragments finds.
-#    Everything else past the fast-reject (the wrapper pre-check, arm 1,
-#    and arm 2) forks only once the fast-reject matches.
+#    call. The STRIPPED_FRAGMENTS split forks as soon as the fast-reject
+#    matches. Everything else past the fast-reject (the wrapper pre-check,
+#    arm 1, and arm 2) forks only once the fast-reject matches.
 #  - COMMAND_UNQUOTED and the fast-reject's own internal quote-strip
 #    independently strip the same raw $COMMAND, an accepted redundant-fork
 #    cost: _lib_command_concludes_commit takes only COMMAND, with no
-#    pre-stripped-input parameter, the same call-site contract every
-#    GH-783 gate hook still calling _lib_command_invokes_git_subcmd shares
-#    (see _lib.sh's own comment above that function), so the two strips
-#    cannot be threaded together here.
+#    pre-stripped-input parameter (the call-site contract documented above
+#    _lib_command_invokes_git_subcmd in _lib.sh), so the two strips cannot
+#    be threaded together here.
 #  - Every fork here is a pure string-processing one (grep/sed/tr/awk/
 #    xargs), with no filesystem or network access.
 #  - Every fork's exit status is checked and fails closed on a non-zero
@@ -220,11 +216,8 @@ if [ "$FAST_REJECT_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Fragment-split ahead of arm 1's own position below: once the fast-reject
-# confirms a commit-concluding fragment exists somewhere in this command,
-# the wrapper pre-check's deny message (immediately below) needs to name
-# it, which requires the same quote-stripped fragment list arm 1 walks —
-# computed once here and reused there, not recomputed.
+# Split once here: arm 1 walks these fragments, and the wrapper pre-check's
+# deny message names the concluding fragment found in them.
 STRIPPED_FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 SPLIT_EXIT=$?
 if [ "$SPLIT_EXIT" -ne 0 ]; then
@@ -235,10 +228,8 @@ fi
 # _fragment_concluding_label SUBCMD
 # Prints the displayable shape a commit-concluding fragment takes --
 # "git commit" for SUBCMD = commit, else "git SUBCMD --continue" -- so a
-# deny message can name the actual shape this gate detected instead of
-# hard-coding "git commit" now that a --continue form can conclude a
-# commit too. Shared by the lookahead below and arm 2's fragment walk
-# further down.
+# deny message names the shape this gate detected. Shared by the lookahead
+# below and arm 2's fragment walk further down.
 _fragment_concluding_label() {
   if [ "$1" = commit ]; then
     printf 'git commit'
@@ -250,12 +241,13 @@ _fragment_concluding_label() {
 # _first_concluding_fragment_label FRAGMENTS
 # Scans an already fragment-split FRAGMENTS string, in order, for the first
 # fragment _lib_fragment_concludes_commit accepts, and prints its
-# displayable shape. A lookahead: the wrapper pre-check below and arm 1's
-# own ordered-mutation deny each fire before their own walk necessarily
-# reaches the concluding fragment, so naming it in their deny message needs
-# this scanned ahead of time rather than captured mid-walk. Prints
-# "git commit" if no concluding fragment is found, which the fast-reject
-# above has already ruled out for the command as a whole.
+# displayable shape. A lookahead, because the deny messages that name it
+# fire before their own walk reaches the concluding fragment. The label
+# must come from the same fragment set the walk reads: quote-stripped and
+# quote-masked fragments can disagree on which fragment concludes the
+# commit when a quote-embedded decoy is present. Prints "git commit" if no
+# concluding fragment is found, which the fast-reject above has already
+# ruled out for the command as a whole.
 _first_concluding_fragment_label() {
   local fragments="$1" fragment subcmd
   while IFS= read -r fragment; do
@@ -339,18 +331,13 @@ if [ "$MASKED_SPLIT_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Lookahead for the ordered-mutation deny below, over arm 2's own masked
-# fragments rather than the stripped-text lookahead above — a
-# quote-embedded decoy fragment (see the header comment) can make the two
-# scans disagree on which fragment actually concludes the commit, and this
-# arm's own deny message must name the one its own masked-text walk will
-# reach.
+# Label for the ordered-mutation deny below, from the masked fragments (see
+# _first_concluding_fragment_label).
 MASKED_CONCLUDING_LABEL=$(_first_concluding_fragment_label "$MASKED_FRAGMENTS")
 
 COMMIT_FRAGMENT_COUNT=0
-# Every commit-concluding fragment's displayable shape, collected in the
-# walk below for the multi-invocation deny message so it can name what it
-# actually found rather than assuming every fragment was `git commit`.
+# Each commit-concluding fragment's displayable shape, for the
+# multi-invocation deny message.
 CONCLUDING_FRAGMENT_LABELS=()
 # Captured alongside the count above for arm 1's worktree-target check to
 # reuse below — see the header comment above for why a masked fragment's
@@ -379,7 +366,10 @@ while IFS= read -r masked_fragment; do
 done <<< "$MASKED_FRAGMENTS"
 
 if [ "$COMMIT_FRAGMENT_COUNT" -gt 1 ]; then
-  CONCLUDING_FRAGMENT_LABELS_JOINED=$(IFS=', '; echo "${CONCLUDING_FRAGMENT_LABELS[*]}")
+  CONCLUDING_FRAGMENT_LABELS_JOINED=""
+  for concluding_label in "${CONCLUDING_FRAGMENT_LABELS[@]}"; do
+    CONCLUDING_FRAGMENT_LABELS_JOINED+="${CONCLUDING_FRAGMENT_LABELS_JOINED:+, }${concluding_label}"
+  done
   emit_deny "Commit — this Bash call chains ${COMMIT_FRAGMENT_COUNT} commit-concluding git invocations together (${CONCLUDING_FRAGMENT_LABELS_JOINED}), but every commit gate evaluates \`git diff --cached\` once per Bash tool call — any one after the first runs against a snapshot no gate re-checked. Each commit-concluding git command must run as its own, separate Bash tool call."
   exit 0
 fi
@@ -396,9 +386,7 @@ fi
 # this commit never sees), and a quote-stripped commit message         #
 # containing `&&` can synthesize exactly that trailing shape — so the  #
 # walk stops at the first commit-concluding fragment rather than       #
-# scanning the whole command. STRIPPED_FRAGMENTS was already computed  #
-# right after the fast-reject above, for the wrapper pre-check's own   #
-# lookahead -- reused here rather than split a second time.            #
+# scanning the whole command.                                          #
 # ------------------------------------------------------------------ #
 
 while IFS= read -r fragment; do

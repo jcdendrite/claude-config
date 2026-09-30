@@ -284,10 +284,9 @@ class TestRequireCodeReview:
             # concludes a commit under the broad predicate, but the narrow
             # predicate this hook calls deliberately excludes it, so this
             # hook reaches no opinion here exactly like a command that does
-            # not conclude a commit at all. No repo fixture needed: the
-            # narrow predicate runs before any staged-diff or marker logic,
-            # so this determination is a pure function of the command
-            # string.
+            # not conclude a commit at all. The narrow predicate runs before
+            # any staged-diff or marker logic, so this allow does not depend
+            # on the repo's index.
             "git rebase --continue",
         ],
     )
@@ -308,9 +307,8 @@ class TestRequireCodeReview:
         """Every commit-concluding shape the narrow predicate recognizes
         reaches this hook. With no marker present, each denies -- the
         rebase carve-out's positive case, mirroring the negative case
-        above. No repo fixture needed for the same reason as that case:
-        the narrow predicate's match/no-match determination runs before
-        any staged-diff or marker logic."""
+        above. The deny depends on git_repo's staged change: with an empty
+        index the gate takes its empty-staged-diff early exit and allows."""
         assert run_hook(CODE_REVIEW_HOOK, bash_input(command), cwd=git_repo) == "deny"
 
     def test_noconflict_rebase_edit_stop_with_unrelated_staged_file_does_not_fire(
@@ -1738,13 +1736,9 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
     Bash calls also closes it, since the second call's index is dirty and
     the early exit does not fire.
 
-    The cherry-pick-form assertions below reproduced the exposure as
-    written (git accepted the resolve-to-HEAD-then-`--continue` sequence and
-    the early exit fired), confirmed by actually running them rather than
-    only tracing the code; the merge-form assertions repeat the same
-    three-part proof on an independent construction, since merge is the
-    shape whose over-gating on an ordinary sync originally motivated
-    gating these commit shapes at all."""
+    The cherry-pick, merge, and revert forms below each pin three parts on an
+    independent construction: the bare `--continue` allows via the early
+    exit, the chained form denies, and the split form denies."""
 
     # --- cherry-pick form ---
 

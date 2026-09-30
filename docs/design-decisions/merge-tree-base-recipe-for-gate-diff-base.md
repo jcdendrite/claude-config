@@ -2,6 +2,8 @@
 
 *2026-09-08.*
 
+**Superseded in part by [rebase-continue-marker-gate-carveout](rebase-continue-marker-gate-carveout.md) (2026-09-30):** The claim in "Why both trust anchors are admitted despite neither being unforgeable" that honestly reaching either anchor implies the content already passed review is withdrawn for the `HEAD` anchor. See `rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test".
+
 `_lib_gate_diff_base` (`claude/.claude/hooks/_lib.sh`) computes the tree-ish a commit-time gate should diff its staged content against, in place of the index's implicit `HEAD` base, so a gate hashing `git diff --cached "$(_lib_gate_diff_base "$repo")"` sees only content novel to the commit being made, even mid-merge/rebase/cherry-pick/revert.
 
 ## Per-state `merge-tree --write-tree` recipe

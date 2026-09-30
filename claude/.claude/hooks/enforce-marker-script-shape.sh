@@ -635,12 +635,11 @@ fi
 # Chained-commit allowance. One or more valid `marker.sh write <skill>` shapes
 # joined by `&&`, followed by `git commit ...` or `git <merge|rebase|
 # cherry-pick|revert> --continue ...`, is the natural atomic form an agent
-# types after reviews pass. The tail matches the full `--continue` union,
-# deliberately including `rebase --continue`, even though
-# require-code-review.sh's own narrow predicate never checks for this marker
-# on that shape — this pattern is about chain shape, not which gate the
-# chained command reaches. Chaining marker.sh with anything else (curl, rm,
-# redirects, ;) stays denied by falling through to the message below.
+# types after reviews pass. The tail matches the same verb union as
+# _lib_chains_marker_write_before_commit in _lib.sh, which documents why
+# `rebase --continue` is included. Chaining marker.sh with anything else
+# (curl, rm, redirects, ;) stays denied by falling through to the message
+# below.
 # Coordinated with require-code-review.sh and require-skill-review.sh, which
 # honor the same in-chain marker-write pattern at the commit gate.
 #

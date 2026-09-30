@@ -5438,17 +5438,16 @@ class TestSkillReviewGateCommitShapeTrigger:
         ],
         ids=["start-of-command", "ampersand", "double-ampersand", "semicolon", "pipe", "double-pipe"],
     )
-    def test_every_separator_the_old_commit_regex_accepted_still_reaches_gate(
+    def test_every_shell_separator_before_commit_reaches_gate(
         self, isolated_home, git_repo, command
     ):
-        """Parity with the retired trigger regex
-        `(^|&&?|;|\\|\\|?)[[:space:]]*git[[:space:]]+commit`: each separator it
-        accepted before `git commit` must still reach the gate. A single `&` is
-        the shape _lib_split_fragments leaves unsplit (GH-1063)."""
+        """Each of `&`, `&&`, `;`, `|`, `||` ahead of `git commit` reaches the
+        gate. A single `&` is the shape _lib_split_fragments leaves unsplit
+        (GH-1063)."""
         _stage_reach_probe_skill(git_repo)
         reason = run_hook_reason(
             SKILL_REVIEW_HOOK,
-            bash_input(command, session_id="old-regex-parity-session"),
+            bash_input(command, session_id="separator-reach-session"),
             cwd=git_repo,
         )
         assert reason is not None and _MARKER_GATE_TOKEN in reason
@@ -5457,8 +5456,8 @@ class TestSkillReviewGateCommitShapeTrigger:
     def test_non_marker_fragment_chained_before_continue_reaches_gate(
         self, isolated_home, git_repo, verb
     ):
-        """`git add <path> && git <verb> --continue`: the plan's natural chained
-        shape. A trigger miss and a marker-chain allow are both `allow`, so this
+        """`git add <path> && git <verb> --continue`: a `git add` chained ahead
+        of `--continue`. A trigger miss and a marker-chain allow are both `allow`, so this
         pins the deny on the fragment split, not the chain matcher."""
         _stage_reach_probe_skill(git_repo)
         reason = run_hook_reason(
@@ -5494,7 +5493,7 @@ class TestSkillReviewGateCommitShapeTrigger:
 
     def test_in_chain_marker_write_before_merge_continue_allows(self, isolated_home, git_repo):
         """The chain matcher's `--continue` arm: without it this command
-        reaches the gate now and denies."""
+        reaches the gate and denies."""
         _stage_reach_probe_skill(git_repo)
         assert (
             run_hook(
@@ -5754,6 +5753,22 @@ class TestPluginChainMatcherAcceptsContinueForms:
         assert result.returncode == 0
 
 
+class TestPluginCommitShapePredicateGlobalFlags:
+    """The plugin lib's copy of the narrow predicate skips a separate-word
+    global-flag value (`--attr-source <tree-ish>`) to reach the subcommand."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --attr-source HEAD commit -m x",
+            "git --attr-source=HEAD commit -m x",
+        ],
+    )
+    def test_commit_behind_attr_source_global_flag_is_recognized(self, command):
+        result = _run_lib_fn(_PLUGIN_LIB, "_lib_command_concludes_marker_gated_commit", command)
+        assert result.returncode == 0
+
+
 class TestSkillReviewGateContinueFormsReachBase:
     """The `--continue` forms reach the novel-content base the gate resolves,
     not a HEAD-relative shortcut: a disarm trace on stderr appears only on the
@@ -5783,7 +5798,7 @@ class TestSkillReviewGateContinueFormsReachBase:
 
     def test_revert_continue_stays_armed_with_gated_removal(self, isolated_home, git_repo):
         """The `--continue` twin of test_revert_stays_armed_with_gated_removal:
-        the revert exclusion in _lib_skill_review_diff_base holds for the new
+        the revert exclusion in _lib_skill_review_diff_base holds for the `--continue`
         trigger shape."""
         build_conflicted_revert_with_clean_gated_removal(git_repo)
 

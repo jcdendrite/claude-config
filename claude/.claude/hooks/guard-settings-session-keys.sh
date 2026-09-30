@@ -12,16 +12,17 @@
 # engineer's local state as the shipped config for every user. This hook
 # catches that class of accidental commit and surfaces it before git runs.
 #
-# Defense-in-depth: settings.json carries no "if" pre-filter for this hook —
-# it is dispatched on every Bash tool call, and the internal commit-shape
-# check and staged-file check below are the sole dispatch gate.
+# Defense-in-depth: the hook is dispatched on every Bash tool call, and the
+# internal commit-shape check and staged-file check below are the sole
+# dispatch gate.
 # Unlike require-code-review.sh and the two length gates, this hook diffs
 # against a named branch (origin/<default>) rather than a novel-content base,
-# so it does not consume _lib_gate_diff_base — see docs/design-decisions.md
-# for why that base's two anchors are admitted elsewhere despite being
-# locally forgeable, and their residuals.
-# See §54 there for this hook's own origin/<default> resolution via
-# _lib_default_branch_or_guess.
+# so it does not consume _lib_gate_diff_base. For why that base's two anchors
+# are admitted elsewhere despite being locally forgeable, and their
+# residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
+# For this hook's own origin/<default> resolution via _lib_default_branch_or_guess, see
+# `docs/design-decisions/guard-settings-session-keysshs-default-branch.md`.
 #
 # Exit codes:
 #   0      — allow (no opinion)
@@ -63,13 +64,13 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate commands that conclude a commit. The broad predicate, not the
-# narrow one require-code-review.sh uses: this gate's recourse is mechanical
-# (unstage the key), not a review, so it stays armed on `git rebase
-# --continue` too. Deliberately unchecked, matching this hook's own
-# fail-open posture on the jq-absent path below: status 2 (could not
-# determine) falls through the same "not gated, allow" path as status 1 (no
-# match), rather than gaining a dedicated deny fork.
+# Only gate commands that conclude a commit, using the broad predicate
+# (armed on `git rebase --continue`); see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# Deliberately unchecked, matching this hook's own fail-open posture on the
+# jq-absent path below: status 2 (could not determine) falls through the same
+# "not gated, allow" path as status 1 (no match), rather than gaining a
+# dedicated deny fork.
 _lib_command_concludes_commit "$COMMAND" || exit 0
 
 # Resolve the repo from the payload's cwd rather than this hook process's

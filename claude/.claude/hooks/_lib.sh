@@ -1339,11 +1339,10 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
-      # Every git 2.43 global flag taking a separate-word value, per `git
-      # help --all`'s global-options list.
-      # A future git version adding another one needs this list updated by
-      # hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+      # The git 2.43 global flags that take a separate-word value, per
+      # git(1)'s OPTIONS. A later git version adding another needs this list
+      # updated by hand.
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
         skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
@@ -1537,18 +1536,16 @@ _lib_fragment_has_token() {
 # SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
 # or the fragment-split) failed and the answer could not be determined.
 # Composes _lib_strip_shell_quotes, _lib_split_fragments,
-# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so the eight gate
-# hooks share one fragment-aware matcher instead of each hand-copying a raw
-# regex over unstripped $COMMAND (which a quote-split defeats, e.g. `"git"
-# commit`).
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so a caller gets
+# one fragment-aware matcher instead of a raw regex over unstripped $COMMAND
+# (which a quote-split defeats, e.g. `"git" commit`).
 #
 # Call-site contract (load-bearing): never picks a fail posture itself —
 # every caller must check for status 2 and decide allow-or-deny for its own
 # gate, the same discipline _lib_split_fragments's own call-site contract
-# already requires. Six checked-fail-closed hooks deny on status 2; the two
-# correctly-fail-open hooks (guard-settings-session-keys.sh,
-# require-stow-reminder.sh) treat anything other than 0 as "no match" and
-# stay silent about the distinction, matching their own documented posture.
+# already requires. The commit gates call _lib_command_concludes_commit or
+# _lib_command_concludes_marker_gated_commit instead; this helper is the
+# tri-state contract those predicates follow.
 _lib_command_invokes_git_subcmd() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" subcmd="$2"
@@ -1579,7 +1576,7 @@ _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 # (SUBCMD = that verb and `--continue` is one of the verb's own arguments,
 # not merely present somewhere else in FRAGMENT). Matches any unambiguous
 # prefix of `--continue` (`--c` through `--continu`), since git's option
-# parser accepts the same abbreviations (gitcli(1), "ENHANCED OPTION
+# parser accepts the same abbreviations (gitcli(7), "ENHANCED OPTION
 # PARSER"). This also matches a few prefixes git itself would reject as
 # ambiguous against another long option on the same verb -- a false
 # positive here only denies a command git would have rejected anyway, never
@@ -1587,10 +1584,7 @@ _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 # Caller contract: FRAGMENT must already have passed
 # _lib_fragment_invokes_git, and SUBCMD must be that same fragment's
 # _lib_extract_git_subcmd result -- this function performs neither check
-# nor extraction itself. Extracted from _lib_command_concludes_commit_shape's
-# own loop body so a per-fragment walk over an already-split command (arm 1
-# and arm 2 of deny-invisible-commit-content.sh) shares this file's one
-# definition of the --continue grammar rather than a second copy.
+# nor extraction itself.
 # Plain boolean, not tri-state: _lib_extract_git_subcmd_args runs no sed or tr
 # (_lib_git_argv_from_subcmd is a pure bash word-walk), so no sed/tr failure
 # needs signalling here. The `< <(...)` read below forks a subshell whose
@@ -1685,10 +1679,9 @@ _lib_command_concludes_commit_shape() {
 # shared by every gate whose recourse on a bad commit is mechanical (unstage
 # a value, shorten a file, remove a session key) rather than a review, so
 # narrowing this predicate to skip a verb would silently disarm those gates
-# for that verb's `--continue` form once wired in. See
-# _lib_command_concludes_marker_gated_commit
-# below for the narrower sibling used by the two gates whose recourse is a
-# review.
+# for that verb's `--continue` form. See
+# _lib_command_concludes_marker_gated_commit below for the narrower sibling
+# used by the two gates whose recourse is a review.
 # Called from the five mechanical gates: guard-settings-session-keys.sh,
 # check-skill-length.sh, check-claude-md-length.sh, deny-pii-in-commits.sh,
 # and deny-private-project-refs.sh -- and from deny-invisible-commit-content.sh's
@@ -1705,11 +1698,10 @@ _lib_command_concludes_commit() {
 # anchor in the ordinary case (see _lib_gate_diff_base), so gating a review
 # marker on it would mean demanding a full review at every conflicted step
 # of a rebase against content that, for the most part, already passed
-# review at its own original commit time. Once wired in, the two gates
-# intended to consume this narrower predicate would still deny an ordinary
-# `git commit` made mid-rebase without `--continue`, while the five gates
-# intended to consume the broad predicate above would stay armed on
-# `git rebase --continue` -- this predicate is designed to narrow
+# review at its own original commit time. The two gates that consume this
+# narrower predicate still deny an ordinary `git commit` made mid-rebase
+# without `--continue`, while the gates that consume the broad predicate
+# above stay armed on `git rebase --continue` -- this predicate narrows
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
 # Called from require-code-review.sh.
@@ -1719,18 +1711,10 @@ _lib_command_concludes_marker_gated_commit() {
 }
 
 # _lib_fragment_concludes_commit FRAGMENT SUBCMD
-# Public, plain-boolean sibling of _lib_fragment_concludes_commit_shape
-# above, fixed to the broad $_LIB_CONTINUE_VERBS_ALL set -- the same shape
-# set _lib_command_concludes_commit tests at the whole-command level. For a
-# caller that already walks a command's fragments one at a time and has
-# each fragment's own _lib_extract_git_subcmd result on hand
-# (deny-invisible-commit-content.sh's arm 1 and arm 2), this answers "does
-# this fragment alone conclude a commit" without re-deriving the
-# --continue grammar or re-forking _lib_command_concludes_commit's own
-# strip-and-split. No narrower, marker-gated sibling exists at this
-# fragment level: nothing calls one, and an unused narrow wrapper would
-# only invite deny-invisible-commit-content.sh -- whose recourse on a bad
-# commit is mechanical, never a review -- to reach for the wrong predicate.
+# Plain-boolean fragment-level sibling of _lib_fragment_concludes_commit_shape,
+# fixed to $_LIB_CONTINUE_VERBS_ALL; for callers that already hold each
+# fragment's _lib_extract_git_subcmd result (deny-invisible-commit-content.sh).
+# No marker-gated variant exists because no fragment-level caller needs one.
 _lib_fragment_concludes_commit() {
   _lib_fragment_concludes_commit_shape "$1" "$2" "$_LIB_CONTINUE_VERBS_ALL"
 }
@@ -1907,9 +1891,9 @@ _lib_length_ratchet_exceeded() {
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
 #
-# Runs only when a Bash command invokes `git commit`, gated behind both
-# callers' `if: git commit *` matcher in settings.json — commit-time-cold,
-# not per-tool-call like most _lib.sh helpers.
+# Runs only when a Bash command concludes a commit, per the caller's
+# _lib_command_concludes_commit check — commit-time-cold, not per-tool-call
+# like most _lib.sh helpers.
 # REPO_ROOT is resolved by the caller from the payload's cwd, the same shape
 # require-code-review.sh uses, and threaded through every git call below --
 # an ambient-cwd call here would let a session whose shell drifted to a
@@ -2059,7 +2043,7 @@ _lib_staged_length_gate() {
 # predicate never checks for this marker on that command shape. This
 # matcher is about chain *shape*, not about which gate the chained command
 # reaches. Denying `marker.sh write code-review && git rebase --continue`
-# would be a new, confusing footgun for an agent chaining defensively out
+# would be a confusing footgun for an agent chaining defensively out
 # of habit.
 #
 # **Anchored at command start, not fragment start.** A fragment-walking

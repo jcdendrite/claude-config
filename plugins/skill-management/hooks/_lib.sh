@@ -695,11 +695,10 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
-      # Every git 2.43 global flag taking a separate-word value, per `git
-      # help --all`'s global-options list.
-      # A future git version adding another one needs this list updated by
-      # hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+      # The git 2.43 global flags that take a separate-word value, per
+      # git(1)'s OPTIONS. A later git version adding another needs this list
+      # updated by hand.
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
         skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
@@ -734,7 +733,7 @@ _lib_extract_git_subcmd_args() {
 # (SUBCMD = that verb and `--continue` is one of the verb's own arguments,
 # not merely present somewhere else in FRAGMENT). Matches any unambiguous
 # prefix of `--continue` (`--c` through `--continu`), since git's option
-# parser accepts the same abbreviations (gitcli(1), "ENHANCED OPTION
+# parser accepts the same abbreviations (gitcli(7), "ENHANCED OPTION
 # PARSER"). This also matches a few prefixes git itself would reject as
 # ambiguous against another long option on the same verb -- a false
 # positive here only denies a command git would have rejected anyway, never
@@ -858,7 +857,7 @@ _lib_command_concludes_marker_gated_commit() {
 # `rebase --continue`, even though _lib_command_concludes_marker_gated_commit
 # never matches that command shape. This matcher is about chain *shape*, not
 # about which gate the chained command reaches: denying
-# `marker.sh write skill-review && git rebase --continue` would be a new,
+# `marker.sh write skill-review && git rebase --continue` would be a
 # confusing footgun for an agent chaining defensively out of habit.
 #
 # **Anchored at command start, not fragment start.** A fragment-walking

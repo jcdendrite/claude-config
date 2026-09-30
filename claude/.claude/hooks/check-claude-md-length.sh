@@ -19,12 +19,12 @@
 # structure is kept so future exceptions can slot in without touching the
 # surrounding logic.
 #
-# settings.json carries no "if" pre-filter for this hook: it is dispatched on
-# every Bash tool call, and the internal commit-shape check below is the sole
-# dispatch gate. See require-code-review.sh for the same pattern and
+# Dispatched on every Bash tool call; the internal commit-shape check below is
+# the sole dispatch gate. See require-code-review.sh for the same pattern and
 # rationale. _lib_staged_length_gate resolves its base the same way
-# require-code-review.sh does — see docs/design-decisions.md for why that
-# base is admissible despite being locally forgeable, and its residuals.
+# require-code-review.sh does. For why that base is admissible despite being
+# locally forgeable, and its residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
 #
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
@@ -83,14 +83,13 @@ fi
 
 # Only gate commands that conclude a commit -- checked here, before
 # REPO_ROOT resolution below, so the overwhelming majority of Bash calls
-# this hook is dispatched for (per the no-"if"-pre-filter note above) never
-# spawn a git subprocess at all. Matches require-code-review.sh's actual
-# ordering, not just its REPO_ROOT-resolution shape. The broad predicate,
-# not the narrow one require-code-review.sh uses: this gate's recourse is
-# mechanical (shorten the file), not a review, so it stays armed on
-# `git rebase --continue` too. Checked and fail-closed: an undetermined
-# match (sed/tr missing, killed, or erroring inside the helper) must not
-# silently let an unscanned commit bypass the length check.
+# this hook is dispatched for never spawn a git subprocess at all. Matches
+# require-code-review.sh's actual ordering, not just its REPO_ROOT-resolution
+# shape. Uses the broad predicate, armed on `git rebase --continue`; see
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# Checked and fail-closed: an undetermined match (sed/tr missing, killed, or
+# erroring inside the helper) must not silently let an unscanned commit
+# bypass the length check.
 _lib_command_concludes_commit "$COMMAND"
 GIT_COMMIT_MATCH_STATUS=$?
 if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then

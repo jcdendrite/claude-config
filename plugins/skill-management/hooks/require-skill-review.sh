@@ -6,8 +6,8 @@
 # verified via marker file.
 #
 # WARNING: Do NOT remove the internal commit-shape check below.
-# hooks.json carries no "if" pre-filter for this hook: it is dispatched on
-# every Bash tool call, and the in-body predicate is the sole dispatch gate.
+# The hook is dispatched on every Bash tool call; the in-body predicate is
+# the sole dispatch gate.
 #
 # How it works:
 # - The /skill-review skill writes
@@ -42,9 +42,8 @@
 #   conflicted SKILL.md leaves the index equal to HEAD, so a HEAD-relative
 #   prefilter would disarm on exactly the commit that discards upstream's
 #   reviewed content.
-# - Known gap: `git rebase --continue` never reaches this gate (the predicate's
-#   rebase carve-out); see _lib_command_concludes_marker_gated_commit's header
-#   in _lib.sh.
+# - Known gap: `git rebase --continue` never reaches this gate; see
+#   _lib_command_concludes_marker_gated_commit's header in _lib.sh.
 # - Known gap: a conflict-free merge/cherry-pick/revert still reaches a commit
 #   with no gate firing; see "Known gap: the ungated clean merge" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
@@ -137,10 +136,9 @@ fi
 #   so `git -C <dir> commit`, `git -c <k>=<v> commit`, `env git commit`, and
 #   quoted-`git` forms reach the gate along with plain `git commit`.
 # - `git merge/cherry-pick/revert --continue` reach the gate.
-# - `git rebase --continue` is excluded (the rebase carve-out: REBASE_HEAD
-#   reaches no trusted anchor in the ordinary case, so gating it here would
-#   mean a full review at every conflicted step of a rebase). The exclusion
-#   lives in the predicate's verb set, not in a hook-local check.
+# - `git rebase --continue` is excluded by the predicate's verb set, not by a
+#   hook-local check; see _lib_command_concludes_marker_gated_commit's header
+#   in _lib.sh.
 # - Fails closed on an undetermined match (sed/tr missing, killed, or
 #   erroring inside the helper, or a fragment read that never ran) rather
 #   than silently letting an unscanned commit through the review gate.

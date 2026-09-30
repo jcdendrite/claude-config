@@ -985,13 +985,12 @@ def build_conflicted_merge(
     configured user.email/user.name. Returns the merged-in branch's tip
     oid -- MERGE_HEAD's expected content.
 
-    resolve_to_head=True (additive, opt-in -- existing callers leave it
-    False and are unaffected) additionally resolves the conflict by
-    writing `file_name` back to HEAD's own pre-merge content and staging
-    it, leaving MERGE_HEAD present but the index clean (`git diff
-    --cached` empty against HEAD) -- the merge-form instance of the row-34
-    bypass fixture's precondition, matching build_conflicted_cherry_pick's
-    own resolve_to_head."""
+    resolve_to_head=True (opt-in; default False) additionally resolves the
+    conflict by writing `file_name` back to HEAD's own pre-merge content
+    and staging it, leaving MERGE_HEAD present but the index clean (`git
+    diff --cached` empty against HEAD), so require-code-review.sh takes its
+    empty-staged-diff early exit. Matches build_conflicted_cherry_pick's own
+    resolve_to_head."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "theirs")
@@ -1063,14 +1062,12 @@ def build_conflicted_cherry_pick(
     markers staged. Returns the cherry-picked commit's oid -- CHERRY_PICK_HEAD's
     expected content.
 
-    resolve_to_head=True (additive, opt-in -- the four existing callers
-    leave it False and are unaffected) additionally resolves the conflict
-    by writing `file_name` back to HEAD's own pre-cherry-pick content and
-    staging it, leaving CHERRY_PICK_HEAD present but the index clean
-    (`git diff --cached` empty against HEAD) -- the row-34 bypass fixture's
-    precondition, where a resolution that reintroduces no novel content
-    leaves nothing for require-code-review.sh's empty-staged-diff early
-    exit to see."""
+    resolve_to_head=True (opt-in; default False) additionally resolves the
+    conflict by writing `file_name` back to HEAD's own pre-cherry-pick
+    content and staging it, leaving CHERRY_PICK_HEAD present but the index
+    clean (`git diff --cached` empty against HEAD), so a resolution that
+    reintroduces no novel content leaves nothing for require-code-review.sh's
+    empty-staged-diff early exit to see."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "source")
@@ -1142,8 +1139,8 @@ def build_conflicted_revert_of_unmerged_commit(
     resolve_to_head=True additionally resolves the conflict by writing
     `file_name` back to HEAD's own pre-revert content and staging it,
     leaving REVERT_HEAD present but the index clean (`git diff --cached`
-    empty against HEAD) -- the revert-form instance of the row-34 bypass
-    fixture's precondition, matching build_conflicted_merge's and
+    empty against HEAD), so require-code-review.sh takes its empty-staged-diff
+    early exit. Matches build_conflicted_merge's and
     build_conflicted_cherry_pick's own resolve_to_head."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)

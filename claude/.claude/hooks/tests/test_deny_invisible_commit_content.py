@@ -122,6 +122,14 @@ class TestDenyInvisibleCommitContent:
             bash_input("git commit -m x && git commit -a --amend --no-edit"),
         ) == "deny"
 
+    def test_multi_invocation_deny_separates_labels_with_comma_and_space(self):
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git commit -m x && git commit -m y"),
+        )
+        assert reason is not None
+        assert "(git commit, git commit)" in reason
+
     def test_mutation_between_two_commits_denied(self):
         """A `git add` between two commit fragments is still denied even
         though it's not chained directly ahead of either commit — arm 1's
@@ -695,8 +703,8 @@ class TestDenyInvisibleCommitContent:
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
     def test_wrapper_token_with_continue_denied_names_concluding_command(self, verb):
-        """The wrapper/commit co-occurrence pre-check's new reach: a
-        --continue form co-occurring with a wrapper token denies, attributed
+        """The wrapper/commit co-occurrence pre-check covers a
+        --continue form: one co-occurring with a wrapper token denies, attributed
         to the pre-check rather than an arm, and names the actual verb
         rather than a hard-coded 'git commit'."""
         reason = run_hook_reason(
@@ -787,19 +795,23 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
-    def test_sed_absent_from_path_denied_for_continue_form(self, tmp_path, verb):
-        """Fail-closed is preserved at the swapped fast-reject call site:
-        _lib_command_concludes_commit's internal quote-strip depends on sed
-        exactly as _lib_command_invokes_git_subcmd's did, for a --continue
-        form and not only for a bare `git commit`."""
-        farm_dir = tmp_path / f"path-without-sed-{verb.replace('-', '_')}"
-        farm_dir.mkdir()
-        restricted_path = build_path_without("sed", farm_dir)
-        assert run_hook(
+    def test_fast_reject_undetermined_match_denies_with_predicate_reason_for_continue_form(
+        self, sed_split_stage_shim, verb
+    ):
+        """The fast-reject's _lib_command_concludes_commit returns status 2
+        when its own fragment split fails, and the hook must deny with that
+        call site's reason. sed_split_stage_shim(0) fails the first
+        `_lib_split_fragments` stage on its first invocation, which is the
+        fast-reject's: COMMAND_UNQUOTED's strip uses different sed scripts and
+        succeeds, and the later STRIPPED_FRAGMENTS split is never reached. The
+        reason text separates this deny from the strip and split denies."""
+        reason = run_hook_reason(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input(f"git {verb} --continue"),
-            extra_env={"PATH": restricted_path},
-        ) == "deny"
+            extra_env=sed_split_stage_shim(0),
+        )
+        assert reason is not None
+        assert "could not determine whether this command concludes a git commit" in reason
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
     def test_quote_embedded_decoy_continue_verb_reaches_arm_two_message(self, verb):
