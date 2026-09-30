@@ -942,6 +942,33 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "global-trigger"
 
+    def test_global_trigger_keeps_domain_targets_outside_the_full_suite_roots(self):
+        """FULL_SUITE_TARGETS never collects evals/, so a review-bench path
+        beside a global-trigger path must still contribute its own tests."""
+        result = _mod.select_pytest_targets(["pyproject.toml", "evals/review_bench/runner.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "global-trigger"
+        assert result.triggering_paths == ("pyproject.toml",)
+        assert result.target_paths == (
+            *_mod.FULL_SUITE_TARGETS,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
+        )
+
+    def test_unmatched_path_keeps_domain_targets_outside_the_full_suite_roots(self):
+        result = _mod.select_pytest_targets([".gitignore", "evals/review_bench/runner.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+        assert result.triggering_paths == (".gitignore",)
+        assert result.target_paths == (
+            *_mod.FULL_SUITE_TARGETS,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
+        )
+
+    def test_fail_open_does_not_duplicate_a_domain_target_a_full_suite_root_already_covers(self):
+        result = _mod.select_pytest_targets([".gitignore", "claude/.claude/scripts/mark-terminal.py"])
+        assert result.is_full_suite is True
+        assert result.target_paths == _mod.FULL_SUITE_TARGETS
+
     def test_unmatched_path_falls_open_to_full_suite(self):
         """.gitignore matches no domain rule and no cross-domain exception --
         CI's own SKIP_REGEX doesn't list it either, so select-tests.py must
@@ -1174,9 +1201,9 @@ class TestSelectPytestTargets:
 
     def test_matched_and_unmatched_path_together_falls_open_to_full_suite(self):
         """A path that matches a domain rule alongside a path that matches
-        none still falls open to the full suite -- the accumulate-all-
-        unmatched-paths refactor doesn't let a matched domain's targets
-        leak through when another path in the same diff is unmatched."""
+        none still falls open to the full suite. The matched domain's targets
+        add nothing to FULL_SUITE_TARGETS here because they sit inside its
+        roots; only a matched target outside them (e.g. evals/) is kept."""
         result = _mod.select_pytest_targets(
             ["claude/.claude/scripts/mark-terminal.py", ".gitignore"],
         )
@@ -1461,6 +1488,17 @@ class TestResolveTargetPaths:
         )
         assert resolved == [_mod.SCRIPTS_TESTS_DIR]
 
+    def test_full_suite_roots_keep_the_evals_targets_beside_them(self):
+        """A fail-open selection's evals/ targets sit outside every
+        FULL_SUITE_TARGETS root, so none absorbs them."""
+        resolved = _mod.resolve_target_paths(
+            [*_mod.FULL_SUITE_TARGETS, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST],
+            repo_root=_REPO_ROOT,
+        )
+        assert set(_mod.FULL_SUITE_TARGETS) <= set(resolved)
+        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in resolved
+        assert any(path.startswith("evals/test_review_bench_") for path in resolved)
+
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
         rule tables are one level deep (ledger row 15), so only a synthetic
@@ -1511,10 +1549,13 @@ class TestResolveTargetPaths:
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
         gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
-        Including it collapses the check to two disjoint survivors
-        (claude/.claude/ and plugins/), making the assertion pass
-        regardless of whether _covers works -- and that combined universe
-        isn't a selection select_pytest_targets ever actually returns."""
+        Including it collapses the check to disjoint survivors
+        (claude/.claude/, claude-skills/, plugins/, and the evals/ test
+        files), making the assertion pass regardless of whether _covers
+        works -- and that combined universe (FULL_SUITE_TARGETS plus every
+        inside-root domain target) isn't a selection select_pytest_targets
+        ever actually returns: its fail-open result adds only targets
+        outside those roots."""
         universe: set[str] = set()
         for _predicate, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
             universe.update(targets)

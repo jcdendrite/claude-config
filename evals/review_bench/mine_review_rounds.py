@@ -498,11 +498,13 @@ def resolve_defect_commits(
 
 
 def _branch_fingerprint(branch: str) -> str:
-    """A short, content-free stand-in for a real git branch name in a
+    """A short, unsalted-hash stand-in for a real git branch name in a
     committed candidate ID. A branch name is this account's own text, not
     project-owned data the way a commit SHA is, so it never appears in an
-    ID's own bytes. Contrast mine_szz.py's SZZ-sourced IDs, which embed
-    real (and already-public) commit SHAs directly."""
+    ID's own bytes. The digest is unsalted and 48 bits, so it obscures a
+    non-guessable branch name and only lets a guessable one be confirmed.
+    Contrast mine_szz.py's SZZ-sourced IDs, which embed real (and
+    already-public) commit SHAs directly."""
     return hashlib.sha256(branch.encode()).hexdigest()[:12]
 
 

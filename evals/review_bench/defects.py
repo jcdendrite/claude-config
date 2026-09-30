@@ -289,9 +289,12 @@ def check_description_provenance(
     not only the one this description confirms, since the drafting session
     saw the whole shortlist.
 
-    Scoped to phrase reuse, not secret-shaped strings -- this repo's
-    commit-time secret-scanning hooks (`redact-credential-values.sh` and
-    related) remain the control of record for verbatim secret leakage.
+    Scoped to phrase reuse, not secret-shaped strings. The commit-time
+    credential-value gate, `deny-pii-in-commits.sh`, remains the control of
+    record for verbatim secret leakage, and it covers vendor-fixed value shapes
+    only (GitHub token prefixes, AWS access key IDs, PEM private-key headers).
+    `redact-credential-values.sh` only redacts tool results and cannot block a
+    commit.
     """
     description_tokens = _tokenize(description)
     if not description_tokens:

@@ -200,6 +200,116 @@ class TestArmRecallAndSensitivityVerdict:
         assert verdict == analysis.SENSITIVITY_NOT_SENSITIVE
 
 
+class TestVerdictsReadTheIntervalLowerLimit:
+    """Two-defect tables make the bootstrap interval hand-computable. A
+    resample draws two defects with replacement: (a, a) with probability
+    1/4, (a, b) or (b, a) with 1/2, (b, b) with 1/4. Each resample's
+    statistic is the mean of its two per-defect differences, so it takes the
+    value a, (a+b)/2 or b. The 2.5th percentile falls inside the a-mass
+    (a lies below the 25th percentile), and the 97.5th inside the b-mass.
+    So the interval is exactly [min(a, b), max(a, b)] while the point
+    estimate over the full defect list is (a+b)/2. A verdict that reads the
+    point estimate or the upper limit instead of the lower limit gives the
+    opposite answer on the failing tables below."""
+
+    COMPLETED = 100
+
+    def _recall_counts(self, found_baseline_and_x_per_defect: list[tuple[int, int]]):
+        return {
+            f"d{i}": analysis.DefectRecallCounts(
+                defect_id=f"d{i}", found_by_arm={ARM_BASELINE: found_baseline, ARM_X: found_x},
+                completed_by_arm={ARM_BASELINE: self.COMPLETED, ARM_X: self.COMPLETED},
+            )
+            for i, (found_baseline, found_x) in enumerate(found_baseline_and_x_per_defect)
+        }
+
+    def _precision_counts(self, valid_baseline_and_x_per_defect: list[tuple[int, int]]):
+        # Every defect carries COMPLETED adjudicated findings per arm, so the
+        # pooled ratio reduces to the mean of per-defect valid rates.
+        return {
+            f"d{i}": analysis.DefectPrecisionCounts(
+                defect_id=f"d{i}", valid_by_arm={ARM_BASELINE: valid_baseline, ARM_X: valid_x},
+                total_by_arm={ARM_BASELINE: self.COMPLETED, ARM_X: self.COMPLETED},
+            )
+            for i, (valid_baseline, valid_x) in enumerate(valid_baseline_and_x_per_defect)
+        }
+
+    def test_recall_noninferiority_fails_when_only_the_point_estimate_clears_the_margin(self) -> None:
+        """Per-defect recall_X - recall_1: d0 = 0.60 - 0.80 = -0.20 and
+        d1 = 0.70 - 0.50 = +0.20. Interval = [-0.20, +0.20], point estimate =
+        0. The point estimate and the upper limit both clear -delta (-0.05);
+        the lower limit -0.20 does not, so the verdict is fail."""
+        counts = self._recall_counts([(80, 60), (50, 70)])
+        verdict, (lower, upper) = analysis.recall_noninferiority_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(-0.20)
+        assert upper == pytest.approx(0.20)
+        assert verdict == analysis.NONINFERIORITY_FAIL
+
+    def test_recall_noninferiority_passes_when_the_lower_limit_clears_the_margin(self) -> None:
+        """d0 = 0.76 - 0.80 = -0.04 and d1 = 0.60 - 0.50 = +0.10. Interval =
+        [-0.04, +0.10]; the lower limit -0.04 exceeds -delta (-0.05), so the
+        verdict is pass."""
+        counts = self._recall_counts([(80, 76), (50, 60)])
+        verdict, (lower, upper) = analysis.recall_noninferiority_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(-0.04)
+        assert upper == pytest.approx(0.10)
+        assert verdict == analysis.NONINFERIORITY_PASS
+
+    def test_precision_noninferiority_fails_when_only_the_point_estimate_clears_the_margin(self) -> None:
+        """Per-defect precision_X - precision_1: d0 = 0.70 - 0.90 = -0.20 and
+        d1 = 0.70 - 0.50 = +0.20. Interval = [-0.20, +0.20], point estimate =
+        0; only the lower limit -0.20 misses -delta, so the verdict is fail."""
+        counts = self._precision_counts([(90, 70), (50, 70)])
+        verdict, (lower, upper) = analysis.precision_noninferiority_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(-0.20)
+        assert upper == pytest.approx(0.20)
+        assert verdict == analysis.NONINFERIORITY_FAIL
+
+    def test_precision_noninferiority_passes_when_the_lower_limit_clears_the_margin(self) -> None:
+        """d0 = 0.76 - 0.80 = -0.04 and d1 = 0.60 - 0.50 = +0.10. Interval =
+        [-0.04, +0.10]; the lower limit -0.04 exceeds -delta, so the verdict
+        is pass."""
+        counts = self._precision_counts([(80, 76), (50, 60)])
+        verdict, (lower, upper) = analysis.precision_noninferiority_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(-0.04)
+        assert upper == pytest.approx(0.10)
+        assert verdict == analysis.NONINFERIORITY_PASS
+
+    def test_baseline_sensitivity_is_not_sensitive_when_only_the_point_estimate_clears_delta(self) -> None:
+        """Per-defect recall_1 - recall_2: d0 = 0.52 - 0.50 = +0.02 and
+        d1 = 0.80 - 0.50 = +0.30. Interval = [+0.02, +0.30], point estimate =
+        0.16. The point estimate and the upper limit both exceed delta
+        (0.05); the lower limit 0.02 does not, so the baseline is
+        not-sensitive."""
+        counts = self._recall_counts([(52, 50), (80, 50)])
+        verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(0.02)
+        assert upper == pytest.approx(0.30)
+        assert verdict == analysis.SENSITIVITY_NOT_SENSITIVE
+
+    def test_baseline_sensitivity_is_sensitive_when_the_lower_limit_exceeds_delta(self) -> None:
+        """d0 = 0.60 - 0.50 = +0.10 and d1 = 0.80 - 0.50 = +0.30. Interval =
+        [+0.10, +0.30]; the lower limit 0.10 exceeds delta (0.05), so the
+        baseline is sensitive."""
+        counts = self._recall_counts([(60, 50), (80, 50)])
+        verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
+            counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+        )
+        assert lower == pytest.approx(0.10)
+        assert upper == pytest.approx(0.30)
+        assert verdict == analysis.SENSITIVITY_SENSITIVE
+
+
 class TestPrecisionAndCertification:
     def _precision_counts(self, valid_baseline: int, total_baseline: int, valid_x: int, total_x: int, n: int = 20):
         return {

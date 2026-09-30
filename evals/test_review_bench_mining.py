@@ -1014,7 +1014,7 @@ class TestMineReviewRoundsCandidates:
     def test_candidate_id_never_embeds_the_raw_branch_name(self, tmp_path, monkeypatch):
         """A branch name is this account's own text and can carry a private
         codename, unlike mine_szz.py's SZZ-sourced ids, which embed only
-        already-public commit SHAs. id must carry a content-free fingerprint
+        already-public commit SHAs. id must carry an unsalted fingerprint
         of the branch instead of the branch itself."""
         branch = "acme-super-secret-project"
         self._build_session(tmp_path, branch=branch)

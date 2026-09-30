@@ -224,7 +224,10 @@ class TestRefusesExecutableProjectConfig:
     @staticmethod
     def _source_repo_and_defect(
         tmp_path: Path, *, base_files: dict[str, str], head_files: dict[str, str],
+        head_symlinks: dict[str, str] | None = None,
     ) -> tuple[Path, ConfirmedDefect]:
+        """`head_symlinks` maps a head-tree path to its link target, which
+        need not exist."""
         source_repo = _init_repo(tmp_path / "source")
         _write(source_repo, "changed_file.py", "x = 1\n")
         for rel_path, content in base_files.items():
@@ -234,6 +237,11 @@ class TestRefusesExecutableProjectConfig:
         for rel_path, content in head_files.items():
             _write(source_repo, rel_path, content)
             _git(source_repo, "add", "-f", rel_path)  # a global ignore rule may exclude a local-settings file
+        for rel_path, link_target in (head_symlinks or {}).items():
+            link_path = source_repo / rel_path
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            link_path.symlink_to(link_target)
+            _git(source_repo, "add", "-f", rel_path)
         head_commit = _commit(source_repo, "fix: bug")
         return source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
 
@@ -295,6 +303,33 @@ class TestRefusesExecutableProjectConfig:
             fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
         with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match=refusal):
             self._build(tmp_path / "built", base_files={}, head_files=head_files)
+
+    def test_refuses_a_settings_symlink_whose_target_holds_a_disallowed_key(self, tmp_path: Path) -> None:
+        """The build follows the extracted symlink and reads the hooks-bearing
+        target; the commit check sees only the link text, which is not JSON."""
+        source_repo, defect = self._source_repo_and_defect(
+            tmp_path, base_files={}, head_files={"tools/hooked-settings.json": json.dumps({"hooks": {}})},
+            head_symlinks={".claude/settings.json": "../tools/hooked-settings.json"},
+        )
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="unparseable"):
+            fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="hooks"):
+            fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+    def test_refuses_a_dangling_mcp_json_symlink(self, tmp_path: Path) -> None:
+        source_repo, defect = self._source_repo_and_defect(
+            tmp_path, base_files={}, head_files={}, head_symlinks={".mcp.json": "missing-mcp-config.json"},
+        )
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="a session would load"):
+            fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="a session would load"):
+            fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
 
     def test_the_commit_check_accepts_historical_settings_and_a_tree_with_no_project_config(
         self, tmp_path: Path,

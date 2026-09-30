@@ -327,6 +327,58 @@ class TestCmdFreezeGuards:
 
         assert run_review_bench.cmd_freeze(args) == 0
 
+    def test_a_stale_smoke_manifest_hash_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        args.last_smoke_manifest_hash = "0" * 64
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        assert "does not match the last passing smoke campaign's" in capsys.readouterr().err
+        assert not Path(args.out).exists()
+
+    def test_a_k_that_differs_from_the_smoke_full_k_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        args.smoke_full_k = 5
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        assert "K being frozen (10) does not match the smoke campaign's full-K fixture (5)" in capsys.readouterr().err
+        assert not Path(args.out).exists()
+
+    def test_a_description_sharing_a_word_run_with_a_local_excerpt_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        # The excerpt belongs to a different candidate than the defect: the
+        # provenance check compares against every shortlisted excerpt.
+        defects.save_candidates(
+            Path(args.local_dir) / "szz_candidates.json",
+            [_candidate(id="szz-other", excerpt="The reviewer said x changed its stale initial value silently.")],
+        )
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "d1" in stderr
+        assert "shares word run" in stderr
+        assert not Path(args.out).exists()
+
+    def test_public_git_text_that_cannot_be_read_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        # A repo that holds neither of the defect's commits, so `git show` fails.
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", _init_repo(tmp_path / "unrelated-repo"))
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "d1" in stderr
+        assert "could not read public git text" in stderr
+        assert not Path(args.out).exists()
+
     def test_an_szz_only_defect_set_needs_no_local_excerpt(self, tmp_path: Path, monkeypatch) -> None:
         args = _prepare_freeze(tmp_path, monkeypatch)
         (Path(args.local_dir) / "szz_candidates.json").unlink()

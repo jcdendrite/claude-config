@@ -45,9 +45,11 @@ _LOCAL_GIT_TIMEOUT_S = 10.0
 
 # One wedged or missing-parent git call must drop its own commit/hunk/file
 # from the mining sweep, not crash the whole run -- every _run_git call site
-# below catches this pair, plus FileNotFoundError/OSError (a missing/
-# unresolvable `git` binary on PATH) for consistency with
+# below except _iter_fix_commits catches this pair, plus FileNotFoundError/
+# OSError (a missing/unresolvable `git` binary on PATH) for consistency with
 # mine_review_rounds.resolve_pr_number's own wider `gh`-call catch set.
+# _iter_fix_commits lets the error propagate: a base ref that does not
+# resolve fails the whole run.
 _GIT_CALL_ERRORS = (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError)
 
 

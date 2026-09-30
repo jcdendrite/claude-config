@@ -440,7 +440,9 @@ of this repo's own known-defect PRs — before that change is allowed to
 merge. This file's own "Why local only — never CI" section above applies
 here too, with one addition: `smoke`, `run`, and `judge` each price out a
 real reviewer or judge dispatch per sample, not one classification call, so
-the cost scales faster (see "Runtime cost" below).
+the cost scales faster (see "Runtime cost" below). The harness needs Python
+3.12 or newer, since `review_bench/runner.py` calls `shutil.rmtree(onexc=...)`;
+the repository's floor elsewhere is 3.11.
 
 ### Usage
 
@@ -635,10 +637,16 @@ and before the block is marked complete. It does not run on Ctrl-C, SIGHUP or
 SIGTERM, an environment halt, an error in a run or a record write, a kill, or
 a crash, and those exits leave that block's fixture directories and session
 stores in place. For `judge`, cleanup runs inline after each judge run, before
-the environment checks, so a judge halt leaves nothing behind. Only a
-resume under the same `--campaign-id` sweeps what a `run` or `smoke` exit left:
-its own sweep deletes
-exactly what its own abandoned attempt recorded, then reruns that block whole.
+the environment checks, so a judge environment halt leaves nothing behind
+unless a delete fails or a store is skipped. The judge's store lookup uses only
+the final attempt's session ID, so a store is skipped when that attempt has no
+`<id>.jsonl`. That inline delete ignores errors and reports none, and a defect
+marked complete is outside a resume sweep, so a failed judge delete or a
+skipped store stays silently. The judge's cleanup is not in a `finally`, so an
+exception out of a judge run skips it. Only a resume under the same
+`--campaign-id` sweeps what a `run`, `smoke`, or `judge` exit left: its own
+sweep deletes exactly what its own abandoned attempt recorded, then reruns that
+block whole.
 The sweep deletes only a `review-bench-` directory directly under the system
 temp dir, and a session store directly under the projects root; any other
 logged path aborts the sweep with nothing deleted. Resume with the `TMPDIR`
@@ -672,7 +680,11 @@ Before its first dispatch, `smoke` and `run` check that every pending
 defect's three commits resolve in the source repo, that its head tree holds no
 project config a session must not load (see "Out-of-session reads"), and that
 both arms have a snapshot file for its lens, then print the run count and the
-nominal cost cap product; any problem exits 2 with the full list. After each block they print its ok and
+nominal cost cap product; any problem exits 2 with the full list. That preflight
+reads the commit's git tree (`git ls-tree`), which does not traverse a
+symlinked parent such as a symlinked `.claude` directory. The build's checks on
+the extracted tree do refuse that case, so it fails closed at build time, not
+before dispatch. After each block, `smoke` and `run` print its ok and
 missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
@@ -680,7 +692,10 @@ it forces every run to fail. `smoke` requires `--defect-id`, and `judge`
 skips a defect that has no completed reviewer run.
 
 Each campaign gets its own run store, nested under its `--campaign-id`, so
-`smoke` followed by `run` never shares completion state. A resume passes the
+`smoke` followed by `run` under distinct campaign IDs never shares completion
+state. A reused campaign ID shares one store, so `run` skips defects that
+`smoke` already completed. A reused ID also shares the `<campaign_id>.jsonl`
+records file. A resume passes the
 same `--campaign-id`; each command prints the ID and store path before it
 takes the lock. A campaign ID is 1–64 characters from `[A-Za-z0-9_.-]`,
 starting with a letter or digit.
@@ -694,14 +709,17 @@ Five residuals remain.
   and its write-ahead log names them.
 - `judge` catches a `CalledProcessError` or `TimeoutExpired` from one
   defect's judging, prints `skipped`, and continues. A judge directory recorded
-  before its fixture install raised is never removed, and the campaign exits 0.
+  before its fixture install raised stays until a later `judge` resume under the
+  same `--campaign-id` sweeps it, and the skip line and exit 0 give no cue to
+  resume.
 - An arm's representative session that has no `<id>.jsonl` leaves the arm's
   shared session store in place, and the completed block is never swept.
 - A `claude -p` child of a hard-killed runner can outlive the lock (see above).
 
 A leftover session store holds raw dispatcher and reviewer transcripts,
-including the tool results of out-of-session reads. Recovery path 2 leaves a
-halted campaign's leftovers by design. Nothing bounds their retention except
+including the tool results of out-of-session reads. The re-freeze recovery path
+(see "Frozen conditions and invalidation") leaves a halted campaign's
+leftovers by design. Nothing bounds their retention except
 whatever bounds `projects/`, and `/tmp` fixture retention is unverified.
 
 A crash between a block's records being appended and the block being marked
@@ -735,9 +753,11 @@ joined onto its `path` (an absolute pattern overrides `path`). A leading `~`
 or `$VAR` in a path is expanded before the check. Printed paths show control
 characters as backslash escapes, since the path is model output.
 
-A run's transcript and subagent sidecar are checked only once no file's size
-has changed across two consecutive polls, so a partly written transcript is
-never classified. A fixture tree (a reviewer arm's or the precision judge's)
+A run's transcript and subagent sidecar are checked once no file's size has
+changed across two consecutive polls. If the sizes are still changing after
+`SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as it stands on disk is
+classified, so a still-growing transcript can be classified partly written and
+miss a later read. A fixture tree (a reviewer arm's or the precision judge's)
 is built only when its head tree's `.claude/settings.json` holds no top-level
 key outside those this repository's own history has held and the tree holds
 neither `.mcp.json` nor `.claude/settings.local.json`; otherwise the build
