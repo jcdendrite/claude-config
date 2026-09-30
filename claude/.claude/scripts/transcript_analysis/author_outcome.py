@@ -12,11 +12,11 @@ Imports corpus, pricing, render, review_rounds, and scope by module
 cross-module discipline (see scope.py's own top-of-file comment for why).
 
 Classifies each round by reading its own review-narrative-ledger files
-directly. Every file matching a session-id glob is read and merged --
-session ids are globally unique (UUIDs), but a session spanning more than
-one git worktree of the same repo appends under more than one repo-hash
-prefix, so this is a merge across every matching file, not a 1:1 point
-lookup. The transcript is still the sole source for round-open positions,
+directly. Rows are attributed to a session by their own `session_id`
+field, or by the session id in the filename for a row without one. Session
+ids are globally unique (UUIDs), and a branch-keyed file holds several
+sessions' rows, so this is a per-root index over every ledger file, not a
+1:1 point lookup. The transcript is still the sole source for round-open positions,
 dispatch completion ordering, and the marker-write fallback signal. Only
 the disposition/authoring-agent values move to the ledger.
 """
@@ -26,6 +26,7 @@ import argparse
 import itertools
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -63,14 +64,14 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 # (which increments them) and _print_author_outcome_report (which reads them
 # back in this fixed order) -- named once here so the two can't drift.
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
-_DQ_KILL_SWITCH_INFERRED_CLEAN = "rounds with a marker write but no ledger row (kill-switch inferred clean)"
+_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a marker write but no ledger row (every append for the round failed)"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
 _DQ_LEDGER_POSSIBLY_SWEPT = "sessions with a code-review round but no ledger file, cold enough to be swept"
 _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
 _DQ_MALFORMED_DISPATCH_ID = "dispatches with a missing or empty tool_use_id"
 _DATA_QUALITY_KEYS = (
-    _DQ_CO_AUTHORED_ROUNDS, _DQ_KILL_SWITCH_INFERRED_CLEAN, _DQ_ROUND_NUMBER_MISMATCH,
+    _DQ_CO_AUTHORED_ROUNDS, _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW, _DQ_ROUND_NUMBER_MISMATCH,
     _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
     _DQ_MALFORMED_DISPATCH_ID,
 )
@@ -161,44 +162,28 @@ def _config_dir_root_for_session(jsonl: Path) -> Path:
     return jsonl.parent.parent.parent
 
 
-def _ledger_files_for_session(jsonl: Path) -> list[Path]:
-    """Every review-narrative-ledger file for this transcript's own
-    session id, sorted by filename for a deterministic read order. The
-    ledger filename is `<repo_hash>.<session_id>.jsonl` -- one per git
-    worktree that appended to this session id -- so a session spanning
-    more than one worktree of the same repo matches more than one file
-    here, all of which _read_ledger_row_entries_for_session reads and
-    merges.
-
-    [] when no such file exists:
-    - the kill switch was on for the session's entire lifetime
-    - the session predates review-ledger.sh
-    - every one of its ledger files was already swept
-    """
-    session_id = jsonl.stem
-    ledger_dir = _config_dir_root_for_session(jsonl) / _REVIEW_LEDGER_DIRNAME
-    return sorted(ledger_dir.glob(f"*.{session_id}.jsonl"))
-
-
 def _read_ledger_rows_from_file(ledger_path: Path) -> tuple[list[dict], bool]:
     """(every JSON row from one ledger file, in file order; whether the
-    file itself could be opened at all). A malformed line is skipped, not
-    fatal, mirroring corpus._parse_jsonl_records' own per-line tolerance
-    for a transcript file with a corrupted line. A file that opens
-    successfully but yields zero valid rows still reports opened=True.
-    opened=False only when open() itself raised OSError -- e.g. the file
-    matched a caller's earlier glob but was deleted or became unreadable
-    before this call."""
+    file itself could be opened at all). A malformed or undecodable line
+    (e.g. a torn multibyte write) is skipped, not fatal, mirroring
+    corpus._parse_jsonl_records' own per-line tolerance for a transcript
+    file with a corrupted line. A file that opens successfully but yields
+    zero valid rows still reports opened=True. opened=False only when open()
+    itself raised OSError -- e.g. the file matched a caller's earlier
+    directory listing but was deleted or became unreadable before this
+    call."""
     rows: list[dict] = []
     try:
-        with open(ledger_path) as fh:
+        # Binary mode so a line that is not valid UTF-8 fails on its own
+        # json.loads call instead of aborting the whole file's iteration.
+        with open(ledger_path, "rb") as fh:
             for raw in fh:
                 raw = raw.strip()
                 if not raw:
                     continue
                 try:
                     row = json.loads(raw)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if isinstance(row, dict):
                     rows.append(row)
@@ -211,77 +196,202 @@ def _read_ledger_rows_from_file(ledger_path: Path) -> tuple[list[dict], bool]:
     return rows, True
 
 
-def _read_ledger_row_entries_for_session(jsonl: Path) -> tuple[list[tuple[int, dict]], bool]:
-    """Every JSON row from every ledger file matching this session's own
-    id, each tagged with source_index -- that file's own position in
-    _ledger_files_for_session's sorted order.
+# Session ids are letters, digits, underscore and hyphen -- review-ledger.sh's
+# own _lib_valid_session_id_component pattern. A row naming any other
+# session_id is ignored rather than attributed.
+_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
-    Rows are concatenated file by file in that sorted order, then
-    stable-sorted by each row's own `event_time` field (an ISO-8601 UTC
-    string that sorts correctly lexically; missing -> "" so a legacy
-    pre-event_time row sorts first). Python's sort is stability-guaranteed,
-    so ties keep that original concatenation (file-encounter) order.
-    review-ledger.sh's own `show` merge (`sort_by(.event_time // "")`) has
-    no such guarantee from jq -- see that comment for the caveat.
 
-    Returns (entries, any_file_found). any_file_found is True iff at
-    least one glob-matched file was also successfully opened. A file that
-    matched the glob but raised OSError on open() -- e.g. evicted by
-    review-ledger.sh clear-stale in the window between the glob and this
-    read -- does not count, which is what distinguishes that race from N
-    opened files that all round-trip to zero valid JSON rows. See
-    _ledger_possibly_swept, the only caller that cares about the
-    distinction.
+def _list_ledger_files(ledger_dir: Path) -> list[Path]:
+    """Every ledger file directly under ledger_dir, sorted by filename for a
+    deterministic read order. [] when the directory does not exist. This is
+    the index's only directory listing, so a test can stand in for a file
+    that vanishes between the listing and the read."""
+    return sorted(ledger_dir.glob("*.jsonl"))
+
+
+def _ledger_file_session_component(ledger_path: Path) -> str:
+    """The session-id slot of a `<repo_hash>.<session_id>.jsonl` filename.
+    The repo hash is hex, so the first dot ends it. A branch-keyed file's
+    second slot is a branch hash, which no session id equals."""
+    return ledger_path.name.removesuffix(".jsonl").partition(".")[2]
+
+
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    """(mtime_ns, size), the change signature the index re-parses on. None
+    when the file cannot be stat'ed."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    return stat_result.st_mtime_ns, stat_result.st_size
+
+
+def _row_session_id(row: dict, ledger_path: Path) -> str | None:
+    """The session a ledger row belongs to: its own `session_id` when it
+    has one, else the session id in its file's name (a row from before rows
+    carried session_id). None for a row naming an invalid session id."""
+    if "session_id" not in row:
+        return _ledger_file_session_component(ledger_path) or None
+    session_id = row["session_id"]
+    if isinstance(session_id, str) and _SESSION_ID_PATTERN.fullmatch(session_id):
+        return session_id
+    return None
+
+
+class _LedgerIndex:
+    """The parsed rows of every ledger file under one config-dir root,
+    attributed to sessions by _row_session_id.
+
+    refresh() re-lists the directory and re-parses only files whose
+    (mtime_ns, size) changed since the previous refresh, so a file that
+    appears or grows between two session lookups is seen, and an unchanged
+    file is parsed once however many sessions read it. A file whose last
+    open failed is retried on every refresh.
     """
-    files = _ledger_files_for_session(jsonl)
-    entries: list[tuple[int, dict]] = []
-    any_file_opened = False
-    for file_index, ledger_path in enumerate(files):
-        rows, opened = _read_ledger_rows_from_file(ledger_path)
-        any_file_opened = any_file_opened or opened
-        entries.extend((file_index, row) for row in rows)
-    entries.sort(key=lambda entry: entry[1].get("event_time") or "")
-    return entries, any_file_opened
+
+    def __init__(self, ledger_dir: Path):
+        self._ledger_dir = ledger_dir
+        self._parsed_files: dict[Path, tuple[tuple[int, int] | None, list[dict], bool]] = {}
+        self._rows_by_session: dict[str, list[tuple[Path, dict]]] = {}
+        self._sessions_with_opened_file: set[str] = set()
+
+    def refresh(self) -> None:
+        parsed_files: dict[Path, tuple[tuple[int, int] | None, list[dict], bool]] = {}
+        changed = False
+        listed_files = _list_ledger_files(self._ledger_dir)
+        for ledger_path in listed_files:
+            signature = _file_signature(ledger_path)
+            cached = self._parsed_files.get(ledger_path)
+            if signature is not None and cached is not None and cached[0] == signature and cached[2]:
+                parsed_files[ledger_path] = cached
+                continue
+            rows, opened = _read_ledger_rows_from_file(ledger_path)
+            parsed_files[ledger_path] = (signature, rows, opened)
+            changed = True
+        if changed or parsed_files.keys() != self._parsed_files.keys():
+            self._parsed_files = parsed_files
+            self._attribute_rows(listed_files)
+
+    def _attribute_rows(self, listed_files: list[Path]) -> None:
+        rows_by_session: dict[str, list[tuple[Path, dict]]] = {}
+        sessions_with_opened_file: set[str] = set()
+        for ledger_path in listed_files:
+            _signature, rows, opened = self._parsed_files[ledger_path]
+            if opened:
+                sessions_with_opened_file.add(_ledger_file_session_component(ledger_path))
+            for row in rows:
+                session_id = _row_session_id(row, ledger_path)
+                if session_id is not None:
+                    rows_by_session.setdefault(session_id, []).append((ledger_path, row))
+        self._rows_by_session = rows_by_session
+        self._sessions_with_opened_file = sessions_with_opened_file
+
+    def entries_for_session(self, session_id: str) -> tuple[list[tuple[int, dict]], bool]:
+        """(the session's rows, each tagged with its source file's position
+        among the files the session has rows in, in filename order; whether
+        a session-keyed file `<repo_hash>.<session_id>.jsonl` was opened).
+
+        Rows are stable-sorted by their own `event_time` (an ISO-8601 UTC
+        string that sorts correctly lexically; missing -> "" so a legacy
+        pre-event_time row sorts first). Python's sort is stability-guaranteed,
+        so ties keep file-encounter order. review-ledger.sh's own `show`
+        (`sort_by(.event_time // "")`) has no such guarantee from jq -- see
+        that comment for the caveat.
+        """
+        file_positions: dict[Path, int] = {}
+        entries = [
+            (file_positions.setdefault(ledger_path, len(file_positions)), row)
+            for ledger_path, row in self._rows_by_session.get(session_id, [])
+        ]
+        entries.sort(key=lambda entry: entry[1].get("event_time") or "")
+        return entries, session_id in self._sessions_with_opened_file
+
+
+def _read_ledger_row_entries_for_session(
+    jsonl: Path, ledger_indexes: dict[Path, _LedgerIndex] | None = None,
+) -> tuple[list[tuple[int, dict]], bool]:
+    """Every ledger row attributed to this transcript's own session id, as
+    (file_index, row) entries (see _LedgerIndex.entries_for_session), and
+    whether a session-keyed ledger file for it was opened.
+
+    ledger_indexes holds one index per config-dir root and is shared across
+    a caller's lookups so an unchanged file is parsed once. None uses a
+    private index, which parses every file it reads.
+
+    The bool is what _ledger_possibly_swept keys on: a session-keyed file
+    that matched the directory listing but raised OSError on open -- e.g.
+    evicted by review-ledger.sh clear-stale in the window between the
+    listing and the read -- does not count. That distinguishes the eviction
+    race from a file that opened and holds zero valid JSON rows.
+    """
+    config_dir_root = _config_dir_root_for_session(jsonl)
+    indexes = {} if ledger_indexes is None else ledger_indexes
+    index = indexes.get(config_dir_root)
+    if index is None:
+        index = indexes[config_dir_root] = _LedgerIndex(config_dir_root / _REVIEW_LEDGER_DIRNAME)
+    index.refresh()
+    return index.entries_for_session(jsonl.stem)
+
+
+def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
+    """Group a session's round-keyed rows into blocks: each maximal run of
+    one (file, round) pair is one block, in entry order. A row without an
+    integer, non-bool `round` (a pre-round legacy row, or a JSON boolean)
+    belongs to no block.
+
+    A round value whose rows are split across two non-adjacent runs keeps a
+    second, separate block, which dict-style first-occurrence dedup would
+    collapse away.
+    """
+    keyed_entries = [
+        (file_index, row) for file_index, row in row_entries
+        if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
+    ]
+    return [
+        [row for _file_index, row in run]
+        for _key, run in itertools.groupby(
+            keyed_entries, key=lambda entry: (entry[0], entry[1]["round"]),
+        )
+    ]
 
 
 def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> bool:
-    """True if this session's ledger rows -- merged across every
-    worktree that appended to it, each tagged with its own source file's
-    index (see _read_ledger_row_entries_for_session) -- don't resolve to
-    the exact 1..round_open_count sequence the transcript's own
-    round-open detector found for this session:
+    """True if this session's ledger rows -- each tagged with its source
+    file's index (see _read_ledger_row_entries_for_session) -- don't map
+    one-to-one, by rank, onto the transcript's own round-opens. The k-th
+    round-open takes the k-th block (see _round_blocks), so a mismatch is:
 
-    - a gap (a round-open whose round never got a ledger row)
-    - a ledger round number with no corresponding round-open
-    - round rows recorded out of sequence
-    - a round value reappearing non-contiguously after a different round
-      value already appeared (e.g. [1, 2, 1])
-    - the same round number claimed by more than one source file -- a
-      worktree-subagent race where two files each independently append
-      their own row for what the transcript treats as a single
-      round-open, with no safe way to pick one file's row as
-      authoritative
+    - a different number of blocks than round-opens (a round-open whose
+      round never got a ledger row, or a ledger round with no round-open)
+    - block round values that are not strictly increasing (rounds recorded
+      out of sequence, a round value reappearing after a different one, or
+      the same round number claimed by more than one source file -- a
+      worktree-subagent race with no safe way to pick one file's row as
+      authoritative)
+
+    Round values are compared only for order, never for equality with the
+    round-open ordinal: rounds are branch-scoped, so a later session on a
+    branch starts above 1.
 
     A ledger with zero rows carrying a `round` key at all is not
-    evaluated: entirely legacy rows (pre-schema-v2), or no ledger file for
+    evaluated: entirely legacy rows (pre-schema-v2), or no ledger rows for
     this session. There is no schema-v2 sequence to compare, so this
     always returns False for that case rather than flagging every
     pre-migration or ledger-less session as a mismatch.
+
+    A round with no rows makes the block count short, so it counts as a
+    mismatch. A stray extra block that makes up for a missing round still
+    matches by count and order; docs/transcript-analysis.md records that
+    residual.
     """
-    keyed_entries = [
-        (file_index, row["round"]) for file_index, row in row_entries
-        if isinstance(row.get("round"), int) and not isinstance(row.get("round"), bool)
-    ]
-    if not keyed_entries:
+    blocks = _round_blocks(row_entries)
+    if not blocks:
         return False
-    # groupby collapses each maximal run of an identical (file, round)
-    # pair into one block. A round value whose rows are split across two
-    # non-adjacent blocks (the reappearance case above, or a genuine
-    # cross-file split) keeps a second, separate entry here even though
-    # dict.fromkeys-style first-occurrence dedup would collapse it away.
-    blocks = [key for key, _ in itertools.groupby(keyed_entries)]
-    round_sequence = [round_value for _file_index, round_value in blocks]
-    return round_sequence != list(range(1, round_open_count + 1))
+    if len(blocks) != round_open_count:
+        return True
+    round_values = [block[0]["round"] for block in blocks]
+    return any(later <= earlier for earlier, later in zip(round_values, round_values[1:], strict=False))
 
 
 def _ledger_possibly_swept(
@@ -293,8 +403,8 @@ def _ledger_possibly_swept(
     now: float | None = None,
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
-    file at all (zero files matched the session's own glob -- not merely
-    zero rows across whichever files did match), and the record at its
+    rows attributed to it, has no session-keyed ledger file that opened
+    (not merely zero rows in whichever files did), and the record at its
     EARLIEST code-review round's own open_idx is older than
     _LEDGER_SWEEP_FLOOR_DAYS -- review-ledger.sh's `append` command (the
     dominant eviction path) passes that fixed floor directly, not the
@@ -312,7 +422,7 @@ def _ledger_possibly_swept(
 
     any_ledger_file_found is the caller's own
     _read_ledger_row_entries_for_session result, resolved once per
-    session and passed straight through here instead of re-globbing.
+    session and passed straight through here instead of re-reading.
     """
     if not code_review_rounds:
         return False
@@ -327,41 +437,32 @@ def _ledger_possibly_swept(
 
 
 def _classify_round(
-    round_ordinal: int,
-    ledger_rows: list[dict],
+    round_rows: list[dict],
     has_marker_write: bool,
     data_quality: Counter,
 ) -> tuple[str, list[dict]]:
-    """(classification, matching ledger rows) for one round, per the
+    """(classification, that round's own ledger rows) for one round, per the
     three-test failure definition in docs/transcript-analysis.md's
     author-outcome section.
 
-    Ledger rows are matched to this round by exact `round` field equality
-    against round_ordinal, this round's own 1-indexed position in the
-    transcript's own code-review-open sequence. A legacy row (no `round`
-    key) has round None, which can never equal an int, so it never matches
-    any round. It falls through with every other round that has no
-    matching ledger rows to the marker-write fallback below. That is the
-    same path a round the kill switch suppressed every append for also
-    takes.
+    round_rows is the round's own block (see _round_blocks), matched to the
+    round by rank rather than by `round` value. A round with no block --
+    including a session whose rows are all legacy (no `round` key) -- falls
+    through to the marker-write fallback below. That is the same path a
+    round for which every append failed also takes.
     """
-    matching = [
-        row for row in ledger_rows
-        if not isinstance(row.get("round"), bool) and row.get("round") == round_ordinal
-    ]
-    if any(row.get("disposition") == _DISPOSITION_ADDRESS for row in matching):
-        return _OUTCOME_FAILURE, matching
-    if matching:
-        return _OUTCOME_PASS, matching
+    if any(row.get("disposition") == _DISPOSITION_ADDRESS for row in round_rows):
+        return _OUTCOME_FAILURE, round_rows
+    if round_rows:
+        return _OUTCOME_PASS, round_rows
     if has_marker_write:
-        # No ledger row at all for this round -- the kill switch was on,
-        # or every append attempt errored before landing. But the round's
-        # own marker.sh write code-review call still ran, so the review
-        # did conclude clean. Distinct from a genuine ledger-backed PASS:
-        # this bucket is inferred, not asserted.
-        data_quality[_DQ_KILL_SWITCH_INFERRED_CLEAN] += 1
-        return _OUTCOME_PASS, matching
-    return _OUTCOME_UNATTRIBUTED, matching
+        # No ledger row at all for this round -- every append attempt
+        # errored before landing. But the round's own clean-marker write
+        # still ran, so the review did conclude clean. Distinct from a
+        # genuine ledger-backed PASS: this bucket is inferred, not asserted.
+        data_quality[_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] += 1
+        return _OUTCOME_PASS, round_rows
+    return _OUTCOME_UNATTRIBUTED, round_rows
 
 
 def _agent_dispatch_tool_use_ids(
@@ -447,6 +548,9 @@ def compute_author_outcomes(
     outcomes: Counter = Counter({key: 0 for key in _OUTCOME_KEYS})
     data_quality: Counter = Counter({key: 0 for key in _DATA_QUALITY_KEYS})
 
+    # One _LedgerIndex per config-dir root, shared by every session's lookup.
+    ledger_indexes: dict[Path, _LedgerIndex] = {}
+
     # (jsonl path, round open_idx) -> round bookkeeping.
     # dispatch_count is the --since-filtered count: it gates "Dispatches in
     # scope" and which dispatches are charged an outcome.
@@ -464,8 +568,10 @@ def compute_author_outcomes(
         code_review_rounds = _code_review_rounds(records)
         # Resolved once per session and reused for the round-number-mismatch
         # check, the possibly-swept check, and every round's own
-        # classification below, instead of re-globbing per lookup.
-        ledger_row_entries, any_ledger_file_found = _read_ledger_row_entries_for_session(jsonl)
+        # classification below, instead of re-reading per lookup.
+        ledger_row_entries, any_ledger_file_found = _read_ledger_row_entries_for_session(
+            jsonl, ledger_indexes,
+        )
         ledger_rows = [row for _file_index, row in ledger_row_entries]
 
         session_round_mismatch = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
@@ -479,11 +585,21 @@ def compute_author_outcomes(
         if session_ledger_possibly_swept:
             data_quality[_DQ_LEDGER_POSSIBLY_SWEPT] += 1
 
-        for round_ordinal, (open_idx, span_end) in enumerate(code_review_rounds, start=1):
-            has_marker_write = _round_has_marker_write(records, open_idx, span_end)
-            classification, matching_ledger_rows = _classify_round(
-                round_ordinal, ledger_rows, has_marker_write, data_quality,
-            )
+        # The k-th round-open takes the k-th block of the session's rows. A
+        # mismatched session's round join is untrusted, so its rounds are
+        # not classified and read no ledger rows: classifying them as
+        # row-less would count every marker-write round as having no row.
+        round_blocks = [] if session_round_mismatch else _round_blocks(ledger_row_entries)
+
+        for round_index, (open_idx, span_end) in enumerate(code_review_rounds):
+            if session_round_mismatch:
+                classification, matching_ledger_rows = None, []
+            else:
+                round_rows = round_blocks[round_index] if round_index < len(round_blocks) else []
+                has_marker_write = _round_has_marker_write(records, open_idx, span_end)
+                classification, matching_ledger_rows = _classify_round(
+                    round_rows, has_marker_write, data_quality,
+                )
             rounds_by_key[(jsonl, open_idx)] = {
                 "classification": classification,
                 "matching_ledger_rows": matching_ledger_rows,
@@ -559,7 +675,7 @@ def cmd_author_outcome(args: argparse.Namespace) -> None:
     of the code-review rounds that judged its diff recorded a must-fix
     (ADDRESS) finding -- the numerator issue #800 defines. Read-only: no
     `gh` calls. Reads the transcript for round/dispatch structure and each
-    session's own review-narrative-ledger file for disposition.
+    session's own rows in the review-narrative-ledger for disposition.
 
     See docs/transcript-analysis.md's author-outcome section for the full
     output shape, every named bias/counter, and this subcommand's

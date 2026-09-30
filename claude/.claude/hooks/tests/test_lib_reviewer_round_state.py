@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from helpers import (
     HOOKS_DIR,
     bare_remote_with_default_branch,
@@ -23,6 +24,8 @@ from helpers import (
     push_conflicting_edit_to_origin,
     staged_diff_hash_at_base,
 )
+
+from .conftest import _review_ledger_path
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -622,3 +625,283 @@ class TestLibReviewerRoundStateValueMergeAwareBase:
             ["git", "diff", "--cached"], cwd=repo, capture_output=True, check=True
         ).stdout
         assert diff_hash == hashlib.sha256(expected_diff).hexdigest()
+
+
+def _ledger_path_resolution(config_dir: Path, repo: Path | str, session_id: str) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_review_ledger_path."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_review_ledger_path "$1" "$2" "$3"', "_", str(config_dir), str(repo), session_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _set_origin_head(repo: Path, default_branch: str) -> None:
+    """Point refs/remotes/origin/HEAD at origin/<default_branch> without a
+    real remote, the same local-refs-only setup test_lib.py's default-branch
+    tests use."""
+    subprocess.run(["git", "update-ref", f"refs/remotes/origin/{default_branch}", "HEAD"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{default_branch}"],
+        cwd=repo, check=True,
+    )
+
+
+class TestLibReviewLedgerPath:
+    """The scope matrix for _lib_review_ledger_path, tested once here. The
+    expected path comes from conftest's independent oracle, and each case
+    also pins its expected scope word."""
+
+    SESSION_ID = "lib-test-session"
+
+    def _resolve(self, tmp_path: Path, repo: Path) -> tuple[str, str]:
+        result = _ledger_path_resolution(tmp_path / "config dir", repo, self.SESSION_ID)
+        assert result.returncode == 0, result.stderr
+        scope, _, path = result.stdout.partition(" ")
+        return scope, path
+
+    def _expected_path(self, tmp_path: Path, repo: Path) -> str:
+        # The oracle builds <home>/.claude/review-narrative-ledger/...; the
+        # function takes the config dir directly, so map the two.
+        oracle_path = _review_ledger_path(tmp_path, repo, self.SESSION_ID)
+        return str(tmp_path / "config dir" / "review-narrative-ledger" / oracle_path.name)
+
+    def test_feature_branch_with_origin_head_set_is_branch_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+        _set_origin_head(repo, "main")
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "branch"
+        assert path == self._expected_path(tmp_path, repo)
+        assert Path(path).name == f"{_state_key(repo).stdout}.jsonl"
+
+    def test_default_branch_named_by_origin_head_is_session_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="trunk")
+        _set_origin_head(repo, "trunk")
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "session"
+        assert path == self._expected_path(tmp_path, repo)
+        assert Path(path).name.endswith(f".{self.SESSION_ID}.jsonl")
+
+    def test_detached_head_is_session_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "session"
+        assert path == self._expected_path(tmp_path, repo)
+
+    @pytest.mark.parametrize("default_named_branch", ["main", "master", "develop"])
+    def test_no_origin_on_a_candidate_named_branch_is_session_scope(self, tmp_path, default_named_branch):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch=default_named_branch)
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "session"
+        assert path == self._expected_path(tmp_path, repo)
+
+    def test_no_origin_on_a_feature_branch_is_branch_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="feature")
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "branch"
+        assert path == self._expected_path(tmp_path, repo)
+
+    def test_candidate_named_branch_is_branch_scope_when_origin_head_names_another_default(self, tmp_path):
+        """The documented residual: only origin/HEAD's own answer decides
+        once it resolves, so a local branch named `main` is branch-keyed
+        when the remote's default is `trunk`."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+        _set_origin_head(repo, "trunk")
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "branch"
+        assert path == self._expected_path(tmp_path, repo)
+
+    def test_config_dir_containing_a_space_still_splits_into_scope_and_path(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="feature")
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert " " in path
+        assert path.startswith(str(tmp_path / "config dir"))
+        assert scope == "branch"
+
+    def test_empty_repo_root_returns_1_with_no_stdout(self, tmp_path):
+        result = _ledger_path_resolution(tmp_path / "config dir", "", self.SESSION_ID)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_default_branch_names_are_exactly_the_candidates_default_branch_probing_resolves(self, tmp_path):
+        """The resolver's fallback name list is a copy of the one
+        _lib_default_branch_or_guess probes. Probing a universe of names
+        with only origin/<name> present checks both directions: every name
+        in the list resolves, and no other name in the universe does."""
+        names = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; printf "%s\\n" "${{_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}}"'],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        decoy_names = ["trunk", "dev", "development", "release", "production", "stable", "next", "default"]
+        assert names, "the resolver's default-branch name list is empty"
+        assert not set(names) & set(decoy_names)
+        for index, name in enumerate(names + decoy_names):
+            repo = tmp_path / f"probe-{index}"
+            _init_repo(repo, branch=name)
+            subprocess.run(["git", "update-ref", f"refs/remotes/origin/{name}", "HEAD"], cwd=repo, check=True)
+            resolved = subprocess.run(
+                ["bash", "-c", f'. "{LIB_SH}"; _lib_default_branch_or_guess "$1"', "_", str(repo)],
+                capture_output=True, text=True, check=False,
+            )
+            if name in names:
+                assert resolved.stdout == name, f"_lib_default_branch_or_guess does not resolve {name!r}"
+            else:
+                assert resolved.returncode == 1, (
+                    f"_lib_default_branch_or_guess resolves {name!r}, absent from the resolver's list"
+                )
+
+    def test_slash_and_dash_branch_names_get_distinct_flat_files(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+        paths = {}
+        for branch in ("a/b", "a-b"):
+            subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=repo, check=True)
+            scope, paths[branch] = self._resolve(tmp_path, repo)
+            assert scope == "branch"
+
+        assert paths["a/b"] != paths["a-b"]
+        ledger_dir = tmp_path / "config dir" / "review-narrative-ledger"
+        assert all(Path(path).parent == ledger_dir for path in paths.values())
+
+    def test_linked_worktree_is_keyed_by_its_own_toplevel_and_branch(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+        linked_worktree = tmp_path / "linked"
+        subprocess.run(["git", "worktree", "add", "-q", "-b", "feature", str(linked_worktree)], cwd=repo, check=True)
+
+        scope, path = self._resolve(tmp_path, linked_worktree)
+        _main_scope, main_checkout_path = self._resolve(tmp_path, repo)
+
+        assert scope == "branch"
+        assert path == self._expected_path(tmp_path, linked_worktree)
+        assert Path(path).name == f"{_state_key(linked_worktree).stdout}.jsonl"
+        assert Path(path).name.split(".")[0] != Path(main_checkout_path).name.split(".")[0]
+
+    def test_unborn_head_on_a_feature_branch_is_branch_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "feature"], cwd=repo, check=True)
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "branch"
+        assert path == self._expected_path(tmp_path, repo)
+
+    def test_unborn_head_on_main_is_session_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == "session"
+        assert path == self._expected_path(tmp_path, repo)
+
+    @pytest.mark.parametrize(
+        ("branch", "expected_scope"), [("main", "session"), ("trunk", "branch")],
+    )
+    def test_dangling_origin_head_falls_through_to_the_candidate_names(self, tmp_path, branch, expected_scope):
+        """origin/HEAD names a branch whose remote-tracking ref is absent, so
+        it does not resolve and only the candidate-name fallback decides."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch=branch)
+        subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+            cwd=repo, check=True,
+        )
+
+        scope, path = self._resolve(tmp_path, repo)
+
+        assert scope == expected_scope
+        assert path == self._expected_path(tmp_path, repo)
+
+    def test_git_failure_reading_head_returns_1_instead_of_downgrading_to_session_scope(self, tmp_path):
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+
+        result = _ledger_path_resolution(tmp_path / "config dir", not_a_repo, self.SESSION_ID)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("bad_session_id", ["../escape", "a/b", "", "has space"])
+    def test_invalid_session_id_returns_1_in_session_scope(self, tmp_path, bad_session_id):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+
+        result = _ledger_path_resolution(tmp_path / "config dir", repo, bad_session_id)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_session_id_is_not_consulted_in_branch_scope(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="feature")
+
+        result = _ledger_path_resolution(tmp_path / "config dir", repo, "")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("branch ")
+
+
+class TestLibReviewLedgerSessionPath:
+    def _session_path(self, config_dir: Path, repo: Path, session_id: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                "bash", "-c", f'. "{LIB_SH}"; _lib_review_ledger_session_path "$1" "$2" "$3"',
+                "_", str(config_dir), str(repo), session_id,
+            ],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_prints_the_repo_hash_and_session_id_keyed_file(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+
+        result = self._session_path(tmp_path / "config dir", repo, "session-1")
+
+        assert result.returncode == 0, result.stderr
+        expected_name = _review_ledger_path(tmp_path, repo, "session-1").name
+        assert result.stdout == str(tmp_path / "config dir" / "review-narrative-ledger" / expected_name)
+
+    @pytest.mark.parametrize("bad_session_id", ["../escape", "a/b", "", "has space", "dot.ted"])
+    def test_rejects_a_session_id_that_is_not_a_path_component(self, tmp_path, bad_session_id):
+        repo = tmp_path / "repo"
+        _init_repo(repo, branch="main")
+
+        result = self._session_path(tmp_path / "config dir", repo, bad_session_id)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+    def test_rejects_an_empty_repo_root(self, tmp_path):
+        result = self._session_path(tmp_path / "config dir", "", "session-1")
+
+        assert result.returncode == 1
+        assert result.stdout == ""

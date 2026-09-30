@@ -2201,10 +2201,13 @@ _lib_permission_prompt_tracking_active() {
 # (letters, digits, underscore, hyphen) has ample room without ever needing
 # '.' or '/'. Empty input is rejected — callers must not fall through to an
 # unvalidated empty SESSION_ID.
-_lib_valid_session_id_component() {
-  local session_id="$1"
-  [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]
-}
+# The body is a subshell that sets LC_ALL=C, so a locale whose collation puts
+# non-ASCII letters inside the bracket ranges does not widen the allow-list.
+# author_outcome.py's _SESSION_ID_PATTERN is the ASCII-only mirror of it.
+_lib_valid_session_id_component() (
+  LC_ALL=C
+  [[ "${1-}" =~ ^[A-Za-z0-9_-]+$ ]]
+)
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
 # - Returns 0 iff $HOME/.claude/MARKER_DIR_NAME/SESSION_ID holds a live PID
@@ -3541,6 +3544,15 @@ _lib_reviewer_round_state_key() {
   local branch
   branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null)
   [ -n "$branch" ] || return 1
+  _lib_reviewer_round_state_key_for_branch "$repo_root" "$branch"
+}
+
+# _lib_reviewer_round_state_key_for_branch REPO_ROOT BRANCH
+# The one home for the "<repo-hash>.<branch-hash>" formula, for a caller that
+# has already read BRANCH from HEAD. Returns 1 with no stdout when either
+# hash did not compute.
+_lib_reviewer_round_state_key_for_branch() {
+  local repo_root="$1" branch="$2"
   local repo_hash branch_hash
   repo_hash=$(_marker_lib_repo_hash "$repo_root")
   branch_hash=$(_lib_hash_diff_text "$branch")
@@ -3757,14 +3769,16 @@ _lib_append_line_locked() {
 # projects through DEDUP_KEY_JQ_FILTER instead of taking
 # _lib_append_line_locked's whole-line match.
 # The dedup check below re-reads and re-parses the whole FILE on every call
-# (O(file size) per append). FILE is scoped per session -- review-ledger.sh
-# builds it as $REPO_HASH.$SESSION_ID.jsonl -- so this scan's cost grows
-# with every finding appended across all of that session's review rounds.
+# (O(file size) per append). FILE is scoped per branch or, on a detached
+# HEAD or the default branch, per session -- review-ledger.sh resolves it
+# through _lib_review_ledger_path -- so this scan's cost grows with every
+# finding appended across all of that branch's (or session's) review rounds.
+# Sessions on the same branch append to one FILE, so cross-session appends
+# contend for its lock.
 # review-ledger.sh's per-append call to _sweep_stale_ledger_files (with the
 # fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
-# footprint by evicting whole stale files. It never touches this file while
-# the session that owns it is still live, so it puts no cap on FILE's own
-# growth.
+# footprint by evicting whole stale files. It never touches a file that is
+# still being appended to, so it puts no cap on FILE's own growth.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
   # Requires a brace-delimited, comma-separated identifier list -- rejects
@@ -3822,6 +3836,9 @@ _lib_append_json_line_locked() {
       printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
     fi
   fi
+  # Known limit: when FILE ends in an unterminated line (only a torn write
+  # leaves one), this row joins that line and is unreadable, yet the call
+  # still returns 0.
   printf '%s\n' "$line" >> "$file"
 }
 
@@ -3882,6 +3899,80 @@ _ledger_sweep_window_days() {
     printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
   else
     printf '%s' "$cleanup_period_days"
+  fi
+}
+
+# Branch names _lib_review_ledger_path treats as the default when no default
+# branch resolves. Mirrors _lib_default_branch_or_guess's candidate list; a
+# copy of that function lives in the skill-management plugin's own _lib.sh
+# and must stay text-identical, so the list cannot be shared by reference.
+_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES=(main master develop)
+
+# _lib_review_ledger_session_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints <config-dir>/review-narrative-ledger/<repo-hash>.<session-id>.jsonl,
+# the one home for the session-scoped ledger path. Returns 1 with no stdout
+# when REPO_ROOT is empty, its hash did not compute, or SESSION_ID is not a
+# valid path component (an id holding '/' or '..' would escape the ledger
+# directory).
+_lib_review_ledger_session_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local repo_hash
+  [ -n "$repo_root" ] || return 1
+  _lib_valid_session_id_component "$session_id" || return 1
+  repo_hash=$(_marker_lib_repo_hash "$repo_root") || return 1
+  [ -n "$repo_hash" ] || return 1
+  printf '%s/review-narrative-ledger/%s.%s.jsonl' "$config_dir" "$repo_hash" "$session_id"
+}
+
+# _lib_review_ledger_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints "<scope> <path>" for the review-ledger file this worktree appends to.
+# The path comes last so a CONFIG_DIR containing a space still parses:
+# scope is ${out%% *}, path is ${out#* }.
+# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the same per-branch key
+#   _lib_reviewer_round_state_key gives the round-3 gate.
+# - scope "session": _lib_review_ledger_session_path's file. It is used on a
+#   detached HEAD (mid-rebase included) and on the default branch, so a
+#   local-only main does not grow one unbounded file.
+# Default-branch detection is _lib_default_branch_or_guess. When no default
+# resolves, a branch named like one of _LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES
+# counts as the default.
+# A branch named like one of those names is still branch-keyed when origin/HEAD
+# names a different branch.
+# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
+# status above 1 when git itself failed or timed out, so a git failure does not
+# silently downgrade a branch's rows into the session file.
+# Exit 1, empty stdout: REPO_ROOT is empty, a hash did not compute, git could
+# not read HEAD, or (session scope only) SESSION_ID is not a valid path
+# component.
+# Exit 1 means the location is unknown, whether the cause is transient or
+# permanent. The caller picks fail-open or fail-closed. A hook must not render
+# exit 1 as "no ledger".
+_lib_review_ledger_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local branch branch_key default_branch candidate session_path
+  local head_status=0 session_scoped=0
+  [ -n "$repo_root" ] || return 1
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
+  [ "$head_status" -le 1 ] || return 1
+  if [ -z "$branch" ]; then
+    session_scoped=1
+  elif default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
+    if [ "$branch" = "$default_branch" ]; then
+      session_scoped=1
+    fi
+  else
+    for candidate in "${_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}"; do
+      if [ "$branch" = "$candidate" ]; then
+        session_scoped=1
+      fi
+    done
+  fi
+  if [ "$session_scoped" -eq 1 ]; then
+    session_path=$(_lib_review_ledger_session_path "$config_dir" "$repo_root" "$session_id") || return 1
+    printf 'session %s' "$session_path"
+  else
+    branch_key=$(_lib_reviewer_round_state_key_for_branch "$repo_root" "$branch") || return 1
+    printf 'branch %s/review-narrative-ledger/%s.jsonl' "$config_dir" "$branch_key"
   fi
 }
 

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ from helpers import (
 )
 from transcript_analysis import author_outcome as ao
 
-from .conftest import _dead_pid, _seed_session
+from .conftest import _dead_pid, _review_ledger_path, _seed_session
 
 REVIEW_LEDGER_SCRIPT = SCRIPTS_DIR / "review-ledger.sh"
 
@@ -58,9 +59,91 @@ def _popen(args: list[str], cwd, home) -> subprocess.Popen:
     )
 
 
+def _popen_as_session(args: list[str], cwd, home, session_id: str) -> subprocess.Popen:
+    """Start review-ledger.sh under a wrapper shell that registers itself as
+    the Claude Code process for `session_id`, so several concurrent
+    invocations resolve distinct session ids. The script's session lookup
+    walks up from its parent, which is this wrapper."""
+    wrapper = (
+        'start=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$"); '
+        'mkdir -p "$HOME/.claude/sessions"; '
+        'printf "%s\\n%s\\n" "$1" "$start" > "$HOME/.claude/sessions/$$"; '
+        'shift; bash "$0" "$@"; exit $?'
+    )
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    return subprocess.Popen(
+        ["bash", "-c", wrapper, str(REVIEW_LEDGER_SCRIPT), session_id, *args],
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def _ledger_path(home: Path, repo: Path, session_id: str = SID) -> Path:
-    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-    return home / ".claude" / "review-narrative-ledger" / f"{repo_hash}.{session_id}.jsonl"
+    return _review_ledger_path(home, repo, session_id)
+
+
+def _repo_hash(repo: Path) -> str:
+    return hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+
+
+def _session_ledger_path(home: Path, repo: Path, session_id: str = SID) -> Path:
+    """This worktree's session-keyed file, whatever scope HEAD currently
+    resolves to."""
+    return home / ".claude" / "review-narrative-ledger" / f"{_repo_hash(repo)}.{session_id}.jsonl"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _rename_branch(repo: Path, name: str) -> None:
+    _git(repo, "branch", "-M", name)
+
+
+def _show_header(result: subprocess.CompletedProcess) -> dict[str, str]:
+    """The key=value pairs of `show`'s one-line stderr header."""
+    header_lines = [line for line in result.stderr.splitlines() if line.startswith("review-ledger.sh: show ")]
+    assert len(header_lines) == 1, f"expected exactly one show header on stderr, got: {result.stderr!r}"
+    pairs = header_lines[0].removeprefix("review-ledger.sh: show ").split(" ")
+    return dict(pair.split("=", 1) for pair in pairs)
+
+
+def _shown_rows(result: subprocess.CompletedProcess) -> list[dict]:
+    return [json.loads(line) for line in result.stdout.splitlines()]
+
+
+# review-ledger.sh's per-field character caps: finding, rationale, source.
+_ROW_FIELD_CAPS = (200, 300, 200)
+
+
+def _row_envelope_bytes(session_id: str) -> int:
+    """Bytes of a built row with empty finding/rationale/source, in jq -c key
+    order, for a round-1 ADDRESS append with no authoring flags."""
+    row = {
+        "schema_version": 3, "round": 1, "finding": "", "disposition": "ADDRESS", "rationale": "",
+        "source": "", "authoring_agent": "", "authoring_effort": "", "session_id": session_id,
+        "event_time": "2026-01-01T00:00:00Z",
+    }
+    return len(json.dumps(row, separators=(",", ":")).encode())
+
+
+def _fields_for_row_of_bytes(row_bytes: int, session_id: str = SID) -> tuple[str, str, str]:
+    """(finding, rationale, source) within the per-field character caps whose
+    built row is exactly `row_bytes` long. U+0001 costs six bytes in a jq
+    string (\\u0001) and `x` one, so a mix reaches any size the caps allow."""
+    field_bytes = row_bytes - _row_envelope_bytes(session_id)
+    assert field_bytes > 0
+    # The mix has to fit the total per-field character budget: 6k + m == field_bytes, k + m <= budget.
+    control_count = max(0, -(-(field_bytes - sum(_ROW_FIELD_CAPS)) // 5))
+    filler_count = field_bytes - 6 * control_count
+    assert control_count + filler_count <= sum(_ROW_FIELD_CAPS), "row size unreachable within the field caps"
+    text = "\x01" * control_count + "x" * filler_count
+    finding_cap, rationale_cap, _source_cap = _ROW_FIELD_CAPS
+    return text[:finding_cap], text[finding_cap:finding_cap + rationale_cap], text[finding_cap + rationale_cap:]
 
 
 def _append_args(
@@ -158,7 +241,7 @@ class TestReviewLedgerAppendHappyPath:
         record = json.loads(lines[0])
         event_time = record.pop("event_time")
         assert record == {
-            "schema_version": 2,
+            "schema_version": 3,
             "round": 1,
             "finding": "Missing error handling in foo()",
             "disposition": "ADDRESS",
@@ -166,6 +249,7 @@ class TestReviewLedgerAppendHappyPath:
             "source": "foo.py:12",
             "authoring_agent": "",
             "authoring_effort": "",
+            "session_id": SID,
         }
         # UTC, second-resolution, Z-suffixed -- e.g. 2026-08-01T10:00:00Z.
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time), event_time
@@ -532,6 +616,26 @@ class TestReviewLedgerRoundScopedDedup:
         rounds = {json.loads(line)["round"] for line in lines}
         assert rounds == {1, 2}
 
+    def test_v3_row_matching_an_existing_v2_row_on_every_other_field_lands_as_a_second_row(
+        self, isolated_home, git_repo
+    ):
+        """A v2 row carries no session_id, so the session_id in the dedup key
+        keeps a v3 append from collapsing into it."""
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(json.dumps({
+            "schema_version": 2, "round": 1, "finding": "Missing error handling in foo()",
+            "disposition": "ADDRESS", "rationale": "fixed inline", "source": "n/a",
+            "authoring_agent": "", "authoring_effort": "", "event_time": "2024-01-01T00:00:00Z",
+        }) + "\n")
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+        assert [row["schema_version"] for row in rows] == [2, 3]
+
     def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
@@ -867,27 +971,229 @@ class TestReviewLedgerFieldCaps:
         assert result.returncode == 0, result.stderr
 
 
-class TestReviewLedgerKillSwitch:
-    def test_kill_switch_suppresses_append(self, isolated_home, git_repo):
+class TestReviewLedgerOldSentinelIgnored:
+    def test_sentinel_file_no_longer_suppresses_append(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         (isolated_home / ".claude" / ".review-narrative-ledger-disabled").touch()
+
         result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
         assert result.returncode == 0, result.stderr
-        assert not _ledger_path(isolated_home, git_repo).exists(), (
-            "append must be a silent no-op while the kill switch is present"
+        assert _ledger_path(isolated_home, git_repo).exists(), (
+            "the retired .review-narrative-ledger-disabled sentinel must not stop an append"
         )
 
-    def test_kill_switch_does_not_suppress_show(self, isolated_home, git_repo):
+
+class TestReviewLedgerLedgerScope:
+    """append's file is the branch's on a feature branch and the session's on
+    a detached HEAD or the default branch. The resolver matrix lives in
+    test_lib_reviewer_round_state.py; these pin the script's wiring to it."""
+
+    def test_default_branch_append_writes_the_session_file_and_says_so(self, isolated_home, git_repo):
+        _rename_branch(git_repo, "main")
         _seed_session(isolated_home, SID)
-        _run(_append_args(), cwd=git_repo, home=isolated_home)
-        (isolated_home / ".claude" / ".review-narrative-ledger-disabled").touch()
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert _session_ledger_path(isolated_home, git_repo).exists()
+        assert "session-scoped" in result.stderr
+
+    def test_feature_branch_append_writes_the_branch_file_without_the_session_note(
+        self, isolated_home, git_repo
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        branch_hash = hashlib.sha256(b"feature").hexdigest()
+        branch_file = isolated_home / ".claude" / "review-narrative-ledger" / f"{_repo_hash(git_repo)}.{branch_hash}.jsonl"
+        assert branch_file.exists()
+        assert not _session_ledger_path(isolated_home, git_repo).exists()
+        assert "session-scoped" not in result.stderr
+
+    def test_a_later_session_on_the_branch_reads_the_earlier_sessions_rows(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, "session-a")
+        _run(_append_args(finding="raised in session a", round="1"), cwd=git_repo, home=isolated_home)
+
+        _seed_session(isolated_home, "session-b")
+        _run(_append_args(finding="raised in session b", round="2"), cwd=git_repo, home=isolated_home)
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        # Both rows can land in the same second, so their event_time may tie
+        # and the order between them is not pinned.
+        assert sorted((row["finding"], row["session_id"]) for row in _shown_rows(result)) == [
+            ("raised in session a", "session-a"),
+            ("raised in session b", "session-b"),
+        ]
+        assert _show_header(result)["scope"] == "branch"
+
+    def test_identical_finding_from_two_sessions_on_one_branch_lands_twice(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        for session_id in ("session-a", "session-b"):
+            _seed_session(isolated_home, session_id)
+            result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+            assert result.returncode == 0, result.stderr
+
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+
+        assert [json.loads(line)["session_id"] for line in lines] == ["session-a", "session-b"]
+
+    def test_detached_head_show_prints_each_row_once_and_hides_branch_rows(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _run(_append_args(finding="branch row"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "--detach")
+        _run(_append_args(finding="detached row"), cwd=git_repo, home=isolated_home)
 
         result = _run(["show"], cwd=git_repo, home=isolated_home)
 
         assert result.returncode == 0, result.stderr
-        assert "Missing error handling in foo()" in result.stdout, (
-            "show must still read a ledger written before the kill switch was set"
+        assert [row["finding"] for row in _shown_rows(result)] == ["detached row"]
+        assert _show_header(result)["scope"] == "session"
+
+    def test_branch_scope_show_also_reads_this_sessions_detached_head_rows(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _run(_append_args(finding="branch row"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "--detach")
+        _run(_append_args(finding="detached row"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "feature")
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert sorted(row["finding"] for row in _shown_rows(result)) == ["branch row", "detached row"]
+
+
+class TestReviewLedgerRowSizeBound:
+    """The built JSON line must fit the 4096-byte atomic-append bound:
+    jq writes a control character with no short escape as six bytes, so the
+    per-field character caps alone do not bound it."""
+
+    _FIELD_CAPS = {"finding": 200, "rationale": 300, "source": 200}
+
+    def _utf8_locale(self) -> str:
+        try:
+            available = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout
+        except FileNotFoundError:
+            available = ""
+        available_names = {name.strip().lower() for name in available.splitlines()}
+        for candidate in ("C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"):
+            if candidate.lower() in available_names:
+                return candidate
+        message = "no UTF-8 locale installed"
+        if os.environ.get("CI"):
+            # A skipped run would drop the byte-versus-character discriminator unnoticed.
+            pytest.fail(f"{message}; CI must provide one")
+        pytest.skip(message)
+
+    def test_control_characters_at_every_cap_are_rejected_with_nothing_written(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = _append_args(
+            finding="\x01" * self._FIELD_CAPS["finding"],
+            rationale="\x01" * self._FIELD_CAPS["rationale"],
+            source="\x01" * self._FIELD_CAPS["source"],
         )
+
+        result = _run(args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "4095-byte limit" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_row_of_exactly_4095_bytes_is_accepted(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        finding, rationale, source = _fields_for_row_of_bytes(4095)
+
+        result = _run(_append_args(finding=finding, rationale=rationale, source=source), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        written_line = _ledger_path(isolated_home, git_repo).read_text().splitlines()[0]
+        assert len(written_line.encode()) == 4095
+        assert json.loads(written_line)["finding"] == finding
+
+    def test_row_of_4096_bytes_is_rejected_naming_the_fields_to_shorten(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        finding, rationale, source = _fields_for_row_of_bytes(4096)
+
+        result = _run(_append_args(finding=finding, rationale=rationale, source=source), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "is 4096 bytes" in result.stderr
+        assert "4095-byte limit" in result.stderr
+        for flag in ("--finding", "--rationale", "--source"):
+            assert flag in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_unmeasurable_row_length_is_rejected_with_nothing_written(self, isolated_home, git_repo, tmp_path):
+        """A `wc` that prints nothing must not read as "under the bound"."""
+        fake_wc = tmp_path / "wc"
+        fake_wc.write_text("#!/bin/bash\nexit 1\n")
+        fake_wc.chmod(0o755)
+        _seed_session(isolated_home, SID)
+
+        result = _run(
+            _append_args(), cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 2
+        assert "could not measure the ledger line length" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_near_cap_row_of_four_byte_characters_is_accepted_under_a_utf8_locale(
+        self, isolated_home, git_repo
+    ):
+        """700 emoji, one per character slot: 2,800 bytes of field text, over
+        four bytes a character but inside the 4,095-byte bound."""
+        _seed_session(isolated_home, SID)
+        emoji = "\U0001F600"
+        args = _append_args(finding=emoji * 200, rationale=emoji * 300, source=emoji * 200)
+
+        result = _run(args, cwd=git_repo, home=isolated_home, extra_env={"LC_ALL": self._utf8_locale()})
+
+        assert result.returncode == 0, result.stderr
+        written_line = _ledger_path(isolated_home, git_repo).read_text().splitlines()[0]
+        assert len(written_line.encode()) <= 4095
+        assert json.loads(written_line)["finding"] == emoji * 200
+
+    def test_max_cap_ascii_row_is_accepted(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = _append_args(
+            finding="x" * self._FIELD_CAPS["finding"],
+            rationale="x" * self._FIELD_CAPS["rationale"],
+            source="x" * self._FIELD_CAPS["source"],
+        )
+
+        result = _run(args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert _ledger_path(isolated_home, git_repo).exists()
+
+    def test_control_and_four_byte_characters_within_every_cap_are_rejected_by_byte_count(
+        self, isolated_home, git_repo
+    ):
+        """600 control characters plus 100 emoji: 700 characters, inside
+        every per-field cap under a UTF-8 locale, but about 4,000 bytes
+        before the row's own envelope. A character count would accept it."""
+        _seed_session(isolated_home, SID)
+        args = _append_args(
+            finding="\x01" * 200,
+            rationale="\x01" * 300,
+            source="\x01" * 100 + "\U0001F600" * 100,
+        )
+
+        result = _run(
+            args, cwd=git_repo, home=isolated_home, extra_env={"LC_ALL": self._utf8_locale()},
+        )
+
+        assert result.returncode == 2
+        assert "4095-byte limit" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
 
 
 class TestReviewLedgerShow:
@@ -897,6 +1203,54 @@ class TestReviewLedgerShow:
         assert result.returncode == 0, result.stderr
         assert "no ledger" in result.stdout.lower()
 
+    def test_show_header_has_the_documented_shape_when_no_ledger_exists(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert _show_header(result) == {
+            "scope": "branch", "rows": "0", "oldest": "-", "newest": "-", "max_round": "0", "files": "",
+        }
+
+    def test_show_header_lists_both_files_and_counts_rows_across_them(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _run(_append_args(finding="branch row", round="2"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "--detach")
+        _run(_append_args(finding="detached row", round="3"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "feature")
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        header = _show_header(result)
+        branch_file = _ledger_path(isolated_home, git_repo)
+        assert header["files"] == f"{branch_file},{_session_ledger_path(isolated_home, git_repo)}"
+        assert header["rows"] == "2"
+        assert header["max_round"] == "3"
+
+    def test_show_header_uses_stand_ins_for_rows_without_event_time_or_round(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(json.dumps({"finding": "schema-v1 row"}) + "\n")
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        header = _show_header(result)
+        assert (header["rows"], header["oldest"], header["newest"], header["max_round"]) == ("1", "-", "-", "0")
+
+    def test_show_absence_message_names_the_scope_and_the_file(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert "no ledger for this branch" in result.stdout
+        assert str(_ledger_path(isolated_home, git_repo)) in result.stdout
+
     def test_show_prints_ledger_contents(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         _run(_append_args(), cwd=git_repo, home=isolated_home)
@@ -905,67 +1259,97 @@ class TestReviewLedgerShow:
         record = json.loads(result.stdout.splitlines()[0])
         assert record["finding"] == "Missing error handling in foo()"
 
-    def test_show_merges_rows_from_a_different_repo_hash_in_event_time_order(
+    def test_show_header_reports_scope_files_row_count_time_span_and_max_round(
         self, isolated_home, git_repo
     ):
-        """A session that appends from two different git worktrees of the
-        same repo produces two ledger files under the shared LEDGER_DIR, one
-        per repo-hash. `show` must merge both files' rows rather than print
-        only the current worktree's, and order the merge by event_time
-        rather than by glob/alphabetical file order."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            json.dumps({"round": 2, "finding": "middle", "event_time": "2024-03-01T00:00:00Z"}) + "\n"
+            + json.dumps({"round": 4, "finding": "newest", "event_time": "2024-06-01T00:00:00Z"}) + "\n"
+            + json.dumps({"round": 1, "finding": "oldest", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert _show_header(result) == {
+            "scope": "branch",
+            "rows": "3",
+            "oldest": "2024-01-01T00:00:00Z",
+            "newest": "2024-06-01T00:00:00Z",
+            "max_round": "4",
+            "files": str(ledger),
+        }
+        assert [row["finding"] for row in _shown_rows(result)] == ["oldest", "middle", "newest"]
+
+    def test_show_reads_a_file_holding_schema_v2_and_v3_rows_together(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            json.dumps({
+                "schema_version": 2, "round": 1, "finding": "v2 row", "disposition": "ADDRESS",
+                "event_time": "2024-01-01T00:00:00Z",
+            }) + "\n"
+        )
+        _run(_append_args(finding="v3 row", round="2"), cwd=git_repo, home=isolated_home)
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        rows = _shown_rows(result)
+        assert [(row["schema_version"], row["finding"]) for row in rows] == [(2, "v2 row"), (3, "v3 row")]
+        assert "session_id" not in rows[0]
+        assert rows[1]["session_id"] == SID
+        assert _show_header(result)["rows"] == "2"
+
+    def test_show_merges_the_branch_and_session_files_in_event_time_order(self, isolated_home, git_repo):
+        """In branch scope `show` reads the branch file and this worktree's
+        own session file (rows appended while HEAD was detached), merged by
+        event_time rather than by which file is read first."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        branch_file = _ledger_path(isolated_home, git_repo)
+        session_file = _session_ledger_path(isolated_home, git_repo)
+        branch_file.parent.mkdir(parents=True, exist_ok=True)
+        branch_file.write_text(
+            json.dumps({"finding": "branch-file-later", "event_time": "2024-06-01T00:00:00Z"}) + "\n"
+        )
+        session_file.write_text(
+            json.dumps({"finding": "session-file-earlier", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert [row["finding"] for row in _shown_rows(result)] == [
+            "session-file-earlier", "branch-file-later",
+        ]
+
+    def test_show_tags_each_row_with_the_repo_hash_of_the_file_it_came_from(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert [row["source_repo_hash"] for row in _shown_rows(result)] == [_repo_hash(git_repo)]
+
+    def test_show_ignores_another_repo_hashs_file_for_the_same_session_id(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
         ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
         ledger_dir.mkdir(parents=True, exist_ok=True)
-
-        # "0"*64 sorts before "f"*64 alphabetically, but carries the LATER
-        # event_time -- only a real event_time sort, not glob order, puts
-        # this file's row second in the output.
         (ledger_dir / ("0" * 64 + f".{SID}.jsonl")).write_text(
-            json.dumps({"finding": "alpha-first-file", "event_time": "2024-06-01T00:00:00Z"})
-            + "\n"
-        )
-        (ledger_dir / ("f" * 64 + f".{SID}.jsonl")).write_text(
-            json.dumps({"finding": "alpha-last-file", "event_time": "2024-01-01T00:00:00Z"})
-            + "\n"
+            json.dumps({"finding": "another worktree's row", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
         )
 
         result = _run(["show"], cwd=git_repo, home=isolated_home)
 
-        assert result.returncode == 0, result.stderr
-        findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
-        assert findings == ["alpha-last-file", "alpha-first-file"], (
-            "show must merge rows from every repo-hash file for this session "
-            "id and sort the result by event_time, not glob/alphabetical order"
-        )
-
-    def test_show_tags_each_merged_row_with_its_own_source_repo_hash(self, isolated_home, git_repo):
-        """The one tool engineers use to debug the round-number-mismatch
-        race a multi-worktree session can produce (see
-        author_outcome.py's _round_number_mismatch) needs to tell which
-        worktree wrote which row -- each merged row must carry a
-        source_repo_hash matching the repo-hash prefix of the ledger file
-        it actually came from, not review-ledger.sh append's own write
-        schema (which never carries this field; see
-        test_append_creates_ledger_with_expected_fields's exact-match
-        assertion for that contract)."""
-        _seed_session(isolated_home, SID)
-        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
-        ledger_dir.mkdir(parents=True, exist_ok=True)
-        repo_hash_a = "0" * 64
-        repo_hash_b = "f" * 64
-        (ledger_dir / f"{repo_hash_a}.{SID}.jsonl").write_text(
-            json.dumps({"finding": "from-file-a", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
-        )
-        (ledger_dir / f"{repo_hash_b}.{SID}.jsonl").write_text(
-            json.dumps({"finding": "from-file-b", "event_time": "2024-06-01T00:00:00Z"}) + "\n"
-        )
-
-        result = _run(["show"], cwd=git_repo, home=isolated_home)
-
-        assert result.returncode == 0, result.stderr
-        records = [json.loads(line) for line in result.stdout.splitlines()]
-        by_finding = {r["finding"]: r["source_repo_hash"] for r in records}
-        assert by_finding == {"from-file-a": repo_hash_a, "from-file-b": repo_hash_b}
+        assert "no ledger for this branch" in result.stdout
 
     def test_show_sorts_a_row_missing_event_time_first(self, isolated_home, git_repo):
         """A pre-existing schema-v1 row (no event_time field) sorts before
@@ -987,27 +1371,92 @@ class TestReviewLedgerShow:
         findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
         assert findings == ["schema-v1-no-timestamp", "has-timestamp"]
 
-    def test_show_falls_back_to_unsorted_cat_when_jq_fails(self, isolated_home, git_repo, tmp_path):
-        """Before this PR, `show` never touched jq (plain `cat`); the merge
-        sort above gives it a new jq dependency with its own failure mode.
-        A `jq` shim on PATH ahead of the real one, that always exits
-        nonzero, makes `_lib_jq` fail exactly like a missing jq would.
-        `show` must still print every row -- unsorted, since the merge
-        never ran -- rather than losing them. The file-vanishing-mid-read
-        race for the shell side specifically is accepted as untested here:
-        it has no monkeypatch seam in bash, so constructing it
-        deterministically (a real concurrent delete mid-`_lib_jq` call) is
-        impractical."""
+    def test_show_skips_a_torn_line_and_still_prints_the_header_and_sorted_rows(self, isolated_home, git_repo):
+        """A crash mid-write or an unlocked interleave leaves an undecodable
+        line in a file that outlives its session. One such line must not
+        suppress the header the round count depends on."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            json.dumps({"round": 2, "finding": "later", "event_time": "2024-06-01T00:00:00Z"}) + "\n"
+            + '{"round": 3, "finding": "torn mid-wri\n'
+            + json.dumps({"round": 1, "finding": "earlier", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert [row["finding"] for row in _shown_rows(result)] == ["earlier", "later"]
+        header = _show_header(result)
+        assert (header["rows"], header["max_round"]) == ("2", "2")
+
+    def test_show_keeps_every_intact_row_when_one_file_ends_in_a_torn_unterminated_line(
+        self, isolated_home, git_repo
+    ):
+        """A torn write leaves the branch file ending mid-row with no newline.
+        The session file's first row must still decode, not merge into that
+        fragment, and its round must count toward max_round."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        branch_file = _ledger_path(isolated_home, git_repo)
+        session_file = _session_ledger_path(isolated_home, git_repo)
+        branch_file.parent.mkdir(parents=True, exist_ok=True)
+        branch_file.write_text(
+            json.dumps({"round": 1, "finding": "branch-intact", "event_time": "2024-01-01T00:00:00Z"}) + "\n"
+            + '{"round": 9, "finding": "torn mid-wri'
+        )
+        session_file.write_text(
+            json.dumps({"round": 4, "finding": "session-first", "event_time": "2024-02-01T00:00:00Z"}) + "\n"
+            + json.dumps({"round": 2, "finding": "session-second", "event_time": "2024-03-01T00:00:00Z"}) + "\n"
+        )
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert [row["finding"] for row in _shown_rows(result)] == [
+            "branch-intact", "session-first", "session-second",
+        ]
+        header = _show_header(result)
+        assert (header["rows"], header["max_round"]) == ("3", "4")
+
+    def test_show_outside_a_git_repository_exits_2_with_no_header_and_writes_nothing(
+        self, isolated_home, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        outside_repo = tmp_path / "not-a-repo"
+        outside_repo.mkdir()
+
+        result = _run(["show"], cwd=outside_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "not inside a git repository" in result.stderr
+        assert "show scope=" not in result.stderr
+        assert not (isolated_home / ".claude" / "review-narrative-ledger").exists()
+
+    def test_show_prints_rows_unsorted_with_no_header_and_exits_1_when_jq_fails(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`show` depends on jq to merge-sort rows. A `jq` shim on PATH ahead
+        of the real one, that always exits nonzero, makes `_lib_jq` fail
+        exactly like a missing jq would. `show` must still print every row,
+        unsorted since the merge never ran, but emit no header and exit 1: a
+        header would report a round count it could not compute. The
+        file-vanishing-mid-read race for the shell side specifically is
+        accepted as untested here: it has no monkeypatch seam in bash, so
+        constructing it deterministically (a real concurrent delete
+        mid-`_lib_jq` call) is impractical."""
         fake_jq = tmp_path / "jq"
         fake_jq.write_text("#!/bin/bash\nexit 1\n")
         fake_jq.chmod(0o755)
         _seed_session(isolated_home, SID)
-        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
-        ledger_dir.mkdir(parents=True, exist_ok=True)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
         # Deliberately out of event_time order in the raw file -- since the
         # sort never runs, the fallback must reproduce this exact raw
         # (unsorted) order, not the event_time-sorted one the tests above pin.
-        (ledger_dir / ("0" * 64 + f".{SID}.jsonl")).write_text(
+        ledger.write_text(
             json.dumps({"finding": "written-first", "event_time": "2024-06-01T00:00:00Z"})
             + "\n"
             + json.dumps({"finding": "written-second", "event_time": "2024-01-01T00:00:00Z"})
@@ -1019,13 +1468,41 @@ class TestReviewLedgerShow:
             extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
         )
 
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 1
         assert "could not sort ledger rows for display" in result.stderr
+        assert "review-ledger.sh: show " not in result.stderr
         findings = [json.loads(line)["finding"] for line in result.stdout.splitlines()]
         assert findings == ["written-first", "written-second"], (
             "show must still print every row via the raw cat fallback when "
             "jq fails, in on-disk (unsorted) order"
         )
+
+    def test_show_exits_1_with_no_header_when_only_the_summary_jq_call_fails(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The sort succeeds but the summary pass (jq -s) fails: the header
+        must not print `?` or a guessed 0 for the count and max round."""
+        real_jq = subprocess.run(["which", "jq"], capture_output=True, text=True, check=True).stdout.strip()
+        fake_jq = tmp_path / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do [ "$arg" = "-s" ] && exit 1; done\n'
+            f'exec {shlex.quote(real_jq)} "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+        _seed_session(isolated_home, SID)
+        _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        result = _run(
+            ["show"], cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 1
+        assert "could not summarize ledger rows for display" in result.stderr
+        header_lines = [line for line in result.stderr.splitlines() if line.startswith("review-ledger.sh: show ")]
+        assert header_lines == [], f"a failed summary must not print a header: {header_lines}"
+        assert len(_shown_rows(result)) == 1
 
 
 class TestReviewLedgerLocking:
@@ -1069,6 +1546,65 @@ class TestReviewLedgerLocking:
         ledger = _ledger_path(isolated_home, git_repo)
         findings = {json.loads(line)["finding"] for line in ledger.read_text().splitlines()}
         assert findings == {"Finding A", "Finding B"}
+
+    def _append_near_limit_rows_from_distinct_sessions(
+        self, isolated_home, git_repo, session_count: int
+    ) -> tuple[list[str], list[str]]:
+        """Runs one 4,095-byte append per session id, all at once, against
+        the one branch file, and returns the file's lines and each
+        appender's stderr."""
+        procs = []
+        for index in range(session_count):
+            session_id = f"session-{index}"
+            finding, rationale, source = _fields_for_row_of_bytes(4095, session_id)
+            procs.append(_popen_as_session(
+                _append_args(finding=finding, rationale=rationale, source=source),
+                cwd=git_repo, home=isolated_home, session_id=session_id,
+            ))
+        stderrs = []
+        for proc in procs:
+            _stdout, stderr = proc.communicate(timeout=30)
+            assert proc.returncode == 0, stderr
+            stderrs.append(stderr)
+        return _ledger_path(isolated_home, git_repo).read_text().splitlines(), stderrs
+
+    def test_parallel_near_limit_appends_from_distinct_sessions_land_as_intact_rows(
+        self, isolated_home, git_repo
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        session_count = 6
+
+        lines, _stderrs = self._append_near_limit_rows_from_distinct_sessions(
+            isolated_home, git_repo, session_count,
+        )
+
+        assert sorted(json.loads(line)["session_id"] for line in lines) == sorted(
+            f"session-{index}" for index in range(session_count)
+        )
+
+    def test_parallel_near_limit_appends_stay_intact_on_the_unlocked_fallback_path(
+        self, isolated_home, git_repo, live_pid
+    ):
+        """A lock held by a live process makes every append exhaust its
+        retries and write unlocked, so the rows race with no lock at all and
+        rely on the single-write append alone."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        lock_file = _ledger_path(isolated_home, git_repo).with_suffix(".jsonl.lock")
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text(f"{live_pid}\n")
+        session_count = 6
+
+        lines, stderrs = self._append_near_limit_rows_from_distinct_sessions(
+            isolated_home, git_repo, session_count,
+        )
+
+        assert all("proceeding unlocked" in stderr for stderr in stderrs), (
+            f"every appender must have taken the unlocked fallback, got stderr: {stderrs}"
+        )
+        assert lock_file.read_text() == f"{live_pid}\n", "the live holder's lock file must be left intact"
+        assert sorted(json.loads(line)["session_id"] for line in lines) == sorted(
+            f"session-{index}" for index in range(session_count)
+        )
 
     def test_lock_held_by_dead_pid_is_acquired_faster_than_a_live_lock(
         self, isolated_home, git_repo, live_pid
@@ -1152,6 +1688,65 @@ class TestReviewLedgerDirectoryCreationFailure:
             config_dir.chmod(0o755)
         assert result.returncode == 2
         assert not (isolated_home / ".claude" / "review-narrative-ledger").exists()
+
+
+class TestReviewLedgerAppendWriteFailure:
+    def test_a_row_that_could_not_be_written_exits_2_and_says_so(self, isolated_home, git_repo):
+        """A directory at the ledger path makes the append redirect fail even
+        for root. The row was neither written nor deduplicated, so the
+        script must not report success."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        ledger = _ledger_path(isolated_home, git_repo)
+        ledger.mkdir(parents=True)
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "could not write the ledger row" in result.stderr
+        assert ledger.is_dir()
+
+    def test_a_deduplicated_row_still_exits_0(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert len(_ledger_path(isolated_home, git_repo).read_text().splitlines()) == 1
+
+
+class TestReviewLedgerResolverFailure:
+    @pytest.mark.parametrize("args", [_append_args(), ["show"]], ids=["append", "show"])
+    def test_a_git_failure_reading_head_exits_2_with_nothing_written(
+        self, isolated_home, git_repo, tmp_path, args
+    ):
+        """A `git` shim that fails only `symbolic-ref` leaves the ledger
+        location unknown. The script must abort rather than fall back to a
+        session file, an empty path, or a stray `.lock` in the working
+        directory."""
+        real_git = shutil.which("git")
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do [ "$arg" = "symbolic-ref" ] && exit 128; done\n'
+            f'exec {shlex.quote(real_git)} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+
+        result = _run(
+            args, cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 2
+        assert "git could not read HEAD" in result.stderr
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        assert not ledger_dir.exists() or list(ledger_dir.iterdir()) == []
+        assert not (git_repo / ".lock").exists()
 
 
 class TestReviewLedgerMultiByteBoundary:
