@@ -27,7 +27,7 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 
 Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
 
-**`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort (under `review-round-cost --pooled`, with the generic unexpected-error refusal).
+**`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
@@ -1206,7 +1206,7 @@ Unpriced turns inside round windows: 0
 - A declared account skipped as invalid or unreadable is a stderr-only notice, not a refusal. This fail-open behavior is deliberate: `declared_roots_matching`'s own docstring makes a stale `~/.claude/transcript-config-dirs` line non-fatal, since a config-file problem must never break every invocation. The notice names neither the entry nor a count. A pool missing an account still prints, and the missing account changes the dominance weights.
 - Lines that fail UTF-8 or JSON decoding are dropped individually. A transcript with no decodable line reads as empty, and a dispatch transcript with none prices as a resolved $0 dispatch rather than a dangling one. A dropped record can move spend between rounds and branches, so the skew has no fixed direction.
 
-Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you. Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
+Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. The digits reproduce only for the same corpus, resolved root paths, and interpreter version, since CPython does not pin `Random.choices`' mapping from the stream to indices. The resampling unit is an account plus a branch name, so same-named branches in different projects of one account merge into one unit. The 95% level is nominal, and actual coverage is lower when few branches are in scope. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate this output is meant to satisfy -- nothing in this command checks that gate for you. Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice; rerun without `--pooled` to read it.
 
 **Sample output** (every figure below is illustrative filler, not derived from any real run):
 ```
@@ -1233,7 +1233,8 @@ covers only branches with at least one review round. No dollar amount, no
 raw count, and no per-account, per-project, or per-branch split is emitted.
 Each interval is a 2,000-resample percentile bootstrap resampled over
 branches, so it reflects branch-to-branch variation, treating the branches
-in scope as a sample of ongoing work.
+in scope as a sample of ongoing work. The 95% level is nominal. Actual
+coverage is lower when few branches are in scope.
 
   Share of branch spend
     inside round windows          40.0% (95% CI 35.0-45.0%)

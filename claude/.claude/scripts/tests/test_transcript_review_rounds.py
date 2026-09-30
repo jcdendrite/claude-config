@@ -2166,6 +2166,18 @@ class TestCmdReviewRoundCostPooled:
         assert review_rounds._POOLED_PUBLICATION_POINTER in docs_text
         assert review_rounds._POOLED_CAPTION in docs_text
 
+    def test_pooled_printed_ci_parameters_track_their_constants(self):
+        """The caption's resample count and every figure's CI level are
+        literals in printed text, so each must equal the constant the
+        bootstrap actually runs with."""
+        resample_phrase = f"{review_rounds._BOOTSTRAP_RESAMPLES:,}-resample"
+        ci_level_label = f"{round(review_rounds._CI_LEVEL * 100)}% CI"
+        assert resample_phrase in review_rounds._POOLED_CAPTION
+        assert f"{ci_level_label[:-len(' CI')]} level" in review_rounds._POOLED_CAPTION
+        assert review_rounds._fmt_share_with_ci(40.0, 35.0, 45.0) == f"40.0% ({ci_level_label} 35.0-45.0%)"
+        assert review_rounds._fmt_share_with_ci(None, None, None).startswith(f"({ci_level_label} not computed")
+        assert review_rounds._fmt_share_with_ci(0.0, None, None).startswith(f"({ci_level_label} not computed")
+
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
     ):
@@ -3008,8 +3020,8 @@ class TestCmdReviewRoundCostPooled:
         convention -- the accumulation loop under test needs no corpus scan
         or pricing table, so going through cmd_review_round_cost's full JSONL
         pipeline would only add incidental coupling to those independently-
-        churning subsystems. Four padding branches, split across both
-        accounts and skills, clear the four-branch bootstrap floor.
+        churning subsystems. Five padding branches, split across both
+        accounts and repeating skills, clear the four-branch bootstrap floor.
 
         Stubs `_pooled_dominance_breach` to isolate this test from the
         dominance-precision floor. Every branch here sets branch_dollars
@@ -3048,7 +3060,8 @@ class TestCmdReviewRoundCostPooled:
         # Sums both of feat-a's code-review rounds ($0.20 + $0.60 = $0.80,
         # count 2), not just the second one -- what an `=`-instead-of-`+=`
         # regression would leave behind. The padding branches each hold a
-        # single round of a distinct skill, matching `rounds` above.
+        # single round, with skills repeating across them, matching `rounds`
+        # above.
         def _single_round_branch(dollars: float, skill: str) -> review_rounds._PooledBranchTotals:
             skill_counts = {"code-review": 0, "plan-review": 0, "ready-for-review": 0}
             skill_counts[skill] = 1
@@ -3078,6 +3091,79 @@ class TestCmdReviewRoundCostPooled:
             point, lo, hi = intervals[key]
             expected_line = f"    {label:<30}{review_rounds._fmt_share_with_ci(point, lo, hi)}"
             assert expected_line in out
+
+    def test_render_pooled_block_hands_the_bootstrap_each_branch_totals_field_by_field(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The render seam's per-branch aggregation: every round field is
+        summed per branch and the result reaches _bootstrap_share_intervals.
+        Each branch carries a distinct nonzero agent_dollars, distinct from
+        its main_dollars, so a swapped or dropped field changes a total.
+        Hand-built rounds via a direct _render_pooled_block call, with
+        _bootstrap_share_intervals recorded instead of run so the assertion
+        sees the totals rather than the interval math.
+        """
+        monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
+        captured_per_branch: list[list[review_rounds._PooledBranchTotals]] = []
+
+        def recording_stub(per_branch):
+            captured_per_branch.append(list(per_branch))
+            return dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 40.0, 60.0))
+
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", recording_stub)
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+
+        def _round(branch_key, skill, main, agent, dangling=0, unpriced_turns=0):
+            return {
+                "branch_key": branch_key, "skill": skill, "main_dollars": main, "agent_dollars": agent,
+                "unpriced_turns": unpriced_turns, "dangling": dangling,
+            }
+
+        rounds = [
+            _round((0, "feat-a"), "code-review", 0.20, 0.05, dangling=2),
+            _round((0, "feat-a"), "plan-review", 0.10, 0.03, unpriced_turns=2),
+            _round((0, "feat-a2"), "ready-for-review", 0.30, 0.07),
+            _round((1, "feat-b"), "code-review", 0.40, 0.11),
+            _round((1, "feat-b2"), "plan-review", 0.15, 0.02),
+            _round((1, "feat-b3"), "code-review", 0.25, 0.09, unpriced_turns=1),
+        ]
+        # Each branch_dollars is distinct, so it keys the captured totals
+        # without depending on the order the render sorts branches into.
+        branch_totals = {
+            (0, "feat-a"): 1.0, (0, "feat-a2"): 2.0, (1, "feat-b"): 3.0, (1, "feat-b2"): 4.0, (1, "feat-b3"): 5.0,
+        }
+
+        review_rounds._render_pooled_block(
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+        )
+        capsys.readouterr()
+
+        assert len(captured_per_branch) == 1
+        totals_by_branch_dollars = {totals.branch_dollars: totals for totals in captured_per_branch[0]}
+        assert len(totals_by_branch_dollars) == len(branch_totals)
+
+        def _skills(code_review=0.0, plan_review=0.0, ready_for_review=0.0):
+            return {"code-review": code_review, "plan-review": plan_review, "ready-for-review": ready_for_review}
+
+        expected = {
+            # branch_dollars: (round_dollars, agent_dollars, skill counts, skill dollars, dangling, unpriced, rounds)
+            1.0: (0.38, 0.08, _skills(1, 1), _skills(0.25, 0.13), 1, 1, 2),
+            2.0: (0.37, 0.07, _skills(ready_for_review=1), _skills(ready_for_review=0.37), 0, 0, 1),
+            3.0: (0.51, 0.11, _skills(code_review=1), _skills(code_review=0.51), 0, 0, 1),
+            4.0: (0.17, 0.02, _skills(plan_review=1), _skills(plan_review=0.17), 0, 0, 1),
+            5.0: (0.34, 0.09, _skills(code_review=1), _skills(code_review=0.34), 0, 1, 1),
+        }
+        for branch_dollars, (
+            round_dollars, agent_dollars, skill_counts, skill_dollars, dangling, unpriced, round_count,
+        ) in expected.items():
+            totals = totals_by_branch_dollars[branch_dollars]
+            assert totals.round_dollars == pytest.approx(round_dollars)
+            assert totals.agent_dollars == pytest.approx(agent_dollars)
+            assert totals.skill_round_counts == skill_counts
+            assert totals.skill_round_dollars == pytest.approx(skill_dollars)
+            assert totals.rounds_with_dangling == dangling
+            assert totals.rounds_with_unpriced == unpriced
+            assert totals.round_count == round_count
 
     def test_degenerate_single_branch_prints_too_few_branches_wording_with_no_digit(
         self, tmp_path, monkeypatch, capsys,
@@ -3780,6 +3866,36 @@ class TestPooledShowWithheld:
             )
         assert exc.value.code == 2
         assert "--branches" in capsys.readouterr().err
+
+    def test_show_withheld_never_bypasses_the_single_resolved_root_refusal(self, fake_projects, capsys):
+        """--show-withheld plus --pooled over one resolved root still exits
+        2 with nothing on stdout, so the flag never prints a figure for a
+        single-account pool."""
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE not in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_show_withheld_never_bypasses_the_scan_gap_refusal(self, tmp_path, monkeypatch, capsys):
+        """--show-withheld plus --pooled over a root whose projects/
+        directory is unreadable still exits 2 with nothing on stdout, so
+        the flag never prints a figure for a pool missing an account."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        os.chmod(roots[1], 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        finally:
+            os.chmod(roots[1], 0o755)
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE not in err
 
     def test_show_withheld_never_manufactures_a_figure_under_the_too_few_branches_floor(
         self, tmp_path, monkeypatch, capsys,

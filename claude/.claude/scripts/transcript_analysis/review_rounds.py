@@ -486,7 +486,8 @@ _POOLED_CAPTION = (
     "raw count, and no per-account, per-project, or per-branch split is emitted.\n"
     "Each interval is a 2,000-resample percentile bootstrap resampled over\n"
     "branches, so it reflects branch-to-branch variation, treating the branches\n"
-    "in scope as a sample of ongoing work."
+    "in scope as a sample of ongoing work. The 95% level is nominal. Actual\n"
+    "coverage is lower when few branches are in scope."
 )
 
 # Percentile bootstrap resampled over branches. The 2,000-resample count
@@ -494,7 +495,9 @@ _POOLED_CAPTION = (
 # docs/cost-levers-considered.md's "Opus-anchored plan boundary" section.
 _BOOTSTRAP_RESAMPLES = 2000
 # Fixed so a published figure is reproducible by whoever checks it -- the
-# value itself is arbitrary.
+# value itself is arbitrary. The digits are a function of the interpreter
+# version as well as the corpus and resolved root paths, since CPython does
+# not pin Random.choices' mapping from the stream to indices.
 _BOOTSTRAP_SEED = 0
 _CI_LEVEL = 0.95
 
@@ -827,8 +830,9 @@ def _fmt_share_with_ci(point: float | None, lo: float | None, hi: float | None) 
 
     `point` is None when the whole pool has too few branches to bootstrap.
     `lo` is None (with `point` defined but unused) when this one share's
-    own denominator is zero. Neither degenerate wording contains a digit,
-    matching the enforcing grammar test.
+    own denominator is zero. Neither degenerate wording carries a figure:
+    the only digits are the CI level, which the enforcing grammar test's
+    figure pattern admits.
     """
     if point is None:
         return "(95% CI not computed — too few branches in scope)"
@@ -1003,12 +1007,8 @@ _POOLED_STDERR_WITHHELD_NOTICE = (
 
 
 def _pooled_filtered_stderr_call(fn, *args, **kwargs):
-    """Call fn with every root-count-revealing diagnostic
-    (_POOLED_STDERR_DIAGNOSTIC_RES) filtered out of what it prints to
-    stderr. A string replacement prints once per call, however many lines
-    matched it. A None replacement drops every matching line entirely.
-    Any other stderr line is withheld behind _POOLED_STDERR_WITHHELD_NOTICE
-    instead of printed raw, including one printed before fn raises.
+    """Call fn with its stderr filtered per _POOLED_STDERR_DIAGNOSTIC_RES's
+    rules, including any line printed before fn raises.
     """
     captured = io.StringIO()
     try:
@@ -1086,11 +1086,8 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    # Everything from here down — including resolve_scan_roots and both
-    # refusal calls — runs inside this try. A --pooled run must never let
-    # an unanticipated exception escape uncaught and print a raw,
-    # account-identifying traceback; see the except clause below for how a
-    # deliberate refusal and a non-pooled run are each handled differently.
+    # Everything through the pooled render, both refusal calls included, runs
+    # inside this try so no raw traceback escapes under --pooled.
     try:
         if pooled:
             # Pre-scan refusal: before resolve_scan_roots, so a refused run

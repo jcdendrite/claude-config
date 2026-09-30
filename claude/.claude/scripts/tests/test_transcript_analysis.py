@@ -10538,7 +10538,7 @@ class TestScanGapCounter:
         assert branches_seen == {"from-open-project"}
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_gap_counter_keys_stay_within_the_three_level_constants(self, tmp_path):
+    def test_gap_counter_keys_equal_the_three_level_constants(self, tmp_path):
         root_a = tmp_path / "acct-a"
         proj_a = root_a / "-repo-a"
         proj_a.mkdir(parents=True)
@@ -10560,7 +10560,7 @@ class TestScanGapCounter:
             os.chmod(sealed, 0o644)
             os.chmod(root_b, 0o755)
 
-        assert set(scan_gaps) <= {
+        assert set(scan_gaps) == {
             _mod.scope._SCAN_GAP_ROOT, _mod.scope._SCAN_GAP_PROJECT_DIR, _mod.scope._SCAN_GAP_SESSION_FILE,
         }
 
