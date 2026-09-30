@@ -26,7 +26,7 @@ If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place
 
 ## Step 2 — Discovery
 
-Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal.
+Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules (wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`), or cited to the ticket it came from. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
 
 ## Step 2.5 — Load project-specific layer
 
@@ -107,9 +107,9 @@ See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 
 Write the plan with these sections:
 
-1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
+1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal, then Step 2's `Ask:` line)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
-3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
+3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths. Name every file the diff will touch, tests and docs included: once approved, this list is the change's file limit. A file added after approval needs the engineer's answer first; the session then adds it to the list itself, with its own `[engineer-verified: "<quote>"]` row or, if it widens the Ask, on the Ask line.
 4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — only if scope creep was observed
 

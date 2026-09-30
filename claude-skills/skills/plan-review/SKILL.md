@@ -93,6 +93,8 @@ Markers of over-elaboration:
 - Captured outputs / fields with no downstream reader.
 - "Could be done in N lines" stays valid even after personas shaped the plan.
 
+**Measure against the ask.** Size the plan against the Context's `Ask:` line, not the plan's account of itself. A plan without one goes back to the author. List each deliverable or Critical file the Ask does not call for. Tests and docs a called-for deliverable needs count as called for, and an item you are unsure of goes on the list. Also list every Critical file added and every change to what the plan delivers since the plan's last commit on this branch, once it has one. Leave off an item an `[engineer-verified: "<quote>"]` row already covers. An item on the list is the engineer's call, not a finding for the author. Once question 3 is clean, put the list to the engineer as one `AskUserQuestion` before spawning any reviewer, and record each answer on its own ledger row quoting it; an unanswered or declined item makes the verdict **Request changes**.
+
 3. **Are foundation-correctness tripwires clean?** These fire on observable plan text, not on judgment calls. If any fire, stop — output "Foundation concern: [one sentence]" + "Lighter alternative: [one sentence pointing to source]" as the primary output; do not spawn specialists until the foundation question is resolved.
 
    - **Over-powered primitive.** Plan uses a mechanism heavier, more invasive, or wider-scope than the task needs. Required: **at least two** lighter primitives named from the source documentation, each with a one-sentence justification for why it fails — the same threshold `plan-it` Step 5 sets for the author, so a one-alternative plan fails here rather than passing review while violating the authoring rule. If fewer than two are enumerated, the foundation is the finding, not the hardening on top of it.
@@ -105,9 +107,11 @@ Markers of over-elaboration:
 
 If over-elaborated or any foundation tripwire fires: stop. Surface the simpler design or the foundation question as the primary review output before any checklist findings. Otherwise proceed to Step 5 — gap-finding will surface what's missing.
 
-Question implementation choices and the conditions the design accepts as fixed. A condition that defines *what* the plan delivers is feature scope and goes back to the author; a condition that constrains *how* it delivers is in bounds — whether or not the plan lists the file that would change it.
+Question implementation choices and the conditions the design accepts as fixed. A condition that defines *what* the plan delivers is feature scope, which question 2 measures against the `Ask:` line; a condition that constrains *how* it delivers is in bounds — whether or not the plan lists the file that would change it.
 
 If the plan carries an assumption ledger and this is a re-review round, note it here — the cross-check itself runs in each spawned reviewer's fresh context at Step 5 (see `ROUTING.md`'s Ledger cross-check).
+
+**Quote provenance.** Check, yourself and never through a spawned reviewer (which cannot see this session's messages), every quote the `Ask:` line or an `[engineer-verified: "<quote>"]` row attributes to the engineer that was added or changed since the plan's last commit on this branch — every quote, before its first commit. Each must appear among the engineer's own messages or selected labels this session; an accepted session draft is checked by its label and against the wording the question showed. Add any quote you cannot find there, a relayed one or one lost to compaction included, to question 2's `AskUserQuestion` instead of returning it to the author. A ticket cited on the `Ask:` line is a citation: check it as B5 does.
 
 ## Step 5 — Evaluate
 
