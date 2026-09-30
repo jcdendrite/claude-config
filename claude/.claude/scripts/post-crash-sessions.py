@@ -158,7 +158,7 @@ CLASS_TRANSCRIPT_ONLY = "transcript-only"
 CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"
 
 # Evidence-source names in --json output's `evidence_sources`. Part of the
-# JSON contract: renaming one bumps JSON_SCHEMA_VERSION.
+# JSON contract.
 SOURCE_REGISTRY = "registry"
 SOURCE_LOCK = "lock"
 SOURCE_LOOKUP = "lookup"
@@ -633,7 +633,9 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
 
     Returns (entries, legacy_bare_pid_paths, unparsed_count, any_sessions_dir_found).
     unparsed_count covers unparsable registry files and sessions/ directories
-    that could not be listed.
+    that could not be listed. A registry file is parsable only when it is a
+    JSON object with a non-empty string sessionId and an integer (or
+    ASCII-digit string) pid.
     Legacy bare-pid files (no .json suffix, written by capture-session-id.sh)
     are collected separately — they are a different, still-active mechanism,
     not part of this registry.
@@ -694,6 +696,8 @@ def _read_registry(config_dirs: list[Path]) -> tuple[list[RegistryEntry], list[P
 # ---------------------------------------------------------------------------
 
 def _read_lock(path: Path) -> LockEntry | None:
+    """Return None unless the file is a JSON object with a non-empty string
+    sessionId and an integer (or ASCII-digit string) pid."""
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -778,7 +782,7 @@ def _read_transcript_head(jsonl: Path, max_records: int) -> tuple[bool, str | No
                     break
                 try:
                     rec = json.loads(raw)
-                except json.JSONDecodeError:
+                except ValueError:
                     continue
                 any_parsed = True
                 if isinstance(rec, dict) and "cwd" in rec:

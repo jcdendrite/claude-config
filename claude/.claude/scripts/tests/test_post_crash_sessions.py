@@ -954,6 +954,14 @@ def test_find_scheduled_task_locks_reports_timeout_without_raising(tmp_path):
     assert timed_out is True
 
 
+def test_find_scheduled_task_locks_reports_timeout_when_find_cannot_be_started(tmp_path):
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("find is not installed")
+    found, timed_out, elapsed = _mod._find_scheduled_task_locks(tmp_path, run=fake_run)
+    assert found == []
+    assert timed_out is True
+
+
 def test_build_report_union_discovers_lock_missed_by_either_method_alone(tmp_path):
     """A harvest-only lock (reachable only because its cwd was seen in a
     transcript) and a find-only lock (never mentioned in any transcript)
@@ -1491,6 +1499,27 @@ def test_read_session_end_records_oversized_integer_literal_degrades_to_no_recor
     records, found = _mod._read_session_end_records([tmp_path])
     assert found is True
     assert [record.session_id for record in records.values()] == ["s-valid"]
+
+
+def test_read_transcript_head_oversized_integer_literal_skips_the_record_not_crash(tmp_path):
+    """json.loads raises ValueError (not JSONDecodeError) for an integer literal
+    past int()'s conversion limit; the next record must still be read."""
+    transcript_path = tmp_path / "s-oversized.jsonl"
+    oversized_line = '{"pid": ' + _digits_beyond_int_conversion_limit() + "}"
+    cwd_line = json.dumps(_cwd_record(str(tmp_path), branch="feature", session_id="s-oversized"))
+    transcript_path.write_text(oversized_line + "\n" + cwd_line + "\n")
+    any_parsed, cwd, git_branch, _timestamp = _mod._read_transcript_head(transcript_path, max_records=10)
+    assert any_parsed is True
+    assert cwd == str(tmp_path)
+    assert git_branch == "feature"
+
+
+def test_read_transcript_head_only_oversized_integer_literals_reports_nothing_parsed(tmp_path):
+    transcript_path = tmp_path / "s-oversized-only.jsonl"
+    transcript_path.write_text('{"pid": ' + _digits_beyond_int_conversion_limit() + "}\n")
+    any_parsed, cwd, _git_branch, _timestamp = _mod._read_transcript_head(transcript_path, max_records=10)
+    assert any_parsed is False
+    assert cwd is None
 
 
 def test_read_session_end_records_empty_session_id_degrades_to_no_record(tmp_path):
@@ -4025,6 +4054,43 @@ def test_build_report_with_unusable_ps_emits_only_unknown_rows_and_refuses(tmp_p
     assert {s["classification"] for s in document["sessions"]} == {"unknown"}
 
 
+def test_build_report_healthy_scan_emits_no_refuse_reasons(tmp_path):
+    config_dir_path = tmp_path / "config"
+    home_root = tmp_path / "home"
+    home_root.mkdir()
+    _write_registry_entry(config_dir_path / "sessions", _dead_pid(), sessionId="healthy-session")
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=home_root,
+        ps_lstart=_fake_ps_lstart({os.getpid(): "Mon Jan  1 00:00:00 2024"}),
+    )
+    document = _render_json_document(report)
+    assert document["refuse_reasons"] == []
+    assert [session["session_id"] for session in document["sessions"]] == ["healthy-session"]
+
+
+def test_build_report_junk_scheduled_task_lock_refuses_with_unparsed_lock_files(tmp_path):
+    config_dir_path = tmp_path / "config"
+    home_root = tmp_path / "home"
+    (config_dir_path / "sessions").mkdir(parents=True)
+    junk_lock = home_root / "proj" / ".claude" / "scheduled_tasks.lock"
+    junk_lock.parent.mkdir(parents=True)
+    junk_lock.write_text("not json")
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=home_root)
+    document = _render_json_document(report)
+    assert "unparsed_lock_files" in document["refuse_reasons"]
+    assert document["unparsed_lock_files"] == 1
+
+
+def test_build_report_timed_out_lock_sweep_refuses_with_find_timed_out(tmp_path, monkeypatch):
+    config_dir_path = tmp_path / "config"
+    (config_dir_path / "sessions").mkdir(parents=True)
+    monkeypatch.setattr(_mod, "_find_scheduled_task_locks", lambda find_root: ([], True, 0.1))
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    document = _render_json_document(report)
+    assert document["find_timed_out"] is True
+    assert "find_timed_out" in document["refuse_reasons"]
+
+
 def test_render_json_null_cwd_is_emitted_as_null():
     session = _render_json_document(_blank_report(rows=[_json_row(cwd=None)]))["sessions"][0]
     assert session["cwd"] is None
@@ -4354,7 +4420,8 @@ def test_build_report_config_dir_prefers_transcript_over_registry(tmp_path):
 def test_build_report_subagent_only_transcript_sets_config_dir_and_last_activity_over_registry_in_another_root(tmp_path):
     """A subagent-only transcript is not listed in evidence_sources, but its root
     and newest mtime still decide config_dir and last_activity on a dead pre-boot
-    registry row, because the classifier keys on the transcript's presence."""
+    registry row, because the classifier keys on the transcript's presence.
+    This test characterizes current behavior that the contract deliberately leaves unspecified."""
     registry_root = tmp_path / "registry-root"
     subagent_root = tmp_path / "subagent-root"
     _write_registry_entry(registry_root / "sessions", _dead_pid(), sessionId="split-session")
@@ -4376,6 +4443,7 @@ def test_build_report_subagent_only_transcript_sets_config_dir_and_last_activity
 
 
 def test_build_report_config_dir_for_two_main_transcripts_is_the_later_scanned_root(tmp_path):
+    """This test characterizes current behavior that the contract deliberately leaves unspecified."""
     earlier_root = tmp_path / "root-z-scanned-first"
     later_root = tmp_path / "root-a-scanned-last"
     for root in (earlier_root, later_root):
@@ -4404,6 +4472,7 @@ def test_build_report_config_dir_prefers_registry_over_lookup(tmp_path):
 
 
 def test_build_report_config_dir_is_the_first_registry_entry_in_scan_order(tmp_path):
+    """This test characterizes current behavior that the contract deliberately leaves unspecified."""
     first_root = tmp_path / "root-z-scanned-first"
     second_root = tmp_path / "root-a-scanned-last"
     for root in (first_root, second_root):
