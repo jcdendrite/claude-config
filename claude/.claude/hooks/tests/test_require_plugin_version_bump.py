@@ -236,13 +236,10 @@ class TestRequirePluginVersionBump:
         assert run_hook(VERSION_BUMP_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
 
     def test_dash_c_global_flag_form_allows_despite_unbumped_plugin(self, isolated_home, git_repo):
-        """This hook keeps its own bespoke regex (`git[[:space:]]+commit`),
-        unlike the shared fragment-aware matcher the other commit gates
-        use, and that regex stays blind to a `-c`
-        global flag ahead of the subcommand. An unbumped plugin change
-        that would deny under a bare `git commit` (see
-        test_plugin_file_changed_no_bump_denies) allows here instead --
-        pinned as an assertion rather than left as prose."""
+        """This hook matches `git[[:space:]]+commit` over raw text, so it
+        does not see a `-c` global flag ahead of the subcommand. An unbumped
+        plugin change that would deny under a bare `git commit` (see
+        test_plugin_file_changed_no_bump_denies) allows here instead."""
         _commit_plugin(git_repo, "plugins/foo", "1.0.0")
         _write_skill_file(git_repo, "plugins/foo/skills/bar/SKILL.md")
         _git_q(git_repo, "add", "plugins/foo/skills/bar/SKILL.md")

@@ -3254,8 +3254,7 @@ class TestCommandInvokesGitSubcmd:
 
     def test_global_dash_c_flag_prefix_still_matches(self) -> None:
         """A `-c key=val` global flag ahead of the subcommand must not hide
-        it -- require-skill-review.sh's bespoke regex missed exactly this
-        form, which is why this word-walking matcher exists."""
+        it: the word-walk skips the flag and its value."""
         assert _command_invokes_git_subcmd("git -c core.editor=true commit", "commit") == 0
 
     def test_global_dash_cap_c_flag_prefix_still_matches(self) -> None:

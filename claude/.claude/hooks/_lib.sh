@@ -1618,7 +1618,8 @@ _lib_fragment_concludes_commit_shape() {
 # initiating command with no separate `git commit` call, so this is the
 # only PreToolUse shape a conflict-resolution commit takes.
 # Tri-state via exit status, same 0/1/2 contract as
-# _lib_command_invokes_git_subcmd.
+# _lib_command_invokes_git_subcmd. Status 2 also covers a failed here-string
+# redirect in the fragment walk below.
 _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
@@ -2066,7 +2067,7 @@ _lib_chains_marker_write_before_commit() {
   local command="$1" skill="$2"
   # Step 1: command matches the sanctioned chained shape (mirrors
   # enforce-marker-script-shape.sh's VALID_CHAINED_COMMIT_PATTERN). One or
-  # more marker.sh write fragments joined by `&&`, then git commit. Anchored
+  # more marker.sh write fragments joined by `&&`, then a commit-concluding command. Anchored
   # so wrapper commands cannot trick the gate. `=~` anchors `^`/`$` to the
   # whole string and lets `.` cross a newline, so the chain must begin the
   # whole command and only the commit's tail may span further lines.

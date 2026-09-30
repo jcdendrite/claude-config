@@ -1400,17 +1400,18 @@ class TestRequireCodeReviewMergeAwareBase:
         )
 
 
-def _make_blocking_diff_git(bin_dir: Path) -> Path:
-    """For `diff` specifically, writes a partial line to stdout then blocks
-    past the 5s cap; every other subcommand proxies to the real git. Local
-    copy of test_lib.py's shim of the same name."""
+def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
+    """For `diff` specifically, writes `stdout_before_block` to stdout (nothing
+    when empty) then blocks past the 5s cap; every other subcommand proxies to
+    the real git. Extended local copy of test_lib.py's shim of the same name
+    (it takes `stdout_before_block`)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
         '#!/bin/bash\n'
         'for arg in "$@"; do\n'
         '  if [ "$arg" = "diff" ]; then\n'
-        '    printf "partialline"\n'
+        f'    printf "{stdout_before_block}"\n'
         '    sleep 20\n'
         '    exit 0\n'
         '  fi\n'
@@ -1444,6 +1445,33 @@ class TestRequireCodeReviewEmptyDiffCheckCapFaultInjection:
         unreviewed commit through."""
         bin_dir = tmp_path / "bin-blocking-diff"
         _make_blocking_diff_git(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocked_diff_with_zero_output_denies_rather_than_allows_as_nothing_staged(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A `git diff --cached` killed past the cap before printing anything
+        leaves EMPTY_DIFF_CHECK empty, indistinguishable by output alone from
+        a genuinely empty diff -- the killed status must keep it from taking
+        the nothing-staged exit, since git_repo has a real staged change."""
+        bin_dir = tmp_path / "bin-blocking-diff-zero-output"
+        _make_blocking_diff_git(bin_dir, stdout_before_block="")
         extra_env = {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "REAL_GIT": shutil.which("git"),
@@ -1707,8 +1735,8 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
 
 def _init_repo_on_branch(path: Path, branch: str) -> None:
     """Same minimal-repo shape as test_lib.py's own private helper of this
-    name -- kept as a file-local copy rather than a cross-test-file import,
-    since neither test file exports it via helpers.py."""
+    name. Deliberately duplicated per test file (DAMP over DRY) so each file's
+    fixture setup reads in full without a shared-helper indirection."""
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)

@@ -909,10 +909,8 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
-    # Carry no "Bash(git commit *)" `if` -- the field was observed firing
-    # on non-commit Bash calls, so it performed no filtering. Each of
-    # these already carries its own in-body commit-shape matcher as the
-    # real gate.
+    # Carry no "Bash(git commit *)" `if`; each self-filters on its own
+    # in-body commit-shape matcher.
     "require-code-review.sh",
     "guard-settings-session-keys.sh",
     "check-skill-length.sh",
@@ -945,10 +943,9 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
 
 def test_skill_management_gate_has_no_if_matcher() -> None:
     """The plugin's skill-review gate self-filters on its in-body
-    commit-shape predicate, so its hooks.json entry carries no `if` key: a
-    `Bash(git commit *)` glob would never dispatch the hook for a
-    `--continue` form or a `git -C <dir> commit` spelling. Declared-config
-    check only, same limit as test_self_filtering_bash_gate_has_no_if_matcher."""
+    commit-shape predicate, so its hooks.json entry carries no `if` key.
+    Declared-config check only, same limit as
+    test_self_filtering_bash_gate_has_no_if_matcher."""
     hook = _REPO_ROOT / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
     entries = _pretooluse_entries_for(hook)
     assert entries, f"{hook.name}: expected at least one PreToolUse entry"
@@ -970,16 +967,14 @@ def test_skill_management_gate_has_no_if_matcher() -> None:
 def test_version_bump_plugin_gate_keeps_its_commit_if_matcher(
     plugin_name: str, hook_name: str
 ) -> None:
-    """The two version-bump plugins' gates still rely on a literal
-    `Bash(git commit *)` `if` filter; dropping it from skill-management's gate
-    does not extend to them."""
+    """The version-bump plugins' gates dispatch on a literal `Bash(git commit *)` `if` filter."""
     hook = _REPO_ROOT / "plugins" / plugin_name / "hooks" / hook_name
     entries = _pretooluse_entries_for(hook)
     assert entries, f"{hook_name}: expected at least one PreToolUse entry"
     for entry in entries:
         assert entry.get("if") == "Bash(git commit *)", (
-            f"{hook_name}: expected its `Bash(git commit *)` `if` filter to be "
-            f"unchanged, got {entry.get('if')!r}"
+            f"{hook_name}: expected its `Bash(git commit *)` `if` filter, "
+            f"got {entry.get('if')!r}"
         )
 
 

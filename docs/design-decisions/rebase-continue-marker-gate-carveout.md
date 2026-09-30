@@ -116,7 +116,7 @@ The latency half exists only where `timeout(1)` or `gtimeout(1)` is on PATH. `_l
 
 Making `install.sh` fail instead of warn is declined. It would block onboarding on stock macOS without Homebrew coreutils, which is a change to install policy for every stow consumer that is out of proportion to a gate fix, and nothing re-checks PATH after install anyway.
 
-The mitigation is diagnostic only. A status-2 fallback and a genuine no-state result both produce an empty base and the same over-gating deny, so `require-code-review.sh` and `require-skill-review.sh` name the undetermined base in the deny message they were already emitting. No log file, counter, or telemetry is added. The other consumers of the base (`marker.sh`, `_lib_active_plan_files`, `_lib_staged_length_gate`, `_lib_reviewer_round_state_value`) stay silent on status 2, because none is the surface a confused contributor reads.
+The mitigation is diagnostic only. A status-2 fallback and a genuine no-state result both produce an empty base and the same over-gating deny, so `require-code-review.sh` and `require-skill-review.sh` name the undetermined base in the deny message they emit. No log file, counter, or telemetry is added. The other consumers of the base (`marker.sh`, `_lib_active_plan_files`, `_lib_staged_length_gate`, `_lib_reviewer_round_state_value`) stay silent on status 2, because none is the surface a confused contributor reads.
 
 ## The round-3 consult gate stays disarmed for the duration of a rebase
 
@@ -126,9 +126,9 @@ The carve-out does not widen the window. Because `require-code-review.sh` never 
 
 ## The version-bump gates keep their narrow matcher
 
-`require-plugin-version-bump.sh` and `require-npm-version-bump.sh` keep a bespoke `git commit` regex and their `hooks.json` `"if"` pre-filter. They stay blind to `git -c <key>=<value> commit` and to the `--continue` forms. Two reasons:
+`require-plugin-version-bump.sh` and `require-npm-version-bump.sh` match a bespoke `git commit` regex behind a `hooks.json` `"if"` pre-filter. They do not see `git -c <key>=<value> commit` or the `--continue` forms, for two reasons:
 
 - Arming them would mean duplicating the shared matcher's dependency chain into two more trimmed plugin libs, each with its own definition-equality test.
 - Arming them on `--continue` first requires deciding what "version strictly raised since the merge-base" means when the merge itself moved the merge-base.
 
-The duplication cost of the two maintained copies of the matcher (stowed and `skill-management` plugin) is the price of keeping the plugin installable without this repo. It is guarded by byte-comparison of function bodies, not by shared differential fixtures, so a divergence fails CI on the body changing rather than on observed output changing.
+The duplication cost of the two maintained copies of the matcher (stowed and `skill-management` plugin) is the price of a plugin installable without this repo. It is guarded by byte-comparison of function bodies, not by shared differential fixtures, so a divergence fails CI on the body changing rather than on observed output changing.

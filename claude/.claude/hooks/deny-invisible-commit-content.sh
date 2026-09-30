@@ -9,7 +9,7 @@
 # gates that depend on this one for their own empty-diff carve-out to stay
 # sound, for the shapes this gate closes.
 #
-# Three independent checks run.
+# Four independent checks run.
 #  - A wrapper/commit co-occurrence pre-check denies outright when the
 #    command's raw text carries both a commit-concluding fragment (`git
 #    commit`, or `git <merge|rebase|cherry-pick|revert> --continue` — the
@@ -32,14 +32,8 @@
 #      non-word-character boundary class treats a hyphen as a legitimate
 #      word boundary.
 #  - Arm 1 walks the command's git fragments in order over quote-stripped
-#    text. It denies:
-#    - a non-read-only git subcommand chained ahead of the first
-#      commit-concluding fragment (`git commit` or a `--continue` form)
-#    - a `git commit` fragment specifically carrying `-a`/`--all`, a `--`
-#      pathspec separator, or a bare pathspec argument — no `--continue`
-#      form accepts any of the three (see Known gaps below), so this half
-#      of the check stays keyed on the literal `commit` subcommand rather
-#      than the broader commit-concluding shape
+#    text. It denies a non-read-only git subcommand chained ahead of the
+#    first commit-concluding fragment (`git commit` or a `--continue` form).
 #  - Arm 2 counts commit-concluding fragments over quote-masked text and
 #    denies more than one anywhere in the command, since arm 1 stops at the
 #    first one and cannot see a second. The same ordered walk over masked
@@ -48,11 +42,20 @@
 #    a quote-embedded decoy's content, so a real mutation hidden behind a
 #    fake stripped commit fragment in arm 1's quote-stripped walk is still
 #    visible here.
-# Arm 1's own worktree-target check reuses arm 2's masked fragment for a
-# direct (unwrapped) `git commit` invocation rather than its own quote-
-# stripped one, so a multi-word quoted `-m` value stays one token for the
-# shared tokenizer instead of splitting into several bare-looking trailing
-# words.
+#  - The worktree-target check denies a `git commit` fragment carrying
+#    `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument. It
+#    is keyed on the literal `commit` subcommand because no `--continue` form
+#    accepts any of the three.
+#    - It runs between arm 2 and arm 1, after arm 2's multi-fragment deny.
+#    - The sole masked commit fragment's worktree target is always checked
+#      over its masked text, whatever its command word, so a quoted decoy does
+#      not hide that target and a multi-word quoted `-m` value is one token
+#      for the shared tokenizer.
+#    - Arm 1 re-checks quote-stripped text as an additional best-effort check
+#      that can also see a commit the masker erased (a quote-wrapped launcher).
+#      It can over-deny, and it does not reliably cover a masker-erased commit.
+#    - The test class in tests/test_deny_invisible_commit_content.py is the
+#      authoritative list of the shapes this check pins.
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
 # so it runs for every Bash tool call and filters internally via the
@@ -91,9 +94,12 @@
 #    `_lib.sh` header.
 #  - An execution mechanism outside the wrapper/commit co-occurrence
 #    check's enumerated token list — an `awk` `system()` call, a `make`
-#    recipe, `find -exec`, a remote `ssh host <cmd>` — still hides a real
-#    `git commit` from every check here. See require-respond-pr.sh's own
-#    "Threat model" comment for why this is accepted.
+#    recipe, `find -exec`, a remote `ssh host <cmd>` — hides a real
+#    `git commit` from every check here when the commit's words are not
+#    literal command text in the string. Arm 1's best-effort check covers
+#    some launchers whose quoted payload carries the commit as literal text.
+#    See require-respond-pr.sh's own "Threat model" comment for why the
+#    remainder is accepted.
 #  - A commit fragment embedded as a wrapper-language string literal with
 #    no whitespace between the wrapper's own call syntax and the opening
 #    quote evades the fast-reject's bare-word `git` match entirely — e.g.
@@ -125,11 +131,6 @@
 #    widened this hook's failure blast radius from commit-shaped Bash
 #    calls only to every Bash call in the session on a missing or wedged
 #    sed/tr.
-#  - The `-a`/`--`/pathspec check (arm 1) stays keyed on the literal
-#    `commit` subcommand: no `--continue` form accepts `-a`, `--`, or a
-#    bare pathspec argument (verified against git 2.55.0's option parser
-#    for all four gated verbs), so widening that check to `--continue`
-#    would only ever report "no target" and buys no additional coverage.
 #  - GH-1063: `_lib_split_fragments` doesn't split a bare `&` (background),
 #    so the walk judges a `&`-glued fragment by its first git subcommand only. A mutating first
 #    command is denied (`git add secret & git commit -m x`). A read-only
@@ -246,9 +247,11 @@ _fragment_concluding_label() {
 # fire before their own walk reaches the concluding fragment. The label
 # must come from the same fragment set the walk reads: quote-stripped and
 # quote-masked fragments can disagree on which fragment concludes the
-# commit when a quote-embedded decoy is present. Prints "git commit" if no
-# concluding fragment is found, which the fast-reject above has already
-# ruled out for the command as a whole.
+# commit when a quote-embedded decoy is present. Prints the neutral
+# "commit-concluding command" when no fragment qualifies. The fast-reject
+# above also walks `&`-separated pieces, which fragment-splitting does not,
+# and the masked fragment set erases the quoted text the fast-reject reads,
+# so the fast-reject can match a command this scan does not.
 _first_concluding_fragment_label() {
   local fragments="$1" fragment subcmd
   while IFS= read -r fragment; do
@@ -260,7 +263,7 @@ _first_concluding_fragment_label() {
       return 0
     fi
   done <<< "$fragments"
-  printf 'git commit'
+  printf 'commit-concluding command'
 }
 
 CONCLUDING_FRAGMENT_LABEL=$(_first_concluding_fragment_label "$STRIPPED_FRAGMENTS")
@@ -279,7 +282,7 @@ EXECUTION_WRAPPER_TOKEN_RE='(^|/|[[:space:]])(bash|sh|zsh|ksh|dash)[[:space:]]+-
 printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"
 WRAPPER_TOKEN_EXIT=$?
 if [ "$WRAPPER_TOKEN_EXIT" -eq 0 ]; then
-  emit_deny "this Bash call carries both a commit-concluding fragment (${CONCLUDING_FRAGMENT_LABEL}) and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
+  emit_deny "this Bash call carries both a ${CONCLUDING_FRAGMENT_LABEL} and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
   exit 0
 fi
 if [ "$WRAPPER_TOKEN_EXIT" -ne 1 ]; then
@@ -340,13 +343,14 @@ COMMIT_FRAGMENT_COUNT=0
 # Each commit-concluding fragment's displayable shape, for the
 # multi-invocation deny message.
 CONCLUDING_FRAGMENT_LABELS=()
-# Captured alongside the count above for arm 1's worktree-target check to
-# reuse below — see the header comment above for why a masked fragment's
-# real quoting matters there. Only ever set from a fragment that is itself
-# a direct `git ...` invocation (never `bash -c "..."`/`eval ...`), so a
-# wrapped commit's own flags are never silently swapped out for an
-# unrelated, later direct commit's clean ones.
-DIRECT_MASKED_COMMIT_FRAGMENT=""
+# Captured alongside the count above for the worktree-target check below.
+# Holds the masked `git commit` fragment whatever its command word. The count
+# deny below runs first, so at most one commit fragment reaches the check.
+SOLE_MASKED_COMMIT_FRAGMENT=""
+# 1 when that fragment's command word is `git` itself. Arm 1 skips its
+# stripped-text re-check for a stripped fragment whose command word is also
+# `git` while this is 1.
+SOLE_MASKED_COMMIT_INVOKES_GIT=0
 while IFS= read -r masked_fragment; do
   [ -z "$masked_fragment" ] && continue
   _lib_fragment_invokes_git "$masked_fragment" || continue
@@ -354,14 +358,19 @@ while IFS= read -r masked_fragment; do
   if _lib_fragment_concludes_commit "$masked_fragment" "$masked_subcmd"; then
     COMMIT_FRAGMENT_COUNT=$((COMMIT_FRAGMENT_COUNT + 1))
     CONCLUDING_FRAGMENT_LABELS+=("$(_fragment_concluding_label "$masked_subcmd")")
-    if [ "$masked_subcmd" = "commit" ] && _lib_fragment_invokes_tool "$masked_fragment" git; then
-      DIRECT_MASKED_COMMIT_FRAGMENT="$masked_fragment"
+    if [ "$masked_subcmd" = "commit" ]; then
+      SOLE_MASKED_COMMIT_FRAGMENT="$masked_fragment"
+      if _lib_fragment_invokes_tool "$masked_fragment" git; then
+        SOLE_MASKED_COMMIT_INVOKES_GIT=1
+      else
+        SOLE_MASKED_COMMIT_INVOKES_GIT=0
+      fi
     fi
     continue
   fi
   if [ "$COMMIT_FRAGMENT_COUNT" -eq 0 ] && ! [[ "$masked_subcmd" =~ ^($ALLOWED_RE)$ ]]; then
     trimmed_masked_fragment=$(_trim_fragment "$masked_fragment")
-    emit_deny "'${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real ${MASKED_CONCLUDING_LABEL} and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with ${MASKED_CONCLUDING_LABEL} as a second, separate call."
+    emit_deny "'${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real ${MASKED_CONCLUDING_LABEL} and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with the ${MASKED_CONCLUDING_LABEL} as a second, separate call."
     exit 0
   fi
 done <<< "$MASKED_FRAGMENTS"
@@ -372,6 +381,14 @@ if [ "$COMMIT_FRAGMENT_COUNT" -gt 1 ]; then
     CONCLUDING_FRAGMENT_LABELS_JOINED+="${CONCLUDING_FRAGMENT_LABELS_JOINED:+, }${concluding_label}"
   done
   emit_deny "Commit — this Bash call chains ${COMMIT_FRAGMENT_COUNT} commit-concluding git invocations together (${CONCLUDING_FRAGMENT_LABELS_JOINED}), but every commit gate evaluates \`git diff --cached\` once per Bash tool call — any one after the first runs against a snapshot no gate re-checked. Each commit-concluding git command must run as its own, separate Bash tool call."
+  exit 0
+fi
+
+# Worktree-target check for the sole masked `git commit` fragment, run over
+# masked text ahead of arm 1 — the header explains why.
+WORKTREE_TARGET_DENY_MESSAGE="Commit — this git commit uses -a/--all, a -- pathspec separator, or a bare pathspec argument, which commits working-tree content that was not in the index when every commit gate's \`git diff --cached\` snapshot ran — that content was never reviewed. Stage the changes explicitly first (git add), then commit with no -a/--all and no pathspec."
+if [ -n "$SOLE_MASKED_COMMIT_FRAGMENT" ] && _lib_commit_fragment_has_worktree_target "$SOLE_MASKED_COMMIT_FRAGMENT"; then
+  emit_deny "$WORKTREE_TARGET_DENY_MESSAGE"
   exit 0
 fi
 
@@ -395,26 +412,21 @@ while IFS= read -r fragment; do
   _lib_fragment_invokes_git "$fragment" || continue
   subcmd=$(_lib_extract_git_subcmd "$fragment")
   if _lib_fragment_concludes_commit "$fragment" "$subcmd"; then
-    if [ "$subcmd" = "commit" ]; then
-      # Prefer arm 2's masked counterpart when this stripped fragment is
-      # itself a direct `git ...` invocation — see the header comment above
-      # for why. Falls back to the stripped fragment unchanged for a wrapped
-      # invocation (`bash -c "git commit ..."`), where the masked
-      # counterpart may belong to a different, later invocation entirely.
-      commit_check_fragment="$fragment"
-      if [ -n "$DIRECT_MASKED_COMMIT_FRAGMENT" ] && _lib_fragment_invokes_tool "$fragment" git; then
-        commit_check_fragment="$DIRECT_MASKED_COMMIT_FRAGMENT"
-      fi
-      if _lib_commit_fragment_has_worktree_target "$commit_check_fragment"; then
-        emit_deny "Commit — this git commit uses -a/--all, a -- pathspec separator, or a bare pathspec argument, which commits working-tree content that was not in the index when every commit gate's \`git diff --cached\` snapshot ran — that content was never reviewed. Stage the changes explicitly first (git add), then commit with no -a/--all and no pathspec."
-        exit 0
-      fi
+    # Skipped when this fragment and the sole masked commit fragment both have
+    # `git` as command word. Otherwise a best-effort check runs over
+    # quote-stripped text. It can over-deny, and the walk ends at the first
+    # concluding fragment, so it does not reliably cover every commit.
+    if [ "$subcmd" = "commit" ] \
+      && ! { [ "$SOLE_MASKED_COMMIT_INVOKES_GIT" -eq 1 ] && _lib_fragment_invokes_tool "$fragment" git; } \
+      && _lib_commit_fragment_has_worktree_target "$fragment"; then
+      emit_deny "$WORKTREE_TARGET_DENY_MESSAGE"
+      exit 0
     fi
     exit 0
   fi
   if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
     trimmed_fragment=$(_trim_fragment "$fragment")
-    emit_deny "'${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's ${CONCLUDING_FRAGMENT_LABEL} and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
+    emit_deny "'${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's ${CONCLUDING_FRAGMENT_LABEL} and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."
     exit 0
   fi
 done <<< "$STRIPPED_FRAGMENTS"

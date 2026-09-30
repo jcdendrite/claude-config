@@ -72,13 +72,10 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_wrapped_dirty_commit_then_clean_direct_commit_denied(self):
-        """Adversarial case for the arm 1/arm 2 fragment substitution: arm 2
-        would capture the second, direct, `-a`-free commit as
-        `DIRECT_MASKED_COMMIT_FRAGMENT`, but arm 1 stops at the first
-        (wrapped, `-a`-carrying) commit fragment. Substituting arm 2's
-        clean second invocation in for the first would wrongly turn this
-        into an allow — the "direct invocation" guard must keep this
-        fragment on its own quote-stripped text instead."""
+        """The wrapper/commit co-occurrence pre-check denies this `bash -c`
+        command before either arm runs. The quote-stripped check in arm 1 is
+        pinned by the `ssh host "..."` tests below, whose launcher is not a
+        wrapper token."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('bash -c "git commit -a -m x" && git commit -m y'),
@@ -414,8 +411,8 @@ class TestDenyInvisibleCommitContent:
 
     def test_commit_all_multiword_message_denied(self):
         """A real `-a` bundled with a multi-word message must still deny —
-        the arm 1/arm 2 fragment substitution that fixes the multi-word
-        false-deny below must not accidentally swallow a genuine `-a`."""
+        the masked-fragment check that fixes the multi-word false-deny below
+        must not accidentally swallow a genuine `-a`."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('git commit -am "fix a real bug"'),
@@ -427,13 +424,10 @@ class TestDenyInvisibleCommitContent:
 
     def test_quoted_git_word_with_all_flag_denied(self):
         """GH-783: a single, unchained, quoted-`git` commit using `-a`
-        proves arm 1's whole path denies once the fast-reject hoist onto
-        COMMAND_UNQUOTED lets it through. Does not by itself isolate the
-        masker fix's contribution — arm 1's commit_check_fragment defaults
-        to the already quote-stripped `$fragment` regardless of the
-        masker, so `-a` is visible either way; the allow test below (a
-        multiword message, no `-a`) is what actually isolates the masker
-        fix."""
+        denies. Does not by itself isolate the masker's contribution, since
+        `-a` is visible in the quote-stripped and masked text alike; the
+        allow test below (a multiword message, no `-a`) is what actually
+        isolates the masker."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('"git" commit -a -m "fix the thing"'),
@@ -465,6 +459,112 @@ class TestDenyInvisibleCommitContent:
         assert reason is not None
         assert "stage the changes explicitly" in reason.lower()
         assert "no -a/--all and no pathspec" in reason
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_non_git_fragment_naming_continue_form_ahead_of_commit_all_denied(self, verb):
+        """A non-git fragment whose quote-stripped text reads as `git <verb>
+        --continue` is a decoy that arm 1's stripped walk stops at, so the
+        real `git commit -am` behind it must reach the worktree-target
+        check."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'grep -rn "git {verb} --continue" docs/; git commit -am "x"'),
+        ) == "deny"
+
+    def test_variable_assigned_continue_text_ahead_of_commit_all_denied(self):
+        """The decoy text reaches the walk through an assignment fragment
+        rather than a quoted argument; the real `-am` commit denies."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('msg="docs: git rebase --continue"; git commit -am "$msg"'),
+        ) == "deny"
+
+    def test_echoed_commit_text_ahead_of_commit_all_denied(self):
+        """A quoted `git commit` inside `echo` is a decoy commit fragment for
+        arm 1's stripped walk; the real `-am` commit behind it denies."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('echo "git commit -m y"; git commit -am x'),
+        ) == "deny"
+
+    @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
+    def test_non_git_fragment_naming_continue_form_ahead_of_clean_commit_allowed(self, verb):
+        """Control for `test_non_git_fragment_naming_continue_form_ahead_of_commit_all_denied`:
+        the same decoy ahead of a commit with no worktree target allows, so
+        that deny comes from the `-am`, not the decoy."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(f'grep -rn "git {verb} --continue" docs/; git commit -m "x"'),
+        ) == "allow"
+
+    def test_echoed_commit_text_ahead_of_clean_commit_allowed(self):
+        """Control for `test_echoed_commit_text_ahead_of_commit_all_denied`:
+        the same decoy ahead of a commit with no worktree target allows."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('echo "git commit -m y"; git commit -m x'),
+        ) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('grep -rn "git rebase --continue" docs/; timeout 60 git commit -am "x"', id="timeout-runner"),
+            pytest.param('grep -rn "git rebase --continue" docs/; nohup git commit -am x', id="nohup-launcher"),
+            pytest.param('msg="docs: git rebase --continue"; nice -n 10 git commit -am "$msg"', id="nice-with-argument"),
+        ],
+    )
+    def test_commit_all_behind_decoy_denied_whatever_its_command_word(self, command):
+        """The sole masked commit fragment is checked for a worktree target
+        whatever its command word. Arm 1 stops at the decoy that reads as a
+        `--continue` form, so a check keyed on a bare `git` command word
+        would let the `-am` through."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('grep -rn "git rebase --continue" docs/; timeout 60 git commit -m "x"', id="timeout-runner"),
+            pytest.param('grep -rn "git rebase --continue" docs/; nohup git commit -m x', id="nohup-launcher"),
+            pytest.param('msg="docs: git rebase --continue"; nice -n 10 git commit -m "$msg"', id="nice-with-argument"),
+        ],
+    )
+    def test_clean_commit_behind_decoy_allowed_whatever_its_command_word(self, command):
+        """Control for `test_commit_all_behind_decoy_denied_whatever_its_command_word`:
+        the same decoys ahead of a commit with `-m` and no worktree target
+        allow."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "allow"
+
+    @pytest.mark.parametrize("command", ["nohup git commit -am x", "timeout 60 git commit -am x"])
+    def test_commit_all_with_non_git_command_word_denied(self, command):
+        """No decoy: the commit's command word is a launcher, not `git`, and
+        its `-am` denies."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('ssh host "git commit -a -m x"', id="quote-wrapped-alone"),
+            pytest.param('ssh host "git commit -a -m x" && git commit -m y', id="quote-wrapped-then-clean-direct"),
+        ],
+    )
+    def test_quote_wrapped_launcher_commit_all_denied(self, command):
+        """`ssh` is not an execution-wrapper token, so the pre-check does not
+        fire. Masking erases the quoted commit, leaving no masked commit
+        fragment (alone) or the clean direct one (chained), so arm 1's
+        quote-stripped check is what finds the `-a`."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('ssh host "git commit -m x"', id="quote-wrapped-alone"),
+            pytest.param('ssh host "git commit -m x" && git commit -m y', id="quote-wrapped-then-clean-direct"),
+        ],
+    )
+    def test_quote_wrapped_launcher_clean_commit_allowed(self, command):
+        """Control for `test_quote_wrapped_launcher_commit_all_denied`: the
+        same shapes with no `-a` allow."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "allow"
 
     def test_dash_c_other_repo_commit_denied(self):
         """GH-783: `-C <other-repo>` no longer hides this commit from
@@ -662,27 +762,49 @@ class TestDenyInvisibleCommitContent:
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
-    def test_bare_continue_form_allowed(self, verb):
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "git {verb} --continue",
+            "GIT_EDITOR=true git {verb} --continue",
+            "git -c core.editor=true {verb} --continue",
+        ],
+    )
+    def test_bare_continue_form_allowed(self, verb, command_template):
         """Once the fast-reject and both arms recognize the --continue
         family, a bare `--continue` with nothing chained ahead of it must
-        still allow -- a regression that widened only the fast-reject while
-        leaving either arm's test at literal `commit` would instead deny
-        every sync in the repo. Also confirms the worktree-target check
-        stays keyed on literal `commit`, so this --continue form never
-        reaches that deny either."""
-        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(f"git {verb} --continue")) == "allow"
+        allow, including behind an env-var prefix or a `-c` global flag -- a
+        regression that widened only the fast-reject while leaving either
+        arm's test at literal `commit` would instead deny every sync in the
+        repo. The worktree-target check is keyed on literal `commit`, so
+        this --continue form never reaches that deny either."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input(command_template.format(verb=verb)),
+        ) == "allow"
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])
-    def test_chained_mutation_ahead_of_continue_denied(self, verb):
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "git {verb} --continue",
+            "GIT_EDITOR=true git {verb} --continue",
+            "git -c core.editor=true {verb} --continue",
+        ],
+    )
+    def test_chained_mutation_ahead_of_continue_denied(self, verb, command_template):
         """The TOCTOU gap this gate exists to close: a chained `git add`
         ahead of a `--continue` form is invisible to every other commit
         gate's `git diff --cached` snapshot exactly as it is ahead of a bare
         `git commit` -- including the rebase form, which the two
         review-marker gates' own rebase carve-out does not reach, so this
-        gate is the only one still armed on it."""
+        gate is the only one still armed on it. The env-prefixed and
+        `-c`-qualified spellings are the deny twins of
+        `test_bare_continue_form_allowed`'s templates, so an allow there
+        cannot come from the hook failing to recognize the spelling."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
-            bash_input(f"git add f && git {verb} --continue"),
+            bash_input(f"git add f && {command_template.format(verb=verb)}"),
         ) == "deny"
 
     @pytest.mark.parametrize("verb", ["merge", "rebase", "cherry-pick", "revert"])

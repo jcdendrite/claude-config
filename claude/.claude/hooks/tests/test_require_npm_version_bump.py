@@ -369,13 +369,10 @@ class TestRequireNpmVersionBump:
         assert run_hook(VERSION_BUMP_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
 
     def test_dash_c_global_flag_form_allows_despite_missing_bump(self, feature_clone):
-        """This hook keeps its own bespoke regex (`git[[:space:]]+commit`),
-        unlike the shared fragment-aware matcher the other commit gates
-        use, and that regex stays blind to a `-c`
-        global flag ahead of the subcommand. A missing-bump change that
-        would deny under a bare `git commit` (see
-        test_bump_missing_denies) allows here instead -- pinned as an
-        assertion rather than left as prose."""
+        """This hook matches `git[[:space:]]+commit` over raw text, so it
+        does not see a `-c` global flag ahead of the subcommand. A
+        missing-bump change that would deny under a bare `git commit` (see
+        test_bump_missing_denies) allows here instead."""
         _write_source_file(feature_clone, "packages/demo/src/index.ts")
         _git_q(feature_clone, "add", "packages/demo/src/index.ts")
         assert (

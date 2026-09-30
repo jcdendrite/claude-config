@@ -154,9 +154,9 @@ Accepted residual: the trigger's four forks (`sed` and `tr` in the quote-strip, 
 
 The trigger is `_lib_command_concludes_marker_gated_commit`. The hook is dispatched on every `Bash` tool call, not only `git commit`-shaped ones, and the cost that matters is the non-matching (allow) fast path.
 
-Measured per-fire wall-clock cost of `require-skill-review.sh` on that fast path, run directly against the hook (`bash <hook>`) with a synthetic `tool_input` payload on stdin from a plain non-repository working directory. Each input has 1 unmeasured warm-up run and 5 timed runs, on a development machine with 8 cores, GNU bash 5.2 and GNU sed 4.9, at a load average of about 3 (other sessions were running, so ranges include contention). Every payload is synthetic. A prose heredoc is `cat <<'EOF'`, N filler lines, then `EOF`, and every filler line is 67 bytes, so 5 KB is 76 lines, 50 KB is 764, and 500 KB is 7,640. The prose filler line is `The reviewers read the plans, noted two open issues, and moved on.` The git-dense filler is `Run git status, git add, git commit, then git push the branch now.` The two-`&` filler is `Plans & notes: the reviewer read it & moved on with the new items.` The one-`&` rows open the heredoc as `cat 2>&1 <<'EOF'`, so their only `&` is on line 1.
+Measured per-fire wall-clock cost of `require-skill-review.sh` on that fast path, run directly against the hook with a synthetic `tool_input` payload from a non-repository working directory, as 1 warm-up run plus 5 timed runs on an 8-core development machine at a load average of about 3, so ranges include contention. Heredoc payloads are `cat <<'EOF'`, N 67-byte filler lines (prose, git-dense prose, or prose with `&`), then `EOF`, and the one-`&` rows open the heredoc as `cat 2>&1 <<'EOF'`, so their only `&` is on line 1.
 
-| Command | Size | Fragment-aware median (range) |
+| Command | Size | Median (range) |
 |---|---|---|
 | `ls -la` | 6 B | 17ms (17–18ms) |
 | compound, 3 git fragments | 43 B | 23ms (22–24ms) |
@@ -203,7 +203,7 @@ The pass's worst case is a payload where every line has both a standalone `git` 
 
 Ratio is the as-written time over the no-pass-2 time, so pass 2 alone costs about 3–4 times pass 1 on this shape. GH-1180 owns the follow-up for this cost. Its success criterion below names inputs with no `git` word, so an early exit alone does not bound this shape, which has `git` words on every line.
 
-Follow-up owner: GH-1180. GH-1063 tracks the fragment splitter this predicate shares, and it can close without meeting this criterion. Success criterion: allow-path cost for an input containing no `git` word does not scale with fragment count. A fork-free glob test on the already quote-stripped string, ahead of the split and loop, is the lighter primitive to try first. The fix lands in the shared predicate in both `_lib.sh` copies, whose function bodies the closure-equality tests hold byte-identical. The stowed `require-code-review.sh` and `deny-invisible-commit-content.sh` run the same predicate on every Bash call, so they pay the same per-fragment cost; neither hook's cost was measured separately.
+Follow-up owner: GH-1180. GH-1063 tracks the fragment splitter this predicate shares, and it can close without meeting this criterion. Success criterion: allow-path cost for an input containing no `git` word does not scale with fragment count. A fork-free glob test on the already quote-stripped string, ahead of the split and loop, is the lighter primitive to try first. The fix lands in the shared predicate in both `_lib.sh` copies, whose function bodies the closure-equality tests hold byte-identical. Every hook that calls either public wrapper pays this per-fragment cost on each Bash call. The measurements above cover the plugin's `require-skill-review.sh` alone.
 
 ## Known gap: the plugin matcher
 
@@ -221,7 +221,7 @@ No stowed gate evaluates a redirected repository, tree, or index (`-C`, `--git-d
 
 The trigger also over-matches. It is a quote-blind word walk, so a command that only names a commit command as an argument (`echo git commit`, `grep "git commit" docs/x.md`, `git log --grep "fix & git commit hook"`) reaches the gate and denies while gated content is staged with no marker. Fail-toward-deny is the accepted posture, pinned by `test_accepted_over_deny_command_naming_a_commit_reaches_gate`.
 
-`bash -c "git commit"` and `eval "git commit"` are recognized: quote-stripping leaves `git commit` as bare words. What bypasses the trigger, as it does the stowed code-review gate, is a commit whose words never appear together in the command string:
+`bash -c "git commit"` and `eval "git commit"` are recognized: quote-stripping leaves `git commit` as bare words. What bypasses the trigger, as it does the stowed code-review gate, is a commit the argv walk does not parse as `git` then `commit`:
 
 - A variable or `${IFS}` standing in for a word (`c=commit; git $c`).
 - A git alias (`git ci`).
@@ -229,6 +229,7 @@ The trigger also over-matches. It is a quote-blind word walk, so a command that 
 - A `\`-newline continuation between `git` and `commit`.
 - A value of a global flag that precedes the subcommand (the value-taking list in `_lib_git_argv_from_subcmd`) that contains whitespace, which requires quotes, or a fragment operator (`$(`, backtick, `;`, `&&`, `||`, `|`), quoted or not. The argv walk breaks on such a value, so the subcommand is not found. Examples are `git -C "dir with space" commit` and `git -C $(pwd) commit`.
 - Text built by command substitution or decoded from an encoding and piped to a shell.
+- An env-var assignment whose value ends in `/git`, ahead of the real `git` word (`X=/a/git git commit`). The walk takes the assignment as the `git` word, so the subcommand it reads is the real `git`.
 
 `test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized` pins the first five bullets, and its parametrization is the authoritative list of shapes for the fifth.
 

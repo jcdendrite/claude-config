@@ -128,7 +128,10 @@ GATE_DIFF_BASE_STATUS=$?
 # three non-rebase --continue forms), not literal git commit alone.
 if [ -z "$GATE_DIFF_BASE" ]; then
   EMPTY_DIFF_CHECK=$(_lib_capped git -C "$REPO_ROOT" diff --cached 2>/dev/null)
-  if [ -z "$EMPTY_DIFF_CHECK" ]; then
+  EMPTY_DIFF_STATUS=$?
+  # A non-zero status (killed past the cap, git error) can leave the output
+  # empty, so "nothing staged" requires a zero status as well as empty output.
+  if [ "$EMPTY_DIFF_STATUS" -eq 0 ] && [ -z "$EMPTY_DIFF_CHECK" ]; then
     exit 0
   fi
 fi

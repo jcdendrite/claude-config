@@ -5388,11 +5388,11 @@ def _stage_reach_probe_skill(repo):
 
 
 class TestSkillReviewGateCommitShapeTrigger:
-    """The trigger is the fragment-aware _lib_command_concludes_marker_gated_commit,
-    not a `git commit` regex: the three non-rebase `--continue` forms and
-    global-flag / quoted-`git` commit spellings reach the gate, `rebase
-    --continue` and non-commit commands do not. The trigger runs before
-    REPO_ROOT resolution, so no in-progress state is needed."""
+    """The trigger is the fragment-aware _lib_command_concludes_marker_gated_commit:
+    the three non-rebase `--continue` forms and global-flag / quoted-`git`
+    commit spellings reach the gate, `rebase --continue` and non-commit
+    commands do not. The trigger runs before REPO_ROOT resolution, so no
+    in-progress state is needed."""
 
     @pytest.mark.parametrize(
         "command",
@@ -5950,7 +5950,10 @@ class TestSkillReviewGateTriggerFailsClosedWithoutBinary:
     ):
         """The deny covers every Bash call, `ls` included: hooks.json carries no
         `if` pre-filter, so the predicate's forks run before any command-shape
-        check. That scope is a decision on record, not an accident."""
+        check. That scope is deliberate: `CHANGELOG.md` records it in the
+        `skill-management` 4.1.0 entry, and
+        `docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md`
+        § "Performance" measures its cost."""
         farm_dir = tmp_path / f"path-without-{missing_binary}"
         farm_dir.mkdir()
         restricted_path = build_path_without(missing_binary, farm_dir)
