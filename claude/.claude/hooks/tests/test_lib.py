@@ -8391,3 +8391,78 @@ def test_shared_closure_function_is_identical_across_stowed_and_plugin_lib(
     assert _declared_function_body(_LIB_SH, function_name) == _declared_function_body(
         _SKILL_MANAGEMENT_PLUGIN_LIB, function_name
     )
+
+
+# --- The no-follow helpers must not import from the working directory ---------
+
+_POISONED_STDLIB_MODULE_SOURCE = (
+    'import pathlib\n'
+    'pathlib.Path(__file__).with_name("poison-ran").write_text("ran")\n'
+    'raise RuntimeError("the working directory shadowed the standard library")\n'
+)
+
+
+def _poisoned_cwd(tmp_path: Path) -> Path:
+    """A directory holding modules that record their own import and then fail,
+    named for the standard-library module the sha256 helper imports."""
+    poisoned_dir = tmp_path / "pr-checkout"
+    poisoned_dir.mkdir()
+    (poisoned_dir / "hashlib.py").write_text(_POISONED_STDLIB_MODULE_SOURCE)
+    return poisoned_dir
+
+
+def _run_helper_uncapped(helper_call: str, cwd: Path, target: Path) -> subprocess.CompletedProcess:
+    """Runs `helper_call` (target at "$2") with _lib_capped passed through, so its 5s cap cannot fire under load."""
+    return subprocess.run(
+        ["bash", "-c", f'. "$1"; _lib_capped() {{ "$@"; }}; {helper_call}', "bash", str(_LIB_SH), str(target)],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=60,  # Generous harness bound so a hung helper fails this test instead of the suite.
+    )
+
+
+class TestNoFollowHelpersIgnoreTheWorkingDirectory:
+    """`python3 -c` puts the cwd first on sys.path, and a review runs these
+    helpers with a PR checkout as cwd. A PR-planted top-level hashlib.py must
+    not run in the sha256 helper, the only one importing a module outside the
+    already-loaded os and sys, and must not break the other helpers' round
+    trip."""
+
+    def test_sha256_helper_does_not_execute_a_hashlib_planted_in_the_cwd(self, tmp_path):
+        poisoned_dir = _poisoned_cwd(tmp_path)
+        target = tmp_path / "findings-body.txt"
+        target.write_bytes(b"reviewed bytes\n")
+
+        result = _run_helper_uncapped('_lib_sha256_no_follow "$2"', poisoned_dir, target)
+
+        assert result.returncode == 0, f"exit {result.returncode}: {result.stderr}"
+        assert result.stdout.strip() == hashlib.sha256(b"reviewed bytes\n").hexdigest()
+        assert not (poisoned_dir / "poison-ran").exists(), "the planted hashlib.py was imported and executed"
+
+    def test_cat_and_write_helpers_still_round_trip_from_a_cwd_holding_a_hashlib_module(self, tmp_path):
+        """A round trip only: these helpers import os and sys, which are loaded
+        before the cwd joins sys.path, so the cwd cannot show whether -I is
+        present. test_lib_sh_inline_python_starts_carry_isolated_mode does."""
+        poisoned_dir = _poisoned_cwd(tmp_path)
+        destination = tmp_path / "artifact.txt"
+
+        result = _run_helper_uncapped(
+            'printf "%s" "payload" | _lib_write_no_follow "$2" && _lib_cat_no_follow "$2"', poisoned_dir, destination
+        )
+
+        assert result.returncode == 0, f"exit {result.returncode}: {result.stderr}"
+        assert result.stdout == "payload"
+
+
+def test_lib_sh_inline_python_starts_carry_isolated_mode():
+    """A `python3 -c` whose option cluster lacks -I puts the cwd on sys.path."""
+    code_lines = [line.strip() for line in _LIB_SH.read_text().splitlines() if not line.lstrip().startswith("#")]
+    inline_start = re.compile(r"python3 ((?:-\S+ )*-[A-Za-z]*c)\b")
+    inline_starts = [line for line in code_lines if inline_start.search(line)]
+    inline_starts_without_isolated_mode = [
+        line for line in inline_starts if not re.search(r"-[A-Za-z]*I", inline_start.search(line).group(1))
+    ]
+
+    assert inline_starts, "found no `python3 -c` start in _lib.sh, so the isolated-mode check examined nothing"
+    assert inline_starts_without_isolated_mode == []

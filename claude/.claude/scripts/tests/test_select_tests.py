@@ -696,6 +696,19 @@ class TestSelectPytestTargets:
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
+    def test_review_pr_audit_script_change_also_selects_scripts_tests(self):
+        """test_review_pr_lib.py (SCRIPTS_TESTS_DIR) runs the audit script and
+        compares its stdout byte-for-byte to the clean-document constant, by a
+        function-local path read. Without this cross-domain exception, the
+        review-pr domain rule claims the path first and that coverage goes
+        unrun."""
+        result = _mod.select_pytest_targets([_mod.REVIEW_PR_AUDIT_SCRIPT])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_PR_SKILL_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+        }
+
     def test_skill_files_read_by_hook_tests_each_also_select_hooks_tests(self):
         """Every SKILL_FILES_READ_BY_HOOK_TESTS member is read by exact path
         from a test under HOOKS_TESTS_DIR -- e.g.
@@ -1682,6 +1695,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.CLAUDE_SETTINGS_JSON,
     _mod.HANDOFF_SKILL_MD,
     _mod.MARKER_CLEAR_STALE_PY,
+    _mod.REVIEW_PR_AUDIT_SCRIPT,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,

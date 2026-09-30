@@ -68,7 +68,8 @@
 #
 # A matched WRITE is never released, with or without a marker: every `gh pr
 # review`/`reviews` write is denied unconditionally, redirecting to
-# ~/.claude/scripts/review-pr-post.sh. That script independently
+# `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
+# That script independently
 # re-verifies the PR identity and findings-body hash recorded by /review-pr's
 # own completion marker, and re-fetches the PR's live remote headRefOid to
 # compare against the marker's recorded one (see that script's
@@ -346,7 +347,7 @@ shopt -u nocasematch
 # "Second bypass path" above) -- there is no read-release path here for a
 # write to ride along with.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
+  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N> instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0
 fi
 

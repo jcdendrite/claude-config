@@ -5591,6 +5591,29 @@ class TestMarkerScriptReviewPr:
         assert lines[2] == expected_hash
         assert lines[3] == "checkout"
 
+    def test_write_does_not_execute_a_hashlib_planted_in_the_pr_checkout(
+        self, isolated_home, git_repo
+    ):
+        """SKILL.md runs this arm from inside the PR checkout, and `python3 -c`
+        would put that directory first on sys.path: a PR-planted hashlib.py
+        must neither run nor keep the marker from being written."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        (git_repo / "hashlib.py").write_text(
+            "import pathlib\n"
+            "pathlib.Path(__file__).with_name('poison-ran').write_text('ran')\n"
+            "raise RuntimeError('the PR checkout shadowed the standard library')\n"
+        )
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert not (git_repo / "poison-ran").exists(), "the planted hashlib.py was imported and executed"
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
+        assert marker.read_text().splitlines()[2] == hashlib.sha256(findings_body.read_bytes()).hexdigest()
+
     def _write_findings_body_for_mode(self, home, mode, sid=SID):
         """A findings body passing the attribution check for `mode`:
         diff-only additionally requires the reduced-coverage disclosure."""

@@ -161,14 +161,10 @@ _lib_status_consistent_with_cap_kill() {
 # _lib_capped_for wraps `env`, not the reverse: env(1) execs an external
 # binary by name, so it cannot invoke _lib_capped_for itself (a shell
 # function, not something on PATH).
-# Prints nothing of its own; callers keep wrapping the call in
-# `2>/dev/null` as before, since gh's own stderr can echo request
-# parameters back (REFERENCES.md). Returns _lib_capped_for's own exit
-# status unchanged -- 124/137/143 on a cap kill, gh's own status
-# otherwise -- so a caller that wants to distinguish "gh itself failed"
-# from "the call timed out" (rather than folding both into one "failed or
-# timed out" message, as every review-pr script does today) passes the
-# returned status through _lib_status_consistent_with_cap_kill.
+# Prints nothing of its own. The calls that redirect gh's stderr do so because it can echo request parameters back; the two `gh pr review` calls in review-pr-post.sh leave it visible.
+# Returns _lib_capped_for's own exit status unchanged -- 124/137/143 on a cap kill, gh's own status otherwise.
+# A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh, which names only 124 because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
+# A caller that wants every cap-kill-consistent status passes it through _lib_status_consistent_with_cap_kill.
 _lib_gh() {
   local seconds="${1:?_lib_gh requires a seconds argument}"
   shift
@@ -903,6 +899,13 @@ _lib_review_pr_select_session_worktrees() {
   done <<< "$porcelain"
 }
 
+# The three `python3 -c` helpers below (_lib_sha256_no_follow,
+# _lib_cat_no_follow, _lib_write_no_follow) run with -I (isolated mode). A plain
+# -c puts the cwd first on sys.path, and the cwd can be a PR checkout whose
+# top-level hashlib.py would then run in place of the standard library's. -I
+# also ignores PYTHON* environment variables and the user site directory, which
+# these helpers never need.
+
 # _lib_sha256_no_follow PATH
 # Prints PATH's sha256 hex digest through a single os.open(O_NOFOLLOW) and
 # returns 0 -- refuses a symlink at the final path component atomically with
@@ -916,7 +919,7 @@ _lib_review_pr_select_session_worktrees() {
 # byte-for-byte identical `python3 -c` blocks.
 _lib_sha256_no_follow() {
   local target="$1"
-  _lib_capped python3 -c '
+  _lib_capped python3 -I -c '
 import hashlib, os, sys
 try:
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
@@ -941,7 +944,7 @@ print(digest.hexdigest())
 # path a second time.
 _lib_cat_no_follow() {
   local target="$1"
-  _lib_capped python3 -c '
+  _lib_capped python3 -I -c '
 import os, sys
 try:
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
@@ -961,7 +964,7 @@ with os.fdopen(fd, "rb") as f:
 # write session-scoped provenance/context/diff artifacts at an identically
 # predictable, session-ID-keyed path.
 _lib_write_no_follow() {
-  _lib_capped python3 -c '
+  _lib_capped python3 -I -c '
 import os, sys
 try:
     fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)

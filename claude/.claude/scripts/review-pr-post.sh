@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# Post a /review-pr review. The verdict is the script's only argument;
-# --approve is not constructible from it. See docs/hooks.md's
+# Post a /review-pr review. The verdict is the script's first argument;
+# --approve is not constructible from it. The second argument names the
+# PR the caller believes it is posting to. See docs/hooks.md's
 # require-respond-pr.sh entry for the gate that redirects here.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: ~/.claude/scripts/review-pr-post.sh <comment|request-changes>
+Usage: ~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<number>
 
 Posts the /review-pr findings body recorded by this session's `marker.sh
 write review-pr` completion marker, as the named gh pr review verdict.
 Before posting, verifies: a completion marker exists for this repo (keyed
 to its main tree root, so any tree of it resolves the same marker) and
-session; the findings-body file's sha256 still equals the marker's
-recorded hash; and the marker's PR number/owner/repo names a real PR whose
-current headRefOid still matches the marker's recorded HEAD. Fails closed
-(no gh call) on any missing or mismatched piece.
+session; the target argument equals both the marker's recorded PR identity
+and this repo's origin remote (owner/repo); the findings-body file's sha256
+still equals the marker's recorded hash; and the marker's PR number/owner/
+repo names a real PR whose current headRefOid still matches the marker's
+recorded HEAD. Fails closed (no gh call) on any missing or mismatched
+piece. The marker is consumed before the post call: gh pr review has no
+idempotency key, so a retry after a post that landed, or that failed after
+landing, could double-post. A post that fails therefore leaves it unknown
+whether the review landed.
 EOF
 }
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -ne 2 ]]; then
   usage
   exit 2
 fi
@@ -38,20 +44,12 @@ esac
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
 
-# Single combined EXIT trap (shell-script-conventions.md): cleans up the
-# verified-content temp file created below, on every exit path including an
-# abort before it exists.
-TMP_FINDINGS_BODY_FILE=""
-# shellcheck disable=SC2329 # invoked indirectly via the trap registered below, which shellcheck's static analysis doesn't follow.
-_cleanup_tmp_findings_body() {
-  # Captures and restores $? explicitly: under `set -e`, an EXIT trap whose
-  # last command is a false `[[ -n ... ]]` test would otherwise overwrite the
-  # script's real exit code with that test's own failure status.
-  local exit_code=$?
-  [[ -n "$TMP_FINDINGS_BODY_FILE" ]] && rm -f -- "$TMP_FINDINGS_BODY_FILE"
-  return "$exit_code"
-}
-trap _cleanup_tmp_findings_body EXIT
+if ! TARGET_FIELDS=$(_lib_parse_pr_identity "$2"); then
+  echo "review-pr-post.sh: target '$2' is not a valid <owner>/<repo>#<number>." >&2
+  usage
+  exit 2
+fi
+TARGET_OWNER_REPO=$(printf '%s\n' "$TARGET_FIELDS" | sed -n '1p')
 
 CONFIG_DIR=$(_lib_config_dir) || {
   echo "review-pr-post.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty). Abort without posting." >&2
@@ -68,8 +66,9 @@ REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
   exit 2
 }
 
+MARKER_PATH="$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
 MARKER_FIELDS=$(_lib_review_pr_completion_marker_fields "$CONFIG_DIR" "$REPO_HASH" "$SESSION_ID") || {
-  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 7 before posting. Abort without posting." >&2
+  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 7 before posting. If a previous post attempt ran, it consumed the marker: check the PR for its review before re-arming. Abort without posting." >&2
   exit 2
 }
 MARKER_PR_IDENTITY=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '1p')
@@ -90,38 +89,6 @@ case "$MARKER_MODE" in
     ;;
 esac
 
-# Calls the same shared _lib_review_pr_artifact_path helper (_lib.sh) that
-# marker.sh's `write review-pr` arm calls, at the same fixed suffix --
-# SKILL.md Step 7 writes the findings body here and nowhere else.
-FINDINGS_BODY_PATH=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" body)
-
-# _lib_cat_no_follow reads through a single O_NOFOLLOW open, matching
-# marker.sh's own hardened read of this same file: a separate `[ -L ]` check
-# followed by a later, ordinary open is not atomic. The hash below is
-# computed from this same captured content, never a second open of
-# FINDINGS_BODY_PATH by path -- `gh -F`'s own read further down is an
-# ordinary, symlink-following open, so re-opening this path again after the
-# check below would leave a symlink-swap window between the check and that
-# later read. The trailing 'x' sentinel, stripped back off, preserves a
-# trailing newline command substitution would otherwise strip, so the hash
-# matches what _lib_sha256_no_follow would compute directly on the file.
-FINDINGS_BODY_CONTENT=$(_lib_cat_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null; printf x)
-FINDINGS_BODY_CONTENT="${FINDINGS_BODY_CONTENT%x}"
-ACTUAL_BODY_HASH=$(_lib_hash_diff_text "$FINDINGS_BODY_CONTENT") || ACTUAL_BODY_HASH=""
-if [[ -z "$ACTUAL_BODY_HASH" || "$ACTUAL_BODY_HASH" != "$MARKER_BODY_HASH" ]]; then
-  echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH is missing, unreadable, a symlink, or no longer matches the reviewed hash. Abort without posting." >&2
-  exit 2
-fi
-
-# Verified content written to our own mktemp file (not FINDINGS_BODY_PATH
-# itself) for `gh -F` to read -- see the comment above for why the file at
-# FINDINGS_BODY_PATH must not be opened again after the hash check.
-TMP_FINDINGS_BODY_FILE=$(mktemp -t review-pr-findings-body.XXXXXX) || {  # GNU mktemp requires the XXXXXX suffix; a bare prefix is BSD-only.
-  echo "review-pr-post.sh: could not create a temp file for the verified findings body. Abort without posting." >&2
-  exit 2
-}
-printf '%s' "$FINDINGS_BODY_CONTENT" > "$TMP_FINDINGS_BODY_FILE"
-
 # Same split and validation review-pr-checkout.sh's own PR-identity
 # handling uses, so the two scripts agree on one PR-identity convention.
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$MARKER_PR_IDENTITY"); then
@@ -130,6 +97,45 @@ if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$MARKER_PR_IDENTITY"); then
 fi
 OWNER_REPO=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '1p')
 PR_NUMBER=$(printf '%s\n' "$PR_IDENTITY_FIELDS" | sed -n '2p')
+
+# The target names the PR the caller means to post to. It must match both the
+# marker's own recorded PR and the repository this checkout's origin points
+# at, so a review the marker vouches for is never posted to a PR the caller
+# did not name, nor to a repo other than the one being worked in.
+if _lib_case_insensitive_ne "$2" "$MARKER_PR_IDENTITY"; then
+  echo "review-pr-post.sh: target '$2' does not match the completion marker's PR identity '$MARKER_PR_IDENTITY'. Abort without posting." >&2
+  exit 2
+fi
+ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo) || {
+  echo "review-pr-post.sh: could not resolve this repository's origin remote, or parse an owner/repo out of its URL. Abort without posting." >&2
+  exit 2
+}
+if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$TARGET_OWNER_REPO"; then
+  echo "review-pr-post.sh: target '$2' names repo '$TARGET_OWNER_REPO', which does not match this repository's origin remote ('$ORIGIN_OWNER_REPO'). Abort without posting." >&2
+  exit 2
+fi
+
+# Calls the same shared _lib_review_pr_artifact_path helper (_lib.sh) that
+# marker.sh's `write review-pr` arm calls, at the same fixed suffix --
+# SKILL.md Step 7 writes the findings body here and nowhere else.
+FINDINGS_BODY_PATH=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" body)
+
+# One O_NOFOLLOW read supplies both the hash and the bytes posted below, so a
+# swap of the file after this read cannot change what is posted. A symlink at
+# FINDINGS_BODY_PATH is refused instead of followed.
+# The `x` sentinel keeps trailing newlines through the command substitution.
+# A NUL byte in the file is dropped by the substitution, which makes the hash
+# differ from the marker's and refuses.
+if ! FINDINGS_BODY=$(_lib_cat_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null && printf x); then
+  echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH is missing, unreadable, or a symlink. Abort without posting." >&2
+  exit 2
+fi
+FINDINGS_BODY=${FINDINGS_BODY%x}
+ACTUAL_BODY_HASH=$(_lib_hash_diff_text "$FINDINGS_BODY") || ACTUAL_BODY_HASH=""
+if [[ -z "$ACTUAL_BODY_HASH" || "$ACTUAL_BODY_HASH" != "$MARKER_BODY_HASH" ]]; then
+  echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH no longer matches the reviewed hash (or could not be hashed). Abort without posting." >&2
+  exit 2
+fi
 
 # PR_NUMBER/OWNER_REPO are validated above by shape only -- neither check
 # proves this number actually names the PR the marker's body-hash check
@@ -151,38 +157,48 @@ if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; 
   exit 2
 fi
 
+# The marker is consumed before the post: a gh pr review POST has no
+# idempotency key, so a stop at any later point (a kill, a timeout after the
+# request landed) must leave the marker gone, and a retry then fails closed at
+# the "no completion marker" check above instead of double-posting.
+# unlink exits non-zero when the marker cannot be removed, which refuses before
+# any post. Not `rm`: it prompts about a write-protected file on a terminal, and
+# a declined prompt exits 0 without removing anything.
+if ! unlink -- "$MARKER_PATH"; then
+  echo "review-pr-post.sh: could not consume the completion marker $MARKER_PATH. Abort without posting." >&2
+  exit 2
+fi
+
 # The two `gh pr review` calls below are the only ones in this script, each
 # with a literal verdict flag never built from $1. --approve cannot appear
 # here.
 #
 # 20s, not _lib_capped's 5s local-read default: this call is a network POST
-# carrying a body file, not a local git/index read, so it needs more slack
-# than a request with no payload.
+# carrying a body, not a local git/index read, so it needs more slack than a
+# request with no payload.
 GH_PR_REVIEW_TIMEOUT_SECONDS=20
 # GH_HOST/GH_ENTERPRISE_TOKEN stripped via _lib_gh from gh's environment on
 # both calls: an ambient GH_HOST (adversarial PR content could induce the
 # calling agent to set one) would otherwise silently redirect the post to a
 # different host before this script's own checks have any say in it.
+# The body goes to gh on stdin (`-F -`) from the same bytes that were hashed.
+# gh-pr-review(1), v2.100.0, for -F/--body-file: use "-" to read from standard input.
+# A failing call is captured, not left to `set -e`, so the failure message
+# below prints.
+POST_STATUS=0
 case "$1" in
   comment)
-    if ! _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --comment -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
-      echo "review-pr-post.sh: gh pr review --comment failed or timed out. Completion marker left intact for a retry." >&2
-      exit 2
-    fi
+    printf '%s' "$FINDINGS_BODY" | _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --comment -R "$OWNER_REPO" -F - || POST_STATUS=$?
     ;;
   request-changes)
-    if ! _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --request-changes -R "$OWNER_REPO" -F "$TMP_FINDINGS_BODY_FILE"; then
-      echo "review-pr-post.sh: gh pr review --request-changes failed or timed out. Completion marker left intact for a retry." >&2
-      exit 2
-    fi
+    printf '%s' "$FINDINGS_BODY" | _lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER" --request-changes -R "$OWNER_REPO" -F - || POST_STATUS=$?
     ;;
   *)
     exit 2
     ;;
 esac
 
-# Self-consuming: a gh pr review POST has no idempotency key, so a retry
-# after a successful post would double-post. Deleting the completion marker
-# here makes a subsequent invocation fail closed at the "no completion
-# marker" check above instead of re-posting.
-rm -f "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
+if [[ "$POST_STATUS" -ne 0 ]]; then
+  echo "review-pr-post.sh: gh pr review exited $POST_STATUS (failed or timed out), so whether the review posted is unknown. Check PR $OWNER_REPO#$PR_NUMBER for it before retrying. The completion marker was consumed before the post; to post again, re-arm with \`marker.sh write review-pr\`." >&2
+  exit 2
+fi

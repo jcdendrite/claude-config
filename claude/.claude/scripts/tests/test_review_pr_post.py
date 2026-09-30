@@ -26,7 +26,8 @@ from .conftest import _shimmed_env
 
 SCRIPT = SCRIPTS_DIR / "review-pr-post.sh"
 SID = "test-session-review-pr-post"
-PR_IDENTITY = "foo/bar#42"
+OWNER_REPO = "foo/bar"
+PR_IDENTITY = f"{OWNER_REPO}#42"
 
 
 def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
@@ -72,6 +73,9 @@ def git_repo(tmp_path):
     (repo / "file.txt").write_text("first\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", f"https://github.com/{OWNER_REPO}.git"], cwd=repo, check=True, timeout=60,
+    )
     return repo
 
 
@@ -79,10 +83,12 @@ def _findings_body_path(home: Path, session_id: str = SID) -> Path:
     return home / ".claude" / ".review-pr-active.d" / f"{session_id}.body"
 
 
-def _write_findings_body(home: Path, content: str = "# findings\n", session_id: str = SID) -> tuple[Path, str]:
+def _write_findings_body(
+    home: Path, content: str | bytes = "# findings\n", session_id: str = SID
+) -> tuple[Path, str]:
     body = _findings_body_path(home, session_id)
     body.parent.mkdir(parents=True, exist_ok=True)
-    body.write_text(content)
+    body.write_bytes(content if isinstance(content, bytes) else content.encode())
     return body, hashlib.sha256(body.read_bytes()).hexdigest()
 
 
@@ -91,7 +97,13 @@ def _write_marker(home: Path, repo: Path, head_ref_oid: str, body_hash: str, pr_
 
 
 def _gh_shim_source(
-    call_log: Path, pr_view_head_ref_oid: str | None = None, fail_pr_review: bool = False
+    call_log: Path,
+    pr_view_head_ref_oid: str | None = None,
+    pr_review_exit_status: int = 0,
+    marker_path: Path | None = None,
+    swap_body_path: Path | None = None,
+    swap_body_content: str | None = None,
+    swap_body_symlink_target: Path | None = None,
 ) -> str:
     """gh shim recording every invocation. Records GH_HOST/GH_ENTERPRISE_TOKEN
     as this shim process actually saw them (not as the test's own subprocess
@@ -105,12 +117,24 @@ def _gh_shim_source(
     call, matching a `gh` failure or a PR whose current headRefOid the
     script cannot determine.
 
-    `fail_pr_review`, when true, exits 1 on a `gh pr review` invocation
-    specifically (every other invocation, including `pr view`, still exits
-    0) -- the production `gh` binary's own always-0 stand-in otherwise never
-    exercises the script's failure branch that leaves the completion marker
-    intact for a retry."""
+    `pr_review_exit_status`, when nonzero, is the exit status of a `gh pr
+    review` invocation specifically (every other invocation, including `pr
+    view`, still exits 0) -- the shim's own always-0 default otherwise never
+    exercises the script's post-failure branch. 124 and 143 model
+    timeout(1) killing a `gh` that outlived its cap.
+
+    A `gh pr review` call records the body bytes it was handed, read from
+    stdin for `-F -` (as real gh does) or from the named file otherwise, and
+    whether `marker_path` still existed when it was called.
+
+    `swap_body_path` names a findings-body file the shim replaces during
+    the `gh pr view` call -- with `swap_body_content`, or with a symlink to
+    `swap_body_symlink_target` -- modeling a writer racing the window between
+    the script's read of that file and its post."""
     pr_view_stdout = "" if pr_view_head_ref_oid is None else pr_view_head_ref_oid
+    marker_path_text = None if marker_path is None else str(marker_path)
+    swap_body_path_text = None if swap_body_path is None else str(swap_body_path)
+    swap_body_symlink_target_text = None if swap_body_symlink_target is None else str(swap_body_symlink_target)
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -119,29 +143,46 @@ def _gh_shim_source(
 
         CALL_LOG = {str(call_log)!r}
         PR_VIEW_STDOUT = {pr_view_stdout!r}
-        FAIL_PR_REVIEW = {fail_pr_review!r}
+        PR_REVIEW_EXIT_STATUS = {pr_review_exit_status!r}
+        MARKER_PATH = {marker_path_text!r}
+        SWAP_BODY_PATH = {swap_body_path_text!r}
+        SWAP_BODY_CONTENT = {swap_body_content!r}
+        SWAP_BODY_SYMLINK_TARGET = {swap_body_symlink_target_text!r}
         args = sys.argv[1:]
         record = {{
             "args": args,
             "GH_HOST": os.environ.get("GH_HOST"),
             "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
         }}
-        # Captured at invocation time, before review-pr-post.sh's own EXIT
-        # trap deletes its mktemp'd -F file -- a later, post-exit read from
-        # the test process would find nothing left to read.
-        if "-F" in args:
-            f_path = args[args.index("-F") + 1]
-            try:
-                with open(f_path) as f:
-                    record["body_content"] = f.read()
-            except OSError:
-                record["body_content"] = None
+        if args[:2] == ["pr", "review"]:
+            record["marker_exists_at_post"] = None if MARKER_PATH is None else os.path.exists(MARKER_PATH)
+            # Captured at invocation time so a test can assert what gh would
+            # have posted, whatever the file holds when the script later exits.
+            if "-F" in args:
+                body_source = args[args.index("-F") + 1]
+                if body_source == "-":
+                    posted_bytes = sys.stdin.buffer.read()
+                else:
+                    try:
+                        with open(body_source, "rb") as f:
+                            posted_bytes = f.read()
+                    except OSError:
+                        posted_bytes = None
+                record["posted_bytes_hex"] = None if posted_bytes is None else posted_bytes.hex()
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
-        if args[:2] == ["pr", "view"] and PR_VIEW_STDOUT:
-            print(PR_VIEW_STDOUT)
-        if FAIL_PR_REVIEW and args[:2] == ["pr", "review"]:
-            sys.exit(1)
+        if args[:2] == ["pr", "view"]:
+            if SWAP_BODY_PATH is not None:
+                os.unlink(SWAP_BODY_PATH)
+                if SWAP_BODY_SYMLINK_TARGET is not None:
+                    os.symlink(SWAP_BODY_SYMLINK_TARGET, SWAP_BODY_PATH)
+                else:
+                    with open(SWAP_BODY_PATH, "w") as f:
+                        f.write(SWAP_BODY_CONTENT)
+            if PR_VIEW_STDOUT:
+                print(PR_VIEW_STDOUT)
+        if args[:2] == ["pr", "review"]:
+            sys.exit(PR_REVIEW_EXIT_STATUS)
         sys.exit(0)
     """)
 
@@ -164,16 +205,10 @@ def _run(
     args: list[str],
     tmp_path: Path,
     extra_env: dict | None = None,
-    pr_view_head_ref_oid: str | None = None,
-    fail_pr_review: bool = False,
+    **shim_options,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     call_log = tmp_path / "gh_calls.jsonl"
-    env = {
-        **_shimmed_env(
-            tmp_path, _gh_shim_source(call_log, pr_view_head_ref_oid, fail_pr_review)
-        ),
-        "HOME": str(home),
-    }
+    env = {**_shimmed_env(tmp_path, _gh_shim_source(call_log, **shim_options)), "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
         env.update(extra_env)
@@ -185,6 +220,11 @@ def _run(
         text=True,
     )
     return result, call_log
+
+
+def _pr_review_records(call_log: Path) -> list[dict]:
+    """Full records (args plus what the shim captured) of the `pr review` calls."""
+    return [r for r in _read_records(call_log) if r["args"][:2] == ["pr", "review"]]
 
 
 def _read_pr_review_calls(call_log: Path) -> list[list[str]]:
@@ -226,7 +266,17 @@ class TestApproveIsNotReachable:
 class TestUsageErrors:
     @pytest.mark.parametrize(
         "args",
-        [[], ["comment", "extra"], ["approve"], ["--approve"], ["request-changes", "comment"]],
+        [
+            [],
+            ["comment"],
+            ["comment", PR_IDENTITY, "extra"],
+            ["comment", "extra"],
+            ["approve", PR_IDENTITY],
+            ["--approve", PR_IDENTITY],
+            ["request-changes", "comment"],
+            ["comment", "foo/bar#NOTANUMBER"],
+            ["comment", "../..#5"],
+        ],
     )
     def test_invalid_argv_exits_two_with_no_gh_call(self, isolated_home, git_repo, tmp_path, args):
         result, call_log = _run(git_repo, isolated_home, args, tmp_path)
@@ -238,7 +288,7 @@ class TestUsageErrors:
 class TestMissingCompletionMarker:
     def test_no_marker_at_all_fails_closed(self, isolated_home, git_repo, tmp_path):
         _seed_session(isolated_home, SID)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert "completion marker" in result.stderr
         assert _read_calls(call_log) == []
@@ -257,7 +307,7 @@ class TestMissingCompletionMarker:
             isolated_home, git_repo, PR_IDENTITY, marker_head, body_hash, f"{SID}-other"
         )
         result, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert result.returncode != 0
         assert "completion marker" in result.stderr
@@ -279,7 +329,7 @@ class TestLocalHeadIsNotConsulted:
         assert reviewed_head != head_sha(git_repo)
         _write_marker(isolated_home, git_repo, reviewed_head, body_hash)
         result, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=reviewed_head
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=reviewed_head
         )
         assert result.returncode == 0, result.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -294,7 +344,7 @@ class TestLocalHeadIsNotConsulted:
         linked_worktree = tmp_path / "linked-post-worktree"
         subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree)], cwd=git_repo, check=True)
         result, call_log = _run(
-            linked_worktree, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+            linked_worktree, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert result.returncode == 0, result.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -307,17 +357,32 @@ class TestBodyHashMismatch:
         _seed_session(isolated_home, SID)
         _write_findings_body(isolated_home, content="# changed after review\n")
         _write_marker(isolated_home, git_repo, head_sha(git_repo), "a" * 64)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert "hash" in result.stderr.lower()
         assert _read_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 
     def test_findings_body_missing_fails_closed(self, isolated_home, git_repo, tmp_path):
         _seed_session(isolated_home, SID)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), "a" * 64)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert _read_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
+
+    def test_findings_body_holding_a_nul_byte_fails_closed(self, isolated_home, git_repo, tmp_path):
+        """bash cannot carry a NUL byte in the body it posts, so the hash of the
+        bytes it holds differs from the marker's hash of the file, and the post
+        refuses rather than sending altered text."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home, content=b"before\x00after\n")
+        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
+        assert result.returncode != 0
+        assert "hash" in result.stderr.lower()
+        assert _read_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 
     def test_symlinked_findings_body_fails_closed(self, isolated_home, git_repo, tmp_path):
         """O_NOFOLLOW read: a pre-planted symlink at the fixed findings-body
@@ -331,9 +396,10 @@ class TestBodyHashMismatch:
         body_path.symlink_to(real_target)
         body_hash = hashlib.sha256(real_target.read_bytes()).hexdigest()
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert _read_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 
 
 class TestMalformedPrIdentity:
@@ -355,8 +421,11 @@ class TestMalformedPrIdentity:
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash, pr_identity=pr_identity)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
+        assert "marker PR identity" in result.stderr, (
+            "the marker's own malformed identity must be what refuses, not the target comparison"
+        )
         assert _read_calls(call_log) == []
 
 
@@ -376,10 +445,15 @@ class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
         behavior."""
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
-        _write_marker(
-            isolated_home, git_repo, head_sha(git_repo), body_hash, pr_identity="my-org/my.repo#5"
+        dotted_identity = "my-org/my.repo#5"
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "https://github.com/my-org/my.repo.git"],
+            cwd=git_repo, check=True, timeout=60,
         )
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        _write_marker(
+            isolated_home, git_repo, head_sha(git_repo), body_hash, pr_identity=dotted_identity
+        )
+        result, call_log = _run(git_repo, isolated_home, ["comment", dotted_identity], tmp_path)
         assert result.returncode != 0
         assert "does not name a valid owner/repo" not in result.stderr
         assert "headRefOid" in result.stderr
@@ -402,13 +476,16 @@ class TestPrIdentityCrossCheck:
         result, call_log = _run(
             git_repo,
             isolated_home,
-            ["comment"],
+            ["comment", PR_IDENTITY],
             tmp_path,
             pr_view_head_ref_oid="f" * 40,
         )
         assert result.returncode != 0
         assert "headRefOid" in result.stderr
         assert _read_pr_review_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists(), (
+            "a refusal before the claim leaves the marker armed"
+        )
 
     def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path):
         """`gh pr view` itself fails or returns no output -- treated the
@@ -416,10 +493,11 @@ class TestPrIdentityCrossCheck:
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert "headRefOid" in result.stderr
         assert _read_pr_review_calls(call_log) == []
+        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 
 
 class TestHappyPath:
@@ -432,7 +510,7 @@ class TestHappyPath:
         marker_head = head_sha(git_repo)
         _write_marker(isolated_home, git_repo, marker_head, body_hash)
         result, call_log = _run(
-            git_repo, isolated_home, [verdict], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert result.returncode == 0, result.stderr
 
@@ -446,14 +524,68 @@ class TestHappyPath:
         assert "--approve" not in args
         r_index = args.index("-R")
         assert args[r_index + 1] == "foo/bar"
-        f_index = args.index("-F")
-        # gh reads review-pr-post.sh's own re-verified mktemp copy, not the
-        # original findings-body file at FINDINGS_BODY_PATH -- opening that
-        # path again after its hash check would leave a symlink-swap window
-        # between the check and this read.
-        tmp_body_file = Path(args[f_index + 1])
-        assert tmp_body_file != body_file
-        assert record["body_content"] == body_file.read_text()
+        assert bytes.fromhex(record["posted_bytes_hex"]) == body_file.read_bytes()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "# findings\n",
+            "no trailing newline",
+            "trailing blank lines\n\n\n",
+            "  leading space and a tab\t\n",
+            "caf\u00e9 \u4e2d\u6587 \U0001f600\r\nsecond line\r\n",
+            b"\xff\xfe not utf-8\n",
+            "x" * 300_000 + "\n",
+        ],
+        ids=[
+            "plain", "no-trailing-newline", "trailing-blank-lines", "leading-whitespace",
+            "non-ascii-and-crlf", "non-utf8-bytes", "larger-than-a-pipe-buffer",
+        ],
+    )
+    def test_posted_bytes_equal_the_file_bytes_the_marker_hashed(
+        self, isolated_home, git_repo, tmp_path, body
+    ):
+        _seed_session(isolated_home, SID)
+        body_file, body_hash = _write_findings_body(isolated_home, content=body)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+        )
+        assert result.returncode == 0, result.stderr
+        (record,) = _pr_review_records(call_log)
+        assert bytes.fromhex(record["posted_bytes_hex"]) == body_file.read_bytes()
+
+
+class TestPostedBytesAreTheHashedBytes:
+    """The body is read once, hashed, and handed to gh from that same read, so
+    a writer replacing the file while the script waits on `gh pr view` cannot
+    change what is posted."""
+
+    @pytest.mark.parametrize("swap_kind", ["overwritten-content", "replaced-by-symlink"])
+    def test_body_swapped_after_the_hash_check_is_not_what_gets_posted(
+        self, isolated_home, git_repo, tmp_path, swap_kind
+    ):
+        _seed_session(isolated_home, SID)
+        original_body = "# reviewed findings\n"
+        body_file, body_hash = _write_findings_body(isolated_home, content=original_body)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        credential_file = tmp_path / "credential-file"
+        credential_file.write_text("secret-shaped content\n")
+        if swap_kind == "overwritten-content":
+            swap_options = {"swap_body_content": "# unreviewed payload\n"}
+        else:
+            swap_options = {"swap_body_symlink_target": credential_file}
+
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, swap_body_path=body_file, **swap_options,
+        )
+        assert result.returncode == 0, result.stderr
+        assert body_file.read_bytes() != original_body.encode(), "the shim must have swapped the file"
+        (record,) = _pr_review_records(call_log)
+        assert bytes.fromhex(record["posted_bytes_hex"]) == original_body.encode()
 
 
 class TestModeGating:
@@ -470,7 +602,7 @@ class TestModeGating:
             isolated_home, git_repo, PR_IDENTITY, remote_head, body_hash, SID, mode="diff-only"
         )
         result, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=remote_head
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=remote_head
         )
         assert result.returncode == 0, result.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -484,7 +616,7 @@ class TestModeGating:
             isolated_home, git_repo, PR_IDENTITY, "f" * 40, body_hash, SID, mode="diff-only"
         )
         result, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid="0" * 40
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid="0" * 40
         )
         assert result.returncode != 0
         assert "headRefOid" in result.stderr
@@ -499,7 +631,7 @@ class TestModeGating:
         write_review_pr_completion_marker(
             isolated_home, git_repo, PR_IDENTITY, head_sha(git_repo), body_hash, SID, mode="acquired"
         )
-        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
         assert result.returncode != 0
         assert "neither checkout nor diff-only" in result.stderr
         assert _read_calls(call_log) == []
@@ -521,7 +653,7 @@ class TestGhHostStripped:
         result, call_log = _run(
             git_repo,
             isolated_home,
-            ["comment"],
+            ["comment", PR_IDENTITY],
             tmp_path,
             extra_env={
                 "GH_HOST": "attacker-chosen-host.example",
@@ -547,8 +679,49 @@ class TestGhHostStripped:
 
 class TestCompletionMarkerSelfConsuming:
     """A gh pr review POST has no idempotency key, so the completion marker
-    that authorizes it must be invalidated immediately after a successful
-    post -- a retry must fail closed rather than double-post."""
+    that authorizes it is consumed before the post call, so a retry finds no
+    marker and is refused, and a marker that cannot be removed refuses before
+    any post."""
+
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
+    def test_marker_is_already_consumed_when_gh_pr_review_is_called(
+        self, isolated_home, git_repo, tmp_path, verdict
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+        assert marker.exists()
+
+        result, call_log = _run(
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, marker_path=marker,
+        )
+        assert result.returncode == 0, result.stderr
+        (record,) = _pr_review_records(call_log)
+        assert record["marker_exists_at_post"] is False, (
+            "the marker must be gone before gh pr review runs, so a stop mid-call cannot leave it armed"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root can remove a marker from a read-only directory")
+    def test_marker_that_cannot_be_removed_refuses_before_any_post(self, isolated_home, git_repo, tmp_path):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+        marker.parent.chmod(0o500)
+        try:
+            result, call_log = _run(
+                git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+            )
+            assert marker.exists()
+        finally:
+            marker.parent.chmod(0o700)
+        assert result.returncode != 0
+        assert "could not consume the completion marker" in result.stderr
+        assert _read_pr_review_calls(call_log) == []
 
     def test_second_invocation_fails_closed_after_the_first_succeeds(
         self, isolated_home, git_repo, tmp_path
@@ -560,7 +733,7 @@ class TestCompletionMarkerSelfConsuming:
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
         first, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert first.returncode == 0, first.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -569,7 +742,7 @@ class TestCompletionMarkerSelfConsuming:
         )
 
         second, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert second.returncode != 0
         assert "completion marker" in second.stderr
@@ -579,16 +752,21 @@ class TestCompletionMarkerSelfConsuming:
         )
 
 
-class TestGhPrReviewFailureBranch:
-    """The `gh` test shim otherwise always exits 0, so without this class
-    the script's `if ! ... gh pr review ...; then ... exit 2` failure
-    branches are never exercised -- a regression making completion-marker
-    deletion unconditional (deleting it even when the post failed, breaking
-    retry-safety) would pass every other test in this file."""
+class TestPostFailureConsumesTheMarker:
+    """A `gh pr review` POST has no idempotency key, so a failure -- including
+    timeout(1) killing a `gh` that had already sent the request -- leaves
+    unknown whether the review landed. Leaving the marker armed would let a
+    retry double-post. The shim's default always-0 exit otherwise never
+    exercises this branch."""
 
     @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
-    def test_gh_pr_review_failure_exits_nonzero_and_keeps_the_marker(
-        self, isolated_home, git_repo, tmp_path, verdict
+    @pytest.mark.parametrize(
+        "exit_status",
+        [1, 124, 137, 143],
+        ids=["gh-failed", "cap-kill-124", "cap-kill-sigkill-137", "cap-kill-sigterm-143"],
+    )
+    def test_gh_pr_review_failure_exits_nonzero_and_consumes_the_marker(
+        self, isolated_home, git_repo, tmp_path, verdict, exit_status
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -599,62 +777,132 @@ class TestGhPrReviewFailureBranch:
         result, call_log = _run(
             git_repo,
             isolated_home,
-            [verdict],
+            [verdict, PR_IDENTITY],
             tmp_path,
             pr_view_head_ref_oid=marker_head,
-            fail_pr_review=True,
+            pr_review_exit_status=exit_status,
         )
         assert result.returncode != 0
         assert len(_read_pr_review_calls(call_log)) == 1, (
             "the failing gh pr review call must still have been attempted"
         )
-        assert marker.exists(), (
-            "a failed post must leave the completion marker intact for a retry"
+        assert not marker.exists(), (
+            "a failed post's outcome is unknown, so it must consume the completion marker"
         )
+        assert "unknown" in result.stderr
+        assert PR_IDENTITY in result.stderr
+        assert "marker.sh write review-pr" in result.stderr
 
-
-class TestTmpFindingsBodyFileCleanup:
-    """The EXIT trap (_cleanup_tmp_findings_body) deletes the mktemp'd,
-    re-verified copy of the findings body gh -F reads, on every exit path --
-    pinned here on both a successful post and a gh pr review failure, the
-    two cases where the tmp file exists by the time the trap fires."""
-
-    def test_tmp_file_removed_after_a_successful_post(
+    def test_retry_after_a_failed_post_fails_closed_without_a_second_gh_pr_review(
         self, isolated_home, git_repo, tmp_path
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         marker_head = head_sha(git_repo)
         _write_marker(isolated_home, git_repo, marker_head, body_hash)
-        result, call_log = _run(
-            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
-        )
-        assert result.returncode == 0, result.stderr
-        f_index = _read_pr_review_calls(call_log)[0].index("-F")
-        tmp_body_file = Path(_read_pr_review_calls(call_log)[0][f_index + 1])
-        assert not tmp_body_file.exists(), (
-            "the EXIT trap must delete the mktemp'd findings-body copy after a successful post"
-        )
 
-    def test_tmp_file_removed_after_a_gh_pr_review_failure(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        _seed_session(isolated_home, SID)
-        _, body_hash = _write_findings_body(isolated_home)
-        marker_head = head_sha(git_repo)
-        _write_marker(isolated_home, git_repo, marker_head, body_hash)
-        result, call_log = _run(
-            git_repo,
-            isolated_home,
-            ["comment"],
-            tmp_path,
+        first, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_review_exit_status=124,
+        )
+        assert first.returncode != 0
+        second, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head,
-            fail_pr_review=True,
+        )
+        assert second.returncode != 0
+        assert "completion marker" in second.stderr
+        assert "previous post attempt" in second.stderr
+        assert len(_read_pr_review_calls(call_log)) == 1, (
+            "the retry must not reach gh pr review a second time"
+        )
+
+
+class TestTargetArgument:
+    """The target names the PR the caller means to post to, and must equal
+    both the marker's recorded identity and this repo's origin. Every
+    refusal happens before any gh call, so the marker stays armed."""
+
+    def test_target_naming_a_different_pr_than_the_marker_refuses(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", f"{OWNER_REPO}#43"], tmp_path,
+            pr_view_head_ref_oid=marker_head,
         )
         assert result.returncode != 0
-        f_index = _read_pr_review_calls(call_log)[0].index("-F")
-        tmp_body_file = Path(_read_pr_review_calls(call_log)[0][f_index + 1])
-        assert not tmp_body_file.exists(), (
-            "the EXIT trap must delete the mktemp'd findings-body copy even "
-            "when gh pr review itself fails"
+        assert "does not match the completion marker" in result.stderr
+        assert _read_calls(call_log) == []
+        assert marker.exists()
+
+    def test_target_naming_a_different_repo_than_the_marker_refuses(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", "other-owner/bar#42"], tmp_path,
+            pr_view_head_ref_oid=marker_head,
         )
+        assert result.returncode != 0
+        assert "does not match the completion marker" in result.stderr
+        assert _read_calls(call_log) == []
+
+    def test_target_and_marker_agreeing_on_a_repo_other_than_origin_refuses(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The marker and the target agree with each other but not with the
+        repository being worked in -- the cross-repo post the origin check
+        exists to stop."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        other_identity = "other-owner/other-repo#42"
+        _write_marker(isolated_home, git_repo, marker_head, body_hash, pr_identity=other_identity)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", other_identity], tmp_path,
+            pr_view_head_ref_oid=marker_head,
+        )
+        assert result.returncode != 0
+        assert "origin remote" in result.stderr
+        assert _read_calls(call_log) == []
+        assert marker.exists()
+
+    def test_repo_without_an_origin_remote_refuses(self, isolated_home, git_repo, tmp_path):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=git_repo, check=True, timeout=60)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head,
+        )
+        assert result.returncode != 0
+        assert "origin remote" in result.stderr
+        assert _read_calls(call_log) == []
+
+    def test_target_differing_from_the_marker_and_origin_only_by_case_still_posts(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """GitHub treats owner/repo slugs case-insensitively, so a target
+        spelled in a different case than the marker or origin must not
+        refuse."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", "FOO/BAR#42"], tmp_path,
+            pr_view_head_ref_oid=marker_head,
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_read_pr_review_calls(call_log)) == 1

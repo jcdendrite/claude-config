@@ -109,6 +109,13 @@ SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py
 # constant-scan, so declared here by hand.
 MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
 
+# SCRIPTS_TESTS_DIR's test_review_pr_lib.py runs this script and compares its
+# stdout to _review-pr-lib.sh's clean-document constant, and the
+# review-pr-checkout/review-pr-diff tests symlink it into their fixtures. Both
+# are function-local path reads, invisible to TestCrossDomainReadCompleteness,
+# so declared here by hand.
+REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface.py"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -558,6 +565,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
+# REVIEW_PR_AUDIT_SCRIPT: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
@@ -619,6 +627,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),

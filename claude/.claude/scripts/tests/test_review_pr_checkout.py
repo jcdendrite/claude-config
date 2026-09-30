@@ -1,7 +1,7 @@
-"""Tests for review-pr-checkout.sh -- the single script that makes
-/review-pr Step 2's stop-before-checkout invariant unbypassable by
-construction: it re-derives the PR's file list and headRefOid itself from
-`gh`/git rather than trusting either as an argument.
+"""Tests for review-pr-checkout.sh -- the single script that runs
+/review-pr Step 2's stop-before-checkout audit: it re-derives the PR's file
+list and headRefOid itself from `gh`/git rather than trusting either as an
+argument.
 
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives (one JSON object per line), matching test_review_pr_post.py's own
@@ -13,17 +13,24 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, write_review_pr_provenance
+from helpers import (
+    SCRIPTS_DIR,
+    SKILLS_DIR,
+    write_review_pr_provenance,
+)
 
 from .conftest import (
+    GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
     _build_repo_with_pr_ref,
     _git_shim_that_fails_on_worktree_subcommand,
     _install_audit_script,
+    _install_audit_script_that_runs,
     _provenance_fields,
     _seed_session,
     _shimmed_env,
@@ -80,6 +87,14 @@ def repo_with_pr_ref(tmp_path):
 # "my-org/my.repo") still gets a safe, same-repo trust response by default.
 _SAME_AS_REQUEST = "__SAME_AS_REQUEST__"
 
+_ALLOWLISTED_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR", "CONTRIBUTOR"]
+
+
+def _is_listing_call(call: list[str], suffix: str) -> bool:
+    """True for a `gh api` call to the pulls listing ending in `suffix`,
+    whatever query string it carries."""
+    return call[:1] == ["api"] and call[1].split("?", 1)[0].endswith(suffix)
+
 
 def _gh_shim_source(
     call_log: Path,
@@ -89,11 +104,14 @@ def _gh_shim_source(
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
-    author_association: str = "MEMBER",
+    author_association: str | None = "MEMBER",
     head_repo_full_name: str | None = _SAME_AS_REQUEST,
     base_repo_full_name: str | None = _SAME_AS_REQUEST,
     fail_trust_check: bool = False,
     malformed_trust_check: bool = False,
+    changed_files: int | str | None = None,
+    omit_changed_files: bool = False,
+    files_failure_exit_status: int = 1,
 ) -> str:
     """gh shim recording every invocation, matching test_review_pr_post.py's
     own shim shape. Dispatches on the invocation's own first word(s):
@@ -118,7 +136,20 @@ def _gh_shim_source(
     deleted-fork PR (REST `head.repo` reads null). `fail_trust_check` exits
     1 on the trust-check call only; `malformed_trust_check` exits 0 but
     prints non-JSON, modeling a malformed response distinct from an
-    outright `gh` failure."""
+    outright `gh` failure. `changed_files` is the REST payload's own
+    `changed_files` count, independent of the `files` listing the
+    paginated call returns -- it defaults to `len(files)` (a complete
+    listing), and a test sets it apart from `files` to model a listing that
+    is truncated or padded; `omit_changed_files` drops the field entirely.
+    The files listing prints one JSON string per line when the call carries
+    the `@json` jq filter, as real `gh --jq` does for a string result, and
+    raw names otherwise: raw UTF-8, with a control character rendered in caret
+    notation, as gh 2.100.0 is modeled to do (see the shim constant in
+    conftest.py). The listing call must carry `--paginate` and
+    `per_page=100`; the shim exits 97 otherwise, so a script dropping either
+    fails the run. `fail_files` and `partial_files_then_fail` exit
+    `files_failure_exit_status`. `author_association=None` models a payload
+    whose value is null."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -138,6 +169,10 @@ def _gh_shim_source(
         SAME_AS_REQUEST = {_SAME_AS_REQUEST!r}
         FAIL_TRUST_CHECK = {fail_trust_check!r}
         MALFORMED_TRUST_CHECK = {malformed_trust_check!r}
+        CHANGED_FILES = {len(files or []) if changed_files is None else changed_files!r}
+        OMIT_CHANGED_FILES = {omit_changed_files!r}
+        FILES_FAILURE_EXIT_STATUS = {files_failure_exit_status!r}
+        {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
         if os.path.exists(CALL_LOG):
@@ -163,7 +198,7 @@ def _gh_shim_source(
             if oid:
                 print(oid)
             sys.exit(0)
-        if args[:1] == ["api"] and len(args) >= 2 and not args[1].endswith("/files"):
+        if args[:1] == ["api"] and len(args) >= 2 and not args[1].split("?")[0].endswith("/files"):
             if FAIL_TRUST_CHECK:
                 sys.exit(1)
             if MALFORMED_TRUST_CHECK:
@@ -174,21 +209,32 @@ def _gh_shim_source(
             head_name = requested_repo if HEAD_REPO_FULL_NAME == SAME_AS_REQUEST else HEAD_REPO_FULL_NAME
             base_name = requested_repo if BASE_REPO_FULL_NAME == SAME_AS_REQUEST else BASE_REPO_FULL_NAME
             head_repo = {{"full_name": head_name}} if head_name is not None else None
-            print(json.dumps({{
+            payload = {{
                 "author_association": AUTHOR_ASSOCIATION,
                 "head": {{"repo": head_repo}},
                 "base": {{"repo": {{"full_name": base_name}}}},
-            }}))
+            }}
+            if not OMIT_CHANGED_FILES:
+                payload["changed_files"] = CHANGED_FILES
+            print(json.dumps(payload))
             sys.exit(0)
         if args[:1] == ["api"]:
+            if "--paginate" not in args or not args[1].endswith("?per_page=100"):
+                print("shim: listing call without --paginate and per_page=100", file=sys.stderr)
+                sys.exit(97)
+            encode = (
+                (lambda name: json.dumps(name, ensure_ascii=False))
+                if ".[].filename | @json" in args else str
+            )
+            emit = lambda name: sys.stdout.buffer.write((encode(sanitize_like_gh(name)) + chr(10)).encode("utf-8"))
             if PARTIAL_FILES_THEN_FAIL:
                 for f in PARTIAL_FILES_THEN_FAIL:
-                    print(f)
-                sys.exit(1)
+                    emit(f)
+                sys.exit(FILES_FAILURE_EXIT_STATUS)
             if FAIL_FILES:
-                sys.exit(1)
+                sys.exit(FILES_FAILURE_EXIT_STATUS)
             for f in FILES:
-                print(f)
+                emit(f)
             sys.exit(0)
         sys.exit(0)
     """)
@@ -218,11 +264,14 @@ def _run(
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
-    author_association: str = "MEMBER",
+    author_association: str | None = "MEMBER",
     head_repo_full_name: str | None = _SAME_AS_REQUEST,
     base_repo_full_name: str | None = _SAME_AS_REQUEST,
     fail_trust_check: bool = False,
     malformed_trust_check: bool = False,
+    changed_files: int | str | None = None,
+    omit_changed_files: bool = False,
+    files_failure_exit_status: int = 1,
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -237,7 +286,8 @@ def _run(
             _gh_shim_source(
                 call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail,
                 head_ref_oid_second, author_association, head_repo_full_name, base_repo_full_name,
-                fail_trust_check, malformed_trust_check,
+                fail_trust_check, malformed_trust_check, changed_files, omit_changed_files,
+                files_failure_exit_status,
             ),
         ),
         "HOME": str(home),
@@ -324,7 +374,7 @@ class TestOwnerRepoOriginMismatch:
             repo, isolated_home, [f"decoy-owner/decoy-repo#{PR_NUMBER}"], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "origin" in result.stderr
         assert _read_calls(call_log) == []
         assert _local_pr_ref_names(repo) == ""
@@ -366,7 +416,7 @@ class TestMissingAuditScript:
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"]
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "audit script not found" in result.stderr
         assert _read_calls(call_log) == []
 
@@ -377,7 +427,14 @@ class TestTrustClassificationRefuses:
     subprocess, and cannot verify the audit's own input). Trust
     classification widens the stop conditions; it never removes one."""
 
-    @pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "NONE"])
+    # GitHub's eight defined author_association values are OWNER, MEMBER,
+    # COLLABORATOR, CONTRIBUTOR (checked out below), and the four refused
+    # here; "SOMETHING_NEW" stands in for a value GitHub adds later, which an
+    # allowlist must refuse by default.
+    @pytest.mark.parametrize(
+        "author_association",
+        ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "NONE", "SOMETHING_NEW"],
+    )
     def test_restricted_author_association_refuses_with_no_fetch_or_worktree(
         self, isolated_home, repo_with_pr_ref, tmp_path, author_association
     ):
@@ -387,12 +444,34 @@ class TestTrustClassificationRefuses:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
         )
-        assert result.returncode != 0
+        assert result.returncode == 3, "a trust refusal exits 3, distinct from exit 2's operational failures"
         assert "review-pr-diff.sh" in result.stderr
         assert _local_pr_ref_names(repo) == ""
         assert _review_worktrees(repo) == []
         # No files pagination either -- the block fires before it.
-        assert not any(c[:1] == ["api"] and c[1].endswith("/files") for c in _read_calls(call_log))
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
+
+    @pytest.mark.parametrize(
+        "author_association,expected_exit_status",
+        [(None, 2), ("", 2), ("member", 3)],
+        ids=["null", "empty", "lowercase"],
+    )
+    def test_unusable_or_misspelled_author_association_refuses_with_no_fetch_or_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path, author_association, expected_exit_status
+    ):
+        """A null or empty value is a malformed response (exit 2); a lowercase
+        spelling is not in the allowlist, which matches exact GitHub values
+        (exit 3). Neither reaches a fetch."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
+        )
+        assert result.returncode == expected_exit_status
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
 
     def test_cross_repo_via_differing_full_name_refuses(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -404,33 +483,37 @@ class TestTrustClassificationRefuses:
             head_ref_oid=pr_sha, files=["a.py"],
             head_repo_full_name="some-fork/bar", base_repo_full_name=OWNER_REPO,
         )
-        assert result.returncode != 0
+        assert result.returncode == 3
         assert "review-pr-diff.sh" in result.stderr
         assert _local_pr_ref_names(repo) == ""
         assert _review_worktrees(repo) == []
 
-    def test_deleted_fork_null_head_repo_refuses(self, isolated_home, repo_with_pr_ref, tmp_path):
+    @pytest.mark.parametrize("author_association", _ALLOWLISTED_ASSOCIATIONS)
+    def test_deleted_fork_null_head_repo_refuses(
+        self, isolated_home, repo_with_pr_ref, tmp_path, author_association
+    ):
         """A null `head.repo` (REST payload) means the PR's fork was
         deleted -- treated as cross-repo, the more restrictive read on an
-        ambiguous input, never as a pass."""
+        ambiguous input, never as a pass, whatever the author's standing."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], head_repo_full_name=None,
+            head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
+            head_repo_full_name=None,
         )
-        assert result.returncode != 0
+        assert result.returncode == 3
         assert "review-pr-diff.sh" in result.stderr
         assert _review_worktrees(repo) == []
 
-    @pytest.mark.parametrize("author_association", ["MEMBER", "OWNER"])
-    def test_member_or_owner_author_paired_with_cross_repo_still_refuses(
+    @pytest.mark.parametrize("author_association", _ALLOWLISTED_ASSOCIATIONS)
+    def test_allowlisted_author_paired_with_cross_repo_still_refuses(
         self, isolated_home, repo_with_pr_ref, tmp_path, author_association
     ):
-        """A MEMBER/OWNER author association must not itself waive the
-        cross-repo check -- otherwise a suite that only checks cross-repo
-        status for non-members would pass, which is the exact
-        standing-gated shape this design rejects."""
+        """No allowlisted author association may itself waive the cross-repo
+        check -- otherwise a suite that only checks cross-repo status for
+        non-members would pass, which is the exact standing-gated shape this
+        design rejects."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
@@ -438,16 +521,19 @@ class TestTrustClassificationRefuses:
             head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
             head_repo_full_name="some-fork/bar", base_repo_full_name=OWNER_REPO,
         )
-        assert result.returncode != 0
+        assert result.returncode == 3
         assert "review-pr-diff.sh" in result.stderr
         assert _review_worktrees(repo) == []
 
-    def test_member_same_repo_still_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
+    @pytest.mark.parametrize("author_association", _ALLOWLISTED_ASSOCIATIONS)
+    def test_allowlisted_author_same_repo_still_checks_out(
+        self, isolated_home, repo_with_pr_ref, tmp_path, author_association
+    ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], author_association="MEMBER",
+            head_ref_oid=pr_sha, files=["a.py"], author_association=author_association,
         )
         assert result.returncode == 0, result.stderr
         assert [Path(result.stdout.strip())] == _review_worktrees(repo)
@@ -461,14 +547,14 @@ class TestTrustClassificationRefuses:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], author_association="NONE",
         )
-        assert result.returncode != 0
+        assert result.returncode == 3, result.stderr
         calls = _read_calls(call_log)
         assert calls, "the trust-check call itself must still have been made"
-        assert calls[0][:1] == ["api"] and not calls[0][1].endswith("/files"), (
+        assert calls[0][:1] == ["api"] and not _is_listing_call(calls[0], "/files"), (
             "the trust-classification call must be the first gh invocation, "
             "strictly before the paginated files listing"
         )
-        assert not any(c[1].endswith("/files") for c in calls if c[:1] == ["api"])
+        assert not any(_is_listing_call(c, "/files") for c in calls)
 
     def test_trust_check_gh_failure_aborts_rather_than_falling_through_to_checkout(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -482,7 +568,7 @@ class TestTrustClassificationRefuses:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], fail_trust_check=True,
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, "an operational failure is not a trust refusal"
         assert _review_worktrees(repo) == []
 
     def test_trust_check_malformed_response_aborts(self, isolated_home, repo_with_pr_ref, tmp_path):
@@ -494,7 +580,7 @@ class TestTrustClassificationRefuses:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], malformed_trust_check=True,
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, "an operational failure is not a trust refusal"
         assert _review_worktrees(repo) == []
 
 
@@ -563,7 +649,7 @@ class TestProvenanceWrite:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], author_association="NONE",
         )
-        assert result.returncode != 0
+        assert result.returncode == 3, result.stderr
         provenance = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
         assert not provenance.exists()
 
@@ -622,7 +708,7 @@ class TestAuditCleanProceedsToCheckout:
         # Scoped to the files-listing call specifically, not api_calls[0] --
         # the trust-classification call is also a `gh api` call and runs
         # first.
-        files_api_calls = [c for c in calls if c[:1] == ["api"] and c[1].endswith("/files")]
+        files_api_calls = [c for c in calls if _is_listing_call(c, "/files")]
         assert files_api_calls, "the file list must be self-fetched"
         assert "--paginate" in files_api_calls[0], (
             "the files listing call must paginate -- a regression dropping "
@@ -678,8 +764,9 @@ class TestAuditStopAbortsBeforeFetch:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["src/app.py", ".mcp.json"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 3, "an audit stop names review-pr-diff.sh, so it exits with the refusal status"
         assert ".mcp.json" in result.stderr
+        assert "review-pr-diff.sh" in result.stderr
 
         # The property the whole design exists to guarantee: a stop verdict
         # must leave no trace of a fetch, not just report a matching exit code.
@@ -709,7 +796,7 @@ class TestHeadRefOidMismatch:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid="f" * 40, files=["src/app.py"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "force-push" in result.stderr or "headRefOid" in result.stderr
         assert _review_worktrees(repo) == []
 
@@ -733,7 +820,7 @@ class TestHeadRefOidDriftDuringFileListFetch:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, head_ref_oid_second="f" * 40, files=["src/app.py"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "force-push" in result.stderr
         assert _local_pr_ref_names(repo) == "", (
             "a drift-detected-mid-audit abort must never fetch refs/pull/<N>/head into a local ref"
@@ -749,20 +836,26 @@ class TestHeadRefOidDriftDuringFileListFetch:
 
 
 class TestMalformedGhApiOutput:
+    @pytest.mark.parametrize(
+        "exit_status,status_wording",
+        [(1, "failed (exit 1)"), (124, "timed out"), (137, "failed (exit 137)")],
+        ids=["gh-failed", "cap-kill-124", "sigkill-137"],
+    )
     def test_files_listing_failure_aborts_rather_than_auditing_an_empty_list(
-        self, isolated_home, repo_with_pr_ref, tmp_path
+        self, isolated_home, repo_with_pr_ref, tmp_path, exit_status, status_wording
     ):
         """`gh api --paginate` failing (a bad page mid-pagination, a rate
-        limit) must abort outright, never fall through to auditing an empty
-        file list as if the PR touched nothing."""
+        limit, the cap firing) must abort outright, never fall through to
+        auditing an empty file list as if the PR touched nothing."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, fail_files=True,
+            head_ref_oid=pr_sha, fail_files=True, files_failure_exit_status=exit_status,
         )
-        assert result.returncode != 0
+        assert result.returncode == 2
         assert "file list" in result.stderr
+        assert f"gh api --paginate {status_wording}" in result.stderr
         assert _local_pr_ref_names(repo) == ""
         assert _review_worktrees(repo) == []
 
@@ -774,7 +867,7 @@ class TestMalformedGhApiOutput:
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, fail_pr_view=True, files=["a.py"]
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "headRefOid" in result.stderr
         assert _review_worktrees(repo) == []
 
@@ -793,21 +886,146 @@ class TestMalformedGhApiOutput:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, partial_files_then_fail=["src/app.py", "README.md"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "file list" in result.stderr
         assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+
+class TestFileListIntegrity:
+    """The file listing is fetched one JSON string per name, so a name that
+    holds a raw newline cannot split into two innocuous-looking fragments,
+    and its length is checked against the PR's own REST `changed_files`. The
+    input matrix for both checks lives in test_review_pr_lib.py."""
+
+    def test_newline_embedded_filename_is_refused_not_split_into_fragments(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The literal shape a raw `--jq '.[].filename'` fetch mishandles:
+        one name whose newline a line-split turns into the two fragments
+        `docs/notes.txt` and `evil.sh`, each passing the audit and neither
+        matching a tracked path in the symlink scan. Decoded intact, the name
+        holds a control character and checkout is refused."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        newline_name = "docs/notes.txt\nevil.sh"
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py", newline_name],
+        )
+        assert result.returncode == 3
+        assert "control character" in result.stderr
+        assert "review-pr-diff.sh" in result.stderr
+        assert _local_pr_ref_names(repo) == "", "a refusal must never fetch the PR's ref"
+        assert _review_worktrees(repo) == []
+        files_calls = [c for c in _read_calls(call_log) if _is_listing_call(c, "/files")]
+        assert files_calls and ".[].filename | @json" in files_calls[0], (
+            "the listing must be fetched one JSON string per name"
+        )
+
+    def test_control_character_gh_renders_in_caret_notation_is_refused(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """gh 2.100.0 is modeled, not independently re-verified, to render an
+        ESC in a file name as `^[` before `--jq` runs, so the script never
+        sees the raw byte. The name below arrives already rendered: it holds
+        no control character, and only the predicate's `^` clause refuses it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a^[b.py"],
+        )
+        assert result.returncode == 3
+        assert "control character" in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    def test_printable_non_ascii_quote_and_space_filenames_check_out(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The other side of the refusal: names that only look unusual are
+        passed through unchanged."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["docs/caf\u00e9 notes.md", 'say "hi".txt', "a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        assert [Path(result.stdout.strip())] == _review_worktrees(repo)
+
+    def test_symlink_named_with_non_ascii_quote_and_space_is_matched_intact(
+        self, isolated_home, tmp_path
+    ):
+        """The decoded name must reach `git ls-tree` byte for byte: a decode
+        that altered any of these characters would match no tree entry, and
+        the tracked symlink would be checked out unflagged."""
+        _install_audit_script(isolated_home)
+        symlink_name = 'caf\u00e9 "notes".txt'
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name=symlink_name)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt", symlink_name],
+        )
+        assert result.returncode == 3
+        assert "tracks a git symlink" in result.stderr
+        assert _review_worktrees(repo) == []
+
+    def test_listing_length_differing_from_changed_files_refuses_before_any_ref_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], changed_files=2,
+        )
+        assert result.returncode == 2
+        assert "truncated, or the PR changed while it was being fetched" in result.stderr
+        assert "Retry" in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    def test_missing_changed_files_count_aborts_before_the_file_list_is_fetched(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], omit_changed_files=True,
+        )
+        assert result.returncode == 2
+        assert "changed_files" in result.stderr
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
+        assert _review_worktrees(repo) == []
+
+    def test_non_integer_changed_files_count_aborts_before_the_file_list_is_fetched(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], changed_files="abc",
+        )
+        assert result.returncode == 2
+        assert "changed_files" in result.stderr
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
         assert _review_worktrees(repo) == []
 
 
 class TestAuditRejectsMalformedInput:
     """AUDIT_EXIT == 2 (audit-execution-surface.py's own "stdin must be a
     JSON array of path strings" rejection) is unreachable through this
-    script's ordinary pipeline: `jq -R -s 'split("\\n") |
-    map(select(length > 0))'` structurally always yields a JSON array of
-    strings from any text `gh api` can print, so the classifier's own
-    non-string-element rejection has no real trigger short of corrupting
-    that encoding step. A `jq` PATH shim does that corruption deliberately,
-    so the real classifier (not a stand-in) is what's driven to exit 2."""
+    script's ordinary pipeline: `@json` output decoded by `jq -c -s '.'`
+    structurally always yields a JSON array of strings from any text
+    `gh api` can print, so the classifier's own non-string-element rejection
+    has no real trigger short of corrupting that decode step. A `jq` PATH
+    shim does that corruption deliberately -- and delegates every other jq
+    call to the real binary -- so the real classifier (not a stand-in) is
+    what's driven to exit 2."""
 
     def test_corrupted_jq_encoding_makes_audit_reject_non_string_array(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -816,26 +1034,35 @@ class TestAuditRejectsMalformedInput:
         repo, pr_sha = repo_with_pr_ref
         env = _shimmed_env(
             tmp_path,
-            _gh_shim_source(tmp_path / "gh_calls.jsonl", head_ref_oid=pr_sha, files=["a.py"]),
+            _gh_shim_source(
+                tmp_path / "gh_calls.jsonl", head_ref_oid=pr_sha, files=["a.py"],
+                # The corrupted decode below yields three elements; the count
+                # check must pass so the run reaches the audit.
+                changed_files=3,
+            ),
         )
         env["HOME"] = str(isolated_home)
         env.pop("CLAUDE_CONFIG_DIR", None)
 
+        real_jq = shutil.which("jq")
+        assert real_jq is not None, "the real jq binary is required to delegate to"
         jq_shim_dir = tmp_path / "jq-shim"
         jq_shim_dir.mkdir()
         jq_shim = jq_shim_dir / "jq"
-        jq_shim.write_text(textwrap.dedent("""\
+        jq_shim.write_text(textwrap.dedent(f"""\
             #!/usr/bin/env python3
-            # Test-only override of jq's real split/map behavior for
-            # review-pr-checkout.sh's FILES_JSON encoding step -- always
-            # emits a JSON array of non-string elements regardless of
-            # stdin/argv, so audit-execution-surface.py's own "must be an
-            # array of strings" rejection (otherwise unreachable through
+            # Test-only override of jq for review-pr-checkout.sh's FILES_JSON
+            # decode step (`jq -c -s .`) -- emits a JSON array of non-string
+            # elements instead, so audit-execution-surface.py's own "must be
+            # an array of strings" rejection (otherwise unreachable through
             # this script's real pipeline) fires on real, self-fetched
-            # input.
+            # input. Every other jq call runs the real binary.
+            import os
             import sys
-            print("[1, 2, 3]")
-            sys.exit(0)
+            if sys.argv[1:] == ["-c", "-s", "."]:
+                print("[1, 2, 3]")
+                sys.exit(0)
+            os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
         """))
         jq_shim.chmod(0o755)
         env["PATH"] = os.pathsep.join([str(jq_shim_dir), env["PATH"]])
@@ -843,8 +1070,203 @@ class TestAuditRejectsMalformedInput:
         result = subprocess.run(
             ["bash", str(SCRIPT), PR_IDENTITY], cwd=repo, env=env, capture_output=True, text=True,
         )
-        assert result.returncode != 0
-        assert "rejected its own self-fetched file list as malformed input" in result.stderr
+        assert result.returncode == 2, result.stderr
+        assert (
+            'returned no verdict (exit 2, first line of stdout: {"error": "stdin must be a JSON array of path strings"})'
+            in result.stderr
+        )
+        assert _review_worktrees(repo) == []
+
+
+class TestAuditThatReturnsNoVerdictIsNotARefusal:
+    """Exit 3 tells the caller to switch to review-pr-diff.sh, so it is
+    reserved for an audit that positively returned `stop: true`. A tool that
+    failed to run is an operational failure, exit 2 with the audit's stderr
+    shown."""
+
+    @pytest.mark.parametrize(
+        "audit_script_body",
+        [
+            "import sys\nsys.exit(127)\n",
+            "raise RuntimeError('audit-tool-crashed')\n",
+            "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n",
+            "import sys\nprint('not json')\nsys.exit(1)\n",
+            "import sys\nprint('{\"stop\": false, \"matches\": []}')\nsys.exit(1)\n",
+        ],
+        ids=["python3-missing-status", "uncaught-exception", "sigkill", "status-1-non-json", "status-1-stop-false"],
+    )
+    def test_a_failed_audit_exits_two_never_three_and_fetches_nothing(
+        self, isolated_home, repo_with_pr_ref, tmp_path, audit_script_body
+    ):
+        _install_audit_script_that_runs(isolated_home, audit_script_body)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["src/app.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert "returned no verdict (exit " in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr, "a tooling failure must not tell the caller to switch paths"
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    def test_the_failed_audits_stderr_is_shown(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script_that_runs(isolated_home, "raise RuntimeError('audit-tool-crashed')\n")
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["src/app.py"],
+        )
+        assert result.returncode == 2
+        assert "audit-tool-crashed" in result.stderr
+
+    def test_a_positive_stop_verdict_exits_three(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import sys\n"
+            "print('{\"stop\": true, \"matches\": [{\"path\": \"src/app.py\", \"reason\": \"stand-in reason\"}]}')\n"
+            "sys.exit(1)\n",
+        )
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["src/app.py"],
+        )
+        assert result.returncode == 3
+        assert "src/app.py: stand-in reason" in result.stderr
+        assert "review-pr-diff.sh" in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+
+
+class TestAuditThatExitsCleanWithoutAVerdictIsNotClean:
+    """Exit status 0 alone is not a clean audit: an empty or truncated audit
+    script also exits 0. Only the audit's exact clean document proceeds to the
+    ref fetch, so an unaudited PR is never checked out."""
+
+    @pytest.mark.parametrize(
+        "audit_script_body,first_stdout_line",
+        [
+            ("", ""),
+            ("print('not json')\nprint('second line')\n", "not json"),
+            ("print('{\"stop\": true, \"matches\": []}')\n", '{"stop": true, "matches": []}'),
+        ],
+        ids=["empty-script", "non-json-stdout", "stop-true-at-status-0"],
+    )
+    def test_a_zero_status_audit_without_a_clean_verdict_exits_two_and_checks_nothing_out(
+        self, isolated_home, repo_with_pr_ref, tmp_path, audit_script_body, first_stdout_line
+    ):
+        _install_audit_script_that_runs(isolated_home, audit_script_body)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["src/app.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"returned no verdict (exit 0, first line of stdout: {first_stdout_line})" in result.stderr
+        assert "second line" not in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr, "a tooling failure must not tell the caller to switch paths"
+        assert result.stdout == ""
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+
+class TestStandInAuditInstaller:
+    def test_installing_a_stand_in_replaces_the_audit_symlink_without_writing_through_it(
+        self, isolated_home, tmp_path
+    ):
+        """The symlink points at a scratch copy, so a regression that writes
+        through it damages only the copy, never the tracked audit script."""
+        scratch_audit_script = tmp_path / "scratch-audit-execution-surface.py"
+        real_audit_source = (SKILLS_DIR / "review-pr" / "audit-execution-surface.py").read_text()
+        scratch_audit_script.write_text(real_audit_source)
+        _install_audit_script(isolated_home, scratch_audit_script)
+        installed = isolated_home / ".claude" / "skills" / "review-pr" / "audit-execution-surface.py"
+        assert installed.is_symlink()
+
+        _install_audit_script_that_runs(isolated_home, "stand-in body\n")
+
+        assert installed.read_text() == "stand-in body\n"
+        assert not installed.is_symlink()
+        assert scratch_audit_script.read_text() == real_audit_source
+
+    def test_reinstalling_the_real_audit_replaces_an_earlier_stand_in(self, isolated_home):
+        _install_audit_script_that_runs(isolated_home, "stand-in body\n")
+
+        _install_audit_script(isolated_home)
+
+        installed = isolated_home / ".claude" / "skills" / "review-pr" / "audit-execution-surface.py"
+        assert installed.is_symlink()
+        assert installed.read_text() == (SKILLS_DIR / "review-pr" / "audit-execution-surface.py").read_text()
+
+
+class TestRepoReadThatCannotRunIsNotACrossRepositoryRefusal:
+    @pytest.mark.parametrize("failing_read", [".head.repo", ".base.repo"], ids=["head-read", "base-read"])
+    def test_a_jq_failure_reading_either_repo_exits_two_never_three(
+        self, isolated_home, repo_with_pr_ref, tmp_path, failing_read
+    ):
+        """A null head.repo (a deleted fork) is a positive cross-repository
+        verdict, exit 3. A jq that fails on either repo read produced no
+        verdict, so the caller must not be told to switch to
+        review-pr-diff.sh: with a failed base read and a real head name the
+        two would read as unequal. Every other jq call runs the real binary."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        real_jq = shutil.which("jq")
+        assert real_jq is not None, "the real jq binary is required to delegate to"
+        jq_shim_dir = tmp_path / "jq-shim"
+        jq_shim_dir.mkdir()
+        jq_shim = jq_shim_dir / "jq"
+        jq_shim.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import os
+            import sys
+            if any({failing_read!r} in arg for arg in sys.argv[1:]):
+                sys.exit(5)
+            os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+        """))
+        jq_shim.chmod(0o755)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], path_prefix=jq_shim_dir,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not read" in result.stderr
+        assert "undecided" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+
+class TestNameCheckThatCannotRunIsNotARefusal:
+    def test_a_jq_failure_in_the_name_check_exits_two_never_three(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The refused-character predicate is the only jq call that explodes a
+        name into code points, so a jq that fails on it models a jq that is
+        broken or capped mid-check. Every other jq call runs the real binary."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        real_jq = shutil.which("jq")
+        assert real_jq is not None, "the real jq binary is required to delegate to"
+        jq_shim_dir = tmp_path / "jq-shim"
+        jq_shim_dir.mkdir()
+        jq_shim = jq_shim_dir / "jq"
+        jq_shim.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import os
+            import sys
+            if any("explode" in arg for arg in sys.argv[1:]):
+                sys.exit(5)
+            os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+        """))
+        jq_shim.chmod(0o755)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], path_prefix=jq_shim_dir,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not check" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _local_pr_ref_names(repo) == ""
         assert _review_worktrees(repo) == []
 
 
@@ -887,9 +1309,10 @@ class TestSymlinkDetection:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt", "notes.txt"],
         )
-        assert result.returncode != 0
+        assert result.returncode == 3, "a tracked symlink names review-pr-diff.sh, so it exits with the refusal status"
         assert "notes.txt" in result.stderr
         assert "symlink" in result.stderr
+        assert "review-pr-diff.sh" in result.stderr
         assert _review_worktrees(repo) == []
 
     def test_pre_existing_symlink_on_base_branch_untouched_by_this_pr_does_not_stop(
@@ -932,7 +1355,7 @@ class TestSymlinkDetection:
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt", symlink_name],
         )
-        assert result.returncode != 0
+        assert result.returncode == 3
         assert symlink_name in result.stderr
         assert "symlink" in result.stderr
         assert _review_worktrees(repo) == []
@@ -963,7 +1386,7 @@ class TestWorktreeAddFailure:
             head_ref_oid=pr_sha, files=["a.py"],
             path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add"),
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert "git worktree add failed" in result.stderr
         assert "local git cap" not in result.stderr
         assert result.stdout == ""
@@ -985,7 +1408,7 @@ class TestWorktreeAddFailure:
             head_ref_oid=pr_sha, files=["a.py"],
             path_prefix=_git_shim_that_fails_on_worktree_subcommand(tmp_path, "add"),
         )
-        assert result.returncode != 0
+        assert result.returncode == 2, result.stderr
         assert _provenance_fields(provenance)["mode"] == "acquired"
 
     def test_add_exit_status_from_a_cap_kill_is_named_in_the_message(

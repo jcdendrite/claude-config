@@ -18,21 +18,23 @@ Usage: ~/.claude/scripts/review-pr-diff.sh <owner>/<repo>#<number>
 Self-derives the PR's own file list and headRefOid, the same discipline
 review-pr-checkout.sh uses, but never checks the PR out. First checks that
 <owner>/<repo> matches this worktree's own origin remote, aborting before
-any gh call on a mismatch. Fetches the PR's own current headRefOid and full,
-paginated file list directly from `gh`, re-fetches headRefOid once more to
-catch a force-push landing while the file list was being paginated, and
-aborts on drift. Pipes the file list to audit-execution-surface.py, but a
-hit is reported on stderr as a mandatory pre-seeded finding rather than a
-stop -- nothing is landing on disk here for that predicate to protect, and
-a PR touching .claude/hooks/** or .mcp.json is precisely what an inbound
-reviewer must flag. Fetches `gh pr diff` and writes it to
-$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, comparing the number of
-`diff --git` headers in that output against the paginated file count as a
-truncation check -- not a vendor-documented limit, a defensive heuristic
-against a possibly-truncated diff response -- and reports a mismatch on
-stderr rather than trusting the diff blindly. On success, rewrites this
-session's provenance file with mode "diff-only" and prints the diff file's
-path on stdout as the sole output of a successful run.
+any gh call on a mismatch. Fetches the PR's own current headRefOid and its
+REST `changed_files` count, and stops naming the limit when the PR changes
+more than 300 files, since GitHub's diff endpoint cannot serve one. Then
+fetches the full, paginated file list (one JSON string per file name, so a
+name holding a newline stays one name), aborts when its length differs from
+`changed_files`, re-fetches headRefOid once more to catch a force-push
+landing while the file list was being paginated, and aborts on drift. Pipes
+the file list to audit-execution-surface.py, but a stop verdict is reported
+on stderr as a mandatory pre-seeded finding rather than a stop -- nothing is
+landing on disk here for that predicate to protect, and a PR touching
+.claude/hooks/** or .mcp.json is precisely what an inbound reviewer must
+flag. An audit that fails to return a verdict (python3 missing, a signal
+death, an uncaught exception, an exit 0 without a clean verdict on stdout)
+aborts with exit 2 and its stderr shown, and is never reported as a finding.
+Fetches `gh pr diff`, writes it to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff,
+rewrites this session's provenance file with mode "diff-only", and prints the
+diff file's path on stdout as the sole output of a successful run.
 EOF
 }
 
@@ -45,6 +47,8 @@ PR_IDENTITY="$1"
 
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
+# shellcheck source=_review-pr-lib.sh
+. "$(dirname "$0")/_review-pr-lib.sh"
 
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$PR_IDENTITY"); then
   echo "review-pr-diff.sh: PR identity '$PR_IDENTITY' is not a valid <owner>/<repo>#<number>." >&2
@@ -108,14 +112,51 @@ if [[ -z "$HEAD_REF_OID" ]]; then
   exit 2
 fi
 
-GH_PR_FILES_TIMEOUT_SECONDS=30
-if ! RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
-  echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate failed or timed out). Abort -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
+# The PR's own file count, from the REST payload (snake_case, unlike the
+# camelCase `changedFiles` of `gh pr view --json`). Ground truth for the
+# precheck below and for the file listing's completeness.
+# 10s: a network GET carrying no payload, the budget review-pr-acquire.sh uses
+# for the same call.
+GH_PR_REST_TIMEOUT_SECONDS=10
+if ! PR_REST_JSON=$(_lib_gh "$GH_PR_REST_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER" 2>/dev/null); then
+  echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's changed_files count (gh api failed or timed out). Abort." >&2
+  exit 2
+fi
+if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$PR_REST_JSON"); then
+  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort." >&2
   exit 2
 fi
 
-if ! FILES_JSON=$(printf '%s' "$RAW_FILES" | _lib_jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null); then
-  echo "review-pr-diff.sh: could not encode PR $OWNER_REPO#$PR_NUMBER's file list as JSON. Abort." >&2
+# The changed-file ceiling of GitHub's diff endpoint: `gh pr diff` cannot
+# serve a PR past it, so a named stop here beats a bare gh failure below.
+# [unverified] 300 is the limit in GitHub's 406 error text as third parties report it; no REST reference page states it.
+DIFF_MAX_CHANGED_FILES=300
+if [[ "$CHANGED_FILES_COUNT" -gt "$DIFF_MAX_CHANGED_FILES" ]]; then
+  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER changes $CHANGED_FILES_COUNT files, over the $DIFF_MAX_CHANGED_FILES-file limit GitHub's diff endpoint serves -- no diff can be fetched. Abort; this PR needs a route other than gh pr diff." >&2
+  exit 2
+fi
+
+GH_PR_FILES_TIMEOUT_SECONDS=30
+# per_page=100 is GitHub's maximum page size and the size gh --paginate requests by default.
+FILES_FETCH_STATUS=0
+RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate --jq "$REVIEW_PR_FILE_NAMES_JQ_FILTER" 2>/dev/null) || FILES_FETCH_STATUS=$?
+if [[ "$FILES_FETCH_STATUS" -ne 0 ]]; then
+  echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate $(review_pr_gh_status_description "$FILES_FETCH_STATUS")). Abort -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
+  exit 2
+fi
+
+if ! FILES_JSON=$(review_pr_decode_file_names "$RAW_FILES"); then
+  echo "review-pr-diff.sh: could not decode PR $OWNER_REPO#$PR_NUMBER's file list as JSON. Abort." >&2
+  exit 2
+fi
+
+# A listing whose length differs from the PR's own count is truncated, or the
+# PR changed between the count read and the listing; either way it must not be
+# audited as if it were the full file set. No name is refused for its content
+# here: nothing splits names on a delimiter, and this path reports audit hits
+# instead of stopping on them.
+if ! LISTED_FILES_COUNT=$(review_pr_file_count_matches "$FILES_JSON" "$CHANGED_FILES_COUNT"); then
+  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's file list has ${LISTED_FILES_COUNT:-an unreadable number of} entries but the PR reports $CHANGED_FILES_COUNT changed files -- the listing is truncated, or the PR changed while it was being fetched. Retry only helps in the second case; abort." >&2
   exit 2
 fi
 
@@ -137,37 +178,35 @@ fi
 # verdict here is reported, not fatal: no checkout means no subject for the
 # audit's own protection, while a PR touching .claude/hooks/** or
 # .mcp.json is exactly what an inbound reviewer must flag in the review
-# itself. Same predicate, different disposition.
-if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 "$AUDIT_SCRIPT" 2>/dev/null); then
+# itself. Same predicate, different disposition. A status alone is not proof
+# of a verdict (an uncaught exception also exits 1, an empty script exits 0), so
+# review_pr_audit_verdict reads the status together with stdout, and anything
+# but a verdict aborts instead of reporting a finding. The audit's stderr is
+# not redirected, so a failed run shows its own error. -I keeps PYTHON*
+# variables and the user site directory out of the gate; the audit imports only
+# json and sys.
+if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 -I "$AUDIT_SCRIPT"); then
   AUDIT_EXIT=0
 else
   AUDIT_EXIT=$?
 fi
-if [[ "$AUDIT_EXIT" -eq 2 ]]; then
-  echo "review-pr-diff.sh: audit-execution-surface.py rejected its own self-fetched file list as malformed input: $AUDIT_OUTPUT" >&2
-  exit 2
-fi
-if [[ "$AUDIT_EXIT" -ne 0 ]]; then
-  MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
-  echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- no checkout means nothing landed on disk. Matched paths:" >&2
-  printf '%s\n' "$MATCHES" >&2
-fi
+case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
+  clean) ;;
+  stop)
+    MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
+    echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- no checkout means nothing landed on disk. Matched paths:" >&2
+    printf '%s\n' "$MATCHES" >&2
+    ;;
+  *)
+    echo "review-pr-diff.sh: audit-execution-surface.py returned no verdict (exit $AUDIT_EXIT, first line of stdout: $(review_pr_audit_stdout_excerpt "$AUDIT_OUTPUT")), so the PR's file list was not audited -- a tooling failure, not a finding (any stderr the audit wrote is above). Abort." >&2
+    exit 2
+    ;;
+esac
 
 GH_PR_DIFF_TIMEOUT_SECONDS=30
 if ! DIFF_TEXT=$(_lib_gh "$GH_PR_DIFF_TIMEOUT_SECONDS" pr diff "$PR_NUMBER" -R "$OWNER_REPO" 2>/dev/null); then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's diff (gh pr diff failed or timed out). Abort." >&2
   exit 2
-fi
-# Truncation heuristic, not a vendor-documented limit -- gh pr diff's own
-# truncation behavior on a very large PR is unverified. Each
-# changed file produces exactly one `diff --git a/... b/...` header line in
-# unified diff output (added, deleted, renamed, or binary), so counting
-# those headers against the paginated file count is a structural
-# completeness check, not an arbitrary byte cap.
-DIFF_HEADER_COUNT=$(printf '%s\n' "$DIFF_TEXT" | grep -c '^diff --git ' || true)
-FILES_COUNT=$(printf '%s' "$FILES_JSON" | _lib_jq 'length' 2>/dev/null) || FILES_COUNT=""
-if [[ -n "$FILES_COUNT" && "$DIFF_HEADER_COUNT" != "$FILES_COUNT" ]]; then
-  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's diff carries $DIFF_HEADER_COUNT file header(s) but the paginated file list has $FILES_COUNT entries -- the diff response may be truncated. Report this discrepancy in the review; do not treat the diff as complete." >&2
 fi
 
 ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"

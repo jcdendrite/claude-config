@@ -473,25 +473,6 @@ _review_pr_findings_body_fixed_path() {
   _lib_review_pr_artifact_path "$CONFIG_DIR" "$1" body
 }
 
-# _read_marker_no_follow SRC_PATH
-# Prints SRC_PATH's contents through a single os.open(O_NOFOLLOW) -- refuses
-# a symlink at the final path component atomically with the read, mirroring
-# _lib.sh's _lib_write_no_follow for the read side of these same predictable
-# <active-dir>/<session-id>[.suffix] destinations. Prints nothing and
-# returns 1 on a missing file, a symlink, or a permission error -- callers
-# treat that the same as an empty/dead value, never a fatal abort.
-_read_marker_no_follow() {
-  _lib_capped python3 -c '
-import os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-with os.fdopen(fd, "rb") as f:
-    sys.stdout.buffer.write(f.read())
-' "$1"
-}
-
 SUBCOMMAND="$1"
 ARG2="${2:-}"
 
@@ -930,13 +911,13 @@ case "$SUBCOMMAND" in
     # be swept.
     #
     # One python3 invocation for the whole sweep, not one per entry: a
-    # per-file bash loop would pay a fresh _read_marker_no_follow (its own
-    # python3 spawn) per file. Extracted into marker-clear-stale.py per
-    # shell-script-conventions.md -- this sweep has its own control flow and
-    # data structures, not a single syscall bash can't express.
+    # per-file bash loop would pay a fresh python3 spawn per file. Extracted
+    # into marker-clear-stale.py per shell-script-conventions.md -- this sweep
+    # has its own control flow and data structures, not a single syscall bash
+    # can't express.
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
-    CLEAR_STALE_OUTPUT=$(python3 "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN")
+    CLEAR_STALE_OUTPUT=$(python3 -I "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN")
     printf '%s\n' "$CLEAR_STALE_OUTPUT"
     ;;
   resolve-session-id)

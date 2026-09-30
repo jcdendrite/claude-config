@@ -298,18 +298,42 @@ def _provenance_fields(path: Path) -> dict:
     return fields
 
 
-def _install_audit_script(home: Path) -> None:
+# One line of shim source defining `sanitize_like_gh(name)`, for the review-pr
+# scripts' gh shims. Models gh 2.100.0's behavior, not independently
+# re-verified: a JSON-escaped C0 control character other than tab, LF, VT and
+# CR reaches `--jq` as caret notation (ESC as `^[`, NUL as `^@`), so it never
+# reaches a script raw.
+GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE = (
+    "sanitize_like_gh = lambda name: ''.join("
+    "'^' + chr(ord(c) ^ 0x40) if ord(c) < 32 and c not in '\\t\\n\\x0b\\r' else c for c in name)"
+)
+
+
+def _install_audit_script(home: Path, audit_script_source: Path | None = None) -> None:
     """Symlink the real audit-execution-surface.py into the isolated
     $HOME/.claude/skills/review-pr/ -- the installed-layout path
     review-pr-checkout.sh/review-pr-diff.sh resolve via
     $CONFIG_DIR/skills/review-pr/ (stow-packages.sh: claude-skills/ stows to
     ~/.claude/). Exercises the real predicate rather than a stand-in copy
-    that could drift from it."""
+    that could drift from it. `audit_script_source` redirects the link for a
+    test whose own failure could write through it."""
     skill_dir = home / ".claude" / "skills" / "review-pr"
     skill_dir.mkdir(parents=True, exist_ok=True)
     target = skill_dir / "audit-execution-surface.py"
-    if not target.exists():
-        target.symlink_to(SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+    # Unlink first so an earlier stand-in in this home never survives as the "real" audit.
+    target.unlink(missing_ok=True)
+    target.symlink_to(audit_script_source or SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+
+
+def _install_audit_script_that_runs(home: Path, script_body: str) -> None:
+    """Install a stand-in audit-execution-surface.py at the installed-layout
+    path, for a run whose audit must end a way the real one never does."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    # Unlink first: writing through the symlink _install_audit_script creates would overwrite the tracked audit script.
+    target.unlink(missing_ok=True)
+    target.write_text(script_body)
 
 
 def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:

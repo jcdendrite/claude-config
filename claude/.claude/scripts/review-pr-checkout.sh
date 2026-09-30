@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Audit-then-checkout for /review-pr Step 2, made unbypassable by
-# construction. This script re-derives the PR's own repo identity, file
-# list, and headRefOid itself from `gh`/git, never trusting Step 1's own
-# read or a value passed in as an argument -- the same self-verifying
-# pattern review-pr-post.sh already uses for the post step. A PreToolUse
-# hook can only confirm that *some* audit ran, not that its input went
-# untampered: the same prompt injection this audit guards against could
+# Audit-then-checkout for /review-pr Step 2. This script re-derives the PR's
+# own repo identity, file list, and headRefOid itself from `gh`/git, never
+# trusting Step 1's own read or a value passed in as an argument -- the same
+# self-verifying pattern review-pr-post.sh already uses for the post step. A
+# PreToolUse hook can only confirm that *some* audit ran, not that its input
+# went untampered: the same prompt injection this audit guards against could
 # just as easily instruct the agent to "audit an empty list" before such a
 # hook's own check, or to invoke this very script against a different,
 # attacker-controlled repo than the one actually being checked out. So
@@ -13,6 +12,12 @@
 # argument's own repo identity -- can hand this script a doctored file
 # list or a mismatched repo.
 set -euo pipefail
+
+# Distinct from the exit 2 every operational failure uses, so a caller can
+# tell "this PR needs review-pr-diff.sh" apart from "something broke".
+# Covers every refusal that names review-pr-diff.sh as the alternative, and
+# only a positive verdict: a tool that failed to produce one exits 2.
+EXIT_CHECKOUT_REFUSED=3
 
 usage() {
   cat >&2 <<'EOF'
@@ -24,22 +29,32 @@ checks that <owner>/<repo> matches this worktree's own origin remote,
 aborting before any gh call on a mismatch. Then fetches this PR's own
 author_association and cross-repo status directly from `gh api
 repos/{owner}/{repo}/pulls/{number}` -- unconditionally, on every
-invocation -- and refuses a FIRST_TIME_CONTRIBUTOR/NONE author or a
-cross-repository PR (including a deleted-fork PR, whose head.repo reads
-null) before any further fetch, naming review-pr-diff.sh as the path to use
-instead. Only past that gate does it fetch the PR's own full, paginated
-file list and its current headRefOid directly from `gh`, re-fetch
-headRefOid once more to catch a force-push landing while the file list was
-being paginated, pipe the file list to audit-execution-surface.py, and only
-fetch refs/pull/<N>/head when the audit returns clean. A stop verdict exits
-non-zero before any fetch of the PR's ref, naming the matched paths and
-reasons on stderr. On a clean audit, asserts the fetched SHA still equals
-the headRefOid this script itself fetched earlier in the same run -- a
-force-push race between audit and checkout -- and aborts with no worktree
-left behind on a mismatch. Also lists the fetched tree's own entries for the
+invocation -- and refuses an author whose association is not one of MEMBER,
+OWNER, COLLABORATOR, or CONTRIBUTOR, or a cross-repository PR (including a
+deleted-fork PR, whose head.repo reads null), before any further fetch,
+naming review-pr-diff.sh as the path to use instead. Only past that gate
+does it fetch the PR's own full, paginated file list (one JSON string per
+file name, so a name holding a newline decodes intact) and its current
+headRefOid directly from `gh`. It refuses a file name holding any C0 control
+character (code point below 32), DEL, any C1 control character (128-159) or
+`^` (gh 2.100.0 is modeled as rendering a JSON-escaped control character as
+caret notation before the name reaches this script, so a `^` may stand for
+one; that model was not independently re-verified; the set is defined in
+_review-pr-lib.sh), and
+aborts on a listing whose length differs from the PR's own `changed_files`
+count. It re-fetches headRefOid once more to catch a
+force-push landing while the file list was being paginated, pipes the file
+list to audit-execution-surface.py, and only fetches refs/pull/<N>/head when
+the audit returns clean. A stop verdict exits 3 before any fetch of the PR's
+ref, naming the matched paths and reasons on stderr; an audit that fails to
+return a verdict (python3 missing, a signal death, an uncaught exception, an
+exit 0 without a clean verdict on stdout) exits 2 with its stderr shown. On a clean audit, asserts the fetched SHA
+still equals the headRefOid this script itself fetched earlier in the same
+run -- a force-push race between audit and checkout -- and aborts with no
+worktree left behind on a mismatch. Also lists the fetched tree's own entries for the
 PR's own changed files, for any git-tracked symlink (mode 120000) among
 them, which audit-execution-surface.py's path-only match cannot see, and
-aborts the same way on a hit. A pre-existing symlink elsewhere in the tree
+refuses the same way on a hit. A pre-existing symlink elsewhere in the tree
 that this PR does not touch is out of scope. A second run against the same
 PR gets its own new worktree under the main tree's .claude/worktrees/,
 named for this session and the PR number plus a random suffix;
@@ -49,6 +64,12 @@ the verified headRefOid, this session's Claude PID, the mode) after this
 script's own independent re-derivation -- never trusting
 review-pr-acquire.sh's own mode "acquired" write. Prints the worktree's
 absolute path on stdout as the sole output of a successful run.
+
+Exit status: 0 on success, 3 when checkout is positively refused and
+review-pr-diff.sh is the path to use instead (the PR's trust class, a
+cross-repository head, a file name holding a refused character, an audit stop
+verdict, or a tracked symlink), 2 on every other refusal or failure,
+including a check that could not be completed.
 EOF
 }
 
@@ -61,6 +82,8 @@ PR_IDENTITY="$1"
 
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
+# shellcheck source=_review-pr-lib.sh
+. "$(dirname "$0")/_review-pr-lib.sh"
 
 # Same split and validation review-pr-post.sh's own MARKER_PR_IDENTITY
 # handling uses, so the two scripts agree on one PR-identity convention.
@@ -149,16 +172,31 @@ fi
 # indexes a field off `null` as `null`, never an error -- so it falls
 # through to the empty-HEAD_REPO_FULL_NAME branch below and is treated as
 # cross-repo: failing toward the more restrictive path on an ambiguous read.
-HEAD_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.head.repo.full_name // empty' 2>/dev/null) || HEAD_REPO_FULL_NAME=""
-BASE_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.base.repo.full_name // empty' 2>/dev/null) || BASE_REPO_FULL_NAME=""
+# A jq failure is not that verdict, so it exits 2 rather than reading as empty.
+if ! HEAD_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.head.repo.full_name // empty' 2>/dev/null) \
+  || ! BASE_REPO_FULL_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.base.repo.full_name // empty' 2>/dev/null); then
+  echo "review-pr-checkout.sh: could not read PR $OWNER_REPO#$PR_NUMBER's head and base repositories from its trust-classification data (jq failed or timed out), so whether it is cross-repository is undecided. Abort before any fetch." >&2
+  exit 2
+fi
+# Any spelling not listed here refuses, including FIRST_TIMER, MANNEQUIN, and
+# a value GitHub adds later.
 case "$AUTHOR_ASSOCIATION" in
-  FIRST_TIME_CONTRIBUTOR | NONE)
-    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's author association is $AUTHOR_ASSOCIATION -- checkout is refused unconditionally for this trust class. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
-    exit 2
+  MEMBER | OWNER | COLLABORATOR | CONTRIBUTOR) ;;
+  *)
+    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's author association is $AUTHOR_ASSOCIATION, outside the MEMBER/OWNER/COLLABORATOR/CONTRIBUTOR set -- checkout is refused unconditionally for this trust class. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
+    exit "$EXIT_CHECKOUT_REFUSED"
     ;;
 esac
 if [[ -z "$HEAD_REPO_FULL_NAME" || "$HEAD_REPO_FULL_NAME" != "$BASE_REPO_FULL_NAME" ]]; then
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER is cross-repository (head repo '$HEAD_REPO_FULL_NAME' vs base repo '$BASE_REPO_FULL_NAME') -- checkout is refused unconditionally for this trust class, regardless of author standing. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
+  exit "$EXIT_CHECKOUT_REFUSED"
+fi
+
+# REST snake_case, not the camelCase `changedFiles` of `gh pr view --json`:
+# TRUST_JSON comes from `gh api`. The count is the ground truth the file
+# listing below is checked against.
+if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$TRUST_JSON"); then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort before any fetch -- the file listing below could not be checked for completeness." >&2
   exit 2
 fi
 
@@ -185,23 +223,65 @@ GH_PR_FILES_TIMEOUT_SECONDS=30
 # which silently caps at 100 entries with no --paginate equivalent
 # (REFERENCES.md) -- this is exactly the full, paginated list the audit
 # below must see, self-fetched rather than trusted from Step 1's own read.
-if ! RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' 2>/dev/null); then
-  echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate failed or timed out). Abort before any fetch of the PR's ref -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
+# per_page=100 is GitHub's maximum page size and the size gh --paginate requests by default.
+FILES_FETCH_STATUS=0
+RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate --jq "$REVIEW_PR_FILE_NAMES_JQ_FILTER" 2>/dev/null) || FILES_FETCH_STATUS=$?
+if [[ "$FILES_FETCH_STATUS" -ne 0 ]]; then
+  echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's file list (gh api --paginate $(review_pr_gh_status_description "$FILES_FETCH_STATUS")). Abort before any fetch of the PR's ref -- a partial or failed listing must never be audited as if it were the full, or an empty, file set." >&2
   exit 2
 fi
 
-# Converts the newline-delimited filenames above into the JSON array
+# Decodes those JSON string literals into the JSON array
 # audit-execution-surface.py's stdin contract requires. Kept as its own
 # checked step, separate from the gh fetch above, so a failure here reports
-# "could not encode as JSON" rather than being folded into the gh fetch's
-# own "could not fetch" message -- `pipefail` (set at the top of this
-# script) already makes a combined pipeline's exit status the correct
-# rightmost-nonzero value, so this split is for error-message precision, not
-# to work around a pipefail gap.
-if ! FILES_JSON=$(printf '%s' "$RAW_FILES" | _lib_jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null); then
-  echo "review-pr-checkout.sh: could not encode PR $OWNER_REPO#$PR_NUMBER's file list as JSON. Abort before any fetch of the PR's ref." >&2
+# "could not decode" rather than being folded into the gh fetch's own "could
+# not fetch" message -- `pipefail` (set at the top of this script) already
+# makes a combined pipeline's exit status the correct rightmost-nonzero
+# value, so this split is for error-message precision, not to work around a
+# pipefail gap.
+if ! FILES_JSON=$(review_pr_decode_file_names "$RAW_FILES"); then
+  echo "review-pr-checkout.sh: could not decode PR $OWNER_REPO#$PR_NUMBER's file list as JSON. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
+
+# A name the symlink scan below could split or mis-match is refused rather
+# than passed on: the scan reads names one per line. Only a positive finding
+# refuses with the diff-only status; a check that could not run is a failure.
+NAME_CHECK_STATUS=0
+review_pr_file_names_line_safe "$FILES_JSON" || NAME_CHECK_STATUS=$?
+case "$NAME_CHECK_STATUS" in
+  0) ;;
+  1)
+    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's file list holds a name with a control character or '^' -- checkout is refused. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch of the PR's ref." >&2
+    exit "$EXIT_CHECKOUT_REFUSED"
+    ;;
+  *)
+    echo "review-pr-checkout.sh: could not check PR $OWNER_REPO#$PR_NUMBER's file names for control characters (jq failed or timed out). Abort before any fetch of the PR's ref." >&2
+    exit 2
+    ;;
+esac
+
+# The REST files listing stops short on a very large PR without any error, and
+# a push between the count read and the listing changes the count. Either way a
+# listing whose length differs from the PR's own count must not be audited as
+# if it were the full set.
+if ! LISTED_FILES_COUNT=$(review_pr_file_count_matches "$FILES_JSON" "$CHANGED_FILES_COUNT"); then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's file list has ${LISTED_FILES_COUNT:-an unreadable number of} entries but the PR reports $CHANGED_FILES_COUNT changed files -- the listing is truncated, or the PR changed while it was being fetched. Retry only helps in the second case; abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+
+# One name per line for the symlink scan below, built with a `read` loop, not
+# `mapfile`/`readarray` (bash-4+, forbidden here; test_no_bash4_constructs.py).
+# Safe to split on newlines only because the line-safety check above already
+# refused any name holding one.
+if ! CHANGED_FILE_NAMES=$(printf '%s' "$FILES_JSON" | _lib_jq -r '.[]' 2>/dev/null); then
+  echo "review-pr-checkout.sh: could not list PR $OWNER_REPO#$PR_NUMBER's file names. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+CHANGED_FILE_PATHS=()
+while IFS= read -r changed_path; do
+  [[ -n "$changed_path" ]] && CHANGED_FILE_PATHS+=("$changed_path")
+done <<< "$CHANGED_FILE_NAMES"
 
 # TOCTOU guard: HEAD_REF_OID above was fetched before the file list just
 # above it, so a force-push landing in that window would let the audit run
@@ -221,25 +301,34 @@ if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
 fi
 
 # The audit's own exit code mirrors its "stop" verdict (1 = stop, 0 = clean,
-# 2 = malformed stdin). Captured explicitly via the if/else exemption from
-# `set -e` (shell-script-conventions.md) rather than a bare pipeline, so the
-# stop path can still print the audit's own named matches before exiting.
-if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 "$AUDIT_SCRIPT" 2>/dev/null); then
+# 2 = malformed stdin), so a status alone is not proof of a verdict: an
+# uncaught exception also exits 1, and an empty script exits 0.
+# review_pr_audit_verdict reads the status together with stdout, and anything
+# but a verdict exits 2. -I keeps PYTHON* variables and the user site directory
+# out of the gate; the audit imports only json and sys. The status is
+# captured through the if/else exemption from `set -e`
+# (shell-script-conventions.md) rather than a bare pipeline, so the stop path
+# can still print the audit's own named matches before exiting. The audit's
+# stderr is not redirected, so a failed run shows its own error.
+if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 -I "$AUDIT_SCRIPT"); then
   AUDIT_EXIT=0
 else
   AUDIT_EXIT=$?
 fi
 
-if [[ "$AUDIT_EXIT" -eq 2 ]]; then
-  echo "review-pr-checkout.sh: audit-execution-surface.py rejected its own self-fetched file list as malformed input: $AUDIT_OUTPUT" >&2
-  exit 2
-fi
-if [[ "$AUDIT_EXIT" -ne 0 ]]; then
-  MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
-  echo "review-pr-checkout.sh: passive-execution audit stopped PR $OWNER_REPO#$PR_NUMBER before checkout -- no refs/pull/$PR_NUMBER/head fetch was made. Matched paths:" >&2
-  printf '%s\n' "$MATCHES" >&2
-  exit 2
-fi
+case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
+  clean) ;;
+  stop)
+    MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
+    echo "review-pr-checkout.sh: passive-execution audit stopped PR $OWNER_REPO#$PR_NUMBER before checkout -- no refs/pull/$PR_NUMBER/head fetch was made. Use ~/.claude/scripts/review-pr-diff.sh instead. Matched paths:" >&2
+    printf '%s\n' "$MATCHES" >&2
+    exit "$EXIT_CHECKOUT_REFUSED"
+    ;;
+  *)
+    echo "review-pr-checkout.sh: audit-execution-surface.py returned no verdict (exit $AUDIT_EXIT, first line of stdout: $(review_pr_audit_stdout_excerpt "$AUDIT_OUTPUT")), so the PR's file list was not audited -- a tooling failure, not a stop (any stderr the audit wrote is above). Abort before any fetch of the PR's ref." >&2
+    exit 2
+    ;;
+esac
 
 # Local ref namespace scoped to this script, distinct from any branch name a
 # contributor might already have locally, so this fetch can never collide
@@ -283,13 +372,8 @@ fi
 # Scoped to the PR's own changed files, not the whole tree: a symlink
 # already committed on the base branch that this PR never touches is not
 # this PR's own risk, and must not stop every future review of the repo.
-# CHANGED_FILE_PATHS is the same newline-delimited list RAW_FILES already
-# holds for the path-based audit above -- built with a `read` loop, not
-# `mapfile`/`readarray` (bash-4+, forbidden here; test_no_bash4_constructs.py).
-CHANGED_FILE_PATHS=()
-while IFS= read -r changed_path; do
-  [[ -n "$changed_path" ]] && CHANGED_FILE_PATHS+=("$changed_path")
-done <<< "$RAW_FILES"
+# CHANGED_FILE_PATHS is the same list FILES_JSON holds for the path-based
+# audit above.
 
 # 30s, not _lib_capped's 5s local-read default: `ls-tree -r` still walks a
 # subtree per pathspec given, whose cost scales with the number and depth of
@@ -308,9 +392,9 @@ if [[ "${#CHANGED_FILE_PATHS[@]}" -gt 0 ]]; then
   fi
 fi
 if [[ -n "$SYMLINK_ENTRIES" ]]; then
-  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER tracks a git symlink -- git checks it out verbatim with no target validation, and a Read tool could transparently follow it outside the repo. Abort with no worktree created. Matched paths:" >&2
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER tracks a git symlink -- git checks it out verbatim with no target validation, and a Read tool could transparently follow it outside the repo. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort with no worktree created. Matched paths:" >&2
   printf '%s\n' "$SYMLINK_ENTRIES" >&2
-  exit 2
+  exit "$EXIT_CHECKOUT_REFUSED"
 fi
 
 # _lib_main_repo_root, not $REPO_ROOT: the worktree is created under the main

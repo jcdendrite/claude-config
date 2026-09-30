@@ -4,8 +4,8 @@ marker.sh's `clear-stale` arm. One process for the whole sweep, not one per
 entry: a per-file bash loop would pay a fresh python3 spawn (O_NOFOLLOW read)
 per file. O_NOFOLLOW reads stay -- a symlink planted at one of these
 predictable <active-dir>/<session-id>[.suffix] paths must never be followed,
-the same hardening _lib.sh's _lib_write_no_follow and marker.sh's own
-_read_marker_no_follow apply per-file elsewhere.
+the same hardening _lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply
+per-file elsewhere.
 
 Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 
