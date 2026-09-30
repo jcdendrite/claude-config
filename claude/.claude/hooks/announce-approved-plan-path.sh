@@ -11,13 +11,15 @@
 # starts, after optional spaces or tabs, with the `~`-or-absolute
 # `.../.claude/scripts/marker.sh` path and contains a `write plan-review` op.
 # The rest of the chain is not re-validated here.
+# It depends on enforce-marker-script-shape.sh for the shape of any single-line
+# command that starts with the marker.sh path, and it filters tool_name and the
+# command itself rather than relying solely on the settings.json matcher.
 #
 # Paired literal: the `plan-review marker covers: ` prefix below is copied from
 # PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.
 #
 # Fail posture: fail-silent, never blocks. Every path exits 0, and a failed
 # jq call or a missing _lib.sh produces no output.
-# PostToolUse cannot deny, so there is nothing to fail closed against.
 #
 # Message forms:
 #   - Normal: `plan-review marker recorded for: <path>[, <path>...]`.
@@ -48,22 +50,21 @@
 #     outside the trigger's path class announces nothing.
 #   - A repo path containing a space or other character outside the path
 #     allowlist yields the withheld line.
-#   - A Bash call whose raw payload (command, cwd, transcript path, or output)
-#     contains both marker.sh and plan-review passes the raw-stdin prefilter.
-#     It then pays the _lib.sh sourcing cost, a larger cost than any single jq
-#     call, before the trigger rejects it.
+#   - A Bash call whose raw payload contains both marker.sh and plan-review
+#     passes the raw-stdin prefilter.
+#   - The raw payload includes the command, cwd, transcript path, and output.
+#   - A payload that passes the prefilter pays the _lib.sh sourcing cost before
+#     the trigger rejects it.
 #   - Unverified: whether the harness fires PostToolUse when the Bash command
-#     exits non-zero. marker.sh prints paths only after a successful write, so
-#     a failed write never announces a path either way.
+#     exits non-zero.
+#   - marker.sh prints paths only after a successful write, so a failed write
+#     never announces a path either way.
+#   - If the harness does fire on failure with a non-object tool_response, the
+#     drift line may also appear on a failed write.
 #
 # Timeout: the settings.json registration sets no `timeout`, matching sibling
-# informational hooks. With neither `timeout` nor `gtimeout` on PATH, a hung jq
-# is bounded only by the harness default.
-#
-# Defense-in-depth: filters tool_name and the command itself; does not rely
-# solely on the settings.json matcher condition. It depends on
-# enforce-marker-script-shape.sh for the shape of any single-line command that
-# starts with the marker.sh path.
+# informational hooks, so a hung jq is bounded only by the harness default when
+# neither `timeout` nor `gtimeout` is on PATH.
 set -uo pipefail
 
 INPUT=$(cat) || exit 0

@@ -2151,6 +2151,12 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
         result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
 
+        # The printed set is the hashed set: one line naming the local-edit plan.
+        printed_lines = result.stdout.splitlines()
+        assert len(printed_lines) == 1, result.stdout
+        assert printed_lines[0].startswith("plan-review marker covers: ")
+        assert printed_lines[0].endswith("/.claude/plans/p.md")
+
         assert (
             run_hook(
                 HOOKS_DIR / "require-plan-review.sh",
@@ -2181,6 +2187,9 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
             "an empty active set must leave no non-empty or base-bound marker "
             f"value for this session/repo, got {held_value!r}"
         )
+        # The print re-enumerates with the hash's own base, so no path is
+        # announced for a plan the marker did not hash.
+        assert result.stdout == ""
         # No run_hook allow-check here: with an empty active set the hook
         # exits before reading any marker (require-plan-review.sh ~:241), so
         # such a check observes nothing about this test's write side and is

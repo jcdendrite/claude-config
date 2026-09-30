@@ -13,15 +13,18 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
+    bash_input,
     extract_skill_command,
     git_toplevel,
     install_marker_script,
+    run_hook,
     symlink_hooks_lib_chain,
 )
 
 from .conftest import _seed_session
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-approved-plan-path.sh"
+ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 _SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
 _PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 
@@ -150,35 +153,49 @@ class TestRegistration:
         assert matchers_registering("PreToolUse") == []
 
 
+# Each builder turns the extracted /plan-review command into a shape the
+# real enforce-marker-script-shape.sh gate allows.
+GATE_ALLOWED_SHAPE_PARAMS = [
+    pytest.param(lambda c: c, id="extracted_tilde_form"),
+    pytest.param(
+        lambda c: c.replace("~", "/home/example", 1), id="absolute_path_prefix"
+    ),
+    pytest.param(lambda c: "   " + c, id="leading_spaces"),
+    pytest.param(lambda c: "\t" + c, id="leading_tab"),
+    pytest.param(lambda c: c + " 2>/dev/null", id="trailing_stderr_discard"),
+    pytest.param(
+        lambda c: c.replace("write", "deactivate") + " && " + c,
+        id="deactivate_then_write_chain",
+    ),
+    pytest.param(
+        lambda c: c.replace("write", "deactivate") + " && " + c + " 2>/dev/null",
+        id="deactivate_then_write_chain_with_stderr_discard",
+    ),
+    pytest.param(lambda c: c + "&&git commit -m x", id="no_space_before_chain_operator"),
+    pytest.param(lambda c: c + " && git commit -m x", id="write_then_git_commit"),
+]
+
+
 class TestTrigger:
-    @pytest.mark.parametrize(
-        "command_builder",
-        [
-            pytest.param(lambda c: c, id="extracted_tilde_form"),
-            pytest.param(
-                lambda c: c.replace("~", "/home/example", 1), id="absolute_path_prefix"
-            ),
-            pytest.param(lambda c: "   " + c, id="leading_spaces"),
-            pytest.param(lambda c: "\t" + c, id="leading_tab"),
-            pytest.param(lambda c: c + " 2>/dev/null", id="trailing_stderr_discard"),
-            pytest.param(
-                lambda c: c.replace("write", "deactivate") + " && " + c,
-                id="deactivate_then_write_chain",
-            ),
-            pytest.param(
-                lambda c: c.replace("write", "deactivate") + " && " + c + " 2>/dev/null",
-                id="deactivate_then_write_chain_with_stderr_discard",
-            ),
-            pytest.param(lambda c: c + "&&git commit -m x", id="no_space_before_chain_operator"),
-            pytest.param(lambda c: c + " && git commit -m x", id="write_then_git_commit"),
-        ],
-    )
+    @pytest.mark.parametrize("command_builder", GATE_ALLOWED_SHAPE_PARAMS)
     def test_announces_for_every_gate_allowed_shape_containing_write_plan_review(
         self, isolated_home, command_builder
     ):
         command = command_builder(_record_completion_command())
 
         assert _announce(isolated_home, command, _covered_stdout(PLAN_PATH)) == APPROVED_MESSAGE
+
+    @pytest.mark.parametrize("command_builder", GATE_ALLOWED_SHAPE_PARAMS)
+    def test_every_announced_shape_is_one_the_real_shape_gate_allows(
+        self, isolated_home, command_builder
+    ):
+        command = command_builder(_record_completion_command())
+
+        decision = run_hook(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command), home=isolated_home
+        )
+
+        assert decision == "allow"
 
     @pytest.mark.parametrize("tool_name", ["Write", "Read"])
     def test_stays_silent_for_a_non_bash_tool_carrying_a_triggering_command(
@@ -368,9 +385,10 @@ class TestPayloadDriftAndSilence:
         assert _message(_run_hook_raw(payload, isolated_home)) is None
 
     def test_stays_silent_when_the_marker_write_failed(self, isolated_home):
+        # A prefixed line in stderr pins that the hook reads stdout only.
         failed_write = {
             "stdout": "",
-            "stderr": "marker.sh: permission denied",
+            "stderr": _covered_stdout(PLAN_PATH),
             "exit_code": 1,
         }
         payload = _payload(_record_completion_command(), failed_write)
@@ -426,8 +444,10 @@ class TestFailOpen:
     def test_exits_zero_silently_when_lib_sh_is_not_adjacent(self, isolated_home, tmp_path):
         """dirname($0) resolves to HOOKS_DIR only when the hook runs from its
         real location, so a copy with no adjacent _lib.sh exercises the
-        could-not-source exit-0 path; the positive control proves the same
-        payload announces once the lib chain is linked."""
+        could-not-source exit-0 path.
+
+        The positive control proves the same payload announces once the lib
+        chain is linked."""
         payload = _payload(_record_completion_command(), {"stdout": _covered_stdout(PLAN_PATH)})
 
         bare_dir = tmp_path / "bare-hooks"
