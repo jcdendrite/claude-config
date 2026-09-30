@@ -100,7 +100,7 @@ class TestWriteBenchArtifacts:
         )
         assert check_ignore.returncode == 0
 
-    def test_commit_subject_is_written_verbatim_to_a_bench_data_file(self, tmp_path: Path) -> None:
+    def test_commit_subject_is_written_to_a_bench_data_file_not_the_fixture_history(self, tmp_path: Path) -> None:
         source_repo = _init_repo(tmp_path / "source")
         _write(source_repo, "changed_file.py", "x = 1\n")
         base_commit = _commit(source_repo, "base")
@@ -114,6 +114,11 @@ class TestWriteBenchArtifacts:
         fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
 
         assert (dest_dir / ".bench" / "commit-subject.txt").read_text() == hostile_subject + "\n"
+        assert hostile_subject not in _git(dest_dir, "log", "--all", "--format=%B")
+        assert hostile_subject not in _git(dest_dir, "tag", "--list", "--format=%(contents)")
+        git_dir = dest_dir / ".git"
+        git_text_files = [git_dir / "COMMIT_EDITMSG", *(path for path in (git_dir / "logs").rglob("*") if path.is_file())]
+        assert [path for path in git_text_files if path.exists() and hostile_subject in path.read_text()] == []
 
     def test_function_context_diff_uses_git_dash_w(self, tmp_path: Path) -> None:
         """-W ("show whole function as context") must actually be the flag
@@ -155,7 +160,7 @@ class TestWriteBenchArtifacts:
         dest_dir.mkdir()
         fixture_repo.build_two_commit_repo(source_repo, defect, dest_dir)
 
-        stats_by_path = {stat.path: stat for stat in fixture_repo.write_bench_artifacts(dest_dir)}
+        stats_by_path = {stat.path: stat for stat in fixture_repo.write_bench_artifacts(dest_dir, "fix: bug")}
         assert stats_by_path["at_cap.py"].estimated_tokens == 25_000
         assert stats_by_path["at_cap.py"].over_read_cap is False
         assert stats_by_path["over_cap.py"].estimated_tokens == 25_001
@@ -359,29 +364,6 @@ class TestRefusesExecutableProjectConfig:
 
         with pytest.raises(ValueError, match="40-hex commit SHA"):
             fixture_repo.refuse_executable_project_config_at_commit(source_repo, not_a_sha)
-
-
-class TestPrecisionJudgeFixtureAndRecallJudgeDir:
-    def test_precision_judge_fixture_holds_no_bench_lens_file(self, tmp_path: Path) -> None:
-        source_repo = _init_repo(tmp_path / "source")
-        _write(source_repo, "changed_file.py", "x = 1\n")
-        base_commit = _commit(source_repo, "base")
-        _write(source_repo, "changed_file.py", "x = 2\n")
-        head_commit = _commit(source_repo, "fix: bug")
-        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
-        dest_dir = tmp_path / "judge-fixture"
-        dest_dir.mkdir()
-
-        fixture_repo.build_precision_judge_fixture(source_repo, defect, dest_dir)
-
-        assert not list(dest_dir.rglob("bench-*.md"))
-
-    def test_recall_judge_dir_holds_no_bench_lens_file(self, tmp_path: Path) -> None:
-        dest_dir = tmp_path / "recall-judge-dir"
-        result = fixture_repo.build_recall_judge_dir(dest_dir)
-        assert result == dest_dir
-        assert dest_dir.is_dir()
-        assert not any(dest_dir.iterdir())
 
 
 # --- arms.py -----------------------------------------------------------------

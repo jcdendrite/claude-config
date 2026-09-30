@@ -46,6 +46,10 @@ _FIXTURE_AUTHOR_NAME = "review-bench fixture"
 _FIXTURE_AUTHOR_EMAIL = "review-bench@localhost"
 _FIXTURE_COMMIT_DATE = "2000-01-01T00:00:00+00:00"
 _FIXTURE_BASE_COMMIT_MESSAGE = "base"
+# A constant, never the mined subject: the session's git-status snapshot and
+# `git log` would carry it into the prompt context, and
+# .bench/commit-subject.txt is its only intended route.
+_FIXTURE_HEAD_COMMIT_MESSAGE = "head"
 
 _BENCH_DIR_NAME = ".bench"
 _COMMIT_SUBJECT_FILE_NAME = "commit-subject.txt"
@@ -189,8 +193,7 @@ def build_two_commit_repo(source_repo: Path, defect: ConfirmedDefect, dest_dir: 
     _clear_dir_contents(dest_dir)
     _extract_commit_tree(source_repo, defect.head_commit, dest_dir)
     _refuse_executable_project_config(dest_dir)
-    subject = _head_commit_subject(source_repo, defect.head_commit)
-    _commit_snapshot(dest_dir, subject)
+    _commit_snapshot(dest_dir, _FIXTURE_HEAD_COMMIT_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -257,10 +260,9 @@ def _write_bench_diffs(dest_dir: Path) -> None:
     (bench_dir / "change-function-context.diff").write_text(function_context_diff)
 
 
-def _write_commit_subject(dest_dir: Path) -> None:
+def _write_commit_subject(dest_dir: Path, subject: str) -> None:
     """The mined commit subject reaches the reviewer only as this data file,
-    never through a session prompt."""
-    subject = _head_commit_subject(dest_dir, "HEAD")
+    never through a session prompt or the fixture's git history."""
     (dest_dir / _BENCH_DIR_NAME / _COMMIT_SUBJECT_FILE_NAME).write_text(subject + "\n")
 
 
@@ -275,13 +277,13 @@ def _exclude_bench_dir(dest_dir: Path) -> None:
         exclude_path.write_text(existing + _GIT_INFO_EXCLUDE_LINE)
 
 
-def write_bench_artifacts(dest_dir: Path) -> list[ChangedFileStat]:
+def write_bench_artifacts(dest_dir: Path, commit_subject: str) -> list[ChangedFileStat]:
     """Write `.bench/change.diff`, `.bench/change-function-context.diff`,
-    `.bench/changed-files.tsv`, and `.bench/commit-subject.txt` into an
-    already-built two-commit `dest_dir`, and exclude `.bench/` from git.
-    Returns the per-file stats written to the TSV."""
+    `.bench/changed-files.tsv`, and `.bench/commit-subject.txt` (holding
+    `commit_subject`) into an already-built two-commit `dest_dir`, and exclude
+    `.bench/` from git. Returns the per-file stats written to the TSV."""
     _write_bench_diffs(dest_dir)
-    _write_commit_subject(dest_dir)
+    _write_commit_subject(dest_dir, commit_subject)
     stats = [_stat_changed_file(dest_dir, path) for path in _changed_paths(dest_dir)]
     _write_changed_files_tsv(dest_dir, stats)
     _exclude_bench_dir(dest_dir)
@@ -301,7 +303,7 @@ def build_defect_fixture(source_repo: Path, defect: ConfirmedDefect, dest_dir: P
     fixture -- callers copy in (or don't copy in) a `bench-<lens>.md` file
     afterward."""
     build_two_commit_repo(source_repo, defect, dest_dir)
-    stats = write_bench_artifacts(dest_dir)
+    stats = write_bench_artifacts(dest_dir, _head_commit_subject(source_repo, defect.head_commit))
     return FixtureRepo(dest_dir=dest_dir, defect=defect, changed_files=tuple(stats))
 
 

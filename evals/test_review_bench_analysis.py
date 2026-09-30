@@ -334,17 +334,27 @@ class TestPrecisionAndCertification:
         assert verdict == analysis.NONINFERIORITY_PASS
 
     def test_later_arm_passing_only_one_gate_is_not_certified(self) -> None:
-        assert analysis.certify_later_arm(analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_FAIL) == (
+        assert analysis.certify_later_arm(analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_FAIL, meets_n_min=True) == (
             analysis.CERTIFICATION_NOT_CERTIFIED
         )
-        assert analysis.certify_later_arm(analysis.NONINFERIORITY_FAIL, analysis.NONINFERIORITY_PASS) == (
+        assert analysis.certify_later_arm(analysis.NONINFERIORITY_FAIL, analysis.NONINFERIORITY_PASS, meets_n_min=True) == (
             analysis.CERTIFICATION_NOT_CERTIFIED
         )
 
-    def test_later_arm_passing_both_gates_is_certified(self) -> None:
-        assert analysis.certify_later_arm(analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_PASS) == (
-            analysis.CERTIFICATION_CERTIFIED
-        )
+    def test_later_arm_passing_both_gates_at_n_min_is_certified(self) -> None:
+        assert analysis.certify_later_arm(
+            analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_PASS, meets_n_min=True,
+        ) == analysis.CERTIFICATION_CERTIFIED
+
+    def test_later_arm_passing_both_gates_below_n_min_is_inconclusive(self) -> None:
+        assert analysis.certify_later_arm(
+            analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_PASS, meets_n_min=False,
+        ) == analysis.CERTIFICATION_INCONCLUSIVE
+
+    def test_later_arm_failing_a_gate_below_n_min_stays_not_certified(self) -> None:
+        assert analysis.certify_later_arm(
+            analysis.NONINFERIORITY_FAIL, analysis.NONINFERIORITY_PASS, meets_n_min=False,
+        ) == analysis.CERTIFICATION_NOT_CERTIFIED
 
     def test_defect_with_missing_precision_judge_run_is_dropped_from_both_arms(self) -> None:
         recall_kept = ["d0", "d1", "d2"]

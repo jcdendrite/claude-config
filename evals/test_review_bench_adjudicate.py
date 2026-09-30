@@ -16,7 +16,14 @@ import pytest
 import run_review_bench
 from review_bench import adjudicate, runner
 from review_bench.defects import ConfirmedDefect
-from test_review_bench_runner import INNER_PROMPT, _build_two_commit_source_repo, _load_scenario, _rewrite_records
+from test_review_bench_runner import (
+    INNER_PROMPT,
+    SUCCESS_STREAM_LINES,
+    _build_two_commit_source_repo,
+    _load_scenario,
+    _replace_tool_use,
+    _rewrite_records,
+)
 
 
 def _run_record(defect_id: str, arm: str, opaque_run_id: str, findings_text: str, *, status: str = "ok") -> runner.RunRecord:
@@ -189,6 +196,12 @@ class TestRecallAnswerParser:
         answer = "r1: partially found"
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
+    def test_keeps_an_apostrophe_inside_the_quoted_opening(self) -> None:
+        findings = {"r1": "The handler doesn't close the connection on error."}
+        answer = 'r1: FOUND -- "The handler doesn\'t close the connection"'
+        result = adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings)
+        assert result["r1"].quoted_opening == "The handler doesn't close the connection"
+
     def test_rejects_found_quoting_an_opening_absent_from_that_ids_findings(self) -> None:
         findings = {"r1": "text one."}
         answer = 'r1: FOUND -- "this quote is not in the findings"'
@@ -272,6 +285,14 @@ class TestPrecisionAnswerParser:
         findings_by_id = {"r1": "text."}
         answer = "### Run r1\n1. VALID with no quote at all\n"
         assert adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id) is None
+
+    def test_keeps_an_apostrophe_inside_the_quoted_opening(self) -> None:
+        findings_by_id = {"r1": "The handler doesn't close the connection on error."}
+        answer = '### Run r1\n1. VALID -- "The handler doesn\'t close the connection"\n'
+        result = adjudicate.parse_precision_answer(answer, expected_ids=["r1"], normalized_findings_by_id=findings_by_id)
+        assert result["r1"] == [
+            adjudicate.PrecisionFinding(label="VALID", quoted_opening="The handler doesn't close the connection"),
+        ]
 
     def test_rejects_when_split_check_fails(self) -> None:
         findings_by_id = {"r1": "One problem here."}
@@ -394,7 +415,7 @@ class TestJudgeRunRetry:
 
         def fake_launch(cmd, cwd, timeout_s):
             calls["n"] += 1
-            return [], False
+            return SUCCESS_STREAM_LINES, False
 
         monkeypatch.setattr(
             runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl",
@@ -423,7 +444,7 @@ class TestJudgeRunRetry:
         inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
         session_jsonl = scenario / "session-1.jsonl"
         session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
-        stream = [json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.5}).encode()]
+        stream = [json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.5}).encode()]
         monkeypatch.setattr(
             runner, "find_session_jsonl_by_id", lambda projects_root, session_id: scenario / "session-1.jsonl",
         )
@@ -488,7 +509,9 @@ class TestExecuteJudgeRunValidityWiring:
             tmp_path, monkeypatch, fix_commit_relpaths=("fake-live-checkout/changed_file.py",),
         )
 
-        record = adjudicate.execute_judge_run(ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: ([], False))
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, False),
+        )
 
         assert record.status == runner.STATUS_MISSING
         assert record.missing_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
@@ -498,9 +521,47 @@ class TestExecuteJudgeRunValidityWiring:
     ) -> None:
         ctx = self._judge_context_over_leaking_scenario(tmp_path, monkeypatch, fix_commit_relpaths=())
 
-        record = adjudicate.execute_judge_run(ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: ([], False))
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, False),
+        )
 
         assert record.status == runner.STATUS_OK
+
+    @pytest.mark.parametrize(("read_dir_name", "expected_status"), [
+        pytest.param("session-1", runner.STATUS_OK, id="own-session-dir"),
+        pytest.param("session-2", runner.STATUS_MISSING, id="sibling-session-dir"),
+    ])
+    def test_a_read_of_a_persisted_tool_result_passes_only_in_the_runs_own_session_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read_dir_name: str, expected_status: str,
+    ) -> None:
+        """Pins execute_judge_run's own_session_paths at its call site: reverting
+        it to a narrower pair fails the own-session case, and widening it to the
+        shared per-arm session store fails the sibling case."""
+        projects_root = tmp_path / "projects"
+        scenario = _load_scenario(projects_root, "normal-success")
+        session_jsonl = scenario / "session-1.jsonl"
+        inner_prompt = adjudicate.build_judge_inner_prompt(adjudicate.RECALL_DATA_FILE_NAME)
+        session_jsonl.write_text(session_jsonl.read_text().replace(INNER_PROMPT, inner_prompt))
+        _replace_tool_use(
+            scenario / "session-1" / "subagents" / "agent-1.jsonl", "toolu_read_1", name="Read",
+            input_={"file_path": str(scenario / read_dir_name / "tool-results" / "persisted.txt")},
+        )
+        monkeypatch.setattr(runner, "find_session_jsonl_by_id", lambda root, session_id: session_jsonl)
+        monkeypatch.setattr(runner, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(runner, "SESSION_FLUSH_POLL_INTERVAL_S", 0.01)
+        ctx = dataclasses.replace(
+            _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=tmp_path / "fixture"),
+            agent_name="bench-staff-backend-engineer", agent_declared_tools=frozenset({"Read", "Grep", "Glob"}),
+            model_id="claude-sonnet-5",
+        )
+
+        record = adjudicate.execute_judge_run(
+            ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (SUCCESS_STREAM_LINES, False),
+        )
+
+        assert record.status == expected_status
+        if expected_status == runner.STATUS_MISSING:
+            assert record.missing_reason == runner.VALIDITY_FAIL_CONFIG_DIR_LEAK
 
     def test_a_timed_out_run_with_no_transcript_records_the_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -534,7 +595,7 @@ class TestJudgeWriteAheadOrdering:
 
         def launch(cmd, cwd, timeout_s):
             events.append(("launch", cmd[cmd.index("--session-id") + 1]))
-            return [], False
+            return SUCCESS_STREAM_LINES, False
 
         ctx = dataclasses.replace(
             _judge_run_context(adjudicate.JUDGE_ARM_RECALL, fixture_dir=scenario),
@@ -660,7 +721,7 @@ class TestJudgeRunOkPath:
         _, ctx = self._scenario_and_ctx(
             tmp_path, monkeypatch, final_text=VALID_RECALL_ANSWER, judge_kind=adjudicate.JUDGE_ARM_RECALL,
         )
-        stream = [json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.25}).encode()]
+        stream = [json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.25}).encode()]
 
         record = adjudicate.execute_judge_run(ctx, session_id="s1", launch=lambda cmd, cwd, timeout_s: (stream, False))
 
@@ -696,7 +757,7 @@ class TestJudgeRunOkPath:
 
         def launch(cmd, cwd, timeout_s):
             launches.append("launch")
-            return [], False
+            return SUCCESS_STREAM_LINES, False
 
         attempt = adjudicate.run_judge_with_retry(ctx, launch=launch)
 

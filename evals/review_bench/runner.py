@@ -205,6 +205,7 @@ VALIDITY_FAIL_UNDECLARED_TOOL = "undeclared-tool"
 VALIDITY_FAIL_LIVE_CHECKOUT_LEAK = "live-checkout-leak"
 VALIDITY_FAIL_CONFIG_DIR_LEAK = "config-dir-leak"
 VALIDITY_FAIL_RESULT_ERROR = "result-error"
+VALIDITY_FAIL_NO_RESULT_EVENT = "no-result-event"
 VALIDITY_FAIL_SESSION_STORE_NOT_FOUND = "session-store-not-found"
 VALIDITY_FAIL_SIDECAR_MISSING = "sidecar-missing"
 VALIDITY_FAIL_EMPTY_FINDINGS = "empty-findings"
@@ -471,18 +472,21 @@ def read_dispatcher_transcript(session_jsonl: Path) -> DispatcherTranscript:
     return DispatcherTranscript(tool_calls=tuple(tool_calls))
 
 
+RESULT_SUBTYPE_SUCCESS = "success"
+
+
 class FinalResult(NamedTuple):
     is_error: bool | None
     terminal_reason: str | None
     subtype: str | None
 
 
-def extract_final_result(lines: list[bytes]) -> FinalResult:
+def extract_final_result(lines: list[bytes]) -> FinalResult | None:
     """The raw stream's last "result" event's is_error, terminal_reason and
     subtype -- never persisted to the on-disk transcript (mirrors
     measure_subagent_model_resolution._extract_total_cost_usd's own reverse
-    scan of the same stream). All None when no result event was ever
-    emitted (e.g. the process was killed on timeout first)."""
+    scan of the same stream). None when no result event was ever emitted
+    (e.g. the process was killed on timeout first)."""
     for raw in reversed(lines):
         try:
             rec = json.loads(raw)
@@ -498,7 +502,7 @@ def extract_final_result(lines: list[bytes]) -> FinalResult:
             terminal_reason=terminal_reason if isinstance(terminal_reason, str) else None,
             subtype=subtype if isinstance(subtype, str) else None,
         )
-    return FinalResult(None, None, None)
+    return None
 
 
 @dataclass(frozen=True)
@@ -773,15 +777,22 @@ def is_changed_file_leak(resolved_path: Path, leak_targets: tuple[Path, ...]) ->
     return any(target == resolved_path or target.is_relative_to(resolved_path) for target in leak_targets)
 
 
+def own_session_paths_for(session_jsonl: Path) -> tuple[Path, Path]:
+    """A run's own session transcript and its own `<session-id>/` directory
+    (subagent transcripts and persisted tool results), never the per-arm
+    session-store directory that K concurrent runs of one arm share."""
+    return session_jsonl, session_jsonl.parent / session_jsonl.stem
+
+
 def is_config_dir_leak(resolved_path: Path, projects_root: Path, own_session_paths: tuple[Path, ...]) -> bool:
     """True when resolved_path is the active config dir's projects/ root, is
     under it, or is a directory containing it -- except this run's own
-    session transcript file or its own subagent sidecar directory (the other
+    session transcript file or its own `<session-id>/` directory (the other
     of the two leaks that fail a run outright; evals/README.md's "Out-of-
     session reads" section). own_session_paths must name exactly those two
-    paths, not the whole per-arm session-store directory that K concurrent
-    runs of one arm share, or a sibling run's own transcript would be
-    exempted too."""
+    paths (see own_session_paths_for), not the whole per-arm session-store
+    directory that K concurrent runs of one arm share, or a sibling run's
+    own transcript would be exempted too."""
     if any(resolved_path.is_relative_to(p.resolve()) for p in own_session_paths):
         return False
     projects_root = projects_root.resolve()
@@ -877,10 +888,12 @@ def evaluate_run_validity(
     # Every failure from here on happens after the prompt comparison above
     # already matched, so each carries prompt_verbatim=True.
     final_result = extract_final_result(stream_lines)
+    if final_result is None:
+        return _fail(VALIDITY_FAIL_NO_RESULT_EVENT, prompt_verbatim=True)
     result_detail = f"subtype {final_result.subtype!r}, terminal_reason {final_result.terminal_reason!r}"
     if final_result.terminal_reason and "budget" in final_result.terminal_reason:
         return _fail(MISSING_REASON_BUDGET, prompt_verbatim=True, detail=result_detail)
-    if final_result.is_error:
+    if final_result.is_error or final_result.subtype != RESULT_SUBTYPE_SUCCESS:
         return _fail(VALIDITY_FAIL_RESULT_ERROR, prompt_verbatim=True, detail=result_detail)
 
     dispatches = msmr.parse_subagent_dispatches(
@@ -1340,17 +1353,13 @@ def execute_run(
         # timeout, not the absent store, is its recorded cause.
         validity = _fail(MISSING_REASON_TIMEOUT if timed_out else VALIDITY_FAIL_SESSION_STORE_NOT_FOUND)
     else:
-        # own_session_paths is exactly this run's own session transcript and
-        # its own subagent sidecar dir, not session_jsonl.parent (the whole
-        # per-arm session-store directory K concurrent runs of this arm
-        # share) -- see is_config_dir_leak's own docstring.
-        subagent_dir = msmr.subagent_dir_for_session(session_jsonl)
+        own_session_paths = own_session_paths_for(session_jsonl)
         validity = evaluate_run_validity(
             dispatcher_session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
             expected_agent_name=ctx.agent_name, expected_inner_prompt=inner_prompt,
             expected_model_id=ctx.model_id, agent_declared_tools=ctx.agent_declared_tools,
-            fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, session_jsonl, subagent_dir),
-            projects_root=projects_root, own_session_paths=(session_jsonl, subagent_dir),
+            fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, *own_session_paths),
+            projects_root=projects_root, own_session_paths=own_session_paths,
             live_checkout_roots=ctx.live_checkout_roots, changed_relpaths=ctx.changed_relpaths,
             fix_commit_relpaths=ctx.fix_commit_relpaths,
         )

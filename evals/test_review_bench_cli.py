@@ -1,5 +1,5 @@
 """Tests for evals/run_review_bench.py's own CLI-level logic:
-`_hash_directory`, `cmd_freeze`'s written manifest fields, and
+`analysis.hash_directory`, `cmd_freeze`'s written manifest fields, and
 `_build_spot_check_samples`'s reviewer/judge join. Offline throughout --
 `cmd_freeze`'s own git calls run against a throwaway tmp-path repo, never
 this repo's own history. No test launches `claude`.
@@ -1683,7 +1683,7 @@ class TestAnalyzeLaterArmVerdicts:
         ])
         return reviewer_path, judge_path
 
-    def test_a_later_arm_matching_the_baseline_on_recall_and_precision_is_certified(
+    def test_a_later_arm_matching_the_baseline_below_n_min_is_inconclusive(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
         files = _frozen_files(tmp_path, monkeypatch)
@@ -1697,7 +1697,57 @@ class TestAnalyzeLaterArmVerdicts:
         assert exit_code == 0
         assert f"analyze: recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
         assert f"analyze: precision non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
-        assert f"analyze: certification = {analysis.CERTIFICATION_CERTIFIED}" in stderr
+        assert f"analyze: certification = {analysis.CERTIFICATION_INCONCLUSIVE}" in stderr
+
+    def _matching_records_for_defects(
+        self, tmp_path: Path, *, defect_ids: tuple[str, ...], defects_without_precision_answer: tuple[str, ...] = (),
+    ) -> tuple[Path, Path]:
+        """Both arms find every defect; a defect listed in `defects_without_precision_answer`
+        has a recall-judge answer but no precision-judge run."""
+        reviewer_path, judge_path = tmp_path / "reviewer.jsonl", tmp_path / "judge.jsonl"
+        reviewer_records, judge_records = [], []
+        for defect_id in defect_ids:
+            reviewer_records += [
+                _run_record(defect_id, arms_mod.ARM_CURRENT_RULE, f"{defect_id}-a", "Leaks a connection on error."),
+                _run_record(defect_id, arms_mod.ARM_FUNCTION_CONTEXT, f"{defect_id}-b", "Leaks a connection on error."),
+            ]
+            judge_records.append(_run_record(
+                defect_id, JUDGE_ARM_RECALL, f"{defect_id}-recall",
+                f'{defect_id}-a: FOUND -- "Leaks a connection"\n{defect_id}-b: FOUND -- "Leaks a connection"',
+            ))
+            if defect_id not in defects_without_precision_answer:
+                judge_records.append(_run_record(
+                    defect_id, JUDGE_ARM_PRECISION, f"{defect_id}-precision",
+                    f'### Run {defect_id}-a\n1. VALID -- "Leaks a connection"\n'
+                    f'### Run {defect_id}-b\n1. VALID -- "Leaks a connection"\n',
+                ))
+        runner.append_run_records(reviewer_path, reviewer_records)
+        runner.append_run_records(judge_path, judge_records)
+        return reviewer_path, judge_path
+
+    @pytest.mark.parametrize(("patched_n_min", "defects_without_precision_answer", "expected_certification"), [
+        pytest.param(2, (), analysis.CERTIFICATION_CERTIFIED, id="both-gates-kept-count-equals-n-min"),
+        pytest.param(3, (), analysis.CERTIFICATION_INCONCLUSIVE, id="both-gates-kept-count-one-below-n-min"),
+        pytest.param(2, ("d2",), analysis.CERTIFICATION_INCONCLUSIVE, id="recall-kept-meets-n-min-but-precision-kept-does-not"),
+        pytest.param(1, ("d2",), analysis.CERTIFICATION_CERTIFIED, id="precision-kept-count-equals-n-min"),
+    ])
+    def test_the_n_min_bar_binds_the_smaller_of_the_recall_and_precision_kept_sets(
+        self, tmp_path: Path, monkeypatch, capsys, patched_n_min: int, defects_without_precision_answer: tuple[str, ...],
+        expected_certification: str,
+    ) -> None:
+        files = _frozen_files(tmp_path, monkeypatch, defect_ids=("d1", "d2"))
+        reviewer_path, judge_path = self._matching_records_for_defects(
+            tmp_path, defect_ids=("d1", "d2"), defects_without_precision_answer=defects_without_precision_answer,
+        )
+        monkeypatch.setattr(analysis, "n_min", lambda k: patched_n_min)
+
+        exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
+
+        stderr = capsys.readouterr().err
+        assert exit_code == 0
+        assert f"analyze: recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+        assert f"analyze: precision non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+        assert f"analyze: certification = {expected_certification}" in stderr
 
     def test_a_later_arm_that_misses_the_defect_the_baseline_found_is_not_certified(
         self, tmp_path: Path, monkeypatch, capsys,

@@ -14,9 +14,9 @@ _TERMINATION_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
 
 @pytest.fixture(autouse=True)
 def restore_process_wide_state():
-    """Both CLIs' `main()` set the termination-signal handlers and the umask
-    for the whole process, so every test that calls one must leave both as it
-    found them."""
+    """Both CLIs' `main()` set the termination-signal handlers, and
+    `run_review_bench.main()` also sets the umask, for the whole process, so
+    every test that calls one must leave both as it found them."""
     saved_handlers = {signum: signal.getsignal(signum) for signum in _TERMINATION_SIGNALS}
     saved_umask = os.umask(0)
     os.umask(saved_umask)

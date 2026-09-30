@@ -264,7 +264,7 @@ def install_precision_judge_fixture(
 # pattern rather than requiring byte-exact judge output.
 _MARKDOWN_DECORATION_RE = re.compile(r"[*`]")
 _LABEL_SEPARATOR = r"[:\-–—]+"  # ':', '-', '--', en dash, em dash
-_QUOTE_RE = re.compile(r"[\"'“”‘’]([^\"'“”‘’]+)[\"'“”‘’]")
+_QUOTE_RE = re.compile(r"[\"“”](.+)[\"“”]")
 
 _RECALL_LABEL_LINE_RE = re.compile(
     rf"(?im)^\s*(?P<id>\S+?)\s*{_LABEL_SEPARATOR}\s*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"
@@ -460,13 +460,13 @@ def execute_judge_run(ctx: JudgeRunContext, *, session_id: str, launch=None) -> 
             observed_tools=(), out_of_session_paths=(), findings_text=None, stats=runner.ReadStats.empty(),
         )
     else:
-        subagent_dir = runner.msmr.subagent_dir_for_session(session_jsonl)
+        own_session_paths = runner.own_session_paths_for(session_jsonl)
         validity = runner.evaluate_run_validity(
             dispatcher_session_jsonl=session_jsonl, stream_lines=lines, timed_out=timed_out,
             expected_agent_name=ctx.agent_name, expected_inner_prompt=inner_prompt,
             expected_model_id=ctx.model_id, agent_declared_tools=ctx.agent_declared_tools,
-            fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, session_jsonl, subagent_dir),
-            projects_root=projects_root, own_session_paths=(session_jsonl, subagent_dir),
+            fixture_dir=ctx.fixture_dir, own_dirs=(ctx.fixture_dir, *own_session_paths),
+            projects_root=projects_root, own_session_paths=own_session_paths,
             live_checkout_roots=ctx.live_checkout_roots, changed_relpaths=ctx.changed_relpaths,
             fix_commit_relpaths=ctx.fix_commit_relpaths,
         )
@@ -759,7 +759,7 @@ def import_spot_check_labels(path: Path) -> list[HumanSpotCheckLabel]:
 
 
 def cohens_kappa(labels_a: Sequence[str], labels_b: Sequence[str]) -> float:
-    """Cohen's kappa (Landis & Koch 1977) between two label sequences over
+    """Cohen's kappa between two label sequences over
     the same items, in the same order."""
     if len(labels_a) != len(labels_b):
         raise ValueError("cohens_kappa: label sequences must be the same length")

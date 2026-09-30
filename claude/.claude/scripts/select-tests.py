@@ -645,14 +645,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # to the SCRIPTS_TESTS_DIR the blanket SCRIPTS_DIR domain rule already selects.
 # Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB's own row
 # below.
-# SKILL_EVALS_RUNNER (second row): evals/run_review_bench.py's own runner
-# reuses run_skill_evals.py's launch shape. A change here also needs
-# review_bench's own tests re-run too. This row stays standalone rather than
-# joining _is_skill_management_or_evals_change's shared SKILLS_TESTS_DIR
-# target below, because that predicate also matches every
-# plugins/skill-management/scripts/*.py change, which has no review_bench
-# dependency.
-# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (first two review_bench rows):
+# SKILL_EVALS_RUNNER: evals/review_bench/runner.py imports run_skill_evals.py
+# and reads its SAMPLE_TIMEOUT_S, DEFAULT_WORKERS, and DISPATCH_TOOL_NAMES.
+# A change here also needs review_bench's own tests re-run. This row stays
+# standalone rather than joining _is_skill_management_or_evals_change's
+# shared SKILLS_TESTS_DIR target below, because that predicate also matches
+# every plugins/skill-management/scripts/*.py change, which has no
+# review_bench dependency.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES
+# and SKILL_EVALS_RUNNER rows):
 # measure_subagent_model_resolution.py imports run_skill_evals.py, which
 # imports _config_dir.py, so a change to either also needs that test re-run.
 # The dependencies row over-selects it for the transcript_analysis modules,

@@ -593,10 +593,11 @@ arms; a later arm's own snapshot is a hand-applied diff of
 
 ### Reading the report
 
-`analyze` prints each arm's recall, pooled precision, and non-inferiority
-verdicts, plus every secondary column: Read tokens per run, `PARTIAL
-view`/paged-read counts, whole-file-read adherence, missing-run counts by
-reason, out-of-session read counts, split agreement, and the observed
+`analyze` prints the baseline sensitivity or later-arm verdicts (a later arm
+that passes both gates prints `inconclusive`, not `certified`, when either
+gate's effective defect set is smaller than N_min), plus every secondary column: Read tokens
+per run, `PARTIAL view`/paged-read counts, whole-file-read adherence,
+missing-run counts by reason, out-of-session read counts, and the observed
 standard deviation of the per-defect difference. In baseline mode (no
 `--baseline-conditions-path`), `--out` also writes each arm's recall and
 pooled precision with a paired-bootstrap interval, the per-defect detection
@@ -621,8 +622,8 @@ govern how to read it:
   merge of two findings, or a split of one, moves an arm's pooled precision.
   That cancels out of `precision_X - precision_1` only if the judge's own
   segmentation error rate, and the labels the error touches, are the same
-  for both arms. Split agreement per arm, printed beside the precision
-  figures, is where a violation would show; it never gates on its own.
+  for both arms. Split agreement per arm, printed by `spot-check import`,
+  is where a violation would show; it never gates on its own.
 
 ### Interruption and cleanup
 
@@ -657,8 +658,8 @@ rather than racing the run still in progress. The kernel drops the lock when
 its holder dies, so no stale lock file needs clearing by hand. The lock does
 not cover the killed run's `claude -p` children, which can keep running after
 the lock drops. Nothing enforces the timeout on such a child once its runner is
-dead, so waiting before resuming is a heuristic, not a guarantee. After a hard
-kill, wait at least the command's own timeout before resuming: `REVIEWER_TIMEOUT_S`
+dead, so waiting before resuming is a heuristic, not a guarantee. After any exit that skips the
+child-kill path (see below), wait at least the command's own timeout before resuming: `REVIEWER_TIMEOUT_S`
 in `review_bench/runner.py` for `smoke` and `run`, and the judge's own
 timeout (`RECALL_JUDGE_TIMEOUT_S` or `PRECISION_JUDGE_TIMEOUT_S`) for `judge`.
 A resumed sweep that runs first deletes the directories such a child is still
@@ -667,8 +668,9 @@ using, and the child's output is never recorded.
 Each `claude -p` child leads its own session, so a terminal hangup never
 reaches it. The CLI's `main()` therefore routes SIGHUP and SIGTERM into
 `KeyboardInterrupt`, the same path Ctrl-C takes: `abort_launches()` and a kill
-of each child's whole process group. Only SIGKILL and a machine crash are hard
-kills that skip this child-kill path. A SIGHUP that was already ignored when
+of each child's whole process group. Every exit that bypasses those handlers
+skips this child-kill path: SIGKILL, SIGQUIT and any other unhandled signal,
+and an interpreter or machine crash. A SIGHUP that was already ignored when
 the command started, as under `nohup`, stays ignored, so a detached campaign
 survives a logout. An interrupted `run_review_bench.py` command prints its
 campaign ID with `resume with --campaign-id <id>` and exits 128 plus the
@@ -732,7 +734,8 @@ A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
 and its own session store is recorded in that run's `out_of_session_paths`
 and does not fail the run on its own. Only a read of a live checkout's own
 copy of a file the introducing commit or the fix commit changed, or of the
-ambient config's `projects/` root, fails the run. The live checkouts are the
+ambient config's `projects/` root (a run's own transcript and its own
+`<session-id>/` directory excepted), fails the run. The live checkouts are the
 top level of every worktree of this repository, from `git worktree list`, and
 of every worktree of the repository the ambient config resolves into, read
 once when the command starts. `git worktree list -z` needs Git 2.36 or newer;

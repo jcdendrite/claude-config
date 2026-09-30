@@ -241,6 +241,7 @@ NONINFERIORITY_FAIL = "fail"
 
 CERTIFICATION_CERTIFIED = "certified"
 CERTIFICATION_NOT_CERTIFIED = "not-certified"
+CERTIFICATION_INCONCLUSIVE = "inconclusive"
 
 
 def baseline_sensitivity_verdict(
@@ -296,13 +297,15 @@ def precision_noninferiority_verdict(
     return verdict, (lower, upper)
 
 
-def certify_later_arm(recall_verdict: str, precision_verdict: str) -> str:
+def certify_later_arm(recall_verdict: str, precision_verdict: str, *, meets_n_min: bool) -> str:
     """A later arm is certified only when both the recall gate and the
     precision gate pass. Because both must pass, each gate keeps one-sided
-    alpha = ALPHA_ONE_SIDED with no multiplicity adjustment."""
-    if recall_verdict == NONINFERIORITY_PASS and precision_verdict == NONINFERIORITY_PASS:
-        return CERTIFICATION_CERTIFIED
-    return CERTIFICATION_NOT_CERTIFIED
+    alpha = ALPHA_ONE_SIDED with no multiplicity adjustment. Passing both
+    gates below N_min is inconclusive, not certified; a failing gate stays
+    not-certified at any N."""
+    if recall_verdict != NONINFERIORITY_PASS or precision_verdict != NONINFERIORITY_PASS:
+        return CERTIFICATION_NOT_CERTIFIED
+    return CERTIFICATION_CERTIFIED if meets_n_min else CERTIFICATION_INCONCLUSIVE
 
 
 # --- Secondary columns, never gating (evals/README.md's "Reading the report"

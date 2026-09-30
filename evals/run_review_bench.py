@@ -887,7 +887,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         precision_verdict, precision_interval = analysis.precision_noninferiority_verdict(
             precision_counts, precision_kept_ids, baseline_arm, other_arm,
         )
-        certification = analysis.certify_later_arm(recall_verdict, precision_verdict)
+        # precision_kept_ids is a subset of kept_ids, so its size binds both gates' N_min bar.
+        certification = analysis.certify_later_arm(
+            recall_verdict, precision_verdict, meets_n_min=len(precision_kept_ids) >= analysis.n_min(args.k),
+        )
         print(f"analyze: recall non-inferiority = {recall_verdict} (interval {recall_interval})", file=sys.stderr)
         print(f"analyze: precision non-inferiority = {precision_verdict} (interval {precision_interval})", file=sys.stderr)
         print(f"analyze: certification = {certification}", file=sys.stderr)
